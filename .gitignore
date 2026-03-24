@@ -65,3 +65,21 @@ docs/plans/
 
 .fake
 nul
+
+# Profiling traces and analysis
+*.nettrace
+*.etlx
+*.speedscope.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# BenchmarkDotNet logs
+BenchmarkDotNet.Artifacts/
+
+# Temporary test projects
+temptest/
+
+# Stress test logs
+stress_run.log

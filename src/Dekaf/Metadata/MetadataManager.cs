@@ -248,15 +248,21 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Slow path for topic metadata retrieval when cache miss occurs.
     /// Separated from GetTopicMetadataAsync to keep the fast path inlined.
     /// </summary>
+    /// <remarks>
+    /// Retries with exponential backoff until the cancellation token fires (typically
+    /// bounded by the caller's max.block.ms timeout). This matches the Java client's
+    /// waitOnMetadata behavior: loop until metadata is available or timeout expires,
+    /// rather than giving up after a fixed number of attempts.
+    /// </remarks>
     private async ValueTask<TopicInfo?> GetTopicMetadataSlowAsync(string topicName, CancellationToken cancellationToken)
     {
-        // Retry logic for topics being created
-        const int maxRetries = 3;
-        const int retryDelayMs = 500;
+        const int initialRetryDelayMs = 100;
+        const int maxRetryDelayMs = 2000;
 
         TopicInfo? topic = null;
+        var retryDelayMs = initialRetryDelayMs;
 
-        for (var attempt = 0; attempt < maxRetries; attempt++)
+        while (!cancellationToken.IsCancellationRequested)
         {
             // Refresh metadata for this topic
             await RefreshMetadataAsync([topicName], cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -267,14 +273,17 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 return topic;
             }
 
-            // Check for transient errors that indicate topic is being created
-            if (topic?.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
+            // Retry for transient states: topic not yet in response (null), being created,
+            // or leader election in progress. These are all expected during topic creation.
+            if (topic is null
+                || topic.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
             {
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, maxRetryDelayMs);
                 continue;
             }
 
-            // Non-transient error or topic found with partitions
+            // Non-transient error — no point retrying
             break;
         }
 
@@ -305,7 +314,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         LogMetadataCacheMiss(topicName, partition);
-        await RefreshMetadataAsync([topicName], cancellationToken: cancellationToken).ConfigureAwait(false);
+        // Force refresh: the topic may be cached but with LeaderId=-1 for this partition
+        // (leader election in progress). Without forceRefresh, AllTopicsCached returns true
+        // and the stale metadata persists — the partition is permanently unreachable.
+        await RefreshMetadataAsync([topicName], forceRefresh: true, cancellationToken: cancellationToken).ConfigureAwait(false);
         return _metadata.GetPartitionLeader(topicName, partition);
     }
 
@@ -409,7 +421,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     _metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                _metadata.Update(response);
+                // Topic-specific requests merge into the existing snapshot to preserve
+                // metadata for other topics. Full-cluster requests replace the snapshot.
+                // This matches the Java client's incremental metadata update behavior.
+                _metadata.Update(response, mergeTopics: topics is not null);
 
                 // Register brokers with connection pool
                 foreach (var broker in response.Brokers)
@@ -499,7 +514,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     _metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                _metadata.Update(response);
+                _metadata.Update(response, mergeTopics: topics is not null);
 
                 foreach (var broker in response.Brokers)
                 {

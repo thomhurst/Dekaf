@@ -23,6 +23,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(throwingInterceptor)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -39,7 +40,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -60,6 +61,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
         // Produce a message normally (no interceptor on producer)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -75,7 +77,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .AddInterceptor(throwingInterceptor)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -100,6 +102,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .AddInterceptor(trackingBefore)
             .AddInterceptor(throwingInterceptor)
             .AddInterceptor(trackingAfter)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -121,7 +124,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -143,6 +146,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
         // Produce a message normally
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -160,7 +164,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .AddInterceptor(trackingBefore)
             .AddInterceptor(throwingInterceptor)
             .AddInterceptor(trackingAfter)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -187,6 +191,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(throwingInterceptor)
             .AddInterceptor(trackingInterceptor)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 5;
@@ -210,7 +215,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -241,6 +246,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
         // Produce multiple messages normally
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 5;
@@ -261,7 +267,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .AddInterceptor(throwingInterceptor)
             .AddInterceptor(trackingInterceptor)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

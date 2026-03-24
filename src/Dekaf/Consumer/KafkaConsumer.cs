@@ -325,7 +325,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
-    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(0, int.MaxValue);
+    // Initial count 1: at startup, memory IS available (_prefetchedBytes = 0). Starting at 0
+    // causes a deadlock if the prefetch loop fills memory before the consumer reads anything —
+    // the loop waits for a Release() that never comes because the consumer has no data yet.
+    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(1, int.MaxValue);
 
     // Per-broker reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
     // Keyed by brokerId since PrefetchFromBrokerAsync runs concurrently for multiple brokers
@@ -801,6 +804,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
+        var consecutiveErrors = 0;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -828,6 +832,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Fetch records into prefetch channel
                     await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                    consecutiveErrors = 0; // Reset on success
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -835,7 +840,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 }
                 catch (Exception ex)
                 {
+                    consecutiveErrors++;
                     LogPrefetchLoopError(ex);
+
+                    // After persistent failures, surface the error to the consumer instead of
+                    // looping silently forever. Without this, ConsumeAsync hangs indefinitely
+                    // when the prefetch loop can never produce data (e.g., broker unreachable,
+                    // metadata never resolves, persistent connection errors).
+                    if (consecutiveErrors >= 50) // ~5 seconds of continuous failures (50 * 100ms)
+                    {
+                        _prefetchChannel.Writer.TryComplete(
+                            new KafkaException(ErrorCode.UnknownServerError,
+                                $"Prefetch loop failed {consecutiveErrors} consecutive times, last error: {ex.Message}", ex));
+                        return;
+                    }
+
                     await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -2099,11 +2118,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Return pooled array after extracting results
         ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Return(leaderTasks, clearArray: true);
 
-        // Cache the result - will be reused until assignment/paused changes
-        // Check version to ensure assignment didn't change while we were building
+        // Cache the result - will be reused until assignment/paused changes.
+        // Don't cache empty results: an empty dictionary means partition leaders
+        // couldn't be resolved (metadata not yet available). Caching it would prevent
+        // recovery when metadata becomes available, causing the prefetch loop to spin
+        // forever producing nothing.
         lock (_partitionCacheLock)
         {
-            if (_cachedPartitionsByBroker is null && Volatile.Read(ref _assignmentVersion) == capturedVersion)
+            if (result.Count > 0 && _cachedPartitionsByBroker is null
+                && Volatile.Read(ref _assignmentVersion) == capturedVersion)
             {
                 _cachedPartitionsByBroker = result;
             }
@@ -2816,6 +2839,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             return;
 
         _disposed = true;
+        var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
 
         // Unregister lag callback so the OTel SDK no longer invokes it on this disposed instance
@@ -2835,6 +2859,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Ignore errors during dispose
             }
         }
+
+        var closeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        LogConsumerCloseCompleted(closeElapsedMs);
 
         _wakeupCts?.Cancel();
         _autoCommitCts?.Cancel();
@@ -2892,6 +2919,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
+
+        var disposeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        LogConsumerDisposed(disposeElapsedMs);
     }
 
     #region Metrics
@@ -3002,6 +3032,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer disposing: beginning shutdown")]
     private partial void LogConsumerDisposing();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer close phase completed in {ElapsedMs:F0}ms")]
+    private partial void LogConsumerCloseCompleted(double elapsedMs);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Consumer disposed in {ElapsedMs:F0}ms")]
+    private partial void LogConsumerDisposed(double elapsedMs);
 
     #endregion
 

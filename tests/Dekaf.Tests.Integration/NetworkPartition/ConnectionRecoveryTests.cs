@@ -22,6 +22,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
             .WithAcks(Acks.All)
             .WithDeliveryTimeout(TimeSpan.FromSeconds(30))
             .WithRequestTimeout(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce before partition
@@ -67,7 +68,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
             .WithGroupId($"reconnect-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .SubscribeTo(topic)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var consumed = new List<string>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -96,6 +97,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
             .WithRequestTimeout(TimeSpan.FromSeconds(5))
             .WithMetadataMaxAge(TimeSpan.FromSeconds(3))
             .WithMaxBlock(TimeSpan.FromSeconds(15))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var result1 = await producer.ProduceAsync(new ProducerMessage<string, string>

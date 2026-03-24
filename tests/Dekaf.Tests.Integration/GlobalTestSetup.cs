@@ -3,7 +3,13 @@ using Dekaf.Compression;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
+using Dekaf.Tests.Integration;
+using Microsoft.Extensions.Logging;
+using TUnit.Core;
 using TUnit.Core.Helpers;
+
+[assembly: Timeout(300_000)] // 5 minutes per test — prevents indefinite hangs
+[assembly: ParallelLimiter<IntegrationTestParallelLimit>]
 
 namespace Dekaf.Tests.Integration;
 
@@ -23,6 +29,7 @@ internal sealed class GlobalTestSetup
         // starvation can delay CancellationTokenSource timers by hundreds of seconds,
         // causing tests to hang until the orphan sweep (360s) fires.
         ThreadPool.SetMinThreads(32, 32);
+
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
         CompressionCodecRegistry.Default.AddZstd();
@@ -34,4 +41,11 @@ internal sealed class GlobalTestSetup
             Trace.Listeners.Add(new ConsoleTraceListener());
 #endif
     }
+
+    /// <summary>
+    /// Creates a TUnit-backed logger factory for the current test. Each call creates a new
+    /// factory bound to <c>TestContext.Current</c>, so producer/consumer debug logs appear
+    /// in that test's output in CI reports.
+    /// </summary>
+    public static ILoggerFactory GetLoggerFactory() => LoggerFactoryFixture.Create();
 }

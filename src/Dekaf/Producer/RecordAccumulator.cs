@@ -1165,7 +1165,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var partitions = metadataManager.GetPartitionsForNode(nodeId);
         if (partitions.Count == 0)
+        {
+            // Leader migrated between Ready() and Drain(): the notification was consumed but
+            // the partition now belongs to a different node. Without re-enqueue, the batch is
+            // stranded in the deque until the 3x delivery timeout orphan sweep.
+            foreach (var (tp, pd) in _partitionDeques)
+            {
+                if (pd.Count > 0)
+                    _readyPartitions.Enqueue(tp);
+            }
+
             return;
+        }
 
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
             startIndex = 0;
@@ -1435,7 +1446,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Returns a ReadyBatch to the pool for reuse.
     /// Called by KafkaProducer after batch is processed.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
         // Atomic guard: only the first caller returns the batch to the pool.
@@ -1445,6 +1455,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.Exchange(ref batch._returnedToPool, 1) != 0)
             return;
 
+        batch.WaitForCleanupIfStarted();
         _readyBatchPool.Return(batch);
     }
 
@@ -2791,7 +2802,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// whose references were lost from BrokerSender data structures.
     /// Safe to call multiple times — idempotent due to dictionary removal and IsEmpty check.
     /// </summary>
-    internal void ForceFailAllInFlightBatches()
+    /// <param name="returnToPool">
+    /// When true, batches are returned to the pool after failing (calls Reset which nulls fields).
+    /// Must only be true when all BrokerSenders are stopped — otherwise the send loop may still
+    /// hold references to these batches and access their fields, causing NullReferenceException.
+    /// When false, only completion sources are resolved and memory is released; pool return is
+    /// deferred to a later sweep (after BrokerSenders are disposed).
+    /// </param>
+    internal void ForceFailAllInFlightBatches(bool returnToPool = true)
     {
         if (_inFlightBatches.IsEmpty)
             return;
@@ -2806,9 +2824,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue; // Another thread already handled this batch
 
             FailAndRelease(orphanedBatch, disposedException);
-            // During disposal, BrokerSenders are already stopped — safe to return to pool.
-            try { ReturnReadyBatch(orphanedBatch); }
-            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+
+            if (returnToPool)
+            {
+                // Only safe when BrokerSenders are stopped — their send loops no longer
+                // reference these batches, so Reset() won't cause use-after-free.
+                try { ReturnReadyBatch(orphanedBatch); }
+                catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+            }
         }
     }
 
@@ -4137,6 +4160,21 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
     private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
     internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
+    private int _generation; // Incremented on each Initialize() — detects batch object recycling
+
+    /// <summary>
+    /// True when this batch has been returned to the pool. The authoritative signal for
+    /// "batch is no longer live" — set atomically by ReturnReadyBatch before Reset() runs.
+    /// </summary>
+    internal bool IsReturnedToPool => Volatile.Read(ref _returnedToPool) != 0;
+
+    /// <summary>
+    /// Monotonically increasing counter, incremented on each Initialize(). Used to detect
+    /// batch object recycling: if a PendingResponse holds a reference to a batch and the
+    /// batch's generation doesn't match the expected value, the batch was recycled
+    /// (Reset + re-Initialize with a different topic) while the PendingResponse was in flight.
+    /// </summary>
+    internal int Generation => Volatile.Read(ref _generation);
 
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
@@ -4175,6 +4213,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
         Interlocked.Exchange(ref _memoryReleased, 0);
+        Interlocked.Increment(ref _generation);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;
@@ -4202,12 +4241,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // SAFETY NET: If CompleteSend/Fail wasn't called (_cleanedUp still 0), resolve
         // orphaned completion sources and return pooled arrays before the batch goes back
         // to the pool. Without this, ProduceAsync callers hang forever on unresolved sources.
-        // Single read: _cleanedUp cannot change during Reset (pool return is single-threaded per batch).
+        // WaitForCleanupIfStarted in ReturnReadyBatch handles the race where CompleteSend/Fail
+        // has started but Cleanup hasn't finished. If we reach here, neither was ever called.
         if (Volatile.Read(ref _cleanedUp) == 0)
         {
             if (_completionSourcesArray is not null)
             {
-                var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
+                var orphanedException = new InvalidOperationException(
+                    $"Batch recycled without completing delivery — this indicates a bug in the producer pipeline " +
+                    $"(tp={_topicPartition}, sendCompleted={Volatile.Read(ref _sendCompleted)}, " +
+                    $"completed={Volatile.Read(ref _completed)}, trace={DiagTrace})");
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     _completionSourcesArray[i]?.TrySetException(orphanedException);
@@ -4430,6 +4473,30 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         finally
         {
             Cleanup();
+        }
+    }
+
+    /// <summary>
+    /// If CompleteSend/Fail has been called but Cleanup hasn't finished yet, spin-waits
+    /// for the winning thread to complete. Returns immediately if no send completion has
+    /// started (_sendCompleted == 0) — the safety net in Reset() handles that case.
+    /// </summary>
+    /// <remarks>
+    /// Prevents a race where ForceFailAllInFlightBatches loses the _sendCompleted CAS
+    /// (because BrokerSender's CompleteSend won it), then immediately returns the batch
+    /// to pool via ReturnReadyBatch — before CompleteSend reaches its finally { Cleanup() }.
+    /// Reset() would see _cleanedUp == 0 and fire the safety net, corrupting completion
+    /// sources that CompleteSend is still iterating.
+    /// Resolves in microseconds typically; under thread starvation SpinWait yields to the OS.
+    /// Bounded at 1000 iterations (~1ms) as defense against a stuck Cleanup thread.
+    /// </remarks>
+    internal void WaitForCleanupIfStarted()
+    {
+        if (Volatile.Read(ref _cleanedUp) == 0 && Volatile.Read(ref _sendCompleted) != 0)
+        {
+            var sw = new SpinWait();
+            do { sw.SpinOnce(); }
+            while (Volatile.Read(ref _cleanedUp) == 0 && sw.Count < 1000);
         }
     }
 

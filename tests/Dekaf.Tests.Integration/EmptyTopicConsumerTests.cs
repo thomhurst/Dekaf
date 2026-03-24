@@ -23,7 +23,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -60,6 +60,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -91,7 +92,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -131,6 +132,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -171,7 +173,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -208,6 +210,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 3; i++)
@@ -244,7 +247,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -278,7 +281,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -318,7 +321,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -359,6 +362,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 4; p++)

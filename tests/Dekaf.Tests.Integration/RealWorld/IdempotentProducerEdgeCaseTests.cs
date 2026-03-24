@@ -20,6 +20,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 50;
@@ -46,7 +47,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -71,6 +72,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int tasksCount = 5;
@@ -101,7 +103,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -130,6 +132,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 200;
@@ -143,13 +146,13 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
             });
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify no duplicates
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -177,6 +180,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messagesPerPartition = 25;
@@ -198,7 +202,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"idempotent-mp-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -271,7 +275,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -305,6 +309,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
             .WithAcks(Acks.All)
             .WithBatchSize(256) // Very small - each message will be its own batch
             .WithLinger(TimeSpan.FromMilliseconds(0))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 30;
@@ -321,7 +326,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

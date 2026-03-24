@@ -94,11 +94,17 @@ public class AdaptiveScalingTests
             for (int i = 0; i < waiterCount; i++)
             {
                 var index = i;
-                tasks[i] = Task.Run(() =>
+                var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                tasks[i] = tcs.Task;
+                new Thread(() =>
                 {
-                    accumulator.ReserveMemorySync(recordSize);
-                    Interlocked.Exchange(ref wokeUp[index], 1);
-                }, cancellationToken);
+                    try
+                    {
+                        accumulator.ReserveMemorySync(recordSize);
+                        Interlocked.Exchange(ref wokeUp[index], 1);
+                    }
+                    finally { tcs.TrySetResult(); }
+                }) { IsBackground = true }.Start();
             }
 
             // Wait until all threads have entered the slow path (incremented pressure)
@@ -155,7 +161,9 @@ public class AdaptiveScalingTests
         for (int i = 0; i < waiterCount; i++)
         {
             var index = i;
-            tasks[i] = Task.Run(() =>
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            tasks[i] = tcs.Task;
+            new Thread(() =>
             {
                 try
                 {
@@ -165,7 +173,8 @@ public class AdaptiveScalingTests
                 {
                     exceptions[index] = ex;
                 }
-            }, cancellationToken);
+                finally { tcs.TrySetResult(); }
+            }) { IsBackground = true }.Start();
         }
 
         // Wait until all threads have entered the slow path (incremented pressure counter).
@@ -201,24 +210,29 @@ public class AdaptiveScalingTests
         {
             AppendOneRecord(accumulator);
 
-            // Waiter 1: will time out (maxBlockMs), leaving a cancelled node in the queue
-            var timedOutTask = Task.Run(() =>
+            // Waiter 1: will time out (maxBlockMs), leaving a cancelled node in the queue.
+            // Use dedicated Thread instead of Task.Run: these are intentionally blocking
+            // calls (ManualResetEventSlim.Wait), and Task.Run on a starved thread pool can
+            // delay scheduling by 20-40 seconds, causing test timeouts on CI.
+            var waiter1Done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            new Thread(() =>
             {
                 try { accumulator.ReserveMemorySync(recordSize); }
                 catch { /* Expected: KafkaTimeoutException */ }
-            }, cancellationToken);
+                finally { waiter1Done.TrySetResult(); }
+            }) { IsBackground = true }.Start();
 
-            await timedOutTask.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            await waiter1Done.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
 
             // Start waiter 2 — uses same FIFO queue
             var pressureBefore = accumulator.BufferPressureEvents;
             var waiter2Completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var waiter2Task = Task.Run(() =>
+            new Thread(() =>
             {
                 accumulator.WaitForBufferSpace();
                 waiter2Completed.SetResult();
-            }, cancellationToken);
+            }) { IsBackground = true }.Start();
 
             // Wait until waiter 2 has entered slow path
             await WaitForPressureAsync(accumulator, pressureBefore + 1, cancellationToken);
@@ -227,8 +241,7 @@ public class AdaptiveScalingTests
             accumulator.ClearCurrentBatch("test-topic", 0);
             accumulator.ReleaseMemory(recordSize);
 
-            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-            await waiter2Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
         }
         finally
         {
@@ -255,11 +268,15 @@ public class AdaptiveScalingTests
 
             var pressureBefore = accumulator.BufferPressureEvents;
 
-            // Start a thread that will block in ReserveMemorySync (slow path)
-            var reserveTask = Task.Run(() =>
+            // Start a thread that will block in ReserveMemorySync (slow path).
+            // Use dedicated Thread to avoid thread pool starvation on CI.
+            var reserveTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            new Thread(() =>
             {
-                accumulator.ReserveMemorySync(recordSize);
-            }, cancellationToken);
+                try { accumulator.ReserveMemorySync(recordSize); }
+                finally { reserveTcs.TrySetResult(); }
+            }) { IsBackground = true }.Start();
+            var reserveTask = reserveTcs.Task;
 
             // Wait until the thread has entered the slow path (incremented pressure)
             await WaitForPressureAsync(accumulator, pressureBefore + 1, cancellationToken);
@@ -292,11 +309,15 @@ public class AdaptiveScalingTests
 
             var pressureBefore = accumulator.BufferPressureEvents;
 
-            // Start a thread that will block in WaitForBufferSpace (slow path)
-            var waitTask = Task.Run(() =>
+            // Start a thread that will block in WaitForBufferSpace (slow path).
+            // Use dedicated Thread to avoid thread pool starvation on CI.
+            var waitTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            new Thread(() =>
             {
-                accumulator.WaitForBufferSpace();
-            }, cancellationToken);
+                try { accumulator.WaitForBufferSpace(); }
+                finally { waitTcs.TrySetResult(); }
+            }) { IsBackground = true }.Start();
+            var waitTask = waitTcs.Task;
 
             // Wait until the thread has entered the slow path (incremented pressure)
             await WaitForPressureAsync(accumulator, pressureBefore + 1, cancellationToken);

@@ -16,6 +16,7 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
         // Produce a message first so the consumer has something to join for
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -30,7 +31,7 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -24,6 +24,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithClientId("test-linger-expiry")
             .WithLinger(TimeSpan.FromMilliseconds(100))
             .WithBatchSize(1_048_576) // 1MB batch - one small message will never fill this
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - Send a single small message via fire-and-forget, then wait for linger to expire
@@ -46,7 +47,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, metadata.Partition));
 
@@ -72,6 +73,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
                 .WithClientId("test-maxblock-exceeded")
                 .WithMaxBlock(TimeSpan.FromSeconds(2))
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
         });
 
@@ -93,6 +95,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-before-append")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         using var cts = new CancellationTokenSource();
@@ -121,7 +124,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -153,6 +156,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-waits")
             .WithLinger(TimeSpan.FromMilliseconds(100))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 25;
@@ -169,13 +173,13 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         }
 
         // Act - Flush should block until all pending messages are delivered
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         // Assert - All messages should be consumable after flush returns
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -210,6 +214,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-stops-waiting")
             .WithLinger(TimeSpan.FromSeconds(30)) // Very long linger to guarantee batch won't send on its own
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Send messages via fire-and-forget
@@ -246,12 +251,12 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
 
         // Whether flush was cancelled or completed, messages should eventually be delivered.
         // Flush again without cancellation to ensure all messages are delivered before consuming.
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 

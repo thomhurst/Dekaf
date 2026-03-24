@@ -19,6 +19,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -32,7 +33,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -54,6 +55,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10)) // Encourage batching for better compression
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce many messages to test batch-level compression
@@ -77,7 +79,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -108,6 +110,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -121,7 +124,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-large-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -141,6 +144,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -162,7 +166,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -188,6 +192,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForHighThroughput()
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
@@ -210,7 +215,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-ht-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -235,6 +240,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Batch them together
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages of varying sizes in a single batch
@@ -267,7 +273,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-mixed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -297,6 +303,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -310,7 +317,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-null-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

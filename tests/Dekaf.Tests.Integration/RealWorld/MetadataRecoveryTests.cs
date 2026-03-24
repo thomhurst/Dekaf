@@ -19,6 +19,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-metadata-refresh")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Create the topic after producer is built
@@ -47,6 +48,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-partition-expand")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to original partitions
@@ -64,6 +66,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
         // Expand partitions from 2 to 4 using admin client
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await adminClient.CreatePartitionsAsync(new Dictionary<string, int>
@@ -92,7 +95,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
             .WithClientId("test-consumer-partition-expand")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -120,6 +123,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-short-metadata-age")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Create first topic and produce

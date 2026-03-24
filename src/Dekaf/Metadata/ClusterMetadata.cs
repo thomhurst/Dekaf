@@ -214,7 +214,14 @@ public sealed class ClusterMetadata
     /// Updates metadata from a MetadataResponse.
     /// Creates a new immutable snapshot and atomically swaps the reference.
     /// </summary>
-    public void Update(MetadataResponse response)
+    /// <param name="response">The metadata response from the broker.</param>
+    /// <param name="mergeTopics">
+    /// When true, merges response topics into the existing snapshot (preserving metadata for
+    /// topics not in the response). When false, replaces the entire snapshot.
+    /// Use merge mode for topic-specific metadata requests so that previously cached topic
+    /// metadata is not lost. This matches the Java client's incremental metadata update behavior.
+    /// </param>
+    public void Update(MetadataResponse response, bool mergeTopics = false)
     {
         // Build new snapshot outside of any lock for maximum parallelism
         var brokers = new Dictionary<int, BrokerNode>(response.Brokers.Count);
@@ -229,8 +236,28 @@ public sealed class ClusterMetadata
             };
         }
 
-        var topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
-        var topicsById = new Dictionary<Guid, TopicInfo>();
+        Dictionary<string, TopicInfo> topics;
+        Dictionary<Guid, TopicInfo> topicsById;
+
+        if (mergeTopics)
+        {
+            // Merge mode: start with existing topics and overlay response topics.
+            // This preserves metadata for topics not included in the response,
+            // which is critical when refreshing metadata for a single topic.
+            var existing = _snapshot;
+            topics = new Dictionary<string, TopicInfo>(existing.Topics.Count + response.Topics.Count);
+            topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById.Count + response.Topics.Count);
+
+            foreach (var (name, info) in existing.Topics)
+                topics[name] = info;
+            foreach (var (id, info) in existing.TopicsById)
+                topicsById[id] = info;
+        }
+        else
+        {
+            topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
+            topicsById = new Dictionary<Guid, TopicInfo>();
+        }
 
         foreach (var topic in response.Topics)
         {

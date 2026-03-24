@@ -21,6 +21,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to all partitions
@@ -45,7 +46,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -86,7 +87,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -119,6 +120,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -143,7 +145,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener1)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -181,7 +183,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -208,6 +210,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -231,7 +234,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(6))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             staticConsumer.Subscribe(topic);
 
@@ -252,7 +255,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(otherListener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         dynamicConsumer.Subscribe(topic);
 
@@ -290,6 +293,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -313,7 +317,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -334,7 +338,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -372,6 +376,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to all partitions
@@ -396,7 +401,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(staticListener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         staticConsumer.Subscribe(topic);
 
@@ -417,7 +422,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(dynamicListener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         dynamicConsumer.Subscribe(topic);
 
@@ -465,6 +470,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to all partitions
@@ -489,7 +495,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -535,7 +541,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 

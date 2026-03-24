@@ -23,6 +23,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             .WithAcks(Acks.All)
             .WithDeliveryTimeout(TimeSpan.FromSeconds(30))
             .WithRequestTimeout(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warmup: establish connection and cache metadata
@@ -75,6 +76,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             .WithAcks(Acks.All)
             .WithDeliveryTimeout(TimeSpan.FromSeconds(10))
             .WithRequestTimeout(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warmup: establish connection

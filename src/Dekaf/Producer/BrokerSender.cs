@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -102,6 +103,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private const int MicroLingerMaxSpins = 10;
 
+    private static int s_instanceCounter;
+    private readonly int _instanceId = Interlocked.Increment(ref s_instanceCounter);
+
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -126,15 +130,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly record struct PendingResponse(
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
+        int[] BatchGenerations,
         int Count,
         long RequestStartTime)
     {
         /// <summary>
-        /// Clears batch references and returns the pooled array to <see cref="ArrayPool{T}.Shared"/>.
+        /// Snapshots batch generations at creation time. Must be called immediately after
+        /// populating the Batches array — the generations detect batch object recycling
+        /// between send and response processing.
+        /// </summary>
+        public static PendingResponse Create(
+            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int count, long requestStartTime)
+        {
+            var generations = ArrayPool<int>.Shared.Rent(count);
+            for (var i = 0; i < count; i++)
+                generations[i] = batches[i].Generation;
+            return new PendingResponse(responseTask, batches, generations, count, requestStartTime);
+        }
+
+        /// <summary>
+        /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
+        /// that was present when this PendingResponse was created.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsSameIncarnation(int i) => Batches[i] is not null && Batches[i].Generation == BatchGenerations[i];
+
+        /// <summary>
+        /// Clears batch references and returns pooled arrays to <see cref="ArrayPool{T}.Shared"/>.
         /// Must be called exactly once per PendingResponse entry — not idempotent due to struct copy semantics.
         /// </summary>
         public void ReturnBatchesArray()
         {
+            ArrayPool<int>.Shared.Return(BatchGenerations);
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
         }
     }
@@ -312,9 +339,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private List<PendingResponse>[] _pendingResponsesByConnection;
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
-    // Set by the catch block, consumed by the send loop at the top of each iteration.
-    // Single-threaded: only accessed by the send loop.
-    private readonly List<ReadyBatch> _sendFailedRetries = new();
+    // Must be thread-safe: with multi-connection sends, multiple Z handlers (catch blocks)
+    // can Enqueue simultaneously from different thread-pool threads. ConcurrentQueue provides
+    // FIFO ordering (matching the old List iteration order) and is optimized for the
+    // cross-thread producer-consumer pattern used here.
+    private readonly ConcurrentQueue<ReadyBatch> _sendFailedRetries = new();
 
     // Non-blocking in-flight request limiter. The send loop uses _totalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
@@ -339,8 +368,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
     // batch (when _muteOnSend). Prevents newer batches from being sent, maintaining
     // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
-    // Exclusively owned by the single-threaded send loop — no concurrent access.
-    private readonly HashSet<TopicPartition> _mutedPartitions = new();
+    // Uses ConcurrentDictionary as a concurrent set (byte value unused): with multi-connection
+    // sends, concurrent Z handlers (catch blocks in SendCoalescedAsync) can write from
+    // different threads. HashSet<T> is not thread-safe for concurrent writes.
+    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
     // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
@@ -389,7 +420,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
     // when a PendingResponse is added, decremented in ProcessCompletedResponses and
-    // HandleTimedOutRequests when entries are removed. Single-threaded send loop only.
+    // HandleTimedOutRequests when entries are removed. Must use Interlocked: with
+    // multi-connection sends, concurrent SendCoalescedAsync calls increment from
+    // different threads. Non-atomic ++ silently loses increments, causing the send
+    // loop to undercount pending responses and enter idle wait prematurely.
     private int _totalPendingResponseCount;
 
     // Tracks distinct partitions this broker has seen, used to skip MicroLinger when all
@@ -647,14 +681,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                 // ── 2. Pick up send-failed retries ──
-                // Use AddFirst: retries are older batches that must go before any newer
-                // carry-over batches for the same partition (Java's Deque.addFirst).
-                if (_sendFailedRetries.Count > 0)
-                {
-                    for (var i = 0; i < _sendFailedRetries.Count; i++)
-                        carryOver.AddFirst(_sendFailedRetries[i]);
-                    _sendFailedRetries.Clear();
-                }
+                // FIFO dequeue + AddFirst reverses the enqueue order, but this is intentional:
+                // each retry batch goes before all existing carry-over for its partition,
+                // matching Java's Deque.addFirst semantics for retry priority.
+                while (_sendFailedRetries.TryDequeue(out var retryBatch))
+                    carryOver.AddFirst(retryBatch);
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
                 HandleTimedOutRequests(carryOver, cancellationToken);
@@ -788,7 +819,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && _totalPendingResponseCount < _totalMaxInFlight)
+                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight)
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
@@ -813,7 +844,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var sentThisIteration = false;
                 if (coalescedCount > 0)
                 {
-                    var pendingCount = _totalPendingResponseCount;
+                    var pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                     if (pendingCount >= _totalMaxInFlight)
                         LogWaitingForInFlightCapacity(_brokerId, pendingCount, _totalMaxInFlight);
 
@@ -821,7 +852,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
-                        pendingCount = _totalPendingResponseCount;
+                        pendingCount = Volatile.Read(ref _totalPendingResponseCount);
 
                         if (pendingCount >= _totalMaxInFlight)
                         {
@@ -829,7 +860,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
                             HandleTimedOutRequests(carryOver, cancellationToken);
-                            pendingCount = _totalPendingResponseCount;
+                            pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                             if (pendingCount < _totalMaxInFlight)
                                 break;
 
@@ -839,7 +870,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
                             await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
-                            pendingCount = _totalPendingResponseCount;
+                            pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                         }
                     }
 
@@ -853,7 +884,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         for (var src = 0; src < coalescedCount; src++)
                         {
                             if (!coalescedBatches[src].IsRetry
-                                && _mutedPartitions.Contains(coalescedBatches[src].TopicPartition))
+                                && _mutedPartitions.ContainsKey(coalescedBatches[src].TopicPartition))
                             {
                                 // Normal batch whose partition was muted during the in-flight
                                 // wait (a different batch for this partition triggered a retry).
@@ -1022,8 +1053,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
-                var waitPendingCount = _totalPendingResponseCount;
-                if (carryOver.Count == 0 && waitPendingCount == 0)
+                var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
+                if (carryOver.Count == 0 && waitPendingCount == 0 && _sendFailedRetries.IsEmpty)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1053,9 +1084,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else if (!eventReader.TryPeek(out _))
+                else if (_sendFailedRetries.IsEmpty && !eventReader.TryPeek(out _))
                 {
-                    // No carry-over, no pending responses, no events — wait for new batch.
+                    // No carry-over, no pending responses, no retries, no events — wait for new batch.
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
                 }
@@ -1073,12 +1104,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
 
-            for (var i = 0; i < _sendFailedRetries.Count; i++)
+            while (_sendFailedRetries.TryDequeue(out var retryBatch))
             {
-                try { FailAndCleanupBatch(_sendFailedRetries[i], disposedException); }
+                try { FailAndCleanupBatch(retryBatch, disposedException); }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
-            _sendFailedRetries.Clear();
 
             for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
             {
@@ -1088,7 +1118,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var pr = pendingList[i];
                     for (var j = 0; j < pr.Count; j++)
                     {
-                        if (pr.Batches[j] is not null)
+                        if (pr.IsSameIncarnation(j))
                         {
                             try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
@@ -1096,7 +1126,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     pr.ReturnBatchesArray();
                 }
-                _totalPendingResponseCount -= pendingList.Count;
+                Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
                 pendingList.Clear();
                 // No TrimExcess — lists are unreachable after disposal
             }
@@ -1126,7 +1156,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // preventing Ready()/Drain() from ever picking up queued batches for those
             // partitions. This causes orphaned batch timeouts on slow CI runners where
             // transient connection errors kill the send loop while retries are pending.
-            foreach (var tp in _mutedPartitions)
+            foreach (var (tp, _) in _mutedPartitions)
                 _accumulator.UnmutePartition(tp);
             _mutedPartitions.Clear();
         }
@@ -1145,6 +1175,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<TopicPartition> coalescedPartitions,
         PartitionCarryOver carryOver)
     {
+        // Batch may have been returned to pool by a racing ForceFailAllInFlightBatches
+        // call during disposal — skip silently, it's already been failed.
+        if (batch.IsReturnedToPool)
+            return;
+
         // Track distinct partitions this broker serves for MicroLinger skip optimization.
         _knownPartitions.Add(batch.TopicPartition);
 
@@ -1216,7 +1251,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         // Normal batch: skip muted partitions (retry in progress)
-        if (_mutedPartitions.Contains(batch.TopicPartition))
+        if (_mutedPartitions.ContainsKey(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.AppendDiag('O');
@@ -1252,7 +1287,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (batch.IsRetry)
             {
                 batch.IsRetry = false;
-                _mutedPartitions.Remove(batch.TopicPartition);
+                _mutedPartitions.TryRemove(batch.TopicPartition, out _);
                 _accumulator.UnmutePartition(batch.TopicPartition);
             }
         }
@@ -1302,7 +1337,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     for (var j = 0; j < count; j++)
                     {
-                        if (batches[j] is not null)
+                        if (pending.IsSameIncarnation(j))
                         {
                             batches[j].AppendDiag('P'); // Faulted/cancelled response processed
                             try
@@ -1336,8 +1371,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                ProcessResponseBatches(batches, count, responseLookup,
-                    carryOver, cancellationToken);
+                // Diagnostic: log response content and expected batches for mismatch diagnosis
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    var batchKeys = string.Join(", ",
+                        Enumerable.Range(0, count)
+                            .Where(idx => batches[idx] is not null)
+                            .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
+                    var respKeys = responseLookup is not null
+                        ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                        : "(empty)";
+                    LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys, responseLookup?.Count ?? 0, respKeys);
+                }
+
+                ProcessResponseBatches(pending, responseLookup,
+                    carryOver, cancellationToken, task.Id);
 
                 // Clear for reuse on next response (avoids per-response dictionary allocation)
                 responseLookup?.Clear();
@@ -1348,7 +1396,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Compact: remove processed entries from the end
             if (writeIdx < pendingList.Count)
             {
-                _totalPendingResponseCount -= pendingList.Count - writeIdx;
+                Interlocked.Add(ref _totalPendingResponseCount, -(pendingList.Count - writeIdx));
                 pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
 
                 // Prevent unbounded capacity ratcheting: when the list shrinks well below
@@ -1373,17 +1421,31 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// epoch bump flagging, acknowledgement callbacks, and batch cleanup.
     /// </summary>
     private void ProcessResponseBatches(
-        ReadyBatch[] batches,
-        int count,
+        PendingResponse pending,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
         PartitionCarryOver carryOver,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int responseTaskId = 0)
     {
+        var batches = pending.Batches;
+        var count = pending.Count;
+
         for (var j = 0; j < count; j++)
         {
             var batch = batches[j];
             if (batch is null)
                 continue;
+
+            // Detect batch object recycling: if the batch was returned to pool AND
+            // re-Initialize'd (new topic, _returnedToPool reset to 0), IsReturnedToPool
+            // returns false but the generation won't match. Also catches the simpler case
+            // where the batch is still in the pool (IsReturnedToPool = true).
+            if (!pending.IsSameIncarnation(j))
+            {
+                LogBatchAlreadyReturnedToPool(_instanceId, responseTaskId, count, batch.DiagTrace);
+                continue;
+            }
+
             try
             {
                 batch.AppendDiag('R');
@@ -1395,7 +1457,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse is null)
                 {
-                    LogNoResponseForPartition(expectedTopic, expectedPartition);
+                    // Log what the response actually contains for diagnosis.
+                    // The response may be empty (broker didn't respond for this partition),
+                    // or contain different topic-partitions than expected.
+                    var responseTopicCount = responseLookup?.Count ?? 0;
+                    var responseKeys = responseLookup is not null
+                        ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                        : "(null)";
+                    LogNoResponseForPartition(_instanceId, expectedTopic, expectedPartition,
+                        responseTopicCount, responseKeys, count, responseTaskId, batch.DiagTrace);
                     HandleRetriableBatch(batch, ErrorCode.NetworkException,
                         carryOver, cancellationToken);
                     batches[j] = null!;
@@ -1539,8 +1609,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var pending = pendingList[i];
                 for (var j = 0; j < pending.Count; j++)
                 {
+                    if (!pending.IsSameIncarnation(j)) continue;
                     var batch = pending.Batches[j];
-                    if (batch is null) continue;
 
                     batch.AppendDiag('T'); // Timed-out request
 
@@ -1579,7 +1649,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Remove all entries. Response tasks are orphaned — they'll eventually complete
             // (via CTS timeout or connection disposal) but nobody polls them.
-            _totalPendingResponseCount -= pendingList.Count;
+            Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
             pendingList.Clear();
 
             // After clearing all entries due to timeout, trim the internal array to
@@ -1670,7 +1740,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
         // Also mute in accumulator so Ready/Drain skips this partition — prevents the
         // sender loop from draining newer batches that would jump the retry queue.
-        _mutedPartitions.Add(batch.TopicPartition);
+        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
         _accumulator.MutePartition(batch.TopicPartition);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
@@ -1764,6 +1834,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int connectionIndex,
         CancellationToken cancellationToken)
     {
+        // Tracks whether PendingResponse was added to _pendingResponsesByConnection.
+        // Once added, ProcessCompletedResponses owns the batches array — catch blocks
+        // must NOT return it to ArrayPool, or the array will be recycled while
+        // PendingResponse still references it (causing cross-request batch contamination).
+        var pendingResponseAdded = false;
         try
         {
             // Assign sequences at send time (Java Kafka Sender pattern).
@@ -1916,9 +1991,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
+            var pendingResponse = PendingResponse.Create(responseTask, batches, count, requestStartTime);
             _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
-            _totalPendingResponseCount++;
+            pendingResponseAdded = true; // Array ownership transferred to PendingResponse
+            Interlocked.Increment(ref _totalPendingResponseCount);
+
+            // Diagnostic: log instance+task+partitions at PendingResponse creation time.
+            // This traces which batches are paired with which response task.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                var pipelinedPartitions = string.Join(", ",
+                    Enumerable.Range(0, count).Select(i => $"{batches[i].TopicPartition.Topic}-{batches[i].TopicPartition.Partition}"));
+                LogPendingResponseCreated(_instanceId, _brokerId, responseTask.Id, count, pipelinedPartitions);
+            }
 
             // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
             // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
@@ -1955,7 +2040,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 for (var i = 0; i < count; i++)
                 {
-                    _mutedPartitions.Add(batches[i].TopicPartition);
+                    _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
                     _accumulator.MutePartition(batches[i].TopicPartition);
                 }
             }
@@ -1972,7 +2057,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
             scratch.ClearReferences();
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+
+            // Only return array if PendingResponse was NOT added. If it was, ProcessCompletedResponses
+            // owns the array and will return it when processing the (faulted/cancelled) response.
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
         catch (Exception ex)
         {
@@ -1983,8 +2072,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             for (var i = 0; i < count; i++)
             {
-                batches[i].AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
                 var batch = batches[i];
+
+                // Batch may have been returned to pool by a racing disposal — skip, already failed.
+                if (batch is null || batch.IsReturnedToPool)
+                    continue;
+
+                batch.AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
                 try
                 {
                     // Buffer memory stays reserved during retry — the batch still holds
@@ -2009,12 +2103,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     else
                     {
                         // Mute partition (ordering guarantee) and queue for retry.
-                        _mutedPartitions.Add(batch.TopicPartition);
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                         _accumulator.MutePartition(batch.TopicPartition);
                         batch.IsRetry = true;
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
-                        _sendFailedRetries.Add(batch);
+                        _sendFailedRetries.Enqueue(batch);
                     }
                 }
                 catch (Exception batchEx)
@@ -2028,7 +2122,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             scratch.ClearReferences();
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
     }
 
@@ -2321,7 +2417,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UnmutePartition(TopicPartition tp)
     {
-        _mutedPartitions.Remove(tp);
+        _mutedPartitions.TryRemove(tp, out _);
         _accumulator.UnmutePartition(tp); // Also unmute in accumulator so Ready/Drain can pick up new batches
         _eventChannel.Writer.TryWrite(SendLoopEvent.Unmute());
     }
@@ -2481,7 +2577,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var pr = pendingList[i];
                     for (var j = 0; j < pr.Count; j++)
                     {
-                        if (pr.Batches[j] is not null)
+                        if (pr.IsSameIncarnation(j))
                         {
                             try { FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender))); }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
@@ -2491,7 +2587,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pr.ReturnBatchesArray();
                 }
 
-                _totalPendingResponseCount -= pendingList.Count;
+                Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
                 pendingList.Clear();
                 // No TrimExcess — lists are unreachable after disposal
             }
@@ -2757,11 +2853,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
     private partial void LogResponseFailed(Exception ex, int brokerId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] No response for {Topic}-{Partition}")]
-    private partial void LogNoResponseForPartition(string topic, int partition);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId}[{Topic}-{Partition}] No response (response has {ResponseCount} entries: [{ResponseKeys}], request had {RequestBatchCount} batches, task={TaskId}, trace={DiagTrace})")]
+    private partial void LogNoResponseForPartition(int instanceId, string topic, int partition, int responseCount, string responseKeys, int requestBatchCount, int taskId, string diagTrace);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] DuplicateSequenceNumber for {Topic}-{Partition} at offset {Offset}")]
     private partial void LogDuplicateSequenceNumber(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BS#{InstanceId}[{BrokerId}] pipelined task={TaskId}: {BatchCount} batches [{PipelinedPartitions}]")]
+    private partial void LogPendingResponseCreated(int instanceId, int brokerId, int taskId, int batchCount, string pipelinedPartitions);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BS#{InstanceId}[{BrokerId}] response task={TaskId}: {BatchCount} batches expected [{BatchKeys}], {ResponseCount} received [{ResponseKeys}]")]
+    private partial void LogProduceResponseProcessed(int instanceId, int brokerId, int taskId, int batchCount, string batchKeys, int responseCount, string responseKeys);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Retriable error {ErrorCode} for {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}")]
     private partial void LogRetriableError(ErrorCode errorCode, string topic, int partition, int seq, int count, short epoch, long pid);
@@ -2828,6 +2930,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] adaptive scale-down failed (current: {CurrentCount} connections)")]
     private partial void LogAdaptiveScaleDownFailed(Exception exception, int brokerId, int currentCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} response task={ResponseTaskId}: batch already returned to pool (count={Count}, trace={DiagTrace}), skipping")]
+    private partial void LogBatchAlreadyReturnedToPool(int instanceId, int responseTaskId, int count, string diagTrace);
 
     #endregion
 }

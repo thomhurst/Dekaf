@@ -18,6 +18,7 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await adminClient.CreateTopicsAsync([
@@ -53,21 +54,22 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Produce two messages with the same key
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "duplicate-key",
             Value = "first-value"
         });
 
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "duplicate-key",
@@ -79,7 +81,7 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"duplicate-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -89,8 +91,6 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            // Count non-warmup messages, not total. ProduceWithRetryAsync may produce
-            // duplicate warmups on retry, so total count is unreliable.
             if (messages.Count(m => m.Key != "warmup") >= 2) break;
         }
 

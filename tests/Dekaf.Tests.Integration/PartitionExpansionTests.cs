@@ -17,6 +17,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         return new AdminClientBuilder()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-client")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 
@@ -67,6 +68,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to original partitions
@@ -90,7 +92,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -131,7 +133,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -156,6 +158,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to original partitions
@@ -178,7 +181,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -220,7 +223,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -264,6 +267,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce initial messages
@@ -286,7 +290,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -331,7 +335,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -373,6 +377,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to original partitions
@@ -392,7 +397,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(
             new TopicPartition(topic, 0),
@@ -469,6 +474,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to original partitions
@@ -493,7 +499,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(t => t.StartsWith(topicPrefix, StringComparison.Ordinal));
 
@@ -535,7 +541,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(t => t.StartsWith(topicPrefix, StringComparison.Ordinal));
 

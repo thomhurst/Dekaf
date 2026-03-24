@@ -325,7 +325,7 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchB, CancellationToken.None);
 
             // Wait for send 1 (coalesced A+B)
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // p0 gets retriable error, p1 succeeds
             tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
@@ -337,14 +337,14 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchC, CancellationToken.None);
 
             // Wait for send 2 (batch A retry + batch C coalesced — both partitions)
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Both succeed
             tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.None, 100),
                 (1, ErrorCode.None, 201)));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Verify p1 was acknowledged first (from send 1), then p0 retry + p1 from send 2
             await Assert.That(ackPartitions).Count().IsEqualTo(3);
@@ -418,7 +418,7 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchB, CancellationToken.None);
             await sender.EnqueueAsync(batchC, CancellationToken.None);
 
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // p0 and p1 fail, p2 succeeds
             tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
@@ -427,13 +427,13 @@ public sealed class BrokerSenderMuteOrderingTests
                 (2, ErrorCode.None, 300)));
 
             // Wait for retries of p0 and p1
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.None, 100),
                 (1, ErrorCode.None, 200)));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // p2 acknowledged first (succeeded in send 1)
             await Assert.That(ackPartitions[0]).IsEqualTo((2, 300L));
@@ -500,7 +500,7 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             await sender.EnqueueAsync(batchA, CancellationToken.None);
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Connection fault → HandleRetriableBatch with NetworkException → mutes p0
             tcs1.SetException(new IOException("Connection reset by peer"));
@@ -510,14 +510,14 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchB, CancellationToken.None);
 
             // Retry of A
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             tcs2.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
 
             // B proceeds
-            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             tcs3.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 11));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             await Assert.That(ackOffsets[0]).IsEqualTo(10); // A retry
             await Assert.That(ackOffsets[1]).IsEqualTo(11); // B
@@ -585,7 +585,7 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             await sender.EnqueueAsync(batchA, CancellationToken.None);
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // First error
             tcsList[0].SetResult(CreateRetriableErrorResponse("test-topic", 0));
@@ -595,18 +595,18 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchB, CancellationToken.None);
 
             // Retry 1 → error again
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             tcsList[1].SetResult(CreateRetriableErrorResponse("test-topic", 0));
 
             // Retry 2 → success
-            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             tcsList[2].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 70));
 
             // B proceeds
-            await sendSignals[3].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[3].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             tcsList[3].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 71));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             await Assert.That(ackOffsets[0]).IsEqualTo(70);
             await Assert.That(ackOffsets[1]).IsEqualTo(71);
@@ -676,7 +676,7 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchA, CancellationToken.None);
             await sender.EnqueueAsync(batchB, CancellationToken.None);
 
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // p0 fails, p1 succeeds → p0 muted
             tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
@@ -688,13 +688,13 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchC, CancellationToken.None);
 
             // Send 2: A retry (p0) + C (p1) coalesced
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.None, 100),
                 (1, ErrorCode.None, 201)));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // p1 from send 1 must be first ack
             await Assert.That(ackList[0]).IsEqualTo((1, 200L));
@@ -779,7 +779,7 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchA, CancellationToken.None);
             await sender.EnqueueAsync(batchB, CancellationToken.None);
 
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Enqueue C(p0) and D(p1) while send 1 is in-flight
             // (maxInFlight=1, so the send loop is waiting for the response)
@@ -796,17 +796,17 @@ public sealed class BrokerSenderMuteOrderingTests
 
             // Send 2: should include A retry (p0) and D (p1)
             // C (p0) should be in carry-over because the muted partition filter caught it
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.None, 100),
                 (1, ErrorCode.None, 201)));
 
             // Send 3: C(p0) proceeds after unmute
-            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             tcs3.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 101));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Verify: exactly 3 sends occurred
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(3);

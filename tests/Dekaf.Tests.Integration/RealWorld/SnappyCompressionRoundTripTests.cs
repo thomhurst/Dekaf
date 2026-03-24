@@ -20,6 +20,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -33,7 +34,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -55,6 +56,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
@@ -77,7 +79,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -110,6 +112,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -123,7 +126,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-large-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -144,6 +147,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var expectedMessages = new Dictionary<string, string>
@@ -175,7 +179,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-mixed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -205,6 +209,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -218,7 +223,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-null-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -238,6 +243,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -259,7 +265,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -283,6 +289,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 10;
@@ -307,7 +314,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-cross-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

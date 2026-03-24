@@ -51,6 +51,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
@@ -65,7 +66,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"json-sr-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -98,6 +99,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -115,14 +117,14 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             });
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"json-sr-multi-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -158,6 +160,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
@@ -196,6 +199,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema, jsonOptions)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
@@ -210,7 +214,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"json-sr-options-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient, jsonOptions)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

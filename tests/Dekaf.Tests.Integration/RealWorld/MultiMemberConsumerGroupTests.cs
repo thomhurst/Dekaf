@@ -23,6 +23,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-multi-group")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce one message per partition so consumers have data to fetch
@@ -49,7 +50,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                     .WithGroupId(groupId)
                     .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
                     .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                    .BuildAsync();
+                    .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
                 consumer.Subscribe(topic);
                 consumers.Add(consumer);
@@ -98,6 +99,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-join-midstream")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 4; p++)
@@ -118,7 +120,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -138,7 +140,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -187,6 +189,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-leave")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 4; p++)
@@ -207,7 +210,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -220,7 +223,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -287,6 +290,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-rebalance-listener")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 3; p++)
@@ -308,7 +312,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -341,6 +345,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-revoke-listener")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 4; p++)
@@ -362,7 +367,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -379,7 +384,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -422,6 +427,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-resume-committed")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 10; i++)
@@ -442,7 +448,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -468,7 +474,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -492,6 +498,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-loss")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -514,7 +521,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -522,7 +529,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         Task task1 = Task.CompletedTask, task2 = Task.CompletedTask;
         try

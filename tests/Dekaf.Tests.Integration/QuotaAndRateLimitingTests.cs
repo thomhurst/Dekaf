@@ -18,6 +18,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         return new AdminClientBuilder()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-quota")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 
@@ -111,6 +112,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             // Act - produce messages that exceed the quota
@@ -175,6 +177,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-for-consumer-throttle")
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             const int messageCount = 30;
@@ -190,7 +193,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 });
             }
 
-            await producer.FlushAsync();
+            await producer.FlushWithTimeoutAsync();
 
             await SetDefaultConsumerQuotaAsync(admin, brokerId, "1024");
 
@@ -203,7 +206,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithClientId("test-consumer-throttle")
                 .WithGroupId($"test-group-throttle-{Guid.NewGuid():N}")
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -263,6 +266,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var baselineSw = Stopwatch.StartNew();
@@ -276,7 +280,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 });
             }
 
-            await baselineProducer.FlushAsync();
+            await baselineProducer.FlushWithTimeoutAsync();
             baselineSw.Stop();
             var baselineMs = baselineSw.ElapsedMilliseconds;
 
@@ -294,6 +298,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var throttledSw = Stopwatch.StartNew();
@@ -309,7 +314,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 results.Add(result);
             }
 
-            await throttledProducer.FlushAsync();
+            await throttledProducer.FlushWithTimeoutAsync();
             throttledSw.Stop();
 
             // Assert - all messages delivered (throughput degraded but no errors)
@@ -357,6 +362,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce a burst of messages
@@ -381,7 +387,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             results.Add(await task);
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
         sw.Stop();
 
         // Assert - all messages delivered

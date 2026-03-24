@@ -20,6 +20,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce a small message (~20 bytes) that won't meet the 50KB min bytes threshold
@@ -38,7 +39,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMinBytes(50 * 1024) // 50KB - much larger than our small message
             .WithFetchMaxWait(TimeSpan.FromMilliseconds(500))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -69,7 +70,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMinBytes(1024) // Require 1KB, but topic is empty
             .WithFetchMaxWait(TimeSpan.FromMilliseconds(200)) // Short wait
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -95,6 +96,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce 5 messages, each ~10KB
@@ -119,7 +121,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMaxBytes(1024) // 1KB - much smaller than message size
             .WithMaxPartitionFetchBytes(1024) // 1KB per partition
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -150,6 +152,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var sizes = new[] { 10, 50_000, 5, 100_000, 1, 25_000, 200_000, 3 };
@@ -171,7 +174,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithFetchMinBytes(1)
             .WithFetchMaxBytes(64 * 1024) // 64KB - some messages exceed this
             .WithMaxPartitionFetchBytes(32 * 1024) // 32KB per partition
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -201,6 +204,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce 10 messages each ~1KB to a single partition
@@ -226,7 +230,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithMaxPartitionFetchBytes(2 * 1024) // 2KB per partition - fits ~1 message per fetch
             .WithFetchMaxWait(TimeSpan.FromMilliseconds(100))
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

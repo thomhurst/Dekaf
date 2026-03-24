@@ -23,6 +23,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -67,6 +68,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -86,7 +88,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithGroupId(fastGroup)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         fastConsumer.Subscribe(topic);
 
@@ -108,7 +110,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithGroupId(slowGroup)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         slowConsumer.Subscribe(topic);
 
@@ -143,6 +145,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages before any consumer exists
@@ -190,6 +193,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -213,7 +217,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(group)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -246,7 +250,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

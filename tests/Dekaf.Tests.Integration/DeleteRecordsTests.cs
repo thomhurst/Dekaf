@@ -16,6 +16,7 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         return new AdminClientBuilder()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-client")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 
@@ -48,6 +49,7 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < count; i++)
@@ -223,7 +225,7 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(tp);
 
@@ -291,7 +293,7 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(tp);
 

@@ -33,6 +33,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
@@ -47,7 +48,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"proto-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -80,6 +81,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -97,14 +99,14 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             });
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"proto-multi-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -141,6 +143,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
@@ -175,6 +178,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
@@ -189,7 +193,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"proto-default-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -23,6 +23,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithAcks(Acks.Leader)
             .WithBufferMemory(1_048_576) // 1MB buffer
             .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - send more than 1MB of data (2MB+)
@@ -65,7 +66,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-pause")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -99,6 +100,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-pause-resume")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce 10 messages
@@ -116,7 +118,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-pause-resume")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -159,6 +161,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-high-throughput")
             .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -168,7 +171,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             producer.Produce(topic, $"key-{i}", $"value-{i}");
         }
 
-        await producer.FlushAsync().ConfigureAwait(false);
+        await producer.FlushWithTimeoutAsync();
 
         // Act - consume with high throughput preset
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -177,7 +180,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForHighThroughput()
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

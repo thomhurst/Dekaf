@@ -32,6 +32,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithClientId("sasl-plain-producer")
             .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -60,6 +61,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-plain-producer-for-consumer")
             .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -76,7 +78,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithGroupId(groupId)
             .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -106,6 +108,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithClientId("sasl-scram256-producer")
             .WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -134,6 +137,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-scram256-producer-for-consumer")
             .WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -150,7 +154,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithGroupId(groupId)
             .WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -180,6 +184,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithClientId("sasl-scram512-producer")
             .WithSaslScramSha512(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -208,6 +213,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-scram512-producer-for-consumer")
             .WithSaslScramSha512(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -224,7 +230,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithGroupId(groupId)
             .WithSaslScramSha512(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -256,6 +262,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 .WithClientId("sasl-invalid-producer")
                 .WithSaslPlain("wronguser", "wrongpassword")
                 .WithAcks(Acks.All)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             // If BuildAsync doesn't fail (lazy connection), the produce call should fail
@@ -282,7 +289,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 .WithGroupId($"sasl-invalid-group-{Guid.NewGuid():N}")
                 .WithSaslPlain("wronguser", "wrongpassword")
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe("any-topic");
 
@@ -309,6 +316,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-admin-client")
             .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Act
@@ -329,6 +337,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-admin-scram256")
             .WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Act
@@ -355,6 +364,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-admin-scram512")
             .WithSaslScramSha512(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Act
@@ -388,6 +398,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithClientId("sasl-cross-producer")
             .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -404,7 +415,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithGroupId(groupId)
             .WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

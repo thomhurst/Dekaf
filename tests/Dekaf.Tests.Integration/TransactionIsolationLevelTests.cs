@@ -23,6 +23,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -50,7 +51,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithGroupId($"txn-open-ru-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadUncommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -84,6 +85,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -104,7 +106,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithGroupId($"txn-open-rc-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -131,12 +133,14 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(commitTxnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var abortProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(abortTxnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await commitProducer.InitTransactionsAsync();
@@ -174,7 +178,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithGroupId($"txn-concurrent-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -212,6 +216,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -247,7 +252,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithGroupId($"txn-markers-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -287,12 +292,14 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(longTxnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var otherProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(otherTxnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await longProducer.InitTransactionsAsync();
@@ -339,7 +346,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             .WithGroupId($"txn-lso-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

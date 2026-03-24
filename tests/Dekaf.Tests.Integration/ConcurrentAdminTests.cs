@@ -19,6 +19,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         return new AdminClientBuilder()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-client")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 
@@ -267,7 +268,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe(topic);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -337,6 +338,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce messages while simultaneously performing admin operations
@@ -410,6 +412,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-pre")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 5;
@@ -429,7 +432,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

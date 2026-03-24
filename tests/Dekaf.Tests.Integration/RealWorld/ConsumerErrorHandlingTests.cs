@@ -22,7 +22,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-empty-topic")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -46,6 +46,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-double-sub")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -60,7 +61,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithClientId("test-consumer-double-sub")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Act - subscribe to topic1, then replace with topic2
         consumer.Subscribe(topic1);
@@ -89,7 +90,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-sub")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Act - try to consume with no subscription
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -110,6 +111,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-none")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -124,7 +126,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-none")
             .WithAutoOffsetReset(AutoOffsetReset.None)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

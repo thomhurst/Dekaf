@@ -21,6 +21,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-refresh-max-age")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce an initial message
@@ -60,6 +61,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-new-topic-discovery")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Create the topic after the producer is already built and initialized
@@ -90,6 +92,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-partition-expansion")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to original partitions to establish metadata
@@ -107,6 +110,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
         // Expand partitions from 2 to 4 using admin client
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await adminClient.CreatePartitionsAsync(new Dictionary<string, int>
@@ -153,6 +157,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-short-max-age")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce messages continuously over a period longer than metadata max age
@@ -211,6 +216,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce messages to verify the producer works normally with recovery enabled

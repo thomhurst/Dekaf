@@ -64,6 +64,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-test-producer")
             .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
@@ -82,7 +83,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -123,6 +124,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-multi-producer")
             .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -141,7 +143,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             });
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         // Act - Consume all messages
         await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
@@ -150,7 +152,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-multi-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -203,6 +205,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-null-producer")
             .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
@@ -219,7 +222,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-null-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -274,6 +277,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithClientId("avro-key-producer")
             .WithKeySerializer(keySerializer)
             .WithValueSerializer(valueSerializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<GenericRecord, GenericRecord>
@@ -291,7 +295,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithKeyDeserializer(keyDeserializer)
             .WithValueDeserializer(valueDeserializer)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -340,6 +344,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-schema-producer")
             .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>

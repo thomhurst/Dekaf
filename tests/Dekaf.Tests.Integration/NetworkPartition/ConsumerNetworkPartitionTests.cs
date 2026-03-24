@@ -21,6 +21,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-partition-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce initial messages
@@ -42,7 +43,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             .WithSessionTimeout(TimeSpan.FromSeconds(6))
             .WithHeartbeatInterval(TimeSpan.FromSeconds(1))
             .SubscribeTo(topic)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Consume all initial messages
         var prePartitionMessages = new List<string>();
@@ -111,6 +112,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-rebalance-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce initial messages across partitions
@@ -139,7 +141,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             .WithHeartbeatInterval(TimeSpan.FromSeconds(1))
             .WithRebalanceListener(rebalanceListener)
             .SubscribeTo(topic)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Consume initial messages
         var initialMessages = new List<string>();

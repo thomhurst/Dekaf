@@ -17,6 +17,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         return new AdminClientBuilder()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-client")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 
@@ -377,6 +378,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer")
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -393,7 +395,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -507,6 +509,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -552,6 +555,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 3; i++)

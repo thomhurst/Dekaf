@@ -1,6 +1,3 @@
-using Dekaf.Errors;
-using Dekaf.Producer;
-
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
@@ -29,53 +26,5 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
         {
             await Task.Delay(pollIntervalMs, cts.Token).ConfigureAwait(false);
         }
-    }
-
-    /// <summary>
-    /// Produces a message with a per-call timeout and retry. On CI runners, the producer's
-    /// internal write path can occasionally hang (EDQCSGX pattern) when a connection becomes
-    /// unresponsive after topic creation. This helper retries after a 15s timeout so that
-    /// transient hangs don't cause 360s orphan sweep failures.
-    /// </summary>
-    protected static async ValueTask<RecordMetadata> ProduceWithRetryAsync<TKey, TValue>(
-        IKafkaProducer<TKey, TValue> producer,
-        ProducerMessage<TKey, TValue> message,
-        int maxAttempts = 3,
-        int timeoutSeconds = 30,
-        CancellationToken cancellationToken = default)
-    {
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            try
-            {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-                return await producer.ProduceAsync(message, cts.Token);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < maxAttempts - 1)
-            {
-                // Timeout — retry. The cancellation only stops the caller's await;
-                // the message may still be delivered in the background.
-                await Task.Delay(500, cancellationToken);
-            }
-            catch (KafkaTimeoutException) when (attempt < maxAttempts - 1)
-            {
-                // BufferMemory backpressure timeout (max.block.ms). On slow CI runners
-                // with thread pool starvation, the send loop can't drain batches fast
-                // enough. Retry after a delay to let the send loop catch up.
-                await Task.Delay(1000, cancellationToken);
-            }
-            catch (ObjectDisposedException) when (attempt < maxAttempts - 1)
-            {
-                // BrokerSender disposed during an in-flight produce (EDQCSGX pattern).
-                // The producer may recover with a new connection on the next attempt.
-                await Task.Delay(500, cancellationToken);
-            }
-        }
-
-        // Final attempt without retry catch
-        using var finalCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        finalCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-        return await producer.ProduceAsync(message, finalCts.Token);
     }
 }

@@ -30,11 +30,12 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         // thread pool and connection resources on resource-constrained CI runners.
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
         // (topic metadata is cached after this call)
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Build host with consumer service
@@ -66,7 +67,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         for (var i = 0; i < messageCount; i++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"hosted-key-{i}",

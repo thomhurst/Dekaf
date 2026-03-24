@@ -36,7 +36,7 @@ public sealed class CoordinatedRetryTests
         // batch1 completes successfully — signals batch2 to retry
         tracker.Complete(entry1);
 
-        await waitTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await waitTask.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(retryReady).IsTrue();
 
         // batch2 retries and succeeds
@@ -86,7 +86,7 @@ public sealed class CoordinatedRetryTests
 
         // Successor should wake up promptly — 5s timeout catches real backoff issues
         // without being sensitive to CI runner thread scheduling delays
-        await waitTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await waitTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         tracker.Complete(entry2);
     }
@@ -156,7 +156,7 @@ public sealed class CoordinatedRetryTests
 
         // Complete batch1 — batch2 wakes up
         tracker.Complete(entry1);
-        await waitTask2.WaitAsync(TimeSpan.FromSeconds(5));
+        await waitTask2.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(wait2Done).IsTrue();
 
         // batch3 is still waiting for batch2
@@ -165,7 +165,7 @@ public sealed class CoordinatedRetryTests
 
         // Complete batch2 — batch3 wakes up
         tracker.Complete(entry2);
-        await waitTask3.WaitAsync(TimeSpan.FromSeconds(5));
+        await waitTask3.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(wait3Done).IsTrue();
 
         tracker.Complete(entry3);

@@ -17,7 +17,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Initially assign 2 partitions
         consumer.Assign(
@@ -33,6 +33,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         // Produce to all 4 partitions
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 4; p++)
@@ -70,7 +71,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Assign all 4 partitions
         consumer.Assign(
@@ -88,6 +89,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         // Produce to partitions 0 and 1 only
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 2; p++)
@@ -130,6 +132,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         // Produce messages to all partitions
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 4; p++)
@@ -150,7 +153,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener1)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -167,7 +170,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -200,6 +203,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         // Produce a message
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -215,7 +219,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(6000))
             .WithRebalanceListener(listener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

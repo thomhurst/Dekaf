@@ -21,6 +21,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to ensure the consumer has data
@@ -40,7 +41,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -71,6 +72,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to all partitions
@@ -93,7 +95,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener1)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -110,7 +112,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -187,6 +189,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -211,7 +214,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(commitListener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Store the consumer reference in the listener so it can commit
         commitListener.Consumer = consumer1;
@@ -245,7 +248,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -272,7 +275,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         verifier.Subscribe(topic);
 
@@ -308,6 +311,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -329,7 +333,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 .WithGroupId(groupId)
                 .WithSessionTimeout(TimeSpan.FromSeconds(10))
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             try
             {
@@ -368,7 +372,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(stableListener)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         stableConsumer.Subscribe(topic);
 
@@ -397,6 +401,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages to all partitions
@@ -418,7 +423,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener1)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -438,7 +443,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 

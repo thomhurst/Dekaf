@@ -20,6 +20,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -27,6 +28,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -62,6 +64,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -69,6 +72,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -113,6 +117,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -120,6 +125,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -152,6 +158,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -159,6 +166,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -192,6 +200,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -199,6 +208,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -232,6 +242,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -239,6 +250,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -285,6 +297,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -292,6 +305,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -324,6 +338,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -331,6 +346,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -366,6 +382,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -373,6 +390,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -418,7 +436,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -475,6 +493,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await using var producer = await Kafka.CreateProducer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
@@ -482,6 +501,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(topic);

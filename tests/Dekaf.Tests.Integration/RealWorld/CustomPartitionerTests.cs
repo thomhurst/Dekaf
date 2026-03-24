@@ -92,6 +92,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce multiple messages with different keys
@@ -124,6 +125,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce messages and consume them to verify partition assignment
@@ -163,6 +165,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce a message with a key
@@ -198,6 +201,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce a message with null key
@@ -228,7 +232,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"null-key-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -251,6 +255,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce multiple messages; the stateful partitioner cycles through partitions
@@ -288,6 +293,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithPartitioner(PartitionerType.RoundRobin)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce 9 messages (evenly divisible by 3 partitions)

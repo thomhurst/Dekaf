@@ -28,6 +28,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithClientId("test-producer-no-topic")
             .WithAcks(Acks.All)
             .WithMaxBlock(TimeSpan.FromSeconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert - producing to a non-existent topic should eventually throw.
@@ -67,6 +68,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await adminClient.CreateTopicsAsync([
@@ -90,6 +92,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-msg-too-large")
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Create a message that clearly exceeds the topic's 512-byte max.message.bytes
@@ -132,6 +135,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-reset-earliest")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce 3 messages
@@ -145,14 +149,14 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         // Create consumer with AutoOffsetReset.Earliest and manual assignment
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-reset-earliest")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -161,8 +165,8 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         consumer.Seek(new TopicPartitionOffset(topic, 0, 999999));
 
         // Act - consume should auto-reset to earliest and return the first message
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts.Token);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         // Assert - should have recovered and consumed from the beginning
         await Assert.That(result).IsNotNull();
@@ -185,6 +189,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-reset-latest")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce 3 messages before consumer starts
@@ -198,14 +203,14 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        await producer.FlushAsync();
+        await producer.FlushWithTimeoutAsync();
 
         // Create consumer with AutoOffsetReset.Latest and manual assignment
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-reset-latest")
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -221,8 +226,10 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
 
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
+            // CTS must be longer than ConsumeOneAsync timeout so the inner timeout
+            // fires first (returning null) rather than the CTS throwing.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -259,7 +266,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithClientId("test-consumer-no-topic")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(nonExistentTopic);
 
@@ -273,8 +280,10 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
 
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
+            // CTS must be longer than ConsumeOneAsync timeout so the inner timeout
+            // fires first (returning null) rather than the CTS throwing.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         }
         catch (KafkaException ex)
         {

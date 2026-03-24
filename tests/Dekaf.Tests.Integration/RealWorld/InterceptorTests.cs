@@ -21,6 +21,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(interceptor)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -38,7 +39,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"trace-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -61,6 +62,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(interceptor)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int messageCount = 5;
@@ -93,6 +95,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(interceptor1)
             .AddInterceptor(interceptor2)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -106,7 +109,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"chain-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -126,6 +129,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -143,7 +147,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId($"intercepted-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .AddInterceptor(interceptor)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -168,6 +172,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 3; i++)
@@ -186,7 +191,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .AddInterceptor(interceptor)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -219,6 +224,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(producerInterceptor)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -233,7 +239,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithGroupId($"e2e-trace-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .AddInterceptor(consumerInterceptor)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
