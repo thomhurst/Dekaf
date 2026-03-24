@@ -20,7 +20,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         Console.WriteLine($"  [{sw.Elapsed.TotalSeconds:F1}s] {phase}");
     }
 
-
     [Test]
     public async Task MultiPartition_KeyBasedPartitioning_SameKeyGoesToSamePartition()
     {

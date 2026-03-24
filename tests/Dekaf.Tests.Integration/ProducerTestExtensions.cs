@@ -11,9 +11,9 @@ internal static class ProducerTestExtensions
     /// Flushes the producer with a bounded timeout to prevent indefinite hangs on slow CI runners.
     /// </summary>
     public static async ValueTask FlushWithTimeoutAsync<TKey, TValue>(
-        this IKafkaProducer<TKey, TValue> producer, int seconds = 30)
+        this IKafkaProducer<TKey, TValue> producer, int timeoutSeconds = 30)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         await producer.FlushAsync(cts.Token);
     }
 
@@ -21,9 +21,9 @@ internal static class ProducerTestExtensions
     /// Flushes the topic producer with a bounded timeout to prevent indefinite hangs on slow CI runners.
     /// </summary>
     public static async ValueTask FlushWithTimeoutAsync<TKey, TValue>(
-        this ITopicProducer<TKey, TValue> producer, int seconds = 30)
+        this ITopicProducer<TKey, TValue> producer, int timeoutSeconds = 30)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         await producer.FlushAsync(cts.Token);
     }
 

@@ -13,7 +13,6 @@ namespace Dekaf.Tests.Integration;
 [Category("Producer")]
 public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-
     [Test]
     public async Task IdempotentProducer_StrictOrdering_Preserved()
     {
