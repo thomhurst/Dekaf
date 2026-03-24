@@ -1446,7 +1446,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Returns a ReadyBatch to the pool for reuse.
     /// Called by KafkaProducer after batch is processed.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
         // Atomic guard: only the first caller returns the batch to the pool.
@@ -1456,11 +1455,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.Exchange(ref batch._returnedToPool, 1) != 0)
             return;
 
-        // Ensure any in-progress CompleteSend/Fail has finished Cleanup before Reset runs.
-        // Without this, pool.Return → Reset() can see _cleanedUp==0 and fire the safety net
-        // while CompleteSend is still iterating completion sources on another thread.
         batch.WaitForCleanupIfStarted();
-
         _readyBatchPool.Return(batch);
     }
 
@@ -4464,15 +4459,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// to pool via ReturnReadyBatch — before CompleteSend reaches its finally { Cleanup() }.
     /// Reset() would see _cleanedUp == 0 and fire the safety net, corrupting completion
     /// sources that CompleteSend is still iterating.
-    /// The spin resolves in nanoseconds: Cleanup only returns arrays to pools.
+    /// Resolves in microseconds typically; under thread starvation SpinWait yields to the OS.
+    /// Bounded at 1000 iterations (~1ms) as defense against a stuck Cleanup thread.
     /// </remarks>
     internal void WaitForCleanupIfStarted()
     {
         if (Volatile.Read(ref _cleanedUp) == 0 && Volatile.Read(ref _sendCompleted) != 0)
         {
-            SpinWait sw = default;
-            while (Volatile.Read(ref _cleanedUp) == 0)
-                sw.SpinOnce();
+            var sw = new SpinWait();
+            do { sw.SpinOnce(); }
+            while (Volatile.Read(ref _cleanedUp) == 0 && sw.Count < 1000);
         }
     }
 
