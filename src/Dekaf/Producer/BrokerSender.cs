@@ -1095,7 +1095,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var pr = pendingList[i];
                     for (var j = 0; j < pr.Count; j++)
                     {
-                        if (pr.Batches[j] is not null)
+                        if (pr.Batches[j] is not null && pr.Batches[j].TopicPartition.Topic is not null)
                         {
                             try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
@@ -1316,7 +1316,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     for (var j = 0; j < count; j++)
                     {
-                        if (batches[j] is not null)
+                        if (batches[j] is not null && batches[j].TopicPartition.Topic is not null)
                         {
                             batches[j].AppendDiag('P'); // Faulted/cancelled response processed
                             try
@@ -1412,6 +1412,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var batch = batches[j];
             if (batch is null)
                 continue;
+
+            // Defensive: if the batch was returned to pool (Reset clears TopicPartition to
+            // default with Topic=null), skip it. The batch was already completed by whatever
+            // path returned it to the pool (e.g., HandleTimedOutRequests, ForceFailAllInFlightBatches,
+            // or the SendCoalescedAsync error handler). Retrying a pool-returned batch would hang
+            // the producer because matching always fails (null topic ≠ response topic).
+            if (batch.TopicPartition.Topic is null)
+            {
+                LogBatchAlreadyReturnedToPool(_instanceId, responseTaskId, count, batch.DiagTrace);
+                batches[j] = null!;
+                continue;
+            }
+
             try
             {
                 batch.AppendDiag('R');
@@ -1576,7 +1589,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var j = 0; j < pending.Count; j++)
                 {
                     var batch = pending.Batches[j];
-                    if (batch is null) continue;
+                    if (batch is null || batch.TopicPartition.Topic is null) continue;
 
                     batch.AppendDiag('T'); // Timed-out request
 
@@ -2886,6 +2899,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] adaptive scale-down failed (current: {CurrentCount} connections)")]
     private partial void LogAdaptiveScaleDownFailed(Exception exception, int brokerId, int currentCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} response task={ResponseTaskId}: batch already returned to pool (count={Count}, trace={DiagTrace}), skipping")]
+    private partial void LogBatchAlreadyReturnedToPool(int instanceId, int responseTaskId, int count, string diagTrace);
 
     #endregion
 }
