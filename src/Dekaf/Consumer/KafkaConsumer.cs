@@ -2839,6 +2839,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             return;
 
         _disposed = true;
+        var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
 
         // Unregister lag callback so the OTel SDK no longer invokes it on this disposed instance
@@ -2858,6 +2859,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Ignore errors during dispose
             }
         }
+
+        var closeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        LogConsumerCloseCompleted(closeElapsedMs);
 
         _wakeupCts?.Cancel();
         _autoCommitCts?.Cancel();
@@ -2915,6 +2919,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
+
+        var disposeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        LogConsumerDisposed(disposeElapsedMs);
     }
 
     #region Metrics
@@ -3025,6 +3032,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer disposing: beginning shutdown")]
     private partial void LogConsumerDisposing();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer close phase completed in {ElapsedMs:F0}ms")]
+    private partial void LogConsumerCloseCompleted(double elapsedMs);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Consumer disposed in {ElapsedMs:F0}ms")]
+    private partial void LogConsumerDisposed(double elapsedMs);
 
     #endregion
 

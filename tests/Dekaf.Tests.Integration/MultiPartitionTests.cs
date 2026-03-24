@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -10,6 +11,15 @@ namespace Dekaf.Tests.Integration;
 [ParallelLimiter<MessagingTestLimit>]
 public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    /// <summary>
+    /// Logs elapsed time for a test phase to help diagnose CI timeout root causes.
+    /// Output goes to TUnit's captured stdout and appears in CI test reports.
+    /// </summary>
+    private static void LogPhase(string phase, Stopwatch sw)
+    {
+        Console.WriteLine($"  [{sw.Elapsed.TotalSeconds:F1}s] {phase}");
+    }
+
     /// <summary>
     /// Produces a warmup message to each partition to ensure the broker has fully initialized
     /// the partition and its producer state tracking.
@@ -204,34 +214,39 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_ConsumerGroupSubscription_GetsAllPartitions()
     {
-        // Master timeout so the test fails fast instead of hitting the 5-minute
-        // framework timeout. On slow CI the produce phase alone can eat minutes.
-        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+        var sw = Stopwatch.StartNew();
 
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 3);
+        LogPhase("warmup done", sw);
 
-        // Use bare ProduceAsync (not ProduceWithRetryAsync) to avoid phantom in-flight
-        // batches and retry overhead. Warmup already validated partitions are ready.
-        for (var p = 0; p < 3; p++)
+        // Produce multiple messages per partition so there's data available even if
+        // consumer group rebalance assigns partitions incrementally on slow CI.
+        for (var round = 0; round < 3; round++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            for (var p = 0; p < 3; p++)
             {
-                Topic = topic,
-                Key = $"key-{p}",
-                Value = $"value-{p}",
-                Partition = p
-            });
+                await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{p}",
+                    Value = $"value-{p}-{round}",
+                    Partition = p
+                });
+            }
         }
+        LogPhase("produce done (9 messages)", sw);
 
         // Act - subscribe (not manual assign)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -240,6 +255,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        LogPhase("consumer built", sw);
 
         consumer.Subscribe(topic);
 
@@ -247,8 +263,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var seenPartitions = new HashSet<int>();
         // Consumer group rebalance can take 60+ seconds on slow CI runners with
         // thread pool starvation. Use a generous timeout to avoid flaky failures.
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(testCts.Token);
-        cts.CancelAfter(TimeSpan.FromSeconds(90));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -258,11 +273,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             // Break only when we've seen messages from ALL 3 partitions
             if (seenPartitions.Count >= 3) break;
         }
+        LogPhase("consume done", sw);
 
         // Assert - should have received messages from all 3 partitions
         var partitions = seenPartitions.OrderBy(p => p).ToList();
         int[] expectedPartitions = [0, 1, 2];
         await Assert.That(partitions).IsEquivalentTo(expectedPartitions);
+        LogPhase("test complete (disposal next)", sw);
     }
 
     [Test]
@@ -341,16 +358,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_SeekOnSpecificPartition_WorksCorrectly()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 2);
+        LogPhase("warmup done", sw);
 
         // Produce to both partitions
         for (var i = 0; i < 5; i++)
@@ -370,6 +392,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Partition = 1
             });
         }
+        LogPhase("produce done (10 messages)", sw);
 
         // Act - assign both but seek partition 0 to offset 3
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -377,6 +400,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        LogPhase("consumer built", sw);
 
         consumer.Assign(
             new TopicPartition(topic, 0),
@@ -395,29 +419,36 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 if (messages.Count >= 2) break;
             }
         }
+        LogPhase("consume done", sw);
 
         // Assert - partition 0 should start from offset 4 (after warmup + 3 actual)
         await Assert.That(messages[0].Partition).IsEqualTo(0);
         await Assert.That(messages[0].Offset).IsEqualTo(4);
+        LogPhase("test complete (disposal next)", sw);
     }
 
     [Test]
     public async Task MultiPartition_HighPartitionCount_WorksCorrectly()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 10);
 
         // Let broker stabilize partition leaders before producing.
         // On slow CI runners, leader election for 10 partitions can take several seconds.
         await Task.Delay(3000);
+        LogPhase("topic created + stabilize delay", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 10);
+        LogPhase("warmup done (10 partitions)", sw);
 
         // Produce to all 10 partitions
         for (var p = 0; p < 10; p++)
@@ -430,11 +461,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Partition = p
             });
         }
-
-        // ProduceWithRetryAsync already awaits delivery confirmation, so all messages
-        // are confirmed delivered by this point. No FlushAsync needed — it was getting
-        // stuck in WaitForAllBatchesCompleteAsync on slow CI runners despite the
-        // accumulator being empty (likely stale warmup batch tracking).
+        LogPhase("produce done (10 messages)", sw);
 
         // Act — use manual Assign (not Subscribe) to skip consumer group rebalance.
         // Rebalance for 10 partitions can take 60+ seconds on slow CI runners with
@@ -444,6 +471,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        LogPhase("consumer built", sw);
 
         consumer.Assign(Enumerable.Range(0, 10)
             .Select(p => new TopicPartition(topic, p)).ToArray());
@@ -461,28 +489,35 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 seenPartitions.Add(msg.Partition);
             if (seenPartitions.Count >= 10) break;
         }
+        LogPhase("consume done", sw);
 
         // Assert - should get messages from all 10 partitions (filter out warmup)
         var actual = messages.Where(m => m.Key != "warmup").ToList();
         await Assert.That(actual).Count().IsGreaterThanOrEqualTo(10);
         var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
         await Assert.That(partitions).IsEquivalentTo(Enumerable.Range(0, 10));
+        LogPhase("test complete (disposal next)", sw);
     }
 
     [Test]
     public async Task MultiPartition_ProduceAndConsumeWithKeys_PartitioningIsConsistent()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
         var groupId = $"test-group-{Guid.NewGuid():N}";
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 5);
+        LogPhase("warmup done", sw);
 
         // Produce same key multiple times
         var expectedPartition = -1;
@@ -505,6 +540,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 await Assert.That(metadata.Partition).IsEqualTo(expectedPartition);
             }
         }
+        LogPhase("produce done (5 messages)", sw);
 
         // Act - consume
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -513,6 +549,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        LogPhase("consumer built", sw);
 
         consumer.Subscribe(topic);
 
@@ -524,6 +561,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             messages.Add(msg);
             if (messages.Count(m => m.Key == "consistent-key") >= 5) break;
         }
+        LogPhase("consume done", sw);
 
         // Assert - all consistent-key messages should be from same partition
         var actual = messages.Where(m => m.Key == "consistent-key").ToList();
@@ -533,5 +571,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             await Assert.That(msg.Partition).IsEqualTo(expectedPartition);
             await Assert.That(msg.Key).IsEqualTo("consistent-key");
         }
+        LogPhase("test complete (disposal next)", sw);
     }
 }

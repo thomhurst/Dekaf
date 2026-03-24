@@ -2820,6 +2820,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return;
 
         _disposed = true;
+        var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();
 
         // Time budget allocation within CloseTimeoutMs:
@@ -2863,7 +2864,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             // Graceful shutdown timed out - fall back to forceful shutdown
             gracefulShutdown = false;
-            LogGracefulShutdownTimedOut(gracefulMs);
+            var gracefulElapsed = Stopwatch.GetElapsedTime(disposeStart);
+            var gracefulElapsedMs = gracefulElapsed.TotalMilliseconds;
+            LogGracefulShutdownTimedOut(gracefulMs, gracefulElapsedMs);
         }
         catch
         {
@@ -3010,6 +3013,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 _connectionPool.DisposeAsync().AsTask())),
             Math.Max(500, RemainingMs()),
             "network");
+
+        var disposeElapsedMs = Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        LogProducerDisposed(disposeElapsedMs, gracefulShutdown);
     }
 
     /// <summary>
@@ -3105,8 +3111,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [LoggerMessage(Level = LogLevel.Debug, Message = "BumpEpoch InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms")]
     private partial void LogBumpEpochRetriable(ErrorCode errorCode, int delayMs);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful shutdown timed out after {Timeout}ms, forcing disposal")]
-    private partial void LogGracefulShutdownTimedOut(int timeout);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful shutdown timed out after {ElapsedMs:F0}ms (budget={Timeout}ms), forcing disposal")]
+    private partial void LogGracefulShutdownTimedOut(int timeout, double elapsedMs);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to dispose broker sender")]
     private partial void LogDisposeBrokerSenderFailed(Exception ex);
@@ -3140,6 +3146,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Producer disposing: beginning graceful shutdown")]
     private partial void LogProducerDisposing();
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Producer disposed in {ElapsedMs:F0}ms (graceful={Graceful})")]
+    private partial void LogProducerDisposed(double elapsedMs, bool graceful);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing {Count} broker senders")]
     private partial void LogDisposingBrokerSenders(int count);
