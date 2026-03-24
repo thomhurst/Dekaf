@@ -35,7 +35,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Warm up to ensure broker has initialized partition state
         // (topic metadata is cached after this call)
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Build host with consumer service
@@ -67,7 +67,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"hosted-key-{i}",
