@@ -37,16 +37,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_KeyBasedPartitioning_SameKeyGoesToSamePartition()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 5);
+        LogPhase("warmup done", sw);
 
         // Act - produce multiple messages with same key
         var results = new List<RecordMetadata>();
@@ -60,6 +65,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             });
             results.Add(metadata);
         }
+        LogPhase("produce done", sw);
 
         // Assert - all should go to same partition
         var partitions = results.Select(r => r.Partition).Distinct().ToList();
@@ -69,16 +75,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_DifferentKeys_DistributeAcrossPartitions()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 5);
+        LogPhase("warmup done", sw);
 
         // Act - produce messages with different keys.
         // 10 keys across 5 partitions is statistically sufficient to hit ≥2 partitions
@@ -95,6 +106,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             });
             results.Add(metadata);
         }
+        LogPhase("produce done", sw);
 
         // Assert - should distribute across multiple partitions
         var partitions = results.Select(r => r.Partition).Distinct().ToList();
@@ -104,16 +116,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_ManualAssignment_ConsumesOnlyAssignedPartition()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 3);
+        LogPhase("warmup done", sw);
 
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
@@ -126,6 +143,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Partition = p
             });
         }
+        LogPhase("produce done", sw);
 
         // Act - manually assign only partition 1
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -156,16 +174,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_AssignMultiplePartitions_ConsumesFromAll()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 4);
+        LogPhase("warmup done", sw);
 
         // Produce to partitions 0, 1, and 2
         for (var p = 0; p < 3; p++)
@@ -178,6 +201,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Partition = p
             });
         }
+        LogPhase("produce done", sw);
 
         // Act - assign partitions 0 and 2 only
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -287,16 +311,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_OrderWithinPartition_IsPreserved()
     {
+        var sw = Stopwatch.StartNew();
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        LogPhase("topic created", sw);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
+        LogPhase("producer built", sw);
 
         await WarmUpAllPartitions(producer, topic, 2);
+        LogPhase("warmup done", sw);
 
         // Produce ordered messages to partition 0.
         // Use a per-call timeout so a single hung delivery fails fast (~30s) instead of
