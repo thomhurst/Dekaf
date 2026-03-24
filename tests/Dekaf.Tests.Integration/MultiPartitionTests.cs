@@ -204,6 +204,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     [Test]
     public async Task MultiPartition_ConsumerGroupSubscription_GetsAllPartitions()
     {
+        // Master timeout so the test fails fast instead of hitting the 5-minute
+        // framework timeout. On slow CI the produce phase alone can eat minutes.
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
@@ -216,20 +220,17 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         await WarmUpAllPartitions(producer, topic, 3);
 
-        // Produce multiple messages per partition so there's data available even if
-        // consumer group rebalance assigns partitions incrementally on slow CI.
-        for (var round = 0; round < 3; round++)
+        // Use bare ProduceAsync (not ProduceWithRetryAsync) to avoid phantom in-flight
+        // batches and retry overhead. Warmup already validated partitions are ready.
+        for (var p = 0; p < 3; p++)
         {
-            for (var p = 0; p < 3; p++)
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
-                {
-                    Topic = topic,
-                    Key = $"key-{p}",
-                    Value = $"value-{p}-{round}",
-                    Partition = p
-                });
-            }
+                Topic = topic,
+                Key = $"key-{p}",
+                Value = $"value-{p}",
+                Partition = p
+            });
         }
 
         // Act - subscribe (not manual assign)
@@ -246,7 +247,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var seenPartitions = new HashSet<int>();
         // Consumer group rebalance can take 60+ seconds on slow CI runners with
         // thread pool starvation. Use a generous timeout to avoid flaky failures.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(testCts.Token);
+        cts.CancelAfter(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
