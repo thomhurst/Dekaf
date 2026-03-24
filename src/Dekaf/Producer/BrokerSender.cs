@@ -1347,6 +1347,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
+                // Diagnostic: log response content and expected batches for mismatch diagnosis
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    var batchKeys = string.Join(", ",
+                        Enumerable.Range(0, count)
+                            .Where(idx => batches[idx] is not null)
+                            .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
+                    var respKeys = responseLookup is not null
+                        ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                        : "(empty)";
+                    LogProduceResponseContent(_brokerId, count, batchKeys, responseLookup?.Count ?? 0, respKeys);
+                }
+
                 ProcessResponseBatches(batches, count, responseLookup,
                     carryOver, cancellationToken);
 
@@ -1406,7 +1419,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse is null)
                 {
-                    LogNoResponseForPartition(expectedTopic, expectedPartition);
+                    // Log what the response actually contains for diagnosis.
+                    // The response may be empty (broker didn't respond for this partition),
+                    // or contain different topic-partitions than expected.
+                    var responseTopicCount = responseLookup?.Count ?? 0;
+                    var responseKeys = responseLookup is not null
+                        ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                        : "(null)";
+                    LogNoResponseForPartition(expectedTopic, expectedPartition,
+                        responseTopicCount, responseKeys, count);
                     HandleRetriableBatch(batch, ErrorCode.NetworkException,
                         carryOver, cancellationToken);
                     batches[j] = null!;
@@ -1863,6 +1884,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
             var request = scratch.Build(batches, count);
+
+            // Diagnostic: log what partitions are in this request so we can compare with the response.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                var requestPartitions = string.Join(", ",
+                    Enumerable.Range(0, count).Select(i => $"{batches[i].TopicPartition.Topic}-{batches[i].TopicPartition.Partition}"));
+                LogProduceRequestContent(_brokerId, count, requestPartitions);
+            }
 
             var requestStartTime = Stopwatch.GetTimestamp();
 
@@ -2775,11 +2804,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
     private partial void LogResponseFailed(Exception ex, int brokerId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] No response for {Topic}-{Partition}")]
-    private partial void LogNoResponseForPartition(string topic, int partition);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] No response for {Topic}-{Partition} (response has {ResponseCount} entries: [{ResponseKeys}], request had {RequestBatchCount} batches)")]
+    private partial void LogNoResponseForPartition(string topic, int partition, int responseCount, string responseKeys, int requestBatchCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] DuplicateSequenceNumber for {Topic}-{Partition} at offset {Offset}")]
     private partial void LogDuplicateSequenceNumber(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] produce request: {BatchCount} batches [{RequestPartitions}]")]
+    private partial void LogProduceRequestContent(int brokerId, int batchCount, string requestPartitions);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] produce response: {BatchCount} batches expected [{BatchKeys}], {ResponseCount} partitions received [{ResponseKeys}]")]
+    private partial void LogProduceResponseContent(int brokerId, int batchCount, string batchKeys, int responseCount, string responseKeys);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Retriable error {ErrorCode} for {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}")]
     private partial void LogRetriableError(ErrorCode errorCode, string topic, int partition, int seq, int count, short epoch, long pid);
