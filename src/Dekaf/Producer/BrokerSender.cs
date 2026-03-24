@@ -1808,6 +1808,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int connectionIndex,
         CancellationToken cancellationToken)
     {
+        // Tracks whether PendingResponse was added to _pendingResponsesByConnection.
+        // Once added, ProcessCompletedResponses owns the batches array — catch blocks
+        // must NOT return it to ArrayPool, or the array will be recycled while
+        // PendingResponse still references it (causing cross-request batch contamination).
+        var pendingResponseAdded = false;
         try
         {
             // Assign sequences at send time (Java Kafka Sender pattern).
@@ -1962,6 +1967,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
             _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
+            pendingResponseAdded = true; // Array ownership transferred to PendingResponse
             Interlocked.Increment(ref _totalPendingResponseCount);
 
             // Diagnostic: log instance+task+partitions at PendingResponse creation time.
@@ -2025,7 +2031,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
             scratch.ClearReferences();
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+
+            // Only return array if PendingResponse was NOT added. If it was, ProcessCompletedResponses
+            // owns the array and will return it when processing the (faulted/cancelled) response.
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
         catch (Exception ex)
         {
@@ -2086,7 +2096,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             scratch.ClearReferences();
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
     }
 
