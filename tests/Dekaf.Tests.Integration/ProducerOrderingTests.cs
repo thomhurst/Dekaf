@@ -13,20 +13,6 @@ namespace Dekaf.Tests.Integration;
 [Category("Producer")]
 public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    /// <summary>
-    /// Produces a warmup message to each partition to ensure the broker has fully initialized
-    /// the partition and its producer state tracking. Without this, the first produce to a
-    /// newly-created partition may get NotLeaderOrFollower, and with MaxInFlight > 1 later
-    /// in-flight batches for the same partition can succeed out of order at the broker.
-    /// </summary>
-    private static async Task WarmUpAllPartitions(IKafkaProducer<string, string> producer, string topic, int partitions)
-    {
-        for (var p = 0; p < partitions; p++)
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-            });
-    }
 
     [Test]
     public async Task IdempotentProducer_StrictOrdering_Preserved()
@@ -223,7 +209,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 4);
+        await producer.WarmUpAllPartitionsAsync(topic, 4);
 
         // Produce to all partitions rapidly using explicit partition assignment
         for (var p = 0; p < 4; p++)
@@ -305,7 +291,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     
                 .BuildAsync();
 
-            await WarmUpAllPartitions(producer, topic, 3);
+            await producer.WarmUpAllPartitionsAsync(topic, 3);
 
             for (var i = 0; i < messagesPerProducer; i++)
             {
@@ -388,7 +374,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 8);
+        await producer.WarmUpAllPartitionsAsync(topic, 8);
 
         // Fire-and-forget to all 8 partitions rapidly to stress the coalescing path
         for (var p = 0; p < 8; p++)
@@ -530,7 +516,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 4);
+        await producer.WarmUpAllPartitionsAsync(topic, 4);
 
         // Produce in waves with flushes between to create distinct drain cycles
         for (var wave = 0; wave < wavesCount; wave++)
@@ -613,7 +599,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 2);
+        await producer.WarmUpAllPartitionsAsync(topic, 2);
 
         // Fire-and-forget to both partitions rapidly
         for (var i = 0; i < messageCount; i++)
@@ -686,7 +672,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 2);
+        await producer.WarmUpAllPartitionsAsync(topic, 2);
 
         // Interleave: p0, p1, p0, p1, ... — this creates alternating batches that
         // will be grouped into deferred chains for each partition
@@ -767,7 +753,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 16);
+        await producer.WarmUpAllPartitionsAsync(topic, 16);
 
         for (var p = 0; p < 16; p++)
         {
@@ -902,7 +888,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 4);
+        await producer.WarmUpAllPartitionsAsync(topic, 4);
 
         // Track per-partition sequence counters
         var partitionSeq = new int[4];
@@ -997,7 +983,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 8);
+        await producer.WarmUpAllPartitionsAsync(topic, 8);
 
         var partitionSeq = new int[8];
 
@@ -1083,7 +1069,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 4);
+        await producer.WarmUpAllPartitionsAsync(topic, 4);
 
         // Produce in bursts with small gaps to let the linger timer fire between bursts
         for (var burst = 0; burst < 10; burst++)
@@ -1164,7 +1150,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 16);
+        await producer.WarmUpAllPartitionsAsync(topic, 16);
 
         for (var i = 0; i < messagesPerPartition; i++)
         {

@@ -20,39 +20,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         Console.WriteLine($"  [{sw.Elapsed.TotalSeconds:F1}s] {phase}");
     }
 
-    /// <summary>
-    /// Produces a warmup message to each partition to ensure the broker has fully initialized
-    /// the partition and its producer state tracking.
-    /// Uses a per-message timeout to fail fast if a produce hangs (e.g., due to a transient
-    /// connection death on CI), and retries once on failure.
-    /// </summary>
-    private static async Task WarmUpAllPartitions(
-        IKafkaProducer<string, string> producer, string topic, int partitions)
-    {
-        for (var p = 0; p < partitions; p++)
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try
-            {
-                await producer.ProduceAsync(new ProducerMessage<string, string>
-                {
-                    Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-                }, cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                // First attempt timed out — connection may have died and self-healed.
-                // Retry once with a fresh timeout.
-                Console.WriteLine($"  [warmup] partition {p} timed out, retrying...");
-                using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                await producer.ProduceAsync(new ProducerMessage<string, string>
-                {
-                    Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-                }, retryCts.Token);
-                Console.WriteLine($"  [warmup] partition {p} retry succeeded");
-            }
-        }
-    }
 
     [Test]
     public async Task MultiPartition_KeyBasedPartitioning_SameKeyGoesToSamePartition()
@@ -70,7 +37,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 5);
+        await producer.WarmUpAllPartitionsAsync(topic, 5);
         LogPhase("warmup done", sw);
 
         // Act - produce multiple messages with same key
@@ -108,7 +75,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 5);
+        await producer.WarmUpAllPartitionsAsync(topic, 5);
         LogPhase("warmup done", sw);
 
         // Act - produce messages with different keys.
@@ -149,7 +116,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 3);
+        await producer.WarmUpAllPartitionsAsync(topic, 3);
         LogPhase("warmup done", sw);
 
         // Produce to all partitions
@@ -207,7 +174,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 4);
+        await producer.WarmUpAllPartitionsAsync(topic, 4);
         LogPhase("warmup done", sw);
 
         // Produce to partitions 0, 1, and 2
@@ -274,7 +241,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 3);
+        await producer.WarmUpAllPartitionsAsync(topic, 3);
         LogPhase("warmup done", sw);
 
         // Produce multiple messages per partition so there's data available even if
@@ -344,7 +311,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 2);
+        await producer.WarmUpAllPartitionsAsync(topic, 2);
         LogPhase("warmup done", sw);
 
         // Produce ordered messages to partition 0.
@@ -422,7 +389,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 2);
+        await producer.WarmUpAllPartitionsAsync(topic, 2);
         LogPhase("warmup done", sw);
 
         // Produce to both partitions
@@ -498,7 +465,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 10);
+        await producer.WarmUpAllPartitionsAsync(topic, 10);
         LogPhase("warmup done (10 partitions)", sw);
 
         // Produce to all 10 partitions
@@ -567,7 +534,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .BuildAsync();
         LogPhase("producer built", sw);
 
-        await WarmUpAllPartitions(producer, topic, 5);
+        await producer.WarmUpAllPartitionsAsync(topic, 5);
         LogPhase("warmup done", sw);
 
         // Produce same key multiple times
