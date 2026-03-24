@@ -1456,6 +1456,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.Exchange(ref batch._returnedToPool, 1) != 0)
             return;
 
+        // Ensure any in-progress CompleteSend/Fail has finished Cleanup before Reset runs.
+        // Without this, pool.Return → Reset() can see _cleanedUp==0 and fire the safety net
+        // while CompleteSend is still iterating completion sources on another thread.
+        batch.WaitForCleanupIfStarted();
+
         _readyBatchPool.Return(batch);
     }
 
@@ -4213,12 +4218,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // SAFETY NET: If CompleteSend/Fail wasn't called (_cleanedUp still 0), resolve
         // orphaned completion sources and return pooled arrays before the batch goes back
         // to the pool. Without this, ProduceAsync callers hang forever on unresolved sources.
-        // Single read: _cleanedUp cannot change during Reset (pool return is single-threaded per batch).
+        // WaitForCleanupIfStarted in ReturnReadyBatch handles the race where CompleteSend/Fail
+        // has started but Cleanup hasn't finished. If we reach here, neither was ever called.
         if (Volatile.Read(ref _cleanedUp) == 0)
         {
             if (_completionSourcesArray is not null)
             {
-                var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
+                var orphanedException = new InvalidOperationException(
+                    $"Batch recycled without completing delivery — this indicates a bug in the producer pipeline " +
+                    $"(tp={_topicPartition}, sendCompleted={Volatile.Read(ref _sendCompleted)}, " +
+                    $"completed={Volatile.Read(ref _completed)}, trace={DiagTrace})");
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     _completionSourcesArray[i]?.TrySetException(orphanedException);
@@ -4441,6 +4450,29 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         finally
         {
             Cleanup();
+        }
+    }
+
+    /// <summary>
+    /// If CompleteSend/Fail has been called but Cleanup hasn't finished yet, spin-waits
+    /// for the winning thread to complete. Returns immediately if no send completion has
+    /// started (_sendCompleted == 0) — the safety net in Reset() handles that case.
+    /// </summary>
+    /// <remarks>
+    /// Prevents a race where ForceFailAllInFlightBatches loses the _sendCompleted CAS
+    /// (because BrokerSender's CompleteSend won it), then immediately returns the batch
+    /// to pool via ReturnReadyBatch — before CompleteSend reaches its finally { Cleanup() }.
+    /// Reset() would see _cleanedUp == 0 and fire the safety net, corrupting completion
+    /// sources that CompleteSend is still iterating.
+    /// The spin resolves in nanoseconds: Cleanup only returns arrays to pools.
+    /// </remarks>
+    internal void WaitForCleanupIfStarted()
+    {
+        if (Volatile.Read(ref _cleanedUp) == 0 && Volatile.Read(ref _sendCompleted) != 0)
+        {
+            SpinWait sw = default;
+            while (Volatile.Read(ref _cleanedUp) == 0)
+                sw.SpinOnce();
         }
     }
 
