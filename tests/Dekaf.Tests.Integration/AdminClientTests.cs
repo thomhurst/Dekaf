@@ -511,7 +511,6 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -557,7 +556,6 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

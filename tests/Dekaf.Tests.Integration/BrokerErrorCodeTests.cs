@@ -29,7 +29,6 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithAcks(Acks.All)
             .WithMaxBlock(TimeSpan.FromSeconds(10))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert - producing to a non-existent topic should eventually throw.
@@ -94,7 +93,6 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             .WithClientId("test-producer-msg-too-large")
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Create a message that clearly exceeds the topic's 512-byte max.message.bytes
@@ -137,7 +135,6 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-reset-earliest")
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -192,7 +189,6 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-reset-latest")
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

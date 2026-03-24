@@ -339,7 +339,6 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce messages while simultaneously performing admin operations
@@ -413,7 +412,6 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-pre")
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

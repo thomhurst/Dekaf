@@ -34,7 +34,6 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithAcks(Acks.Leader)
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Force full GC and measure managed heap baseline. Using GC.GetTotalMemory instead of
@@ -140,7 +139,6 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Short linger for faster batching
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
