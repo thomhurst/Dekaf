@@ -499,13 +499,8 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
     {
         var endpoint = new EndpointKey(host, port);
 
-        // Check if there's an existing valid connection (race condition with fast path).
-        // Don't reuse bootstrap connections (broker -1) for real broker IDs: in single-broker
-        // setups both share the same host:port, but the bootstrap connection's receive loop
-        // will time out after 30s of idleness and kill the shared connection, disrupting
-        // in-flight produce requests. Create a dedicated connection for the real broker instead.
-        if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected
-            && !(brokerId >= 0 && existing.BrokerId < 0))
+        // Check if there's an existing valid connection (race condition with fast path)
+        if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
         {
             return existing;
         }
