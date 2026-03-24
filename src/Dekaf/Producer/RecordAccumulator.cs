@@ -4160,12 +4160,21 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
     private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
     internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
+    private int _generation; // Incremented on each Initialize() — detects batch object recycling
 
     /// <summary>
     /// True when this batch has been returned to the pool. The authoritative signal for
     /// "batch is no longer live" — set atomically by ReturnReadyBatch before Reset() runs.
     /// </summary>
     internal bool IsReturnedToPool => Volatile.Read(ref _returnedToPool) != 0;
+
+    /// <summary>
+    /// Monotonically increasing counter, incremented on each Initialize(). Used to detect
+    /// batch object recycling: if a PendingResponse holds a reference to a batch and the
+    /// batch's generation doesn't match the expected value, the batch was recycled
+    /// (Reset + re-Initialize with a different topic) while the PendingResponse was in flight.
+    /// </summary>
+    internal int Generation => Volatile.Read(ref _generation);
 
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
@@ -4204,6 +4213,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
         Interlocked.Exchange(ref _memoryReleased, 0);
+        Interlocked.Increment(ref _generation);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;

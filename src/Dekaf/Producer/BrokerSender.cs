@@ -130,15 +130,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly record struct PendingResponse(
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
+        int[] BatchGenerations,
         int Count,
         long RequestStartTime)
     {
         /// <summary>
-        /// Clears batch references and returns the pooled array to <see cref="ArrayPool{T}.Shared"/>.
+        /// Snapshots batch generations at creation time. Must be called immediately after
+        /// populating the Batches array — the generations detect batch object recycling
+        /// between send and response processing.
+        /// </summary>
+        public static PendingResponse Create(
+            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int count, long requestStartTime)
+        {
+            var generations = ArrayPool<int>.Shared.Rent(count);
+            for (var i = 0; i < count; i++)
+                generations[i] = batches[i].Generation;
+            return new PendingResponse(responseTask, batches, generations, count, requestStartTime);
+        }
+
+        /// <summary>
+        /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
+        /// that was present when this PendingResponse was created.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsSameIncarnation(int i) => Batches[i] is not null && Batches[i].Generation == BatchGenerations[i];
+
+        /// <summary>
+        /// Clears batch references and returns pooled arrays to <see cref="ArrayPool{T}.Shared"/>.
         /// Must be called exactly once per PendingResponse entry — not idempotent due to struct copy semantics.
         /// </summary>
         public void ReturnBatchesArray()
         {
+            ArrayPool<int>.Shared.Return(BatchGenerations);
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
         }
     }
@@ -1095,10 +1118,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var pr = pendingList[i];
                     for (var j = 0; j < pr.Count; j++)
                     {
-                        var batch = pr.Batches[j];
-                        if (batch is not null && !batch.IsReturnedToPool)
+                        if (pr.IsSameIncarnation(j))
                         {
-                            try { FailAndCleanupBatch(batch, disposedException); }
+                            try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                         }
                     }
@@ -1315,7 +1337,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     for (var j = 0; j < count; j++)
                     {
-                        if (batches[j] is not null && !batches[j].IsReturnedToPool)
+                        if (pending.IsSameIncarnation(j))
                         {
                             batches[j].AppendDiag('P'); // Faulted/cancelled response processed
                             try
@@ -1362,7 +1384,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys, responseLookup?.Count ?? 0, respKeys);
                 }
 
-                ProcessResponseBatches(batches, count, responseLookup,
+                ProcessResponseBatches(pending, responseLookup,
                     carryOver, cancellationToken, task.Id);
 
                 // Clear for reuse on next response (avoids per-response dictionary allocation)
@@ -1399,22 +1421,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// epoch bump flagging, acknowledgement callbacks, and batch cleanup.
     /// </summary>
     private void ProcessResponseBatches(
-        ReadyBatch[] batches,
-        int count,
+        PendingResponse pending,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken,
         int responseTaskId = 0)
     {
+        var batches = pending.Batches;
+        var count = pending.Count;
+
         for (var j = 0; j < count; j++)
         {
             var batch = batches[j];
             if (batch is null)
                 continue;
 
-            // Batch already completed by another path (timeout, disposal, error handler)
-            // and returned to pool — skip to avoid infinite retry on topic mismatch.
-            if (batch.IsReturnedToPool)
+            // Detect batch object recycling: if the batch was returned to pool AND
+            // re-Initialize'd (new topic, _returnedToPool reset to 0), IsReturnedToPool
+            // returns false but the generation won't match. Also catches the simpler case
+            // where the batch is still in the pool (IsReturnedToPool = true).
+            if (!pending.IsSameIncarnation(j))
             {
                 LogBatchAlreadyReturnedToPool(_instanceId, responseTaskId, count, batch.DiagTrace);
                 continue;
@@ -1583,8 +1609,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var pending = pendingList[i];
                 for (var j = 0; j < pending.Count; j++)
                 {
+                    if (!pending.IsSameIncarnation(j)) continue;
                     var batch = pending.Batches[j];
-                    if (batch is null || batch.IsReturnedToPool) continue;
 
                     batch.AppendDiag('T'); // Timed-out request
 
@@ -1965,7 +1991,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
+            var pendingResponse = PendingResponse.Create(responseTask, batches, count, requestStartTime);
             _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
             pendingResponseAdded = true; // Array ownership transferred to PendingResponse
             Interlocked.Increment(ref _totalPendingResponseCount);
@@ -2551,7 +2577,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var pr = pendingList[i];
                     for (var j = 0; j < pr.Count; j++)
                     {
-                        if (pr.Batches[j] is not null)
+                        if (pr.IsSameIncarnation(j))
                         {
                             try { FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender))); }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
