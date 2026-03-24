@@ -23,15 +23,35 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     /// <summary>
     /// Produces a warmup message to each partition to ensure the broker has fully initialized
     /// the partition and its producer state tracking.
+    /// Uses a per-message timeout to fail fast if a produce hangs (e.g., due to a transient
+    /// connection death on CI), and retries once on failure.
     /// </summary>
     private static async Task WarmUpAllPartitions(
         IKafkaProducer<string, string> producer, string topic, int partitions)
     {
         for (var p = 0; p < partitions; p++)
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
             {
-                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-            });
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+                }, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // First attempt timed out — connection may have died and self-healed.
+                // Retry once with a fresh timeout.
+                Console.WriteLine($"  [warmup] partition {p} timed out, retrying...");
+                using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+                }, retryCts.Token);
+                Console.WriteLine($"  [warmup] partition {p} retry succeeded");
+            }
+        }
     }
 
     [Test]
