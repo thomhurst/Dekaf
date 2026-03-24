@@ -16,7 +16,7 @@ internal sealed class LoggerFactoryFixture
         var services = new ServiceCollection();
         services.AddLogging(builder =>
         {
-            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.SetMinimumLevel(LogLevel.Debug);
             builder.AddSimpleConsole(options =>
             {
                 options.SingleLine = true;
