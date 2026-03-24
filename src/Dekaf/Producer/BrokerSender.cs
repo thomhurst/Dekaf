@@ -1149,6 +1149,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<TopicPartition> coalescedPartitions,
         PartitionCarryOver carryOver)
     {
+        // Defensive: batch may have been returned to pool and Reset() by a racing
+        // ForceFailAllInFlightBatches call during disposal. Reset() sets TopicPartition
+        // to default (Topic=null) and RecordBatch to null. Skip silently — the batch
+        // has already been failed and its completion sources resolved.
+        if (batch.TopicPartition.Topic is null)
+            return;
+
         // Track distinct partitions this broker serves for MicroLinger skip optimization.
         _knownPartitions.Add(batch.TopicPartition);
 
@@ -1987,8 +1994,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             for (var i = 0; i < count; i++)
             {
-                batches[i].AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
                 var batch = batches[i];
+
+                // Defensive: batch may have been returned to pool and Reset() by a racing
+                // ForceFailAllInFlightBatches call during disposal. Reset() sets TopicPartition
+                // to default (Topic=null) and RecordBatch to null. Skip — already failed.
+                if (batch is null || batch.TopicPartition.Topic is null)
+                    continue;
+
+                batch.AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
                 try
                 {
                     // Buffer memory stays reserved during retry — the batch still holds

@@ -2898,7 +2898,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // never arrive. Previously this was done only after BrokerSender disposal,
             // meaning the sender task could hang for 5s waiting for in-flight work
             // that was already doomed.
-            _accumulator.ForceFailAllInFlightBatches();
+            //
+            // returnToPool: false — BrokerSender send loops are still running and hold
+            // references to these batches (in carry-over, pending responses, etc.).
+            // Returning to pool calls Reset() which nulls TopicPartition/RecordBatch,
+            // causing NullReferenceException in the send loop. Pool return is deferred
+            // to the second sweep at line ~2983 after BrokerSenders are disposed.
+            _accumulator.ForceFailAllInFlightBatches(returnToPool: false);
 
             // Derive sender wait timeout from remaining time budget rather than hardcoding,
             // so the total dispose time never exceeds CloseTimeoutMs.

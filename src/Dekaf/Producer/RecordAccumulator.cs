@@ -2802,7 +2802,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// whose references were lost from BrokerSender data structures.
     /// Safe to call multiple times — idempotent due to dictionary removal and IsEmpty check.
     /// </summary>
-    internal void ForceFailAllInFlightBatches()
+    /// <param name="returnToPool">
+    /// When true, batches are returned to the pool after failing (calls Reset which nulls fields).
+    /// Must only be true when all BrokerSenders are stopped — otherwise the send loop may still
+    /// hold references to these batches and access their fields, causing NullReferenceException.
+    /// When false, only completion sources are resolved and memory is released; pool return is
+    /// deferred to a later sweep (after BrokerSenders are disposed).
+    /// </param>
+    internal void ForceFailAllInFlightBatches(bool returnToPool = true)
     {
         if (_inFlightBatches.IsEmpty)
             return;
@@ -2817,9 +2824,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue; // Another thread already handled this batch
 
             FailAndRelease(orphanedBatch, disposedException);
-            // During disposal, BrokerSenders are already stopped — safe to return to pool.
-            try { ReturnReadyBatch(orphanedBatch); }
-            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+
+            if (returnToPool)
+            {
+                // Only safe when BrokerSenders are stopped — their send loops no longer
+                // reference these batches, so Reset() won't cause use-after-free.
+                try { ReturnReadyBatch(orphanedBatch); }
+                catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+            }
         }
     }
 
