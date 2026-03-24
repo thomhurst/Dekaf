@@ -447,13 +447,17 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var seenPartitions = new HashSet<int>();
+        // 10 partitions need more time on slow CI runners with thread pool starvation.
+        // Each partition requires a separate fetch request/response cycle.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            var dataCount = messages.Count(m => m.Key != "warmup");
-            if (dataCount >= 10) break;
+            if (msg.Key != "warmup")
+                seenPartitions.Add(msg.Partition);
+            if (seenPartitions.Count >= 10) break;
         }
 
         // Assert - should get messages from all 10 partitions (filter out warmup)
