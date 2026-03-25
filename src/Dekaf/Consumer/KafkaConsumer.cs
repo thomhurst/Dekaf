@@ -370,8 +370,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly Dictionary<string, System.Diagnostics.TagList> _metricTagsCache = [];
 
     // Cached activity names per topic to avoid repeated string interpolation in fetch paths
-    // Static because activity names are identical across all consumer instances for the same topic
-    private static readonly ConcurrentDictionary<string, string> s_activityNameCache = new();
+    // Instance-level to avoid unbounded growth with dynamic topic names across consumer instances
+    private readonly ConcurrentDictionary<string, string> _activityNameCache = new();
 
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
@@ -652,6 +652,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         using var reg = cancellationToken.CanBeCanceled
                             ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
                             : default;
+
+                        // Close any race window: if token was cancelled between method entry and registration
+                        if (cancellationToken.IsCancellationRequested)
+                            timeoutCts.Cancel();
+
                         try
                         {
                             var fetched = await _prefetchChannel.Reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
@@ -886,6 +891,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
                 : default;
 
+            // Close any race window: if token was cancelled between method entry and registration
+            if (cancellationToken.IsCancellationRequested)
+                wakeupCts.Cancel();
+
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
             // If all partitions are paused, delay to prevent tight spin loop
@@ -1009,7 +1018,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         foreach (var topicResponse in response.Responses)
         {
             var topic = topicResponse.Topic ?? string.Empty;
-            var activityName = s_activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
+            var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
@@ -1977,6 +1986,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
                 : default;
 
+            // Close any race window: if token was cancelled between method entry and registration
+            if (cancellationToken.IsCancellationRequested)
+                wakeupCts.Cancel();
+
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
             // If all partitions are paused, delay to prevent tight spin loop
@@ -2208,7 +2221,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         foreach (var topicResponse in response.Responses)
         {
             var topic = topicResponse.Topic ?? string.Empty;
-            var activityName = s_activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
+            var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
