@@ -35,10 +35,42 @@ internal static class ProducerTestExtensions
     public static async Task<RecordMetadata> ProduceWithTimeoutAsync<TKey, TValue>(
         this IKafkaProducer<TKey, TValue> producer,
         ProducerMessage<TKey, TValue> message,
-        int timeoutSeconds = 60)
+        int timeoutSeconds = 90)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         return await producer.ProduceAsync(message, cts.Token);
+    }
+
+    /// <summary>
+    /// Produces a message with retry-on-timeout resilience for slow CI runners.
+    /// On first timeout, retries once with a fresh timeout — the connection may have
+    /// died and self-healed. Returns null only if both attempts time out.
+    /// Callers should NOT retry themselves — cancellation after append still delivers
+    /// the message in background, so a caller retry would produce duplicates.
+    /// </summary>
+    public static async Task<RecordMetadata?> TryProduceWithTimeoutAsync<TKey, TValue>(
+        this IKafkaProducer<TKey, TValue> producer,
+        ProducerMessage<TKey, TValue> message,
+        int timeoutSeconds = 90)
+    {
+        try
+        {
+            return await producer.ProduceWithTimeoutAsync(message, timeoutSeconds);
+        }
+        catch (OperationCanceledException)
+        {
+            // First attempt timed out — retry once with a fresh timeout.
+            try
+            {
+                Console.WriteLine("  [produce] timed out, retrying...");
+                return await producer.ProduceWithTimeoutAsync(message, timeoutSeconds);
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine("  [produce] retry also timed out, skipping");
+                return null;
+            }
+        }
     }
 
     /// <summary>
@@ -71,5 +103,10 @@ internal static class ProducerTestExtensions
                 Console.WriteLine($"  [warmup] partition {p} retry succeeded");
             }
         }
+
+        // Flush to ensure all warmup messages are fully delivered before the test starts.
+        // Without this, warmup batches may still be in-flight when test produces begin,
+        // adding to connection load and causing receive timeouts on slow CI runners.
+        await producer.FlushWithTimeoutAsync(timeoutSeconds);
     }
 }

@@ -7,9 +7,10 @@ namespace Dekaf.Tests.Integration;
 /// Each test creates 1-5 Kafka clients (producers/consumers), each with its own connection pool.
 /// Without limiting, dozens of tests running concurrently against a single Docker Kafka broker
 /// overwhelm the container with concurrent connections, causing receive timeouts and test hangs.
-/// A limit of 3 allows reasonable throughput while keeping total connections manageable.
+/// A limit of 2 keeps total connections manageable. A limit of 3 still caused intermittent
+/// receive timeouts on slow CI runners with thread pool starvation.
 /// </summary>
 public class MessagingTestLimit : IParallelLimit
 {
-    public int Limit => 3;
+    public int Limit => 2;
 }
