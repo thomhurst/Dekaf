@@ -815,6 +815,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
         var consecutiveErrors = 0;
+        // Pipelined prefetch: stores the next in-flight fetch task so the network round-trip
+        // overlaps with the consumer draining the channel and with loop overhead (assignment
+        // checks, memory limit checks, partition grouping). The next fetch is started eagerly
+        // after the current one completes, provided memory limits allow it.
+        Task? inFlightPrefetch = null;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -825,6 +830,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     if (_assignment.Count == 0)
                     {
+                        // No assignment — drain any in-flight fetch before waiting
+                        if (inFlightPrefetch is not null)
+                        {
+                            await inFlightPrefetch.ConfigureAwait(false);
+                            inFlightPrefetch = null;
+                        }
                         await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -834,15 +845,46 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                     if (currentPrefetchedBytes >= maxBytes)
                     {
+                        // At memory limit — drain any in-flight fetch before pausing
+                        if (inFlightPrefetch is not null)
+                        {
+                            await inFlightPrefetch.ConfigureAwait(false);
+                            inFlightPrefetch = null;
+                        }
                         // Wait for consumer to signal memory is available instead of polling
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
+                    // If we have an in-flight fetch from the previous iteration, await it.
+                    // Its network round-trip overlapped with the loop overhead above.
+                    if (inFlightPrefetch is not null)
+                    {
+                        await inFlightPrefetch.ConfigureAwait(false);
+                        inFlightPrefetch = null;
+                        consecutiveErrors = 0;
+
+                        // Re-check memory limit after the in-flight fetch added data.
+                        // If we're now at the limit, loop back to the memory check above
+                        // instead of eagerly issuing another fetch.
+                        currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
+                        if (currentPrefetchedBytes >= maxBytes)
+                            continue;
+                    }
+
                     // Fetch records into prefetch channel
                     await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                     consecutiveErrors = 0; // Reset on success
+
+                    // Pipeline: eagerly start the next fetch if memory allows.
+                    // The network round-trip will overlap with the consumer processing the
+                    // data we just enqueued and with the next iteration's assignment/memory checks.
+                    currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
+                    if (currentPrefetchedBytes < maxBytes && !cancellationToken.IsCancellationRequested)
+                    {
+                        inFlightPrefetch = PrefetchRecordsAsync(cancellationToken).AsTask();
+                    }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -850,6 +892,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 }
                 catch (Exception ex)
                 {
+                    // Drain in-flight fetch to observe its exception and prevent unobserved task leaks.
+                    // The exception may have come from EnsureAssignmentAsync or another call while
+                    // an eager fetch from the previous iteration is still in flight.
+                    if (inFlightPrefetch is not null)
+                    {
+                        try { await inFlightPrefetch.ConfigureAwait(false); }
+                        catch { /* Will be surfaced via the outer exception handling */ }
+                        inFlightPrefetch = null;
+                    }
                     consecutiveErrors++;
                     LogPrefetchLoopError(ex);
 
@@ -871,6 +922,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
+            // Drain any in-flight fetch to observe exceptions and prevent fire-and-forget leaks
+            if (inFlightPrefetch is not null)
+            {
+                try
+                {
+                    await inFlightPrefetch.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected during shutdown
+                }
+                catch (Exception ex)
+                {
+                    LogPrefetchLoopError(ex);
+                }
+            }
+
             // CRITICAL: Complete the prefetch channel when loop exits to prevent consumer hang
             // Without this, ConsumeAsync would wait indefinitely on ReadAsync after prefetch stops
             _prefetchChannel.Writer.TryComplete();
