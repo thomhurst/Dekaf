@@ -249,6 +249,12 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
+    /// <summary>
+    /// Guards against double-return to pool (e.g. multiple Dispose() calls).
+    /// Reset to false when rented from pool.
+    /// </summary>
+    private bool _returnedToPool;
+
     public long BaseOffset { get; internal set; }
     public int BatchLength { get; internal set; }
     public int PartitionLeaderEpoch { get; internal set; } = -1;
@@ -341,7 +347,8 @@ public sealed class RecordBatch : IDisposable
     }
 
     /// <summary>
-    /// Disposes any pooled memory associated with this batch's records.
+    /// Disposes any pooled memory associated with this batch's records
+    /// and returns the batch instance to the pool for reuse.
     /// Call this after consuming all records from this batch.
     /// </summary>
     public void Dispose()
@@ -352,6 +359,8 @@ public sealed class RecordBatch : IDisposable
         {
             disposable.Dispose();
         }
+
+        ReturnToPool();
     }
 
     // ── Pool for producer-path RecordBatch reuse ──
@@ -371,6 +380,7 @@ public sealed class RecordBatch : IDisposable
         if (s_pool.TryPop(out var batch))
         {
             Interlocked.Decrement(ref s_poolCount);
+            batch._returnedToPool = false;
             return batch;
         }
         return new RecordBatch();
@@ -383,6 +393,12 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal void ReturnToPool()
     {
+        // Guard against double-return (e.g. multiple Dispose() calls).
+        if (_returnedToPool)
+            return;
+
+        _returnedToPool = true;
+
         // Clear references to avoid holding onto GC-tracked objects
         Records = null!;
         PreCompressedRecords = null;
@@ -649,22 +665,21 @@ public sealed class RecordBatch : IDisposable
             lazyRecords = new LazyRecordList(pooledData, recordCount);
         }
 
-        return new RecordBatch
-        {
-            BaseOffset = baseOffset,
-            BatchLength = batchLength,
-            PartitionLeaderEpoch = partitionLeaderEpoch,
-            Magic = magic,
-            Crc = crc,
-            Attributes = attributes,
-            LastOffsetDelta = lastOffsetDelta,
-            BaseTimestamp = baseTimestamp,
-            MaxTimestamp = maxTimestamp,
-            ProducerId = producerId,
-            ProducerEpoch = producerEpoch,
-            BaseSequence = baseSequence,
-            Records = lazyRecords
-        };
+        var batch = RentFromPool();
+        batch.BaseOffset = baseOffset;
+        batch.BatchLength = batchLength;
+        batch.PartitionLeaderEpoch = partitionLeaderEpoch;
+        batch.Magic = magic;
+        batch.Crc = crc;
+        batch.Attributes = attributes;
+        batch.LastOffsetDelta = lastOffsetDelta;
+        batch.BaseTimestamp = baseTimestamp;
+        batch.MaxTimestamp = maxTimestamp;
+        batch.ProducerId = producerId;
+        batch.ProducerEpoch = producerEpoch;
+        batch.BaseSequence = baseSequence;
+        batch.Records = lazyRecords;
+        return batch;
     }
 }
 
