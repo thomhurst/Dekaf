@@ -306,9 +306,8 @@ public class RecordBatchTests
         // Dispose the batch (returns to pool, clearing Records reference)
         parsedBatch.Dispose();
 
-        // Accessing records after dispose should throw (NullReferenceException because
-        // Records is cleared when the batch is returned to the pool for reuse)
-        await Assert.ThrowsAsync<NullReferenceException>(() =>
+        // Accessing records after dispose should throw ObjectDisposedException
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
         {
             _ = parsedBatch.Records[0];
             return Task.CompletedTask;
