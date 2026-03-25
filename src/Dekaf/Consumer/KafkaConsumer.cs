@@ -918,7 +918,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
-                await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                // Fast path: single broker avoids Task.WhenAll + ArraySegment boxing overhead
+                if (brokerCount == 1)
+                    await fetchTasks[0].ConfigureAwait(false);
+                else
+                    await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
             }
             finally
             {
@@ -2013,7 +2017,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
-                await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                // Fast path: single broker avoids Task.WhenAll + ArraySegment boxing overhead
+                if (brokerCount == 1)
+                    await fetchTasks[0].ConfigureAwait(false);
+                else
+                    await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
 
                 // Enqueue results from all brokers (now on main thread, safe for Queue)
                 for (var j = 0; j < brokerCount; j++)
