@@ -314,8 +314,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         LogPhase("warmup done", sw);
 
         // Produce ordered messages to partition 0.
-        // No per-call timeout — the producer's internal DeliveryTimeoutMs (120s) and retry
-        // logic handle transient connection failures. The 5-minute test timeout is the safety net.
         for (var i = 0; i < 10; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
