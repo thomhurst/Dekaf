@@ -43,7 +43,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var results = new List<RecordMetadata>();
         for (var i = 0; i < 10; i++)
         {
-            var metadata = await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "consistent-key",
@@ -84,7 +84,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var results = new List<RecordMetadata>();
         for (var i = 0; i < 10; i++)
         {
-            var metadata = await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"different-key-{i}",
@@ -121,7 +121,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
         {
-            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{p}",
@@ -179,7 +179,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to partitions 0, 1, and 2
         for (var p = 0; p < 3; p++)
         {
-            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{p}",
@@ -249,7 +249,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         {
             for (var p = 0; p < 3; p++)
             {
-                await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"key-{p}",
@@ -314,36 +314,18 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         LogPhase("warmup done", sw);
 
         // Produce ordered messages to partition 0.
-        // Use a per-call timeout so a single hung delivery fails fast (~30s) instead of
-        // blocking until the 360s orphan sweep. Don't retry — cancellation after append
-        // doesn't prevent delivery, so a retry would produce a duplicate and shift indices.
-        // If a timeout fires, the message is still delivered in the background;
-        // the consumer assertion below handles this gracefully.
+        // No per-call timeout — the producer's internal DeliveryTimeoutMs (120s) and retry
+        // logic handle transient connection failures. The 5-minute test timeout is the safety net.
         for (var i = 0; i < 10; i++)
         {
-            using var perCallCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                await producer.ProduceAsync(new ProducerMessage<string, string>
-                {
-                    Topic = topic,
-                    Key = $"key-{i}",
-                    Value = $"value-{i:D2}",
-                    Partition = 0
-                }, perCallCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                // Timeout — the message was likely appended and will be delivered in the
-                // background. Continue producing the rest; the consumer assertion below
-                // will validate ordering of whatever was delivered.
-            }
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i:D2}",
+                Partition = 0
+            });
         }
-
-        // No FlushAsync here: ProduceAsync with a per-call CTS can leave timed-out batches
-        // in-flight, and FlushAsync waits for ALL in-flight batches (up to DeliveryTimeoutMs).
-        // The consumer below reads whatever was delivered — if some messages timed out, the
-        // consumer assertion handles it gracefully.
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -394,14 +376,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to both partitions
         for (var i = 0; i < 5; i++)
         {
-            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-p0-{i}",
                 Value = $"p0-value-{i}",
                 Partition = 0
             });
-            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-p1-{i}",
@@ -470,7 +452,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to all 10 partitions
         for (var p = 0; p < 10; p++)
         {
-            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{p}",
@@ -540,7 +522,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var expectedPartition = -1;
         for (var i = 0; i < 5; i++)
         {
-            var metadata = await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "consistent-key",
