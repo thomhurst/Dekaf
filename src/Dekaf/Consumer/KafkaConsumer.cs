@@ -737,9 +737,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         keyDeserializer: _keyDeserializer,
                         valueDeserializer: _valueDeserializer);
 
-                    // Update consumed position per-message so GetPosition()/CommitAsync()
-                    // reflect the latest yielded offset even when the enumerator is paused.
-                    _positions[pending.TopicPartition] = offset + 1;
                     pending.TrackConsumed(offset, messageBytes);
 
                     // Record consumer metrics (~3ns no-op when no listener)
@@ -772,13 +769,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 previousActivity?.Dispose();
                 previousActivity = null;
 
-                // Batch-level _fetchPositions update (once per partition-fetch, not per message).
-                // When prefetching is enabled, the prefetch thread already advances
-                // _fetchPositions in UpdateFetchPositionsFromPrefetch() — skip redundant writes.
-                // When disabled, we only need the final offset for the next fetch request.
-                if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
+                // Batch-level position updates (once per partition-fetch, not per message).
+                // _positions is read by auto-commit/GetPosition() from other threads;
+                // per-fetch granularity is fine since auto-commit runs every 5s.
+                // _fetchPositions drives the next Fetch request — when prefetching is enabled,
+                // the prefetch thread already advances it in UpdateFetchPositionsFromPrefetch().
+                if (pending.LastYieldedOffset >= 0)
                 {
-                    _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                    var nextOffset = pending.LastYieldedOffset + 1;
+                    _positions[pending.TopicPartition] = nextOffset;
+
+                    if (!_prefetchEnabled)
+                        _fetchPositions[pending.TopicPartition] = nextOffset;
                 }
 
                 // This pending fetch is exhausted, remove and dispose it
@@ -790,6 +792,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
+
+                // Update _positions for the current pending fetch if caller breaks out mid-iteration.
+                // This ensures auto-commit/GetPosition() reflect the last yielded offset.
+                if (_pendingFetches.TryPeek(out var currentPending) && currentPending.LastYieldedOffset >= 0)
+                {
+                    _positions[currentPending.TopicPartition] = currentPending.LastYieldedOffset + 1;
+                }
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
