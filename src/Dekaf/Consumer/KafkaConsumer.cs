@@ -71,11 +71,12 @@ internal sealed class PendingFetchData : IDisposable
 
     public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
         IReadOnlyList<AbortedTransaction>? abortedTransactions = null,
-        IPooledMemory? memoryOwner = null)
+        IPooledMemory? memoryOwner = null,
+        string? activityName = null)
     {
         Topic = topic;
         PartitionIndex = partitionIndex;
-        ActivityName = $"{topic} receive";
+        ActivityName = activityName ?? $"{topic} receive";
         TopicPartition = new TopicPartition(topic, partitionIndex);
         _batches = batches;
         _memoryOwner = memoryOwner;
@@ -368,6 +369,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
     private readonly Dictionary<string, System.Diagnostics.TagList> _metricTagsCache = [];
 
+    // Cached activity names per topic to avoid repeated string interpolation in fetch paths
+    // Instance-level to avoid unbounded growth with dynamic topic names across consumer instances
+    private readonly ConcurrentDictionary<string, string> _activityNameCache = new();
+
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
 
@@ -647,6 +652,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         using var reg = cancellationToken.CanBeCanceled
                             ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
                             : default;
+
+                        // Close any race window: if token was cancelled between method entry and registration
+                        if (cancellationToken.IsCancellationRequested)
+                            timeoutCts.Cancel();
+
                         try
                         {
                             var fetched = await _prefetchChannel.Reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
@@ -881,6 +891,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
                 : default;
 
+            // Close any race window: if token was cancelled between method entry and registration
+            if (cancellationToken.IsCancellationRequested)
+                wakeupCts.Cancel();
+
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
             // If all partitions are paused, delay to prevent tight spin loop
@@ -1004,6 +1018,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         foreach (var topicResponse in response.Responses)
         {
             var topic = topicResponse.Topic ?? string.Empty;
+            var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
@@ -1060,7 +1075,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         topic,
                         partitionResponse.PartitionIndex,
                         partitionResponse.Records!,
-                        partitionResponse.AbortedTransactions);
+                        partitionResponse.AbortedTransactions,
+                        activityName: activityName);
 
                     // Track memory before adding to channel
                     TrackPrefetchedBytes(pending, release: false);
@@ -1964,7 +1980,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         try
         {
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, wakeupCts.Token);
+            // Forward outer cancellation into the pooled wakeup CTS via registration
+            // instead of allocating a LinkedCTS (matches the prefetch path pattern)
+            using var reg = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
+                : default;
+
+            // Close any race window: if token was cancelled between method entry and registration
+            if (cancellationToken.IsCancellationRequested)
+                wakeupCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1986,7 +2010,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
                     fetchTasks[i++] = FetchFromBrokerWithErrorHandlingAsync(
-                        brokerId, partitions, linkedCts.Token, wakeupCts.Token);
+                        brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
                 await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
@@ -2197,6 +2221,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         foreach (var topicResponse in response.Responses)
         {
             var topic = topicResponse.Topic ?? string.Empty;
+            var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
@@ -2230,7 +2255,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         topic,
                         partitionResponse.PartitionIndex,
                         partitionResponse.Records!,
-                        partitionResponse.AbortedTransactions));
+                        partitionResponse.AbortedTransactions,
+                        activityName: activityName));
                 }
                 else if (_options.EnablePartitionEof)
                 {

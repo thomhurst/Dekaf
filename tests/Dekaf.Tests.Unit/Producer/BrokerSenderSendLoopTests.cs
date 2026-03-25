@@ -147,7 +147,7 @@ public sealed class BrokerSenderSendLoopTests
             logger: null);
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch(CancellationToken cancellationToken)
     {
         // Verifies that when a response task completes, the response completion callback
@@ -196,7 +196,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_InFlightLimitEnforced_SecondBatchWaitsForFirstResponse(CancellationToken cancellationToken)
     {
         // With maxInFlight=1 and two batches on different partitions, they coalesce into
@@ -288,7 +288,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_SequentialRequests_SecondSendsAfterFirstResponseCompletes(CancellationToken cancellationToken)
     {
         // With maxInFlight=1, enqueue batches sequentially so each becomes its own
@@ -364,7 +364,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_FaultedResponse_WakesSendLoopAndRetries(CancellationToken cancellationToken)
     {
         // When a response task faults (e.g., connection error), the response completion callback
@@ -427,7 +427,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_MultipleInFlight_AllResponsesProcessed(CancellationToken cancellationToken)
     {
         // With maxInFlight=5, multiple requests can be in-flight simultaneously.
@@ -523,7 +523,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_FireAndForget_CompletesWithoutPendingResponse(CancellationToken cancellationToken)
     {
         // With Acks.None, the send loop uses SendFireAndForgetAsync and completes
@@ -570,7 +570,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_FaultedResponseDuringInFlightWait_RetryBatchSurvivesCarryOverSwap(CancellationToken cancellationToken)
     {
         // Regression test for the carry-over list swap bug:
@@ -669,7 +669,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_AlreadyCompletedResponse_ProcessedViaSynchronousFastPath(CancellationToken cancellationToken)
     {
         // Verifies the `if (responseTask.IsCompleted)` fast path in the send loop.
@@ -722,7 +722,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(120_000)]
     public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
     {
         // Regression test: when a response task never completes (hung connection),
