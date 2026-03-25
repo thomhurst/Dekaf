@@ -850,7 +850,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         _pooledArray = null;
         if (pooledArray is not null)
         {
-            ArrayPool<byte>.Shared.Return(pooledArray, clearArray: true);
+            ArrayPool<byte>.Shared.Return(pooledArray, clearArray: false);
         }
 
         // Return list to pool for reuse (soft limit - see MaxPooledLists comment)
