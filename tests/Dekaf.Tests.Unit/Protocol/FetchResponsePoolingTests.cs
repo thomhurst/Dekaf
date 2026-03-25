@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Unit.Protocol;
 /// Verifies that objects are reused from pools, properly cleared on return, and that pool
 /// overflow is handled gracefully.
 /// </summary>
+[NotInParallel("FetchResponsePool")]
 public class FetchResponsePoolingTests
 {
     // ── FetchResponse pooling ──
