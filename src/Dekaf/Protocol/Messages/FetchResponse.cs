@@ -9,6 +9,11 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class FetchResponse : IKafkaResponse
 {
+    // Pool to reuse FetchResponse instances across fetch cycles.
+    // One instance per fetch cycle, so a small pool suffices.
+    private static readonly ConcurrentBag<FetchResponse> s_pool = new();
+    private const int MaxPooled = 16;
+
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 16;
@@ -16,22 +21,22 @@ public sealed class FetchResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs { get; set; }
 
     /// <summary>
     /// Top-level error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode { get; set; }
 
     /// <summary>
     /// Fetch session ID.
     /// </summary>
-    public int SessionId { get; init; }
+    public int SessionId { get; set; }
 
     /// <summary>
     /// Responses per topic.
     /// </summary>
-    public required IReadOnlyList<FetchResponseTopic> Responses { get; init; }
+    public IReadOnlyList<FetchResponseTopic> Responses { get; set; } = [];
 
     /// <summary>
     /// Internal: Pooled memory owner for zero-copy parsing.
@@ -39,6 +44,36 @@ public sealed class FetchResponse : IKafkaResponse
     /// Must be disposed after all records have been consumed.
     /// </summary>
     internal IPooledMemory? PooledMemoryOwner { get; set; }
+
+    /// <summary>
+    /// Returns this FetchResponse and all nested topic/partition objects to their pools.
+    /// Call after all data has been extracted from the response.
+    /// </summary>
+    internal void ReturnToPool()
+    {
+        foreach (var topic in Responses)
+        {
+            topic.ReturnToPool();
+        }
+
+        ThrottleTimeMs = 0;
+        ErrorCode = ErrorCode.None;
+        SessionId = 0;
+        Responses = [];
+        PooledMemoryOwner = null;
+
+        if (s_pool.Count < MaxPooled)
+        {
+            s_pool.Add(this);
+        }
+    }
+
+    private static FetchResponse Rent()
+    {
+        if (s_pool.TryTake(out var response))
+            return response;
+        return new FetchResponse();
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -57,13 +92,12 @@ public sealed class FetchResponse : IKafkaResponse
             reader.SkipTaggedFields();
         }
 
-        return new FetchResponse
-        {
-            ThrottleTimeMs = throttleTimeMs,
-            ErrorCode = errorCode,
-            SessionId = sessionId,
-            Responses = responses
-        };
+        var response = Rent();
+        response.ThrottleTimeMs = throttleTimeMs;
+        response.ErrorCode = errorCode;
+        response.SessionId = sessionId;
+        response.Responses = responses;
+        return response;
     }
 }
 
@@ -72,20 +106,51 @@ public sealed class FetchResponse : IKafkaResponse
 /// </summary>
 public sealed class FetchResponseTopic
 {
+    // Pool to reuse FetchResponseTopic instances. Typically 1-3 per fetch cycle.
+    private static readonly ConcurrentBag<FetchResponseTopic> s_pool = new();
+    private const int MaxPooled = 32;
+
     /// <summary>
     /// Topic name (v0-v12).
     /// </summary>
-    public string? Topic { get; init; }
+    public string? Topic { get; set; }
 
     /// <summary>
     /// Topic ID (v13+).
     /// </summary>
-    public Guid TopicId { get; init; }
+    public Guid TopicId { get; set; }
 
     /// <summary>
     /// Partition responses.
     /// </summary>
-    public required IReadOnlyList<FetchResponsePartition> Partitions { get; init; }
+    public IReadOnlyList<FetchResponsePartition> Partitions { get; set; } = [];
+
+    /// <summary>
+    /// Returns this FetchResponseTopic and all nested partition objects to their pools.
+    /// </summary>
+    internal void ReturnToPool()
+    {
+        foreach (var partition in Partitions)
+        {
+            partition.ReturnToPool();
+        }
+
+        Topic = null;
+        TopicId = Guid.Empty;
+        Partitions = [];
+
+        if (s_pool.Count < MaxPooled)
+        {
+            s_pool.Add(this);
+        }
+    }
+
+    private static FetchResponseTopic Rent()
+    {
+        if (s_pool.TryTake(out var topic))
+            return topic;
+        return new FetchResponseTopic();
+    }
 
     public static FetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -112,12 +177,11 @@ public sealed class FetchResponseTopic
             reader.SkipTaggedFields();
         }
 
-        return new FetchResponseTopic
-        {
-            Topic = topic,
-            TopicId = topicId,
-            Partitions = partitions
-        };
+        var result = Rent();
+        result.Topic = topic;
+        result.TopicId = topicId;
+        result.Partitions = partitions;
+        return result;
     }
 }
 
@@ -130,6 +194,10 @@ public sealed class FetchResponsePartition
     // Soft limit of 64, matching LazyRecordList pattern in RecordBatch.cs.
     private static readonly ConcurrentBag<List<RecordBatch>> s_recordBatchListPool = new();
     private const int MaxPooledLists = 64;
+
+    // Pool to reuse FetchResponsePartition instances. Typically 1-6+ per fetch cycle.
+    private static readonly ConcurrentBag<FetchResponsePartition> s_pool = new();
+    private const int MaxPooled = 64;
 
     internal static List<RecordBatch> RentRecordBatchList()
     {
@@ -150,57 +218,88 @@ public sealed class FetchResponsePartition
     /// <summary>
     /// Partition index.
     /// </summary>
-    public required int PartitionIndex { get; init; }
+    public int PartitionIndex { get; set; }
 
     /// <summary>
     /// Error code.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode { get; set; }
 
     /// <summary>
     /// High watermark.
     /// </summary>
-    public required long HighWatermark { get; init; }
+    public long HighWatermark { get; set; }
 
     /// <summary>
     /// Last stable offset (for transactions).
     /// </summary>
-    public long LastStableOffset { get; init; } = -1;
+    public long LastStableOffset { get; set; } = -1;
 
     /// <summary>
     /// Log start offset.
     /// </summary>
-    public long LogStartOffset { get; init; } = -1;
+    public long LogStartOffset { get; set; } = -1;
 
     /// <summary>
     /// Diverging epoch (v12+).
     /// </summary>
-    public EpochEndOffset? DivergingEpoch { get; init; }
+    public EpochEndOffset? DivergingEpoch { get; set; }
 
     /// <summary>
     /// Current leader (v12+).
     /// </summary>
-    public LeaderIdAndEpoch? CurrentLeader { get; init; }
+    public LeaderIdAndEpoch? CurrentLeader { get; set; }
 
     /// <summary>
     /// Snapshot ID (v12+).
     /// </summary>
-    public SnapshotId? SnapshotId { get; init; }
+    public SnapshotId? SnapshotId { get; set; }
 
     /// <summary>
     /// Aborted transactions (for read committed isolation).
     /// </summary>
-    public IReadOnlyList<AbortedTransaction>? AbortedTransactions { get; init; }
+    public IReadOnlyList<AbortedTransaction>? AbortedTransactions { get; set; }
 
     /// <summary>
     /// Preferred read replica.
     /// </summary>
-    public int PreferredReadReplica { get; init; } = -1;
+    public int PreferredReadReplica { get; set; } = -1;
 
     /// <summary>
     /// Record batches.
     /// </summary>
-    public IReadOnlyList<RecordBatch>? Records { get; init; }
+    public IReadOnlyList<RecordBatch>? Records { get; set; }
+
+    /// <summary>
+    /// Returns this FetchResponsePartition to the pool. Does NOT return Records or AbortedTransactions
+    /// since those are transferred to PendingFetchData and have separate lifecycles.
+    /// </summary>
+    internal void ReturnToPool()
+    {
+        PartitionIndex = 0;
+        ErrorCode = ErrorCode.None;
+        HighWatermark = 0;
+        LastStableOffset = -1;
+        LogStartOffset = -1;
+        DivergingEpoch = null;
+        CurrentLeader = null;
+        SnapshotId = null;
+        AbortedTransactions = null;
+        PreferredReadReplica = -1;
+        Records = null;
+
+        if (s_pool.Count < MaxPooled)
+        {
+            s_pool.Add(this);
+        }
+    }
+
+    private static FetchResponsePartition Rent()
+    {
+        if (s_pool.TryTake(out var partition))
+            return partition;
+        return new FetchResponsePartition();
+    }
 
     public static FetchResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
@@ -271,20 +370,19 @@ public sealed class FetchResponsePartition
             reader.SkipTaggedFields();
         }
 
-        return new FetchResponsePartition
-        {
-            PartitionIndex = partitionIndex,
-            ErrorCode = errorCode,
-            HighWatermark = highWatermark,
-            LastStableOffset = lastStableOffset,
-            LogStartOffset = logStartOffset,
-            DivergingEpoch = divergingEpoch,
-            CurrentLeader = currentLeader,
-            SnapshotId = snapshotId,
-            AbortedTransactions = abortedTransactions,
-            PreferredReadReplica = preferredReadReplica,
-            Records = records
-        };
+        var result = Rent();
+        result.PartitionIndex = partitionIndex;
+        result.ErrorCode = errorCode;
+        result.HighWatermark = highWatermark;
+        result.LastStableOffset = lastStableOffset;
+        result.LogStartOffset = logStartOffset;
+        result.DivergingEpoch = divergingEpoch;
+        result.CurrentLeader = currentLeader;
+        result.SnapshotId = snapshotId;
+        result.AbortedTransactions = abortedTransactions;
+        result.PreferredReadReplica = preferredReadReplica;
+        result.Records = records;
+        return result;
     }
 }
 

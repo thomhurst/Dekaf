@@ -1106,6 +1106,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
+        // Return the response and its nested objects to their pools.
+        // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
+        response.ReturnToPool();
+
         // Write all pending items to the channel, with memory owner attached to the last one
         if (pendingItems.Count > 0)
         {
@@ -2276,6 +2280,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 }
             }
         }
+
+        // Return the response and its nested objects to their pools.
+        // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
+        response.ReturnToPool();
 
         // Attach memory owner to the last item (will be disposed last due to FIFO processing)
         if (pendingItems is not null && pendingItems.Count > 0 && memoryOwner is not null)
