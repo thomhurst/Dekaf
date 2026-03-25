@@ -28,20 +28,6 @@ internal static class ProducerTestExtensions
     }
 
     /// <summary>
-    /// Produces a message with a bounded timeout to prevent indefinite hangs on CI.
-    /// When the bootstrap connection dies from idle timeout, ProduceAsync without a
-    /// CancellationToken can hang forever. This wrapper ensures a fast failure.
-    /// </summary>
-    public static async Task<RecordMetadata> ProduceWithTimeoutAsync<TKey, TValue>(
-        this IKafkaProducer<TKey, TValue> producer,
-        ProducerMessage<TKey, TValue> message,
-        int timeoutSeconds = 60)
-    {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-        return await producer.ProduceAsync(message, cts.Token);
-    }
-
-    /// <summary>
     /// Produces a warmup message to each partition to ensure the broker has fully initialized
     /// the partition and its producer state tracking. Uses a per-message timeout to fail fast
     /// if a produce hangs (e.g., due to a transient connection death on CI), and retries once.

@@ -32,7 +32,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Produce sequentially to guarantee append order
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "ordering-key",
@@ -295,7 +295,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             for (var i = 0; i < messagesPerProducer; i++)
             {
                 // Each producer uses a unique key to guarantee partition assignment
-                var metadata = await producer.ProduceWithTimeoutAsync(new ProducerMessage<string, string>
+                var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"producer-{producerId}-key",
