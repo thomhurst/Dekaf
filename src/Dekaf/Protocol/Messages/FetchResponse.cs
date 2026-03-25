@@ -19,6 +19,7 @@ public sealed class FetchResponse : IKafkaResponse
     private static readonly ConcurrentStack<FetchResponse> s_pool = new();
     private static int s_poolCount;
     private const int MaxPoolSize = 64;
+    private bool _pooled;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -38,7 +39,7 @@ public sealed class FetchResponse : IKafkaResponse
     /// <summary>
     /// Responses per topic.
     /// </summary>
-    public IReadOnlyList<FetchResponseTopic> Responses { get; internal set; } = [];
+    public IReadOnlyList<FetchResponseTopic> Responses { get; internal set; } = Array.Empty<FetchResponseTopic>();
 
     /// <summary>
     /// Internal: Pooled memory owner for zero-copy parsing.
@@ -57,6 +58,7 @@ public sealed class FetchResponse : IKafkaResponse
         if (s_pool.TryPop(out var response))
         {
             Interlocked.Decrement(ref s_poolCount);
+            response._pooled = false;
             return response;
         }
         return new FetchResponse();
@@ -68,6 +70,10 @@ public sealed class FetchResponse : IKafkaResponse
     /// </summary>
     internal void ReturnToPool()
     {
+        // Guard against double-return: if already pooled, skip to avoid corrupting the pool
+        if (_pooled)
+            return;
+
         // Return nested topics (and their partitions) first
         foreach (var topic in Responses)
         {
@@ -75,13 +81,15 @@ public sealed class FetchResponse : IKafkaResponse
         }
 
         // Clear all references
-        Responses = [];
+        Responses = Array.Empty<FetchResponseTopic>();
         PooledMemoryOwner = null;
 
         // Reset value types to defaults
         ThrottleTimeMs = 0;
         ErrorCode = ErrorCode.None;
         SessionId = 0;
+
+        _pooled = true;
 
         // Soft limit: intentionally non-atomic check-then-act to keep return path lock-free
         if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
@@ -127,6 +135,7 @@ public sealed class FetchResponseTopic
     private static readonly ConcurrentStack<FetchResponseTopic> s_pool = new();
     private static int s_poolCount;
     private const int MaxPoolSize = 256;
+    private bool _pooled;
 
     /// <summary>
     /// Topic name (v0-v12).
@@ -141,7 +150,7 @@ public sealed class FetchResponseTopic
     /// <summary>
     /// Partition responses.
     /// </summary>
-    public IReadOnlyList<FetchResponsePartition> Partitions { get; internal set; } = [];
+    public IReadOnlyList<FetchResponsePartition> Partitions { get; internal set; } = Array.Empty<FetchResponsePartition>();
 
     /// <summary>
     /// Rents a FetchResponseTopic from the pool or creates a new one.
@@ -152,6 +161,7 @@ public sealed class FetchResponseTopic
         if (s_pool.TryPop(out var topic))
         {
             Interlocked.Decrement(ref s_poolCount);
+            topic._pooled = false;
             return topic;
         }
         return new FetchResponseTopic();
@@ -163,6 +173,10 @@ public sealed class FetchResponseTopic
     /// </summary>
     internal void ReturnToPool()
     {
+        // Guard against double-return: if already pooled, skip to avoid corrupting the pool
+        if (_pooled)
+            return;
+
         // Return nested partitions first
         foreach (var partition in Partitions)
         {
@@ -172,7 +186,9 @@ public sealed class FetchResponseTopic
         // Clear references
         Topic = null;
         TopicId = Guid.Empty;
-        Partitions = [];
+        Partitions = Array.Empty<FetchResponsePartition>();
+
+        _pooled = true;
 
         if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
         {
@@ -245,6 +261,7 @@ public sealed class FetchResponsePartition
     private static readonly ConcurrentStack<FetchResponsePartition> s_pool = new();
     private static int s_poolCount;
     private const int MaxPoolSize = 1024;
+    private bool _pooled;
 
     /// <summary>
     /// Partition index.
@@ -310,6 +327,7 @@ public sealed class FetchResponsePartition
         if (s_pool.TryPop(out var partition))
         {
             Interlocked.Decrement(ref s_poolCount);
+            partition._pooled = false;
             return partition;
         }
         return new FetchResponsePartition();
@@ -322,6 +340,10 @@ public sealed class FetchResponsePartition
     /// </summary>
     internal void ReturnToPool()
     {
+        // Guard against double-return: if already pooled, skip to avoid corrupting the pool
+        if (_pooled)
+            return;
+
         // Clear references to avoid holding onto GC-tracked objects
         DivergingEpoch = null;
         CurrentLeader = null;
@@ -336,6 +358,8 @@ public sealed class FetchResponsePartition
         LastStableOffset = -1;
         LogStartOffset = -1;
         PreferredReadReplica = -1;
+
+        _pooled = true;
 
         if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
         {

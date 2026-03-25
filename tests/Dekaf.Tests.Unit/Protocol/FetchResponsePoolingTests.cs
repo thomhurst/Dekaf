@@ -230,4 +230,85 @@ public class FetchResponsePoolingTests
         await Assert.That(final.PartitionIndex).IsEqualTo(0);
         final.ReturnToPool();
     }
+
+    // ── Double-return safety ──
+
+    [Test]
+    public async Task FetchResponse_DoubleReturn_DoesNotDuplicateInPool()
+    {
+        // Drain the pool first to get a clean state
+        while (FetchResponse.RentFromPool() is not null)
+        {
+            // RentFromPool always returns non-null (creates new if pool empty), so just rent a few
+            break;
+        }
+
+        var response = FetchResponse.RentFromPool();
+
+        // Return the same object twice
+        response.ReturnToPool();
+        response.ReturnToPool();
+
+        // Rent two objects — if double-return corrupted the pool, both would be the same reference
+        var first = FetchResponse.RentFromPool();
+        var second = FetchResponse.RentFromPool();
+
+        // At most one of them should be our original object.
+        // If the pool was corrupted by double-return, both would be the same reference.
+        // We can't guarantee both come from the pool (second might be newly allocated),
+        // but if both ARE the same reference, the pool is corrupt.
+        if (ReferenceEquals(first, response) && ReferenceEquals(second, response))
+        {
+            // Both rented objects are the same instance — pool corruption from double-return
+            Assert.Fail("Double ReturnToPool caused the same object to be rented twice concurrently");
+        }
+
+        // Clean up
+        first.ReturnToPool();
+        second.ReturnToPool();
+    }
+
+    [Test]
+    public async Task FetchResponsePartition_DoubleReturn_DoesNotDuplicateInPool()
+    {
+        var partition = FetchResponsePartition.RentFromPool();
+
+        // Return the same object twice
+        partition.ReturnToPool();
+        partition.ReturnToPool();
+
+        // Rent two objects
+        var first = FetchResponsePartition.RentFromPool();
+        var second = FetchResponsePartition.RentFromPool();
+
+        if (ReferenceEquals(first, partition) && ReferenceEquals(second, partition))
+        {
+            Assert.Fail("Double ReturnToPool caused the same object to be rented twice concurrently");
+        }
+
+        first.ReturnToPool();
+        second.ReturnToPool();
+    }
+
+    [Test]
+    public async Task FetchResponseTopic_DoubleReturn_DoesNotDuplicateInPool()
+    {
+        var topic = FetchResponseTopic.RentFromPool();
+
+        // Return the same object twice
+        topic.ReturnToPool();
+        topic.ReturnToPool();
+
+        // Rent two objects
+        var first = FetchResponseTopic.RentFromPool();
+        var second = FetchResponseTopic.RentFromPool();
+
+        if (ReferenceEquals(first, topic) && ReferenceEquals(second, topic))
+        {
+            Assert.Fail("Double ReturnToPool caused the same object to be rented twice concurrently");
+        }
+
+        first.ReturnToPool();
+        second.ReturnToPool();
+    }
 }
