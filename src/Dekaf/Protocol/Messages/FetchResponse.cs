@@ -39,7 +39,17 @@ public sealed class FetchResponse : IKafkaResponse
     /// <summary>
     /// Responses per topic.
     /// </summary>
-    public IReadOnlyList<FetchResponseTopic> Responses { get; internal set; } = Array.Empty<FetchResponseTopic>();
+    private IReadOnlyList<FetchResponseTopic> _responses = Array.Empty<FetchResponseTopic>();
+
+    public IReadOnlyList<FetchResponseTopic> Responses
+    {
+        get
+        {
+            if (_pooled) throw new ObjectDisposedException(nameof(FetchResponse));
+            return _responses;
+        }
+        internal set => _responses = value;
+    }
 
     /// <summary>
     /// Internal: Pooled memory owner for zero-copy parsing.
@@ -75,13 +85,13 @@ public sealed class FetchResponse : IKafkaResponse
             return;
 
         // Return nested topics (and their partitions) first
-        foreach (var topic in Responses)
+        foreach (var topic in _responses)
         {
             topic.ReturnToPool();
         }
 
         // Clear all references
-        Responses = Array.Empty<FetchResponseTopic>();
+        _responses = Array.Empty<FetchResponseTopic>();
         PooledMemoryOwner = null;
 
         // Reset value types to defaults
@@ -150,7 +160,17 @@ public sealed class FetchResponseTopic
     /// <summary>
     /// Partition responses.
     /// </summary>
-    public IReadOnlyList<FetchResponsePartition> Partitions { get; internal set; } = Array.Empty<FetchResponsePartition>();
+    private IReadOnlyList<FetchResponsePartition> _partitions = Array.Empty<FetchResponsePartition>();
+
+    public IReadOnlyList<FetchResponsePartition> Partitions
+    {
+        get
+        {
+            if (_pooled) throw new ObjectDisposedException(nameof(FetchResponseTopic));
+            return _partitions;
+        }
+        internal set => _partitions = value;
+    }
 
     /// <summary>
     /// Rents a FetchResponseTopic from the pool or creates a new one.
@@ -178,7 +198,7 @@ public sealed class FetchResponseTopic
             return;
 
         // Return nested partitions first
-        foreach (var partition in Partitions)
+        foreach (var partition in _partitions)
         {
             partition.ReturnToPool();
         }
@@ -186,7 +206,7 @@ public sealed class FetchResponseTopic
         // Clear references
         Topic = null;
         TopicId = Guid.Empty;
-        Partitions = Array.Empty<FetchResponsePartition>();
+        _partitions = Array.Empty<FetchResponsePartition>();
 
         _pooled = true;
 
@@ -316,7 +336,17 @@ public sealed class FetchResponsePartition
     /// <summary>
     /// Record batches.
     /// </summary>
-    public IReadOnlyList<RecordBatch>? Records { get; internal set; }
+    private IReadOnlyList<RecordBatch>? _records;
+
+    public IReadOnlyList<RecordBatch>? Records
+    {
+        get
+        {
+            if (_pooled) throw new ObjectDisposedException(nameof(FetchResponsePartition));
+            return _records;
+        }
+        internal set => _records = value;
+    }
 
     /// <summary>
     /// Rents a FetchResponsePartition from the pool or creates a new one.
@@ -349,7 +379,7 @@ public sealed class FetchResponsePartition
         CurrentLeader = null;
         SnapshotId = null;
         AbortedTransactions = null;
-        Records = null;
+        _records = null;
 
         // Reset value types to defaults
         PartitionIndex = 0;

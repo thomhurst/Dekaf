@@ -60,19 +60,26 @@ public class FetchResponsePoolingTests
         // Return should cascade to topics and partitions
         response.ReturnToPool();
 
-        // After return, the original references should have been cleared
-        // (fields reset by ReturnToPool before being pushed back to pool)
-        // Verify the partition was cleared by checking it was reset
-        await Assert.That(partition.PartitionIndex).IsEqualTo(0);
-        await Assert.That(partition.HighWatermark).IsEqualTo(0);
+        // After return, accessing guarded properties should throw ObjectDisposedException
+        await Assert.That(() => response.Responses).Throws<ObjectDisposedException>();
+        await Assert.That(() => topic.Partitions).Throws<ObjectDisposedException>();
+        await Assert.That(() => partition.Records).Throws<ObjectDisposedException>();
 
-        // Verify the topic was cleared
-        await Assert.That(topic.Topic).IsNull();
-        await Assert.That(topic.Partitions).IsEmpty();
+        // Re-rent to verify fields were actually cleared
+        var reusedResponse = FetchResponse.RentFromPool();
+        var reusedTopic = FetchResponseTopic.RentFromPool();
+        var reusedPartition = FetchResponsePartition.RentFromPool();
 
-        // Verify the response was cleared
-        await Assert.That(response.Responses).IsEmpty();
-        await Assert.That(response.SessionId).IsEqualTo(0);
+        await Assert.That(reusedResponse.Responses).IsEmpty();
+        await Assert.That(reusedResponse.SessionId).IsEqualTo(0);
+        await Assert.That(reusedTopic.Topic).IsNull();
+        await Assert.That(reusedTopic.Partitions).IsEmpty();
+        await Assert.That(reusedPartition.PartitionIndex).IsEqualTo(0);
+        await Assert.That(reusedPartition.HighWatermark).IsEqualTo(0);
+
+        reusedPartition.ReturnToPool();
+        reusedTopic.ReturnToPool();
+        reusedResponse.ReturnToPool();
     }
 
     // ── FetchResponseTopic pooling ──
@@ -310,5 +317,68 @@ public class FetchResponsePoolingTests
 
         first.ReturnToPool();
         second.ReturnToPool();
+    }
+
+    // ── Use-after-return guards ──
+
+    [Test]
+    public async Task FetchResponse_AccessResponsesAfterReturn_ThrowsObjectDisposedException()
+    {
+        var response = FetchResponse.RentFromPool();
+        response.ReturnToPool();
+
+        await Assert.That(() => response.Responses).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task FetchResponseTopic_AccessPartitionsAfterReturn_ThrowsObjectDisposedException()
+    {
+        var topic = FetchResponseTopic.RentFromPool();
+        topic.ReturnToPool();
+
+        await Assert.That(() => topic.Partitions).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task FetchResponsePartition_AccessRecordsAfterReturn_ThrowsObjectDisposedException()
+    {
+        var partition = FetchResponsePartition.RentFromPool();
+        partition.ReturnToPool();
+
+        await Assert.That(() => partition.Records).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task FetchResponse_AccessResponsesAfterRentAgain_Succeeds()
+    {
+        var response = FetchResponse.RentFromPool();
+        response.ReturnToPool();
+
+        // Re-renting should reset the pooled flag, allowing access again
+        var reused = FetchResponse.RentFromPool();
+        await Assert.That(reused.Responses).IsEmpty();
+        reused.ReturnToPool();
+    }
+
+    [Test]
+    public async Task FetchResponseTopic_AccessPartitionsAfterRentAgain_Succeeds()
+    {
+        var topic = FetchResponseTopic.RentFromPool();
+        topic.ReturnToPool();
+
+        var reused = FetchResponseTopic.RentFromPool();
+        await Assert.That(reused.Partitions).IsEmpty();
+        reused.ReturnToPool();
+    }
+
+    [Test]
+    public async Task FetchResponsePartition_AccessRecordsAfterRentAgain_Succeeds()
+    {
+        var partition = FetchResponsePartition.RentFromPool();
+        partition.ReturnToPool();
+
+        var reused = FetchResponsePartition.RentFromPool();
+        await Assert.That(reused.Records).IsNull();
+        reused.ReturnToPool();
     }
 }
