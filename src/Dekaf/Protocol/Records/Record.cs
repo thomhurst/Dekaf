@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
@@ -34,6 +35,11 @@ public readonly record struct Record
     /// Returns true if the value is null (empty memory with special flag).
     /// </summary>
     public bool IsValueNull { get; init; }
+
+    /// <summary>
+    /// Indicates that the Headers array was rented from ArrayPool and must be returned on disposal.
+    /// </summary>
+    internal bool IsHeadersPooled { get; init; }
 
     /// <summary>
     /// Pre-computed body size to avoid redundant calculation during Write().
@@ -127,8 +133,10 @@ public readonly record struct Record
 
         if (headerCount > 0)
         {
-            // Use array directly instead of List to avoid List's internal array allocation
-            headers = new Header[headerCount];
+            // Rent from ArrayPool to avoid per-record heap allocation.
+            // The rented array may be oversized; HeaderCount tracks the actual count.
+            // The array is returned to the pool when the owning LazyRecordList is disposed.
+            headers = ArrayPool<Header>.Shared.Rent(headerCount);
             for (var i = 0; i < headerCount; i++)
             {
                 headers[i] = Header.Read(ref reader);
@@ -146,8 +154,21 @@ public readonly record struct Record
             Value = value,
             IsValueNull = isValueNull,
             Headers = headers,
-            HeaderCount = headers?.Length ?? 0
+            HeaderCount = headerCount,
+            IsHeadersPooled = headers is not null
         };
+    }
+
+    /// <summary>
+    /// Returns the pooled Headers array to ArrayPool if it was rented.
+    /// Called by LazyRecordList during disposal to prevent memory leaks.
+    /// </summary>
+    internal void ReturnPooledHeaders()
+    {
+        if (IsHeadersPooled && Headers is not null)
+        {
+            ArrayPool<Header>.Shared.Return(Headers, clearArray: true);
+        }
     }
 
     internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, Header[]? headers, int headerCount)

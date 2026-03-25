@@ -703,7 +703,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                         batch.BaseTimestamp + record.TimestampDelta);
 
-                    var headers = GetHeaders(record.Headers);
+                    var headers = GetHeaders(record.Headers, record.HeaderCount);
                     var timestampType = ((int)batch.Attributes & 0x08) != 0
                         ? TimestampType.LogAppendTime
                         : TimestampType.CreateTime;
@@ -2291,17 +2291,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Returns headers directly without conversion. Returns null if empty.
+    /// Returns headers as a read-only list. Returns null if empty.
+    /// Uses ArraySegment to handle pooled arrays that may be oversized.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
+    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders, int headerCount)
     {
         // Return null for empty to avoid exposing empty lists
-        if (recordHeaders is null || recordHeaders.Length == 0)
+        if (recordHeaders is null || headerCount == 0)
             return null;
 
-        // Return directly - Header[] implements IReadOnlyList<Header>, no boxing
-        return recordHeaders;
+        // Use ArraySegment to expose only the valid portion of the pooled (potentially oversized) array.
+        // Boxing the ArraySegment allocates ~48 bytes, replacing the previous per-message Header[] allocation
+        // which was 24 + headerCount * ~40 bytes — a net reduction for typical header counts.
+        return new ArraySegment<Header>(recordHeaders, 0, headerCount);
     }
 
     /// <summary>

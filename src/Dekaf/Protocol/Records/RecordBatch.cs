@@ -853,6 +853,16 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
             ArrayPool<byte>.Shared.Return(pooledArray, clearArray: true);
         }
 
+        // Return pooled Header[] arrays from parsed records to ArrayPool.
+        // This is a per-batch cost (iterating ~1000 records), not per-message.
+        if (_parsedRecords is not null)
+        {
+            for (var i = 0; i < _parsedRecords.Count; i++)
+            {
+                _parsedRecords[i].ReturnPooledHeaders();
+            }
+        }
+
         // Return list to pool for reuse (soft limit - see MaxPooledLists comment)
         if (_parsedRecords is not null && s_listPool.Count < MaxPooledLists)
         {
