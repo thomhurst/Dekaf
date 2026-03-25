@@ -249,6 +249,19 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
+    /// <summary>
+    /// Guards against double-return to pool (e.g. multiple Dispose() calls).
+    /// Uses int + Interlocked.Exchange for thread-safe atomic check-and-set.
+    /// Reset to 0 when rented from pool.
+    /// </summary>
+    private int _returnedToPoolFlag;
+
+    /// <summary>
+    /// Tracks whether this batch has been disposed. Used to throw
+    /// <see cref="ObjectDisposedException"/> on post-dispose access.
+    /// </summary>
+    private volatile bool _disposed;
+
     public long BaseOffset { get; internal set; }
     public int BatchLength { get; internal set; }
     public int PartitionLeaderEpoch { get; internal set; } = -1;
@@ -265,8 +278,20 @@ public sealed class RecordBatch : IDisposable
     /// <summary>
     /// The records in this batch. For batches created via Read(), records are parsed lazily
     /// on first enumeration to avoid allocations for unconsumed records.
+    /// Throws <see cref="ObjectDisposedException"/> if the batch has been disposed.
     /// </summary>
-    public IReadOnlyList<Record> Records { get; internal set; } = null!;
+    public IReadOnlyList<Record> Records
+    {
+        get
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordBatch));
+            return _records;
+        }
+        internal set => _records = value;
+    }
+
+    private IReadOnlyList<Record> _records = null!;
 
     /// <summary>
     /// Pre-compressed records data. When set, <see cref="Write"/> skips compression
@@ -341,17 +366,22 @@ public sealed class RecordBatch : IDisposable
     }
 
     /// <summary>
-    /// Disposes any pooled memory associated with this batch's records.
+    /// Disposes any pooled memory associated with this batch's records
+    /// and returns the batch instance to the pool for reuse.
     /// Call this after consuming all records from this batch.
     /// </summary>
     public void Dispose()
     {
+        _disposed = true;
+
         ReturnPreCompressedBuffer();
 
-        if (Records is IDisposable disposable)
+        if (_records is IDisposable disposable)
         {
             disposable.Dispose();
         }
+
+        ReturnToPool();
     }
 
     // ── Pool for producer-path RecordBatch reuse ──
@@ -371,6 +401,8 @@ public sealed class RecordBatch : IDisposable
         if (s_pool.TryPop(out var batch))
         {
             Interlocked.Decrement(ref s_poolCount);
+            batch._returnedToPoolFlag = 0;
+            batch._disposed = false;
             return batch;
         }
         return new RecordBatch();
@@ -383,8 +415,13 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal void ReturnToPool()
     {
+        // Guard against double-return (e.g. multiple Dispose() calls).
+        // Interlocked.Exchange ensures exactly one thread passes this gate.
+        if (Interlocked.Exchange(ref _returnedToPoolFlag, 1) != 0)
+            return;
+
         // Clear references to avoid holding onto GC-tracked objects
-        Records = null!;
+        _records = null!;
         PreCompressedRecords = null;
         PreCompressedLength = 0;
         PreCompressedType = CompressionType.None;
@@ -649,22 +686,21 @@ public sealed class RecordBatch : IDisposable
             lazyRecords = new LazyRecordList(pooledData, recordCount);
         }
 
-        return new RecordBatch
-        {
-            BaseOffset = baseOffset,
-            BatchLength = batchLength,
-            PartitionLeaderEpoch = partitionLeaderEpoch,
-            Magic = magic,
-            Crc = crc,
-            Attributes = attributes,
-            LastOffsetDelta = lastOffsetDelta,
-            BaseTimestamp = baseTimestamp,
-            MaxTimestamp = maxTimestamp,
-            ProducerId = producerId,
-            ProducerEpoch = producerEpoch,
-            BaseSequence = baseSequence,
-            Records = lazyRecords
-        };
+        var batch = RentFromPool();
+        batch.BaseOffset = baseOffset;
+        batch.BatchLength = batchLength;
+        batch.PartitionLeaderEpoch = partitionLeaderEpoch;
+        batch.Magic = magic;
+        batch.Crc = crc;
+        batch.Attributes = attributes;
+        batch.LastOffsetDelta = lastOffsetDelta;
+        batch.BaseTimestamp = baseTimestamp;
+        batch.MaxTimestamp = maxTimestamp;
+        batch.ProducerId = producerId;
+        batch.ProducerEpoch = producerEpoch;
+        batch.BaseSequence = baseSequence;
+        batch.Records = lazyRecords;
+        return batch;
     }
 }
 
