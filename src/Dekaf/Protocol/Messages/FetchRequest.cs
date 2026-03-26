@@ -21,62 +21,62 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
     /// <summary>
     /// Cluster ID (v12+).
     /// </summary>
-    public string? ClusterId { get; set; }
+    public string? ClusterId { get; internal set; }
 
     /// <summary>
     /// Replica ID. -1 for normal consumers.
     /// </summary>
-    public int ReplicaId { get; set; } = -1;
+    public int ReplicaId { get; internal set; } = -1;
 
     /// <summary>
     /// Replica state (v15+).
     /// </summary>
-    public ReplicaState? ReplicaState { get; set; }
+    public ReplicaState? ReplicaState { get; internal set; }
 
     /// <summary>
     /// Maximum wait time in milliseconds.
     /// </summary>
-    public int MaxWaitMs { get; set; }
+    public int MaxWaitMs { get; internal set; }
 
     /// <summary>
     /// Minimum bytes to return.
     /// </summary>
-    public int MinBytes { get; set; }
+    public int MinBytes { get; internal set; }
 
     /// <summary>
     /// Maximum bytes to return (v3+).
     /// </summary>
-    public int MaxBytes { get; set; } = 0x7FFFFFFF;
+    public int MaxBytes { get; internal set; } = 0x7FFFFFFF;
 
     /// <summary>
     /// Isolation level (v4+).
     /// </summary>
-    public IsolationLevel IsolationLevel { get; set; } = IsolationLevel.ReadUncommitted;
+    public IsolationLevel IsolationLevel { get; internal set; } = IsolationLevel.ReadUncommitted;
 
     /// <summary>
     /// Fetch session ID (v7+).
     /// </summary>
-    public int SessionId { get; set; }
+    public int SessionId { get; internal set; }
 
     /// <summary>
     /// Fetch session epoch (v7+).
     /// </summary>
-    public int SessionEpoch { get; set; } = -1;
+    public int SessionEpoch { get; internal set; } = -1;
 
     /// <summary>
     /// Topics to fetch.
     /// </summary>
-    public IReadOnlyList<FetchRequestTopic> Topics { get; set; } = [];
+    public IReadOnlyList<FetchRequestTopic> Topics { get; internal set; } = Array.Empty<FetchRequestTopic>();
 
     /// <summary>
     /// Topics to forget from the session (v7+).
     /// </summary>
-    public IReadOnlyList<ForgottenTopic>? ForgottenTopicsData { get; set; }
+    public IReadOnlyList<ForgottenTopic>? ForgottenTopicsData { get; internal set; }
 
     /// <summary>
     /// Rack ID for rack-aware fetching (v11+).
     /// </summary>
-    public string? RackId { get; set; }
+    public string? RackId { get; internal set; }
 
     /// <summary>
     /// Rents a <see cref="FetchRequest"/> from the pool.
@@ -104,7 +104,7 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             item.IsolationLevel = IsolationLevel.ReadUncommitted;
             item.SessionId = 0;
             item.SessionEpoch = -1;
-            item.Topics = [];
+            item.Topics = Array.Empty<FetchRequestTopic>();
             item.ForgottenTopicsData = null;
             item.RackId = null;
         }
