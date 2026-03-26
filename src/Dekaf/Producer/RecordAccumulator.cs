@@ -1522,10 +1522,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         workItem.Key.Return();
         workItem.Value.Return();
-        if (workItem.Headers is not null)
-        {
-            ArrayPool<Header>.Shared.Return(workItem.Headers);
-        }
+        ReturnPooledHeaders(workItem.Headers);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ReturnPooledHeaders(Header[]? headers)
+    {
+        if (headers is not null)
+            ArrayPool<Header>.Shared.Return(headers);
     }
 
     /// <summary>
@@ -1675,6 +1679,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
+                ReturnPooledHeaders(headers);
                 return false;
             }
 
@@ -1700,6 +1705,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
+                ReturnPooledHeaders(headers);
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -1787,6 +1793,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
+                ReturnPooledHeaders(headers);
                 return false;
             }
 
@@ -1813,6 +1820,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
+                ReturnPooledHeaders(headers);
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -1883,6 +1891,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
+                ReturnPooledHeaders(headers);
                 return false;
             }
 
@@ -1913,6 +1922,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
+                ReturnPooledHeaders(headers);
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -2020,6 +2030,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (_disposed)
             {
                 ReleaseMemory(recordSize);
+                ReturnPooledHeaders(headers);
                 return false;
             }
 
@@ -2043,6 +2054,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Interlocked.Decrement(ref _unsealedBatchCount);
                 _batchPool.Return(newBatch);
                 ReleaseMemory(recordSize);
+                ReturnPooledHeaders(headers);
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -2080,6 +2092,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             keyPooled.Return();
             valuePooled.Return();
+            ReturnPooledHeaders(headers);
             throw;
         }
 
