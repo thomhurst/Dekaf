@@ -347,7 +347,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
     private readonly object _prefetchLock = new();
 
-    private CancellationTokenSource? _wakeupCts;
+    private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeWakeupSources = new();
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
@@ -852,7 +852,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Rent wakeup CTS from pool — used as the combined cancellation source
         // instead of allocating a LinkedCTS
         var wakeupCts = _ctsPool.Rent();
-        _wakeupCts = wakeupCts;
+        _activeWakeupSources.TryAdd(wakeupCts, 0);
 
         try
         {
@@ -898,7 +898,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _wakeupCts = null;
+            _activeWakeupSources.TryRemove(wakeupCts, out _);
             wakeupCts.Dispose();
         }
     }
@@ -1411,9 +1411,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return this;
     }
 
-    public void Wakeup()
+    public void Wakeup() => CancelAllActiveWakeupSources();
+
+    private void CancelAllActiveWakeupSources()
     {
-        _wakeupCts?.Cancel();
+        foreach (var cts in _activeWakeupSources.Keys)
+            cts.Cancel();
     }
 
     public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
@@ -1956,7 +1959,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         // Rent wakeup CTS from pool to avoid allocation
         var wakeupCts = _ctsPool.Rent();
-        _wakeupCts = wakeupCts;
+        _activeWakeupSources.TryAdd(wakeupCts, 0);
 
         try
         {
@@ -2016,7 +2019,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _wakeupCts = null;
+            _activeWakeupSources.TryRemove(wakeupCts, out _);
             wakeupCts.Dispose();
         }
     }
@@ -2708,7 +2711,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Step 6: Wake up any blocked operations
-        _wakeupCts?.Cancel();
+        CancelAllActiveWakeupSources();
 
         // Step 7: Clear pending fetch data and dispose to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
@@ -2879,7 +2882,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var closeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogConsumerCloseCompleted(closeElapsedMs);
 
-        _wakeupCts?.Cancel();
+        CancelAllActiveWakeupSources();
         _autoCommitCts?.Cancel();
         _prefetchCts?.Cancel();
 
@@ -2911,7 +2914,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _prefetchCts?.Dispose();
 
         // Clear and dispose CancellationTokenSource pool
-        // Note: _wakeupCts is managed by the pool and should not be disposed here
+        // Note: active wakeup sources are managed by the pool and should not be disposed here
         _ctsPool.Clear();
 
         // Clear and dispose any pending fetch data to release pooled memory

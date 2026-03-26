@@ -798,7 +798,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
-    private int _prefetchPipelineDepth = 2;
+    private int _prefetchPipelineDepth = 3;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1219,14 +1219,15 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <summary>
     /// Sets the maximum number of overlapping prefetch operations.
     /// With depth 1, fetches are purely sequential. With depth 2, one eager fetch
-    /// overlaps with the synchronous fetch. Currently capped at 2.
+    /// overlaps with the synchronous fetch. Higher values allow more overlapping
+    /// fetches, improving throughput for single-broker setups.
     /// </summary>
-    /// <param name="depth">The pipeline depth (1-2). Default is 2.</param>
+    /// <param name="depth">The pipeline depth (1-8). Default is 3.</param>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
     {
-        if (depth is < 1 or > 2)
-            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be 1 or 2");
+        if (depth is < 1 or > 8)
+            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be between 1 and 8");
         _prefetchPipelineDepth = depth;
         return this;
     }
