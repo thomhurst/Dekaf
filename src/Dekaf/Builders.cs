@@ -1217,16 +1217,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the maximum number of concurrent in-flight prefetch requests.
-    /// Higher values improve throughput by overlapping fetch round-trips,
-    /// at the cost of additional memory for buffered responses.
+    /// Sets the maximum number of overlapping prefetch operations.
+    /// With depth 1, fetches are purely sequential. With depth 2, one eager fetch
+    /// overlaps with the synchronous fetch. Currently capped at 2.
     /// </summary>
-    /// <param name="depth">The pipeline depth. Must be at least 1. Default is 2.</param>
+    /// <param name="depth">The pipeline depth (1-2). Default is 2.</param>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
     {
-        if (depth < 1)
-            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be at least 1");
+        if (depth is < 1 or > 2)
+            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be 1 or 2");
         _prefetchPipelineDepth = depth;
         return this;
     }
@@ -1287,7 +1287,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _maxPollRecords = 1000;
         _fetchMinBytes = 1024;
         _fetchMaxWaitMs = 500;
-        _prefetchPipelineDepth = 3;
         return this;
     }
 

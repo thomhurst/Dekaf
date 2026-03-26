@@ -655,9 +655,9 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
-    public async Task RunAsync_PipelineDepth3_MultipleEagerFetches()
+    public async Task RunAsync_PipelineDepth2_OneEagerFetch()
     {
-        // With pipeline depth 3, up to 2 eager in-flight fetches should be started
+        // With pipeline depth 2 (max), one eager in-flight fetch should be started
         // after each synchronous fetch.
         var fetchCount = 0;
 
@@ -667,26 +667,26 @@ public class PrefetchPipelineRunnerTests
                 var id = Interlocked.Increment(ref fetchCount);
                 await Task.Yield(); // Simulate async work
 
-                if (id >= 6)
+                if (id >= 4)
                     ct.ThrowIfCancellationRequested();
             },
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
-            pipelineDepth: 3);
+            pipelineDepth: 2);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
-        // With depth 3, we should have had at least 4 fetches total
-        // (1 synchronous + 2 eager in first iteration, then more)
-        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(4);
+        // With depth 2, we should have had at least 3 fetches total
+        // (1 synchronous + 1 eager in first iteration, then more)
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(3);
     }
 
     [Test]
-    public async Task RunAsync_PipelineDepth3_RespectsMemoryLimit()
+    public async Task RunAsync_PipelineDepth2_RespectsMemoryLimit()
     {
-        // Even with pipeline depth 3, eager fetches should not start if memory limit is exceeded.
+        // Even with pipeline depth 2, eager fetches should not start if memory limit is exceeded.
         var fetchCount = 0;
         long prefetchedBytes = 0;
 
@@ -711,7 +711,7 @@ public class PrefetchPipelineRunnerTests
                 ct.ThrowIfCancellationRequested();
                 return Task.CompletedTask;
             },
-            pipelineDepth: 3);
+            pipelineDepth: 2);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);

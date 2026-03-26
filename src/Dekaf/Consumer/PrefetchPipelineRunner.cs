@@ -12,8 +12,10 @@ namespace Dekaf.Consumer;
 /// <para>The pipeline depth controls how many concurrent in-flight fetch requests
 /// are allowed. With depth 1, no eager fetches are started (same as synchronous-only).
 /// With depth 2 (default), one eager fetch overlaps with loop overhead and the
-/// next synchronous fetch. With depth 3+, multiple fetches overlap their network
-/// round-trips for higher throughput.</para>
+/// next synchronous fetch. Depth is currently capped at 2 because
+/// <c>_wakeupCts</c> in <c>KafkaConsumer</c> is shared mutable state written by
+/// <c>PrefetchRecordsAsync</c>; with depth >= 3, multiple concurrent eager fetches
+/// would race on that field, breaking <c>Wakeup()</c> for all but the last writer.</para>
 /// </summary>
 internal sealed class PrefetchPipelineRunner
 {
@@ -65,7 +67,7 @@ internal sealed class PrefetchPipelineRunner
         _logError = logError;
         _logMemoryLimitPaused = logMemoryLimitPaused;
         _channelWriter = channelWriter;
-        _pipelineDepth = Math.Max(1, pipelineDepth);
+        _pipelineDepth = pipelineDepth;
     }
 
     /// <summary>
@@ -184,7 +186,6 @@ internal sealed class PrefetchPipelineRunner
         if (_inFlightQueue.TryDequeue(out var oldest))
         {
             await oldest.ConfigureAwait(false);
-            ConsecutiveErrors = 0; // Reset on success
         }
     }
 

@@ -273,10 +273,11 @@ public sealed class ConsumerOptions
     public IRetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
-    /// Maximum number of concurrent in-flight prefetch requests per broker.
-    /// Higher values improve throughput by overlapping fetch round-trips,
-    /// at the cost of additional memory for buffered responses.
-    /// Default is 2. Set to 1 for minimal memory overhead.
+    /// Maximum number of overlapping prefetch operations.
+    /// With depth 1, fetches are purely sequential (no eager pipelining).
+    /// With depth 2 (default), one eager fetch overlaps with the synchronous fetch,
+    /// doubling effective pipeline utilization.
+    /// Currently capped at 2; higher values are reserved for future use.
     /// </summary>
     public int PrefetchPipelineDepth { get; init; } = 2;
 
