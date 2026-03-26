@@ -95,7 +95,7 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 |---------|-------|--------|
 | MaxPollRecords | 1000 | Larger batches |
 | FetchMinBytes | 1KB | Wait for more data |
-| FetchMaxWaitMs | 500ms | Allow batching |
+| FetchMaxWaitMs | 500ms | Allow broker to accumulate more data |
 
 **Best for:** Batch processing, ETL pipelines, analytics
 
