@@ -678,7 +678,9 @@ public class PrefetchPipelineRunnerTests
             prefetchedBytes: 0,
             pipelineDepth: 2);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // Use 30s timeout — on CI with thread pool starvation, 5s may not be enough
+        // for the pipeline runner to schedule multiple async fetches via Task.Yield().
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await runner.RunAsync(cts.Token);
 
         // With depth 2, we should have had at least 3 fetches total
