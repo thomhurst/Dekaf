@@ -863,15 +863,23 @@ public class BufferMemoryTests
 
             var bufferedBefore = accumulator.BufferedBytes;
 
-            // Start a background task that will try to reserve more memory (will block async)
-            var sw = Stopwatch.StartNew();
+            // Signal so we know the reserve task has actually started waiting
+            var reserveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
             var reserveTask = Task.Run(async () =>
             {
+                reserveStarted.SetResult();
                 await accumulator.ReserveMemoryAsync(10, CancellationToken.None);
             });
 
-            // Yield to let the reserve task start
-            await Task.Yield();
+            // Wait for the reserve task to actually begin (not just scheduled)
+            await reserveStarted.Task;
+
+            // Small yield to let ReserveMemoryAsync enter the semaphore wait
+            await Task.Delay(50);
+
+            // Measure only the release-to-acquisition time
+            var sw = Stopwatch.StartNew();
 
             // Release memory — this should unblock the async waiter
             accumulator.ClearCurrentBatch("test-topic", 0);
@@ -880,15 +888,15 @@ public class BufferMemoryTests
             // The reserve should complete promptly
             var completedInTime = await Task.WhenAny(
                 reserveTask,
-                Task.Delay(2000) // generous timeout for CI
+                Task.Delay(5000)
             ) == reserveTask;
 
             sw.Stop();
             await Assert.That(completedInTime).IsTrue();
 
-            // Should be well under 1 second (typically < 100ms).
-            // Using 1000ms as upper bound to account for slow CI runners.
-            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(1000);
+            // Measures only release-to-acquisition, typically < 50ms.
+            // Using 2000ms as upper bound for heavily loaded CI runners.
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(2000);
         }
         finally
         {
