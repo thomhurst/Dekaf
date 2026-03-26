@@ -2320,7 +2320,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // the primary disposal path is the _disposed check at loop top.
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
-            // OperationCanceledException from caller's token propagates naturally
+            catch (OperationCanceledException)
+            {
+                // Propagate wake chain so remaining waiters aren't stranded.
+                // This waiter consumed a semaphore signal but won't use the buffer space.
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                    TryReleaseSemaphore(_asyncBufferSpaceSignal);
+                throw;
+            }
             // WaitAsync returning false (timeout) just means we loop and check deadline above
         }
 
