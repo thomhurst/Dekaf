@@ -45,8 +45,12 @@ public class PrefetchPipelineRunnerTests
         await runner.RunAsync(cts.Token);
 
         // Verify that no two fetches overlap: each start-N must be followed by end-N
-        // before the next start-(N+1)
-        for (var i = 0; i < fetchLog.Count - 1; i += 2)
+        // before the next start-(N+1). Only verify complete pairs to avoid
+        // breaking on an odd number of log entries.
+        var completePairs = fetchLog.Count / 2;
+        await Assert.That(completePairs).IsGreaterThanOrEqualTo(2);
+
+        for (var i = 0; i < completePairs * 2; i += 2)
         {
             var startEntry = fetchLog[i];
             var endEntry = fetchLog[i + 1];

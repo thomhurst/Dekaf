@@ -1,7 +1,6 @@
 using System.Threading.Channels;
 using Dekaf.Errors;
 using Dekaf.Protocol;
-using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Consumer;
 
@@ -112,6 +111,8 @@ internal sealed class PrefetchPipelineRunner
                     }
 
                     // Fetch records into prefetch channel
+                    System.Diagnostics.Debug.Assert(InFlightPrefetch is null,
+                        "Invariant violation: synchronous fetch must not be called while eager in-flight task is running");
                     await _prefetchRecords(cancellationToken).ConfigureAwait(false);
                     ConsecutiveErrors = 0; // Reset on success
 
@@ -209,6 +210,10 @@ internal sealed class PrefetchPipelineRunner
         try
         {
             await pending.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: eager fetch was woken up or cancelled during cleanup — not an error
         }
         catch (Exception ex)
         {
