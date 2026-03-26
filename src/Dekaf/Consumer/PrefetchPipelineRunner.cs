@@ -152,9 +152,11 @@ internal sealed class PrefetchPipelineRunner
             // Drain any in-flight fetch to observe exceptions and prevent fire-and-forget leaks
             if (InFlightPrefetch is not null)
             {
+                var pending = InFlightPrefetch;
+                InFlightPrefetch = null;
                 try
                 {
-                    await InFlightPrefetch.ConfigureAwait(false);
+                    await pending.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
