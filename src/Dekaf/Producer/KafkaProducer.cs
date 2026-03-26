@@ -591,55 +591,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             try
             {
-                // Serialize to thread-local buffers
-                var cache = GetOrCreateCache();
-                var keyIsNull = message.Key is null;
-                int keyLength = 0;
-
-                if (!keyIsNull)
-                {
-                    var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-                    cache.SerializationContext.Topic = message.Topic;
-                    cache.SerializationContext.Component = SerializationComponent.Key;
-                    cache.SerializationContext.Headers = message.Headers;
-                    _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
-                    keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
-                    keyLength = keyWriter.WrittenCount;
-                }
-
-                var valueIsNull = message.Value is null;
-                int valueLength = 0;
-
-                if (!valueIsNull)
-                {
-                    var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-                    cache.SerializationContext.Topic = message.Topic;
-                    cache.SerializationContext.Component = SerializationComponent.Value;
-                    cache.SerializationContext.Headers = message.Headers;
-                    _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
-                    valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-                    valueLength = valueWriter.WrittenCount;
-                }
-
-                var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-                var partition = message.Partition
-                    ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo!.PartitionCount);
-
-                var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-                Header[]? pooledHeaderArray = null;
-                var headerCount = 0;
-                if (message.Headers is not null && message.Headers.Count > 0)
-                {
-                    RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
-                }
-
-                var appendResult = _accumulator.AppendFromSpansAsync(
-                    message.Topic, partition, timestampMs,
-                    keySpan, keyIsNull,
-                    valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
-                    valueIsNull,
-                    pooledHeaderArray, headerCount, null, CancellationToken.None);
+                var appendResult = SerializeAndAppendFromSpansAsync(message, topicInfo!, null);
 
                 if (appendResult.IsCompletedSuccessfully)
                 {
@@ -749,7 +701,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         try
         {
-            // Serialize key and value
             var keyIsNull = message.Key is null;
             key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
             var valueIsNull = message.Value is null;
@@ -941,55 +892,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             try
             {
-                // Serialize to thread-local buffers
-                var cache = GetOrCreateCache();
-                var keyIsNull = message.Key is null;
-                int keyLength = 0;
-
-                if (!keyIsNull)
-                {
-                    var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-                    cache.SerializationContext.Topic = message.Topic;
-                    cache.SerializationContext.Component = SerializationComponent.Key;
-                    cache.SerializationContext.Headers = message.Headers;
-                    _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
-                    keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
-                    keyLength = keyWriter.WrittenCount;
-                }
-
-                var valueIsNull = message.Value is null;
-                int valueLength = 0;
-
-                if (!valueIsNull)
-                {
-                    var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-                    cache.SerializationContext.Topic = message.Topic;
-                    cache.SerializationContext.Component = SerializationComponent.Value;
-                    cache.SerializationContext.Headers = message.Headers;
-                    _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
-                    valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-                    valueLength = valueWriter.WrittenCount;
-                }
-
-                var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-                var partition = message.Partition
-                    ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo!.PartitionCount);
-
-                var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-                Header[]? pooledHeaderArray = null;
-                var headerCount = 0;
-                if (message.Headers is not null && message.Headers.Count > 0)
-                {
-                    RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
-                }
-
-                var appendResult = _accumulator.AppendFromSpansAsync(
-                    message.Topic, partition, timestampMs,
-                    keySpan, keyIsNull,
-                    valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
-                    valueIsNull,
-                    pooledHeaderArray, headerCount, deliveryHandler, CancellationToken.None);
+                var appendResult = SerializeAndAppendFromSpansAsync(message, topicInfo!, deliveryHandler);
 
                 if (appendResult.IsCompletedSuccessfully)
                 {
@@ -2178,7 +2081,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         try
         {
-            // Fetch metadata with MaxBlockMs timeout
             using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
 
             TopicInfo? topicInfo;
@@ -2202,55 +2104,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-            // Serialize and append
-            var cache = GetOrCreateCache();
-            var keyIsNull = message.Key is null;
-            int keyLength = 0;
-
-            if (!keyIsNull)
-            {
-                var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-                cache.SerializationContext.Topic = message.Topic;
-                cache.SerializationContext.Component = SerializationComponent.Key;
-                cache.SerializationContext.Headers = message.Headers;
-                _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
-                keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
-                keyLength = keyWriter.WrittenCount;
-            }
-
-            var valueIsNull = message.Value is null;
-            int valueLength = 0;
-
-            if (!valueIsNull)
-            {
-                var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-                cache.SerializationContext.Topic = message.Topic;
-                cache.SerializationContext.Component = SerializationComponent.Value;
-                cache.SerializationContext.Headers = message.Headers;
-                _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
-                valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-                valueLength = valueWriter.WrittenCount;
-            }
-
-            var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-            var partition = message.Partition
-                ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-
-            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-            Header[]? pooledHeaderArray = null;
-            var headerCount = 0;
-            if (message.Headers is not null && message.Headers.Count > 0)
-            {
-                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
-            }
-
-            var appendResult = await _accumulator.AppendFromSpansAsync(
-                message.Topic, partition, timestampMs,
-                keySpan, keyIsNull,
-                valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
-                valueIsNull,
-                pooledHeaderArray, headerCount, null, CancellationToken.None).ConfigureAwait(false);
+            var appendResult = await SerializeAndAppendFromSpansAsync(message, topicInfo, null).ConfigureAwait(false);
 
             if (!appendResult)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -2282,7 +2136,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         try
         {
-            // Fetch metadata with MaxBlockMs timeout
             using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
 
             TopicInfo? topicInfo;
@@ -2304,55 +2157,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-            // Serialize and append with callback
-            var cache = GetOrCreateCache();
-            var keyIsNull = message.Key is null;
-            int keyLength = 0;
-
-            if (!keyIsNull)
-            {
-                var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-                cache.SerializationContext.Topic = message.Topic;
-                cache.SerializationContext.Component = SerializationComponent.Key;
-                cache.SerializationContext.Headers = message.Headers;
-                _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
-                keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
-                keyLength = keyWriter.WrittenCount;
-            }
-
-            var valueIsNull = message.Value is null;
-            int valueLength = 0;
-
-            if (!valueIsNull)
-            {
-                var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-                cache.SerializationContext.Topic = message.Topic;
-                cache.SerializationContext.Component = SerializationComponent.Value;
-                cache.SerializationContext.Headers = message.Headers;
-                _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
-                valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-                valueLength = valueWriter.WrittenCount;
-            }
-
-            var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-            var partition = message.Partition
-                ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-
-            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-            Header[]? pooledHeaderArray = null;
-            var headerCount = 0;
-            if (message.Headers is not null && message.Headers.Count > 0)
-            {
-                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
-            }
-
-            var appendResult = await _accumulator.AppendFromSpansAsync(
-                message.Topic, partition, timestampMs,
-                keySpan, keyIsNull,
-                valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
-                valueIsNull,
-                pooledHeaderArray, headerCount, deliveryHandler, CancellationToken.None).ConfigureAwait(false);
+            var appendResult = await SerializeAndAppendFromSpansAsync(message, topicInfo, deliveryHandler).ConfigureAwait(false);
 
             if (!appendResult)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -2362,6 +2167,65 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Deliver exception to callback
             try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
         }
+    }
+
+    /// <summary>
+    /// Serializes key/value to thread-local buffers and appends to the accumulator.
+    /// Non-async to allow ReadOnlySpan usage — returns ValueTask for hot/cold path split.
+    /// </summary>
+    private ValueTask<bool> SerializeAndAppendFromSpansAsync(
+        ProducerMessage<TKey, TValue> message,
+        TopicInfo topicInfo,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        var cache = GetOrCreateCache();
+        var keyIsNull = message.Key is null;
+        int keyLength = 0;
+
+        if (!keyIsNull)
+        {
+            var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+            cache.SerializationContext.Topic = message.Topic;
+            cache.SerializationContext.Component = SerializationComponent.Key;
+            cache.SerializationContext.Headers = message.Headers;
+            _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
+            keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+            keyLength = keyWriter.WrittenCount;
+        }
+
+        var valueIsNull = message.Value is null;
+        int valueLength = 0;
+
+        if (!valueIsNull)
+        {
+            var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+            cache.SerializationContext.Topic = message.Topic;
+            cache.SerializationContext.Component = SerializationComponent.Value;
+            cache.SerializationContext.Headers = message.Headers;
+            _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
+            valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+            valueLength = valueWriter.WrittenCount;
+        }
+
+        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+        var partition = message.Partition
+            ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+        var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+        Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
+        if (message.Headers is not null && message.Headers.Count > 0)
+        {
+            RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+        }
+
+        return _accumulator.AppendFromSpansAsync(
+            message.Topic, partition, timestampMs,
+            keySpan, keyIsNull,
+            valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+            valueIsNull,
+            pooledHeaderArray, headerCount, callback, CancellationToken.None);
     }
 
     /// <summary>
@@ -2381,7 +2245,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
             throw;
         }
-        catch (Exception ex) when (ex is not ObjectDisposedException)
+        catch (Exception ex)
         {
             LogFireAndForgetProduceFailed(ex, topic);
         }

@@ -1673,6 +1673,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (_disposed)
             {
                 ReleaseMemory(recordSize);
+                key.Return();
+                value.Return();
                 return false;
             }
 
@@ -1696,6 +1698,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Interlocked.Decrement(ref _unsealedBatchCount);
                 _batchPool.Return(newBatch);
                 ReleaseMemory(recordSize);
+                key.Return();
+                value.Return();
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -1781,6 +1785,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
+                key.Return();
+                value.Return();
                 return false;
             }
 
@@ -1805,6 +1811,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _batchPool.Return(newBatch);
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
+                key.Return();
+                value.Return();
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -1873,6 +1881,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
+                key.Return();
+                value.Return();
                 return false;
             }
 
@@ -1901,6 +1911,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _batchPool.Return(newBatch);
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
+                key.Return();
+                value.Return();
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
