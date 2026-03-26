@@ -758,18 +758,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     _positions[pending.TopicPartition] = offset + 1;
                     pending.TrackConsumed(offset, messageBytes);
 
-                    // Record consumer metrics (~3ns no-op when no listener)
-                    // Cache TagList per topic to avoid per-message struct creation and string boxing.
-                    // The dictionary lookup runs unconditionally (~5ns) — cheaper than checking
-                    // Instrument.Enabled which requires capturing the Instrument reference.
-                    if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
+                    // Record consumer metrics — skip TagList allocation when no meter listener.
+                    // Check both instruments independently since Enabled is per-instrument.
+                    if (Diagnostics.DekafMetrics.MessagesReceived.Enabled || Diagnostics.DekafMetrics.BytesReceived.Enabled)
                     {
-                        metricTags = new System.Diagnostics.TagList
+                        var metricTags = new System.Diagnostics.TagList
                             { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
-                        _metricTagsCache[pending.Topic] = metricTags;
+                        Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
+                        Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
                     }
-                    Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
-                    Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
 
                     // Apply OnConsume interceptors before yielding to user
                     result = ApplyOnConsumeInterceptors(result);
@@ -1180,6 +1177,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Timeout expired with no messages - return null instead of throwing
             }
+            catch (ChannelClosedException ex) when (ex.InnerException is null && timeoutCts.IsCancellationRequested)
+            {
+                // Channel closed cleanly due to timeout-triggered cancellation — no messages available
+            }
             return null;
         }
 
@@ -1196,6 +1197,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             // Our timeout expired (not user cancellation) with no messages - return null
+        }
+        catch (ChannelClosedException ex) when (ex.InnerException is null && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Channel closed cleanly due to our timeout — not user cancellation
         }
 
         return null;
