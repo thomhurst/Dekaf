@@ -2258,6 +2258,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
         }
 
+        // CancellationToken.None is intentional: fire-and-forget callers have no per-call token.
+        // Backpressure is bounded by MaxBlockMs inside ReserveMemoryAsync, which enforces its
+        // own deadline independently of the cancellation token.
         return _accumulator.AppendFromSpansAsync(
             topic, resolvedPartition, timestampMs,
             keySpan, keyIsNull,
