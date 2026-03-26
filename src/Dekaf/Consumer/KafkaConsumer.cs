@@ -825,7 +825,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
             logError: LogPrefetchLoopError,
             logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
-            channelWriter: _prefetchChannel.Writer);
+            channelWriter: _prefetchChannel.Writer,
+            pipelineDepth: _options.PrefetchPipelineDepth);
 
         return runner.RunAsync(cancellationToken);
     }

@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// <summary>
 /// Tests for the pipelined prefetch state machine in <see cref="PrefetchPipelineRunner"/>.
 /// Validates ordering guarantees, error counting, drain behavior on assignment loss,
-/// drain behavior on memory limit, and shutdown exception observation.
+/// drain behavior on memory limit, pipeline depth, and shutdown exception observation.
 /// </summary>
 public class PrefetchPipelineRunnerTests
 {
@@ -225,8 +225,8 @@ public class PrefetchPipelineRunnerTests
         // The eager fetch was awaited (its TCS completed), proving the drain happened
         await Assert.That(eagerFetchAwaited.Task.IsCompleted).IsTrue();
 
-        // InFlightPrefetch should be null after drain
-        await Assert.That((object?)runner.InFlightPrefetch).IsNull();
+        // InFlightPrefetchCount should be 0 after drain
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
     }
 
     #endregion
@@ -270,8 +270,8 @@ public class PrefetchPipelineRunnerTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
-        // InFlightPrefetch should be null after drain at memory limit
-        await Assert.That((object?)runner.InFlightPrefetch).IsNull();
+        // InFlightPrefetchCount should be 0 after drain at memory limit
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
     }
 
     [Test]
@@ -360,8 +360,8 @@ public class PrefetchPipelineRunnerTests
         // The runner should complete without throwing (finally block drains the in-flight task)
         await runTask;
 
-        // InFlightPrefetch should be null (drained in finally)
-        await Assert.That((object?)runner.InFlightPrefetch).IsNull();
+        // InFlightPrefetchCount should be 0 (drained in finally)
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
     }
 
     [Test]
@@ -615,6 +615,114 @@ public class PrefetchPipelineRunnerTests
 
     #endregion
 
+    #region Pipeline depth tests
+
+    [Test]
+    public async Task RunAsync_PipelineDepth1_NoEagerFetches()
+    {
+        // With pipeline depth 1, no eager in-flight fetches should be started.
+        var fetchCount = 0;
+        var maxConcurrent = 0;
+        var currentConcurrent = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: async ct =>
+            {
+                var concurrent = Interlocked.Increment(ref currentConcurrent);
+                if (concurrent > Volatile.Read(ref maxConcurrent))
+                    Interlocked.Exchange(ref maxConcurrent, concurrent);
+
+                var id = Interlocked.Increment(ref fetchCount);
+                await Task.Yield();
+
+                Interlocked.Decrement(ref currentConcurrent);
+
+                if (id >= 3)
+                    ct.ThrowIfCancellationRequested();
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: 1);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // With depth 1, no eager fetches => InFlightPrefetchCount should be 0
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
+        // Max concurrency should be 1 (only synchronous fetches)
+        await Assert.That(maxConcurrent).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RunAsync_PipelineDepth2_OneEagerFetch()
+    {
+        // With pipeline depth 2 (max), one eager in-flight fetch should be started
+        // after each synchronous fetch.
+        var fetchCount = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: async ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                await Task.Yield(); // Simulate async work
+
+                if (id >= 4)
+                    ct.ThrowIfCancellationRequested();
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: 2);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // With depth 2, we should have had at least 3 fetches total
+        // (1 synchronous + 1 eager in first iteration, then more)
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(3);
+    }
+
+    [Test]
+    public async Task RunAsync_PipelineDepth2_RespectsMemoryLimit()
+    {
+        // Even with pipeline depth 2, eager fetches should not start if memory limit is exceeded.
+        var fetchCount = 0;
+        long prefetchedBytes = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                {
+                    // Synchronous fetch succeeds, but fills memory
+                    Interlocked.Exchange(ref prefetchedBytes, 2048);
+                    return ValueTask.CompletedTask;
+                }
+                Assert.Fail("prefetchRecords called more times than expected — memory limit should have prevented eager fetches");
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: 1024,
+            getPrefetchedBytes: () => Interlocked.Read(ref prefetchedBytes),
+            waitForMemoryAvailable: ct =>
+            {
+                ct.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            },
+            pipelineDepth: 2);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // Only 1 fetch — no eager fetches because memory limit was exceeded
+        await Assert.That(fetchCount).IsEqualTo(1);
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -632,7 +740,8 @@ public class PrefetchPipelineRunnerTests
         Func<CancellationToken, Task>? waitForMemoryAvailable = null,
         Action<Exception>? logError = null,
         Action<long, long>? logMemoryLimitPaused = null,
-        ChannelWriter<PendingFetchData>? channelWriter = null)
+        ChannelWriter<PendingFetchData>? channelWriter = null,
+        int pipelineDepth = 2)
     {
         return new PrefetchPipelineRunner(
             ensureAssignment: ensureAssignment ?? (ct => ValueTask.CompletedTask),
@@ -647,7 +756,8 @@ public class PrefetchPipelineRunnerTests
             }),
             logError: logError ?? (_ => { }),
             logMemoryLimitPaused: logMemoryLimitPaused ?? ((_, _) => { }),
-            channelWriter: channelWriter);
+            channelWriter: channelWriter,
+            pipelineDepth: pipelineDepth);
     }
 
     #endregion

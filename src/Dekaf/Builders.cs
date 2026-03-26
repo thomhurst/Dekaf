@@ -798,6 +798,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
+    private int _prefetchPipelineDepth = 2;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1216,6 +1217,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum number of overlapping prefetch operations.
+    /// With depth 1, fetches are purely sequential. With depth 2, one eager fetch
+    /// overlaps with the synchronous fetch. Currently capped at 2.
+    /// </summary>
+    /// <param name="depth">The pipeline depth (1-2). Default is 2.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
+    {
+        if (depth is < 1 or > 2)
+            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be 1 or 2");
+        _prefetchPipelineDepth = depth;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -1386,7 +1402,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            PrefetchPipelineDepth = _prefetchPipelineDepth
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

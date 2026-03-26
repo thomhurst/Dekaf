@@ -6,13 +6,16 @@ namespace Dekaf.Consumer;
 
 /// <summary>
 /// Encapsulates the pipelined prefetch state machine for testability.
-/// The runner manages the in-flight prefetch task and the interaction between
+/// The runner manages in-flight prefetch tasks and the interaction between
 /// assignment checks, memory limits, fetch execution, and error handling.
 ///
-/// <para>Invariant: <see cref="PrefetchRecordsAsync"/> (via <c>_prefetchRecords</c>) is never called
-/// while the eager in-flight task is still executing. The in-flight task is always awaited and nulled
-/// before the next synchronous <c>_prefetchRecords</c> call, preserving single-caller semantics on
-/// the shared <c>_wakeupCts</c> field in <see cref="KafkaConsumer{TKey,TValue}"/>.</para>
+/// <para>The pipeline depth controls how many concurrent in-flight fetch requests
+/// are allowed. With depth 1, no eager fetches are started (same as synchronous-only).
+/// With depth 2 (default), one eager fetch overlaps with loop overhead and the
+/// next synchronous fetch. Depth is currently capped at 2 because
+/// <c>_wakeupCts</c> in <c>KafkaConsumer</c> is shared mutable state written by
+/// <c>PrefetchRecordsAsync</c>; with depth >= 3, multiple concurrent eager fetches
+/// would race on that field, breaking <c>Wakeup()</c> for all but the last writer.</para>
 /// </summary>
 internal sealed class PrefetchPipelineRunner
 {
@@ -25,11 +28,13 @@ internal sealed class PrefetchPipelineRunner
     private readonly Action<Exception> _logError;
     private readonly Action<long, long> _logMemoryLimitPaused;
     private readonly ChannelWriter<PendingFetchData>? _channelWriter;
+    private readonly int _pipelineDepth;
+    private readonly Queue<Task> _inFlightQueue = new();
 
     /// <summary>
-    /// The current in-flight prefetch task, if any. Exposed for testing.
+    /// The number of currently in-flight prefetch tasks. Exposed for testing.
     /// </summary>
-    internal Task? InFlightPrefetch { get; private set; }
+    internal int InFlightPrefetchCount => _inFlightQueue.Count;
 
     /// <summary>
     /// The current consecutive error count. Exposed for testing.
@@ -50,7 +55,8 @@ internal sealed class PrefetchPipelineRunner
         Func<CancellationToken, Task> waitForMemoryAvailable,
         Action<Exception> logError,
         Action<long, long> logMemoryLimitPaused,
-        ChannelWriter<PendingFetchData>? channelWriter = null)
+        ChannelWriter<PendingFetchData>? channelWriter = null,
+        int pipelineDepth = 2)
     {
         _ensureAssignment = ensureAssignment;
         _getAssignmentCount = getAssignmentCount;
@@ -61,6 +67,7 @@ internal sealed class PrefetchPipelineRunner
         _logError = logError;
         _logMemoryLimitPaused = logMemoryLimitPaused;
         _channelWriter = channelWriter;
+        _pipelineDepth = pipelineDepth;
     }
 
     /// <summary>
@@ -78,9 +85,9 @@ internal sealed class PrefetchPipelineRunner
 
                     if (_getAssignmentCount() == 0)
                     {
-                        // No assignment — drain any in-flight fetch before waiting.
+                        // No assignment — drain any in-flight fetches before waiting.
                         // Use safe variant: in-flight fetch errors are cleanup, not fetch attempts.
-                        await DrainInFlightPrefetchSafelyAsync().ConfigureAwait(false);
+                        await DrainAllInFlightSafelyAsync().ConfigureAwait(false);
                         await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -90,19 +97,19 @@ internal sealed class PrefetchPipelineRunner
                     var currentPrefetchedBytes = _getPrefetchedBytes();
                     if (currentPrefetchedBytes >= maxBytes)
                     {
-                        // At memory limit — drain any in-flight fetch before pausing.
+                        // At memory limit — drain any in-flight fetches before pausing.
                         // Use safe variant: in-flight fetch errors are cleanup, not fetch attempts.
-                        await DrainInFlightPrefetchSafelyAsync().ConfigureAwait(false);
+                        await DrainAllInFlightSafelyAsync().ConfigureAwait(false);
                         _logMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _waitForMemoryAvailable(cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
-                    // If we have an in-flight fetch from the previous iteration, await it.
+                    // If we have in-flight fetches from the previous iteration, await the oldest one.
                     // Its network round-trip overlapped with the loop overhead above.
-                    if (InFlightPrefetch is not null)
+                    if (_inFlightQueue.Count > 0)
                     {
-                        await DrainInFlightPrefetchAsync().ConfigureAwait(false);
+                        await DrainOldestInFlightAsync().ConfigureAwait(false);
 
                         // Re-check memory limit after the in-flight fetch added data.
                         currentPrefetchedBytes = _getPrefetchedBytes();
@@ -110,17 +117,18 @@ internal sealed class PrefetchPipelineRunner
                             continue;
                     }
 
-                    // Fetch records into prefetch channel
-                    System.Diagnostics.Debug.Assert(InFlightPrefetch is null,
-                        "Invariant violation: synchronous fetch must not be called while eager in-flight task is running");
+                    // Fetch records into prefetch channel (synchronous call)
                     await _prefetchRecords(cancellationToken).ConfigureAwait(false);
                     ConsecutiveErrors = 0; // Reset on success
 
-                    // Pipeline: eagerly start the next fetch if memory allows.
+                    // Pipeline: eagerly start more fetches if memory allows and pipeline has capacity.
                     currentPrefetchedBytes = _getPrefetchedBytes();
-                    if (currentPrefetchedBytes < maxBytes && !cancellationToken.IsCancellationRequested)
+                    while (_inFlightQueue.Count < _pipelineDepth - 1
+                        && currentPrefetchedBytes < maxBytes
+                        && !cancellationToken.IsCancellationRequested)
                     {
-                        InFlightPrefetch = _prefetchRecords(cancellationToken).AsTask();
+                        _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
+                        currentPrefetchedBytes = _getPrefetchedBytes();
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -129,18 +137,8 @@ internal sealed class PrefetchPipelineRunner
                 }
                 catch (Exception ex)
                 {
-                    // Drain in-flight fetch to observe its exception and prevent unobserved task leaks.
-                    if (InFlightPrefetch is not null)
-                    {
-                        var pending = InFlightPrefetch;
-                        InFlightPrefetch = null;
-                        try { await pending.ConfigureAwait(false); }
-                        catch (Exception inFlightEx)
-                        {
-                            ConsecutiveErrors++;
-                            _logError(inFlightEx);
-                        }
-                    }
+                    // Drain all in-flight fetches to observe their exceptions and prevent unobserved task leaks.
+                    await DrainAllInFlightWithErrorCountingAsync().ConfigureAwait(false);
                     ConsecutiveErrors++;
                     _logError(ex);
 
@@ -158,11 +156,9 @@ internal sealed class PrefetchPipelineRunner
         }
         finally
         {
-            // Drain any in-flight fetch to observe exceptions and prevent fire-and-forget leaks
-            if (InFlightPrefetch is not null)
+            // Drain any in-flight fetches to observe exceptions and prevent fire-and-forget leaks
+            while (_inFlightQueue.TryDequeue(out var pending))
             {
-                var pending = InFlightPrefetch;
-                InFlightPrefetch = null;
                 try
                 {
                     await pending.ConfigureAwait(false);
@@ -182,42 +178,62 @@ internal sealed class PrefetchPipelineRunner
     }
 
     /// <summary>
-    /// Drains and nulls the in-flight prefetch task.
+    /// Awaits and dequeues the oldest in-flight prefetch task.
     /// Exceptions propagate to the caller.
     /// </summary>
-    private async Task DrainInFlightPrefetchAsync()
+    private async Task DrainOldestInFlightAsync()
     {
-        if (InFlightPrefetch is null)
-            return;
-
-        var pending = InFlightPrefetch;
-        InFlightPrefetch = null;
-        await pending.ConfigureAwait(false);
+        if (_inFlightQueue.TryDequeue(out var oldest))
+        {
+            await oldest.ConfigureAwait(false);
+        }
     }
 
     /// <summary>
-    /// Drains and nulls the in-flight prefetch task, absorbing any exceptions.
-    /// Used in cleanup paths (no-assignment, memory-limit) where the in-flight fetch error
+    /// Drains all in-flight prefetch tasks, absorbing any exceptions.
+    /// Used in cleanup paths (no-assignment, memory-limit) where in-flight fetch errors
     /// should not propagate or increment <see cref="ConsecutiveErrors"/>.
     /// </summary>
-    private async Task DrainInFlightPrefetchSafelyAsync()
+    private async Task DrainAllInFlightSafelyAsync()
     {
-        if (InFlightPrefetch is null)
-            return;
+        while (_inFlightQueue.TryDequeue(out var pending))
+        {
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: eager fetch was woken up or cancelled during cleanup — not an error
+            }
+            catch (Exception ex)
+            {
+                _logError(ex);
+            }
+        }
+    }
 
-        var pending = InFlightPrefetch;
-        InFlightPrefetch = null;
-        try
+    /// <summary>
+    /// Drains all in-flight prefetch tasks, counting errors toward <see cref="ConsecutiveErrors"/>.
+    /// Used in the error handler catch block.
+    /// </summary>
+    private async Task DrainAllInFlightWithErrorCountingAsync()
+    {
+        while (_inFlightQueue.TryDequeue(out var pending))
         {
-            await pending.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected: eager fetch was woken up or cancelled during cleanup — not an error
-        }
-        catch (Exception ex)
-        {
-            _logError(ex);
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation is not an error — expected during shutdown/wakeup
+            }
+            catch (Exception inFlightEx)
+            {
+                ConsecutiveErrors++;
+                _logError(inFlightEx);
+            }
         }
     }
 }

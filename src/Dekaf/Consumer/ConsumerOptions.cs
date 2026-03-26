@@ -273,6 +273,15 @@ public sealed class ConsumerOptions
     public IRetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
+    /// Maximum number of overlapping prefetch operations.
+    /// With depth 1, fetches are purely sequential (no eager pipelining).
+    /// With depth 2 (default), one eager fetch overlaps with the synchronous fetch,
+    /// doubling effective pipeline utilization.
+    /// Currently capped at 2; higher values are reserved for future use.
+    /// </summary>
+    public int PrefetchPipelineDepth { get; init; } = 2;
+
+    /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
     /// Interceptors are called on consume (OnConsume) and on commit (OnCommit).
     /// Interceptor exceptions are caught and logged, not propagated.
