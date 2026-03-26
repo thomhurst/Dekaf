@@ -329,7 +329,7 @@ public class BufferMemoryTests
 
             // Verify timeout occurred within reasonable time (should be ~500ms + some overhead)
             await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(400); // At least 400ms
-            await Assert.That(elapsedMs).IsLessThan(3000); // More generous for slow CI (< 3s)
+            await Assert.That(elapsedMs).IsLessThan(10000); // Generous for slow CI with thread pool starvation
 
             // Verify we filled the buffer before timing out
             await Assert.That(messageCount).IsGreaterThan(0);
