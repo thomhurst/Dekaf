@@ -119,7 +119,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "sentinel-key",
             Value = "sentinel-value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -169,7 +169,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = $"flush-key-{i}",
                 Value = $"flush-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - Flush should block until all pending messages are delivered
@@ -225,7 +225,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - Cancel the flush after a generous timeout (1 second is plenty for the cancellation

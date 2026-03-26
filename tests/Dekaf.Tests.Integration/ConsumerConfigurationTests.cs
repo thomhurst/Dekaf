@@ -31,7 +31,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consume with small MaxPollRecords
@@ -79,7 +79,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consume with minimal prefetching
@@ -124,7 +124,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "key",
             Value = "value-subscribe-to"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Act - use SubscribeTo() in the builder instead of Subscribe() after Build()
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -165,7 +165,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             Key = "key",
             Value = "partition-2-message",
             Partition = 2
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Act - create consumer without group ID and use Assign() directly
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -208,7 +208,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consume with low latency preset

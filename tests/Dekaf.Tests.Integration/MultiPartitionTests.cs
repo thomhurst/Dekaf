@@ -128,7 +128,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-partition-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
         LogPhase("produce done", sw);
 
@@ -186,7 +186,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-p{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
         LogPhase("produce done", sw);
 
@@ -256,7 +256,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                     Key = $"key-{p}",
                     Value = $"value-{p}-{round}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
         LogPhase("produce done (9 messages)", sw);
@@ -323,7 +323,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{i}",
                 Value = $"value-{i:D2}",
                 Partition = 0
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -381,14 +381,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-p0-{i}",
                 Value = $"p0-value-{i}",
                 Partition = 0
-            });
+            }, CancellationToken.None);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-p1-{i}",
                 Value = $"p1-value-{i}",
                 Partition = 1
-            });
+            }, CancellationToken.None);
         }
         LogPhase("produce done (10 messages)", sw);
 
@@ -457,7 +457,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
         LogPhase("produce done (10 messages)", sw);
 

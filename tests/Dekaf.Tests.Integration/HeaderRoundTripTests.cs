@@ -29,7 +29,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -76,7 +76,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -118,7 +118,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -159,7 +159,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -198,7 +198,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

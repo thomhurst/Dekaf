@@ -60,7 +60,7 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Key = $"key-{i}",
                 Value = $"value-{i}",
                 Partition = partition
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
     }
 

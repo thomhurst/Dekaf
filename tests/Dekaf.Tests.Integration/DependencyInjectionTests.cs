@@ -72,7 +72,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
             Topic = topic,
             Key = "di-key",
             Value = "di-value"
-        });
+        }, CancellationToken.None);
 
         var host = Host.CreateDefaultBuilder()
             .ConfigureServices(services =>
@@ -168,7 +168,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
             Topic = topic,
             Key = "roundtrip-key",
             Value = "roundtrip-value"
-        });
+        }, CancellationToken.None);
 
         // Consume
         consumer.Subscribe(topic);

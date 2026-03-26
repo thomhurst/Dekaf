@@ -174,7 +174,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = "test-key",
             Value = "test-value"
-        });
+        }, CancellationToken.None);
 
         // Assert - the partitioner should have been invoked with the correct topic and partition count
         List<(string Topic, bool KeyIsNull, int PartitionCount)> invocations;

@@ -34,7 +34,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 Topic = inputTopic,
                 Key = $"atomic-key-{i}",
                 Value = $"atomic-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act: Consume-transform-produce with SendOffsetsToTransaction
@@ -69,7 +69,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 Topic = outputTopic,
                 Key = msg.Key,
                 Value = $"transformed-{msg.Value}"
-            });
+            }, CancellationToken.None);
 
             // Atomically commit consumer offsets as part of the transaction
             var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };
@@ -154,7 +154,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = $"committed-batch-key-{i}",
                     Value = $"committed-batch-value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             await txn1.CommitAsync();
@@ -170,7 +170,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = $"aborted-key-{i}",
                     Value = $"aborted-value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             await txn2.AbortAsync();
@@ -186,7 +186,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = $"committed2-key-{i}",
                     Value = $"committed2-value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             await txn3.CommitAsync();
@@ -266,7 +266,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Key = $"p1-key-{i}",
                     Value = $"p1-committed-{i}",
                     Partition = 0
-                });
+                }, CancellationToken.None);
             }
 
             await txn1.CommitAsync();
@@ -282,7 +282,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Key = $"p2-key-{i}",
                     Value = $"p2-aborted-{i}",
                     Partition = 0
-                });
+                }, CancellationToken.None);
             }
 
             await txn2.AbortAsync();
@@ -299,7 +299,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Key = $"p2-committed-key-{i}",
                     Value = $"p2-committed-{i}",
                     Partition = 0
-                });
+                }, CancellationToken.None);
             }
 
             await txn2b.CommitAsync();
@@ -368,7 +368,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = "epoch1-key",
                     Value = "epoch1-value"
-                });
+                }, CancellationToken.None);
                 await txn.CommitAsync();
             }
         }
@@ -397,7 +397,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = "epoch2-key",
                 Value = "epoch2-value"
-            });
+            }, CancellationToken.None);
             await txn2.CommitAsync();
         }
 
@@ -419,7 +419,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = "epoch3-key",
                 Value = "epoch3-value"
-            });
+            }, CancellationToken.None);
             await txn3.CommitAsync();
         }
 
@@ -478,7 +478,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 Topic = inputTopic,
                 Key = $"input-{i}",
                 Value = $"payload-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act: Consume-transform-produce with per-message transactions and offset commits
@@ -515,7 +515,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 Topic = outputTopic,
                 Key = msg.Key,
                 Value = transformedValue
-            });
+            }, CancellationToken.None);
 
             // Commit consumer offset atomically with the produced message
             var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };

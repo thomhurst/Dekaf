@@ -101,7 +101,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                     Topic = topic,
                     Key = "timeout-key",
                     Value = "timeout-value"
-                });
+                }, CancellationToken.None);
             });
 
             // Assert: should be a timeout or produce exception

@@ -28,7 +28,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Topic = topic,
             Key = "snappy-key",
             Value = "snappy-compressed-value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -120,7 +120,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Topic = topic,
             Key = "large-compressed",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -217,7 +217,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Topic = topic,
             Key = null,
             Value = "null-key-compressed"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -259,7 +259,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Key = "with-headers",
             Value = "{\"data\":\"compressed-with-headers\"}",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

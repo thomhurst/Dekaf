@@ -40,7 +40,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"gzip-{i}",
                 Value = $"gzip-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Flush Gzip producer to ensure batches are sent before Zstd messages
@@ -54,7 +54,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"zstd-{i}",
                 Value = $"zstd-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await zstdProducer.FlushWithTimeoutAsync();
@@ -120,7 +120,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"plain-{i}",
                 Value = $"plain-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await plainProducer.FlushWithTimeoutAsync();
@@ -133,7 +133,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"gzip-{i}",
                 Value = $"gzip-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await gzipProducer.FlushWithTimeoutAsync();
@@ -204,7 +204,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic,
             Key = "codec-gzip",
             Value = "value-from-gzip"
-        });
+        }, CancellationToken.None);
         await gzipProducer.FlushWithTimeoutAsync();
 
         await zstdProducer.ProduceAsync(new ProducerMessage<string, string>
@@ -212,7 +212,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic,
             Key = "codec-zstd",
             Value = "value-from-zstd"
-        });
+        }, CancellationToken.None);
         await zstdProducer.FlushWithTimeoutAsync();
 
         await plainProducer.ProduceAsync(new ProducerMessage<string, string>
@@ -220,7 +220,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic,
             Key = "codec-none",
             Value = "value-from-none"
-        });
+        }, CancellationToken.None);
         await plainProducer.FlushWithTimeoutAsync();
 
         // A single consumer with all codecs registered should read all messages

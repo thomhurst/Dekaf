@@ -161,7 +161,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
                 Topic = topicName,
                 Key = "key",
                 Value = oversizedValue
-            });
+            }, CancellationToken.None);
         }
         catch (KafkaException ex)
         {

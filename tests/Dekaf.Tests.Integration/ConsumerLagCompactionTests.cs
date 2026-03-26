@@ -107,7 +107,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
                     Topic = topic,
                     Key = $"key-{key}",
                     Value = $"value-{key}-round-{round}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -164,7 +164,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
                     Topic = topic,
                     Key = $"key-{key}",
                     Value = $"value-round-{round}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -241,7 +241,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -267,7 +267,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "trigger-key",
             Value = "trigger-value"
-        });
+        }, CancellationToken.None);
 
         // Wait for cleanup to run
         await Task.Delay(5_000);
@@ -309,7 +309,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{key}",
                 Value = "initial-value"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -331,7 +331,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{key}",
                 Value = "updated-value"
-            });
+            }, CancellationToken.None);
         }
 
         var totalProduced = initialUniqueKeys * 2;
@@ -357,7 +357,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"new-key-{i}",
                 Value = $"new-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         var watermarks4 = await consumer.QueryWatermarkOffsetsAsync(tp);

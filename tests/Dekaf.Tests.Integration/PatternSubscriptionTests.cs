@@ -31,14 +31,14 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = topic1,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic2,
             Key = "key2",
             Value = "value2"
-        });
+        }, CancellationToken.None);
 
         await producer.FlushWithTimeoutAsync();
 
@@ -86,14 +86,14 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = matchingTopic,
             Key = "k1",
             Value = "included"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = excludedTopic,
             Key = "k2",
             Value = "excluded"
-        });
+        }, CancellationToken.None);
 
         await producer.FlushWithTimeoutAsync();
 
@@ -127,7 +127,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = topic,
             Key = "key",
             Value = "explicit-value"
-        });
+        }, CancellationToken.None);
 
         await producer.FlushWithTimeoutAsync();
 

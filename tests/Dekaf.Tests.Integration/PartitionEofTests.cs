@@ -30,7 +30,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - create consumer with EnablePartitionEof and consume
@@ -90,7 +90,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Act - consumer without EnablePartitionEof (default is false)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -157,7 +157,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = "key-1",
             Value = "value-1"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -212,7 +212,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = "key-2",
             Value = "value-2"
-        });
+        }, CancellationToken.None);
 
         // Wait for consume task to complete (will exit after second EOF)
         await consumeTask;
@@ -242,7 +242,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -362,7 +362,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
                 Key = $"key-p{partition}",
                 Value = $"value-p{partition}",
                 Partition = partition
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -431,7 +431,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consumer with default prefetching (does NOT call WithQueuedMinMessages)

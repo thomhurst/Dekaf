@@ -140,7 +140,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
                 Topic = topic,
                 Key = $"user-{i}",
                 Value = record
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -213,7 +213,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             Topic = topic,
             Key = "null-test",
             Value = record
-        });
+        }, CancellationToken.None);
 
         // Act - Consume
         await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
@@ -285,7 +285,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             Topic = topic,
             Key = keyRecord,
             Value = valueRecord
-        });
+        }, CancellationToken.None);
 
         // Act - Consume
         await using var consumer = await Kafka.CreateConsumer<GenericRecord, GenericRecord>()
@@ -352,7 +352,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             Topic = topic,
             Key = "test",
             Value = record
-        });
+        }, CancellationToken.None);
 
         // Assert - verify schema was registered
         var subjects = await registryClient.GetAllSubjectsAsync();

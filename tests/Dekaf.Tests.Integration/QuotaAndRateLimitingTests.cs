@@ -190,7 +190,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = messageValue
-                });
+                }, CancellationToken.None);
             }
 
             await producer.FlushWithTimeoutAsync();
@@ -277,7 +277,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = $"baseline-key-{i}",
                     Value = messageValue
-                });
+                }, CancellationToken.None);
             }
 
             await baselineProducer.FlushWithTimeoutAsync();

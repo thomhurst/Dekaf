@@ -34,7 +34,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "ordering-key",
                 Value = $"msg-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -90,7 +90,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {
                 Topic = topic, Key = -1, Value = "warmup", Partition = p
-            });
+            }, CancellationToken.None);
 
         // Produce messages keyed by partition index
         for (var p = 0; p < partitionCount; p++)
@@ -103,7 +103,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                     Partition = p,
                     Key = p,
                     Value = $"p{p}-msg-{i:D4}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -180,7 +180,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                     Topic = topic,
                     Key = "same-key",
                     Value = $"t{threadId}-msg-{i:D3}"
-                });
+                }, CancellationToken.None);
             }
         }).ToArray();
 
@@ -236,7 +236,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "volume-key",
                 Value = $"vol-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -289,7 +289,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "faf-key",
                 Value = $"faf-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -338,7 +338,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "non-idemp-key",
                 Value = $"ni-{i:D3}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -389,7 +389,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {
                 Topic = topic, Key = -1, Value = "warmup", Partition = p
-            });
+            }, CancellationToken.None);
 
         // Produce to all partitions to trigger coalescing
         for (var i = 0; i < messagesPerPartition; i++)
@@ -402,7 +402,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                     Partition = p,
                     Key = p,
                     Value = $"coal-p{p}-{i:D4}"
-                });
+                }, CancellationToken.None);
             }
         }
 

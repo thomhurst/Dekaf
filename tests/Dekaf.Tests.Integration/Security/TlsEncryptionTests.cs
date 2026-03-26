@@ -118,7 +118,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "consume-tls-key",
             Value = "consume-tls-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume over TLS
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -488,7 +488,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "mtls-consume-key",
             Value = "mtls-consume-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume with mTLS
         await using var consumer = await Kafka.CreateConsumer<string, string>()

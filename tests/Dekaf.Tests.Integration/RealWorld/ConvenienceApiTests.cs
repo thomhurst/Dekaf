@@ -62,7 +62,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -396,7 +396,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "pre-subscribe",
             Value = "subscribed-at-build"
-        });
+        }, CancellationToken.None);
 
         // SubscribeTo at build time
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -465,7 +465,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Key = "fluent-headers",
             Value = "payload",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

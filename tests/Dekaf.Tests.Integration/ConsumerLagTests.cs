@@ -29,7 +29,7 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume only half
@@ -83,7 +83,7 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume all messages
@@ -131,7 +131,7 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Key = $"p0-key-{i}",
                 Value = $"p0-value-{i}",
                 Partition = 0
-            });
+            }, CancellationToken.None);
         }
 
         // 3 messages to partition 1
@@ -143,7 +143,7 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Key = $"p1-key-{i}",
                 Value = $"p1-value-{i}",
                 Partition = 1
-            });
+            }, CancellationToken.None);
         }
 
         // 2 messages to partition 2
@@ -155,7 +155,7 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Key = $"p2-key-{i}",
                 Value = $"p2-value-{i}",
                 Partition = 2
-            });
+            }, CancellationToken.None);
         }
 
         // Consume only from partitions 0 and 1, partially

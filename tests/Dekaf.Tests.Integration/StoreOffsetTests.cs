@@ -30,7 +30,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consume with manual commit mode
@@ -86,7 +86,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consume with manual commit mode
@@ -142,7 +142,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // First consumer: consume 3 messages and commit
@@ -212,7 +212,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // First consumer: consume but don't commit
@@ -280,7 +280,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -348,7 +348,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // First consumer: consume with auto commit

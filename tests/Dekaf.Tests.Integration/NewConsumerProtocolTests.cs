@@ -31,7 +31,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -71,7 +71,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -118,7 +118,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -163,7 +163,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer: consume 3 messages and commit
@@ -235,14 +235,14 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = topic1,
             Key = "key1",
             Value = "topic1-message"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic2,
             Key = "key2",
             Value = "topic2-message"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -287,7 +287,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -354,7 +354,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -402,7 +402,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -451,7 +451,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -498,7 +498,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -550,7 +550,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = topic,
             Key = "key",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // First consumer with static membership
         await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
@@ -579,7 +579,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             Topic = topic,
             Key = "key",
             Value = "value2"
-        });
+        }, CancellationToken.None);
 
         // Second consumer with same static membership should rejoin quickly
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -621,7 +621,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -676,7 +676,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

@@ -72,7 +72,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"hosted-key-{i}",
                 Value = $"hosted-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Wait for messages to be processed

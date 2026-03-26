@@ -163,7 +163,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }).Throws<ObjectDisposedException>();
     }
 

@@ -28,7 +28,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Topic = topic,
             Key = "lz4-key",
             Value = "lz4-compressed-value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -120,7 +120,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Topic = topic,
             Key = "large-compressed",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -217,7 +217,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Topic = topic,
             Key = null,
             Value = "null-key-compressed"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -259,7 +259,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Key = "with-headers",
             Value = "{\"data\":\"compressed-with-headers\"}",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -301,7 +301,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"cross-key-{i}",
                 Value = $"cross-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume messages with a separate consumer instance

@@ -60,7 +60,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-p{p}",
                 Value = $"value-original-p{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Expand partitions from 2 to 4 using admin client
@@ -86,7 +86,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-p{p}",
                 Value = $"value-expanded-p{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consumer should discover all 4 partitions

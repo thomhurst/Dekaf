@@ -69,7 +69,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "plain-consumer-key",
             Value = "plain-consumer-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume with SASL/PLAIN
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -145,7 +145,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "scram256-consumer-key",
             Value = "scram256-consumer-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume with SCRAM-SHA-256
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -221,7 +221,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "scram512-consumer-key",
             Value = "scram512-consumer-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume with SCRAM-SHA-512
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -271,7 +271,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 Topic = "any-topic",
                 Key = "key",
                 Value = "value"
-            });
+            }, CancellationToken.None);
         });
     }
 
@@ -406,7 +406,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "cross-key",
             Value = "cross-value"
-        });
+        }, CancellationToken.None);
 
         // Consume with SCRAM-SHA-256
         await using var consumer = await Kafka.CreateConsumer<string, string>()

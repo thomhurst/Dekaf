@@ -78,7 +78,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-            });
+            }, CancellationToken.None);
 
         // Produce sequenced messages to each partition
         for (var p = 0; p < partitionCount; p++)
@@ -91,7 +91,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
                     Key = $"p{p}-key",
                     Value = $"p{p}-seq-{i:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 

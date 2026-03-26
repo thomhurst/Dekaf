@@ -111,7 +111,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

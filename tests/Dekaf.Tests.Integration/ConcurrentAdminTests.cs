@@ -261,7 +261,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
 
             // Consume and commit so the group coordinator is established
             await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -358,7 +358,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                         Topic = topic,
                         Key = $"key-{i}",
                         Value = $"value-{i}"
-                    }).ConfigureAwait(false);
+                    }, CancellationToken.None).ConfigureAwait(false);
 
                     Interlocked.Increment(ref producedCount);
                 }
@@ -423,7 +423,7 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         await using var admin = CreateAdminClient();

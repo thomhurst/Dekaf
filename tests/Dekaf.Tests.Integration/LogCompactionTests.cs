@@ -67,14 +67,14 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             Topic = topic,
             Key = "duplicate-key",
             Value = "first-value"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "duplicate-key",
             Value = "second-value"
-        });
+        }, CancellationToken.None);
 
         // Consume from beginning - both messages should be visible before compaction
         await using var consumer = await Kafka.CreateConsumer<string, string>()

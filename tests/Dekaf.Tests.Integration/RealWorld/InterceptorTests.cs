@@ -29,7 +29,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "traced-key",
             Value = "traced-value"
-        });
+        }, CancellationToken.None);
 
         // Verify interceptor was called
         await Assert.That(interceptor.SendCount).IsEqualTo(1);
@@ -73,7 +73,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Wait briefly for async acknowledgement callbacks
@@ -103,7 +103,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "chained",
             Value = "intercepted"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -139,7 +139,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -182,7 +182,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -232,7 +232,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "e2e-trace",
             Value = "end-to-end"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

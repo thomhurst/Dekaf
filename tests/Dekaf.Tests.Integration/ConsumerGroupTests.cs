@@ -31,7 +31,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -83,7 +83,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Start first consumer
@@ -137,7 +137,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consume with AutoOffsetReset.Earliest (new group, no committed offsets)
@@ -186,7 +186,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer: consume 3 messages and commit
@@ -256,14 +256,14 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             Topic = topic1,
             Key = "key1",
             Value = "topic1-message"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic2,
             Key = "key2",
             Value = "topic2-message"
-        });
+        }, CancellationToken.None);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -338,7 +338,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -383,7 +383,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             Key = "key",
             Value = "value",
             Partition = 1
-        });
+        }, CancellationToken.None);
 
         // Act - manually assign without group
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -424,7 +424,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             Topic = topic,
             Key = "key",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // First consumer with static membership
         await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
@@ -454,7 +454,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             Topic = topic,
             Key = "key",
             Value = "value2"
-        });
+        }, CancellationToken.None);
 
         // Second consumer with same static membership should rejoin quickly
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -497,7 +497,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -552,7 +552,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -604,7 +604,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

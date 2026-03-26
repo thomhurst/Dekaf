@@ -143,7 +143,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"ff-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -194,7 +194,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                     Key = $"p{p}-key-{i}",
                     Value = $"p{p}-value-{i}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -250,7 +250,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"producer1-value-{i}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -267,7 +267,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"producer2-value-{i}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -320,7 +320,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                 Topic = topic,
                 Key = "same-key",
                 Value = $"small-batch-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

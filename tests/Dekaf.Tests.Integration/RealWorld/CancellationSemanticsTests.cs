@@ -73,7 +73,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - start produce, wait for append, then cancel
         using var cts = new CancellationTokenSource();
@@ -145,7 +145,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - produce 10 messages, cancel 5 of them
         var tasks = new List<(int Index, CancellationTokenSource Cts, ValueTask<RecordMetadata> Task)>();
@@ -244,7 +244,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - cancel flush quickly
@@ -301,7 +301,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -380,7 +380,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();

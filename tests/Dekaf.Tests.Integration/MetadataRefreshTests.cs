@@ -104,7 +104,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
                 Key = $"key-original-{p}",
                 Value = $"value-original-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Expand partitions from 2 to 4 using admin client

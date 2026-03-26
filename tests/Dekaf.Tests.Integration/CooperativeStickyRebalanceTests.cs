@@ -44,7 +44,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
                 Key = $"key-p{p}",
                 Value = $"value-p{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consume from all 4 partitions
@@ -100,7 +100,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
                 Key = $"key-p{p}",
                 Value = $"value-p{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Should receive messages from remaining partitions
@@ -143,7 +143,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer joins
@@ -211,7 +211,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

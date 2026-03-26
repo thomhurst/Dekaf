@@ -822,7 +822,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "sync-key",
             Value = "sync-value"
-        });
+        }, CancellationToken.None);
 
         // Flush to ensure delivery
         await producer.FlushWithTimeoutAsync();
@@ -907,7 +907,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Flush to ensure all delivered

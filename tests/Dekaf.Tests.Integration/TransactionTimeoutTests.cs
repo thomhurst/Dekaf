@@ -39,7 +39,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                     Topic = topic1,
                     Key = $"t1-key-{i}",
                     Value = $"t1-value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             // Write 3 messages to topic2
@@ -50,7 +50,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                     Topic = topic2,
                     Key = $"t2-key-{i}",
                     Value = $"t2-value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             await txn.CommitAsync();
@@ -133,7 +133,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                     Topic = topic,
                     Key = "timeout-key",
                     Value = "timeout-value"
-                });
+                }, CancellationToken.None);
 
                 // Wait for the transaction to time out on the broker side
                 await Task.Delay(TimeSpan.FromSeconds(15));
@@ -166,7 +166,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "committed-key",
                 Value = "committed-value"
-            });
+            }, CancellationToken.None);
             await txn2.CommitAsync();
         }
 
@@ -212,7 +212,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "open-txn-key",
                 Value = "open-txn-value"
-            });
+            }, CancellationToken.None);
 
             // Flush to ensure the message is written to the broker
             await producer.FlushWithTimeoutAsync();
@@ -266,14 +266,14 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "aborted-key-1",
                 Value = "aborted-value-1"
-            });
+            }, CancellationToken.None);
 
             await txn1.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "aborted-key-2",
                 Value = "aborted-value-2"
-            });
+            }, CancellationToken.None);
 
             await txn1.AbortAsync();
         }
@@ -286,14 +286,14 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "committed-key-1",
                 Value = "committed-value-1"
-            });
+            }, CancellationToken.None);
 
             await txn2.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "committed-key-2",
                 Value = "committed-value-2"
-            });
+            }, CancellationToken.None);
 
             await txn2.CommitAsync();
         }
@@ -356,7 +356,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
                     Topic = topic,
                     Key = $"large-key-{i:D4}",
                     Value = $"large-value-{i:D4}"
-                });
+                }, CancellationToken.None);
             }
 
             await txn.CommitAsync();

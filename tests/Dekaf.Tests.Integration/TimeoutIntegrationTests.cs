@@ -104,7 +104,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            });
+            }, CancellationToken.None);
 
             // Dispose with timeout to ensure it doesn't hang
             var disposeTask = producer.DisposeAsync().AsTask();
@@ -261,7 +261,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic, Key = "warmup", Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - Produce with a cancellation token, wait for delivery to complete,
         // then cancel the token and verify the already-completed task is not affected.
@@ -381,7 +381,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                     Topic = "test-topic",
                     Key = "key1",
                     Value = "value1"
-                });
+                }, CancellationToken.None);
             }
             catch
             {
@@ -458,7 +458,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            });
+            }, CancellationToken.None);
 
             // Act - Dispose from multiple threads simultaneously
             var disposeTasks = new List<Task>();
@@ -540,7 +540,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - Now fast path is active, produce and wait for delivery to complete,
         // then cancel the token. Since cancellation happens after delivery, it must not
@@ -679,7 +679,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource();
         var tasks = new List<Task<RecordMetadata>>();
@@ -742,7 +742,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Now add awaited produce (will trigger flush)
@@ -864,7 +864,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                     Topic = topic,
                     Key = "key1",
                     Value = "value1"
-                });
+                }, CancellationToken.None);
             });
         }
         finally
@@ -936,7 +936,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Flush completes successfully — all messages were queued

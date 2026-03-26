@@ -61,7 +61,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume and verify order
@@ -121,7 +121,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                     Topic = topic,
                     Key = key,
                     Value = $"{key}-seq-{i}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -216,7 +216,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = "ordered-key",
                 Value = $"seq-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -297,7 +297,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = "batch-key",
                 Value = $"batch-msg-{i:D4}" // Pad for consistent size
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -440,7 +440,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                     Topic = topic,
                     Key = "flush-test",
                     Value = $"seq-{seq:D4}"
-                });
+                }, CancellationToken.None);
             }
 
             await producer.FlushWithTimeoutAsync();
@@ -495,7 +495,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic, Key = "mixed", Value = $"seq-{i:D4}"
-                });
+                }, CancellationToken.None);
             }
             else
             {
@@ -503,7 +503,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic, Key = "mixed", Value = $"seq-{i:D4}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -558,7 +558,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = "stress",
                 Value = $"msg-{i:D5}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -615,7 +615,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                     Topic = topic,
                     Key = key,
                     Value = $"{key}-seq-{i:D3}"
-                });
+                }, CancellationToken.None);
             }
         }).ToArray();
 

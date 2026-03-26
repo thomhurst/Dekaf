@@ -35,7 +35,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Act - start 3 consumers sequentially, waiting for each to get assignments
@@ -110,7 +110,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Start first consumer - should get all 4 partitions
@@ -153,7 +153,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-extra-{p}",
                 Value = $"value-extra-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer 2 needs to consume to trigger group join
@@ -200,7 +200,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Start two consumers
@@ -236,7 +236,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-more-{p}",
                 Value = $"value-more-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -262,7 +262,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-after-{p}",
                 Value = $"value-after-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Wait for session timeout to expire and rebalance to complete
@@ -301,7 +301,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -356,7 +356,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer1 with rebalance listener - gets all 4 partitions initially
@@ -397,7 +397,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Key = $"key-extra-{p}",
                 Value = $"value-extra-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer2 consuming triggers group join and rebalance
@@ -437,7 +437,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer: consume 5 messages and commit
@@ -508,7 +508,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - start 2 consumers, each consuming in background

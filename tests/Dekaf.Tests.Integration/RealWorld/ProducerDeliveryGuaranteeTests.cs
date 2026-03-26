@@ -64,7 +64,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "fast-key",
             Value = "fast-value"
-        });
+        }, CancellationToken.None);
 
         await producer.FlushWithTimeoutAsync();
 
@@ -101,7 +101,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Flush should wait for all in-flight messages
@@ -146,7 +146,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Give time for messages to send, then flush fully
@@ -240,7 +240,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = $"batch1-key-{i}",
                 Value = $"batch1-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -253,7 +253,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = $"batch2-key-{i}",
                 Value = $"batch2-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -299,7 +299,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                });
+                }, CancellationToken.None);
             }
             // DisposeAsync should flush remaining messages
         }
@@ -342,15 +342,15 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic1, Key = $"t1-key-{i}", Value = $"t1-value-{i}"
-            });
+            }, CancellationToken.None);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic2, Key = $"t2-key-{i}", Value = $"t2-value-{i}"
-            });
+            }, CancellationToken.None);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic3, Key = $"t3-key-{i}", Value = $"t3-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Verify each topic
@@ -395,7 +395,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             Key = "ts-key",
             Value = "ts-value",
             Timestamp = timestamp
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

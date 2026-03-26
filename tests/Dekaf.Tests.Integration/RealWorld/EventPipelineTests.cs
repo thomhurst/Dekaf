@@ -35,7 +35,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = inputTopic,
                 Key = $"order-{i}",
                 Value = $"{{\"orderId\":{i},\"amount\":{(i + 1) * 10.50}}}"
-            });
+            }, CancellationToken.None);
         }
 
         // Pipeline worker: consume, transform, produce
@@ -69,7 +69,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Key = msg.Key,
                 Value = enrichedValue,
                 Headers = headers
-            });
+            }, CancellationToken.None);
 
             processedCount++;
             if (processedCount >= 5)
@@ -132,7 +132,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = inputTopic,
                 Key = msg.StartsWith("INVALID", StringComparison.Ordinal) ? "bad-key" : "good-key",
                 Value = msg
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer with DLQ routing
@@ -170,7 +170,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                         { "original-topic", inputTopic },
                         { "original-offset", msg.Offset.ToString() }
                     }
-                });
+                }, CancellationToken.None);
                 dlqCount++;
             }
             else
@@ -241,7 +241,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                 { "correlation-id", Guid.NewGuid().ToString() },
                 { "stage", "ingestion" }
             }
-        });
+        }, CancellationToken.None);
 
         // Stage 2: Consume from stage 1, add enrichment headers, produce to stage 2
         await using var stage1Consumer = await Kafka.CreateConsumer<string, string>()
@@ -267,7 +267,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             Key = stage1Msg.Value.Key,
             Value = $"enriched:{stage1Msg.Value.Value}",
             Headers = enrichedHeaders
-        });
+        }, CancellationToken.None);
 
         // Stage 3: Consume from stage 2, add final headers
         await using var stage2Consumer = await Kafka.CreateConsumer<string, string>()
@@ -292,7 +292,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             Key = stage2Msg.Value.Key,
             Value = $"final:{stage2Msg.Value.Value}",
             Headers = finalHeaders
-        });
+        }, CancellationToken.None);
 
         // Verify final message has accumulated headers from all stages
         await using var finalConsumer = await Kafka.CreateConsumer<string, string>()
@@ -333,21 +333,21 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             Topic = orderTopic,
             Key = "order-100",
             Value = "order-created"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = paymentTopic,
             Key = "payment-100",
             Value = "payment-received"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = shipmentTopic,
             Key = "shipment-100",
             Value = "shipment-dispatched"
-        });
+        }, CancellationToken.None);
 
         // Aggregating consumer subscribes to all three topics
         await using var aggregator = await Kafka.CreateConsumer<string, string>()
@@ -488,7 +488,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = inputTopic,
                 Key = "sensor-1",
                 Value = $"{(i + 1) * 5}" // temperatures: 5, 10, 15, ...50
-            });
+            }, CancellationToken.None);
         }
 
         // Batch aggregator
@@ -520,7 +520,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
                     Key = "sensor-1-summary",
                     Value = $"{{\"avg\":{avg},\"min\":{min},\"max\":{max},\"count\":{batch.Count}}}",
                     Headers = new Headers { { "batch-size", batch.Count.ToString() } }
-                });
+                }, CancellationToken.None);
                 break;
             }
         }

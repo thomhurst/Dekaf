@@ -26,7 +26,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = 42,
             Value = "answer-to-everything"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -61,7 +61,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = key,
             Value = "timestamp-keyed-event"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<long, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -96,7 +96,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = key,
             Value = "guid-keyed-event"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -131,7 +131,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = "binary-event",
             Value = payload
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -167,7 +167,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = key,
             Value = value
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -260,7 +260,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = "raw-bytes",
             Value = memoryPayload
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

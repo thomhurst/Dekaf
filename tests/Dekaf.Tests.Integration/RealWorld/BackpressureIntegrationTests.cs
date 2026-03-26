@@ -194,7 +194,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = messageValue
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();

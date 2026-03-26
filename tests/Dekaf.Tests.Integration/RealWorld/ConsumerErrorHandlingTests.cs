@@ -54,7 +54,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Topic = topic2,
             Key = "key",
             Value = "from-topic2"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -119,7 +119,7 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "key",
             Value = "value"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Use manual assignment to avoid group coordinator delays
         await using var consumer = await Kafka.CreateConsumer<string, string>()

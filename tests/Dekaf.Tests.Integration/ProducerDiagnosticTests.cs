@@ -51,7 +51,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
             Topic = topic,
             Key = "k",
             Value = "v"
-        });
+        }, CancellationToken.None);
 
         await producer.FlushAsync(cancellationToken);
     }
@@ -98,7 +98,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);
@@ -121,7 +121,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);
@@ -148,7 +148,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);
@@ -176,7 +176,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
                     Partition = p,
                     Key = p,
                     Value = $"p{p}-v{i}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -205,7 +205,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         var sendElapsed = sw.Elapsed;
@@ -263,7 +263,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);

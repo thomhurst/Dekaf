@@ -78,7 +78,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                     Topic = topic,
                     Key = $"ff-{i}",
                     Value = $"fire-and-forget-{i}"
-                });
+                }, CancellationToken.None);
             }
         });
 
@@ -275,7 +275,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"concurrent-{i}",
                 Value = $"concurrent-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await consumeTask;
@@ -352,7 +352,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         var allConsumed = new ConcurrentBag<ConsumeResult<string, string>>();

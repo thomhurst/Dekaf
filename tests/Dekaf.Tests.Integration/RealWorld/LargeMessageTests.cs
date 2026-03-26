@@ -39,7 +39,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             Key = "key",
             Value = "value",
             Headers = headers
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Consume back
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -94,7 +94,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             Key = "key",
             Value = "value",
             Headers = headers
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Consume
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -186,7 +186,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
                 Key = $"key-p{partition}",
                 Value = $"value-p{partition}",
                 Partition = partition
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consume all
@@ -243,7 +243,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             Key = unicodeKey,
             Value = unicodeValue,
             Headers = headers
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Consume
         await using var consumer = await Kafka.CreateConsumer<string, string>()

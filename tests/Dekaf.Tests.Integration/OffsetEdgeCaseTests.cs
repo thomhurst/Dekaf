@@ -33,7 +33,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -74,7 +74,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Wait to ensure all messages have timestamps before our future timestamp
@@ -123,7 +123,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
 
             if (i < 4)
             {
@@ -190,7 +190,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -250,7 +250,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer 1: consumes and commits offset 3
@@ -339,7 +339,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -360,7 +360,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key-new",
             Value = "value-new"
-        });
+        }, CancellationToken.None);
 
         // Act - try to consume. The consumer should handle the out-of-range seek gracefully.
         // With AutoOffsetReset.Earliest, Kafka resets to the earliest available offset
