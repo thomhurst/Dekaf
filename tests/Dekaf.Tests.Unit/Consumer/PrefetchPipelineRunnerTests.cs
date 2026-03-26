@@ -444,6 +444,127 @@ public class PrefetchPipelineRunnerTests
 
     #endregion
 
+    #region Scenario 6: In-flight fetch exception absorbed during cleanup drains
+
+    [Test]
+    public async Task RunAsync_InFlightFetchThrowsDuringNoAssignmentDrain_ExceptionAbsorbed()
+    {
+        // When assignment drops to 0, the in-flight fetch is drained via the safe path.
+        // If the in-flight fetch throws, the exception should be logged but NOT propagate,
+        // and ConsecutiveErrors should NOT be incremented for the drain.
+        var fetchCount = 0;
+        var assignmentCount = 1;
+        var loggedErrors = new List<Exception>();
+        var drainHappened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                    return ValueTask.CompletedTask; // Synchronous fetch succeeds
+                if (id == 2)
+                {
+                    // Eager fetch will fail — drop assignment so next iteration drains safely
+                    assignmentCount = 0;
+                    return ValueTask.FromException(new InvalidOperationException("in-flight fetch error"));
+                }
+                ct.ThrowIfCancellationRequested();
+                return ValueTask.CompletedTask;
+            },
+            getAssignmentCount: () => assignmentCount,
+            ensureAssignment: ct =>
+            {
+                // After drain happens (assignment is 0), signal so we can verify
+                if (assignmentCount == 0 && fetchCount >= 2)
+                    drainHappened.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            logError: ex => loggedErrors.Add(ex));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var runTask = runner.RunAsync(cts.Token);
+
+        // Wait for the drain to happen
+        await drainHappened.Task;
+
+        // Cancel to stop the loop
+        await cts.CancelAsync();
+
+        try { await runTask; }
+        catch (OperationCanceledException) { /* expected */ }
+
+        // The in-flight exception was logged
+        await Assert.That(loggedErrors).Count().IsEqualTo(1);
+        await Assert.That(loggedErrors[0].Message).IsEqualTo("in-flight fetch error");
+
+        // ConsecutiveErrors should be 0 — the drain is a cleanup path, not a fetch attempt
+        await Assert.That(runner.ConsecutiveErrors).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RunAsync_InFlightFetchThrowsDuringMemoryLimitDrain_ExceptionAbsorbed()
+    {
+        // When memory limit is hit, the in-flight fetch is drained via the safe path.
+        // If the in-flight fetch throws, the exception should be logged but NOT propagate,
+        // and ConsecutiveErrors should NOT be incremented for the drain.
+        var fetchCount = 0;
+        long prefetchedBytes = 0;
+        var loggedErrors = new List<Exception>();
+        var drainHappened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                    return ValueTask.CompletedTask; // Synchronous fetch succeeds
+                if (id == 2)
+                {
+                    // Eager fetch will fail — also push prefetchedBytes over the limit
+                    Interlocked.Exchange(ref prefetchedBytes, 2048);
+                    return ValueTask.FromException(new InvalidOperationException("in-flight fetch error"));
+                }
+                ct.ThrowIfCancellationRequested();
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: 1024,
+            getPrefetchedBytes: () => Interlocked.Read(ref prefetchedBytes),
+            waitForMemoryAvailable: ct =>
+            {
+                drainHappened.TrySetResult();
+                ct.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            },
+            logError: ex => loggedErrors.Add(ex));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var runTask = runner.RunAsync(cts.Token);
+
+        // Wait for the drain and memory-limit wait to happen
+        await drainHappened.Task;
+
+        // Cancel to stop the loop
+        await cts.CancelAsync();
+
+        try { await runTask; }
+        catch (OperationCanceledException) { /* expected */ }
+
+        // The in-flight exception was logged
+        await Assert.That(loggedErrors).Count().IsEqualTo(1);
+        await Assert.That(loggedErrors[0].Message).IsEqualTo("in-flight fetch error");
+
+        // ConsecutiveErrors should be 0 — the drain is a cleanup path, not a fetch attempt
+        await Assert.That(runner.ConsecutiveErrors).IsEqualTo(0);
+    }
+
+    #endregion
+
     #region Consecutive error counting
 
     [Test]

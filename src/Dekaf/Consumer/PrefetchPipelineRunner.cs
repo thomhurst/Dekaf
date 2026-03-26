@@ -77,8 +77,9 @@ internal sealed class PrefetchPipelineRunner
 
                     if (_getAssignmentCount() == 0)
                     {
-                        // No assignment — drain any in-flight fetch before waiting
-                        await DrainInFlightPrefetchAsync().ConfigureAwait(false);
+                        // No assignment — drain any in-flight fetch before waiting.
+                        // Use safe variant: in-flight fetch errors are cleanup, not fetch attempts.
+                        await DrainInFlightPrefetchSafelyAsync().ConfigureAwait(false);
                         await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -88,8 +89,9 @@ internal sealed class PrefetchPipelineRunner
                     var currentPrefetchedBytes = _getPrefetchedBytes();
                     if (currentPrefetchedBytes >= maxBytes)
                     {
-                        // At memory limit — drain any in-flight fetch before pausing
-                        await DrainInFlightPrefetchAsync().ConfigureAwait(false);
+                        // At memory limit — drain any in-flight fetch before pausing.
+                        // Use safe variant: in-flight fetch errors are cleanup, not fetch attempts.
+                        await DrainInFlightPrefetchSafelyAsync().ConfigureAwait(false);
                         _logMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _waitForMemoryAvailable(cancellationToken).ConfigureAwait(false);
                         continue;
@@ -130,7 +132,11 @@ internal sealed class PrefetchPipelineRunner
                         var pending = InFlightPrefetch;
                         InFlightPrefetch = null;
                         try { await pending.ConfigureAwait(false); }
-                        catch (Exception) { ConsecutiveErrors++; }
+                        catch (Exception inFlightEx)
+                        {
+                            ConsecutiveErrors++;
+                            _logError(inFlightEx);
+                        }
                     }
                     ConsecutiveErrors++;
                     _logError(ex);
@@ -174,6 +180,7 @@ internal sealed class PrefetchPipelineRunner
 
     /// <summary>
     /// Drains and nulls the in-flight prefetch task.
+    /// Exceptions propagate to the caller.
     /// </summary>
     private async Task DrainInFlightPrefetchAsync()
     {
@@ -183,5 +190,27 @@ internal sealed class PrefetchPipelineRunner
         var pending = InFlightPrefetch;
         InFlightPrefetch = null;
         await pending.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Drains and nulls the in-flight prefetch task, absorbing any exceptions.
+    /// Used in cleanup paths (no-assignment, memory-limit) where the in-flight fetch error
+    /// should not propagate or increment <see cref="ConsecutiveErrors"/>.
+    /// </summary>
+    private async Task DrainInFlightPrefetchSafelyAsync()
+    {
+        if (InFlightPrefetch is null)
+            return;
+
+        var pending = InFlightPrefetch;
+        InFlightPrefetch = null;
+        try
+        {
+            await pending.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logError(ex);
+        }
     }
 }
