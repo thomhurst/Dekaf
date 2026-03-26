@@ -13,7 +13,7 @@ public sealed class FetchResponse : IKafkaResponse
     // One instance per fetch cycle, so a small pool suffices.
     private static readonly FetchResponsePool s_pool = new();
 
-    private volatile bool _pooled;
+    private int _pooled; // 0 = active, 1 = returned to pool; used with Interlocked for atomic guard
     private IReadOnlyList<FetchResponseTopic> _responses = Array.Empty<FetchResponseTopic>();
 
     public static ApiKey ApiKey => ApiKey.Fetch;
@@ -42,7 +42,7 @@ public sealed class FetchResponse : IKafkaResponse
     {
         get
         {
-            ObjectDisposedException.ThrowIf(_pooled, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _responses;
         }
         internal set => _responses = value;
@@ -61,10 +61,8 @@ public sealed class FetchResponse : IKafkaResponse
     /// </summary>
     internal void ReturnToPool()
     {
-        if (_pooled)
+        if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
             return;
-
-        _pooled = true;
 
         foreach (var topic in _responses)
         {
@@ -77,7 +75,7 @@ public sealed class FetchResponse : IKafkaResponse
     internal static FetchResponse Rent()
     {
         var item = s_pool.Rent();
-        item._pooled = false;
+        Volatile.Write(ref item._pooled, 0);
         return item;
     }
 
@@ -129,7 +127,7 @@ public sealed class FetchResponseTopic
     // Pool to reuse FetchResponseTopic instances. Typically 1-3 per fetch cycle.
     private static readonly FetchResponseTopicPool s_pool = new();
 
-    private volatile bool _pooled;
+    private int _pooled; // 0 = active, 1 = returned to pool
     private IReadOnlyList<FetchResponsePartition> _partitions = Array.Empty<FetchResponsePartition>();
 
     /// <summary>
@@ -149,7 +147,7 @@ public sealed class FetchResponseTopic
     {
         get
         {
-            ObjectDisposedException.ThrowIf(_pooled, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _partitions;
         }
         internal set => _partitions = value;
@@ -160,10 +158,8 @@ public sealed class FetchResponseTopic
     /// </summary>
     internal void ReturnToPool()
     {
-        if (_pooled)
+        if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
             return;
-
-        _pooled = true;
 
         foreach (var partition in _partitions)
         {
@@ -176,7 +172,7 @@ public sealed class FetchResponseTopic
     internal static FetchResponseTopic Rent()
     {
         var item = s_pool.Rent();
-        item._pooled = false;
+        Volatile.Write(ref item._pooled, 0);
         return item;
     }
 
@@ -236,8 +232,9 @@ public sealed class FetchResponsePartition
     // Pool to reuse FetchResponsePartition instances. Typically 1-6+ per fetch cycle.
     private static readonly FetchResponsePartitionPool s_pool = new();
 
-    private volatile bool _pooled;
+    private int _pooled; // 0 = active, 1 = returned to pool
     private IReadOnlyList<RecordBatch>? _records;
+    private IReadOnlyList<AbortedTransaction>? _abortedTransactions;
 
     internal static List<RecordBatch> RentRecordBatchList() => s_recordBatchListPool.Rent();
 
@@ -286,7 +283,15 @@ public sealed class FetchResponsePartition
     /// <summary>
     /// Aborted transactions (for read committed isolation).
     /// </summary>
-    public IReadOnlyList<AbortedTransaction>? AbortedTransactions { get; internal set; }
+    public IReadOnlyList<AbortedTransaction>? AbortedTransactions
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
+            return _abortedTransactions;
+        }
+        internal set => _abortedTransactions = value;
+    }
 
     /// <summary>
     /// Preferred read replica.
@@ -300,7 +305,7 @@ public sealed class FetchResponsePartition
     {
         get
         {
-            ObjectDisposedException.ThrowIf(_pooled, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _records;
         }
         internal set => _records = value;
@@ -312,17 +317,16 @@ public sealed class FetchResponsePartition
     /// </summary>
     internal void ReturnToPool()
     {
-        if (_pooled)
+        if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
             return;
 
-        _pooled = true;
         s_pool.Return(this);
     }
 
     internal static FetchResponsePartition Rent()
     {
         var item = s_pool.Rent();
-        item._pooled = false;
+        Volatile.Write(ref item._pooled, 0);
         return item;
     }
 
@@ -424,7 +428,7 @@ public sealed class FetchResponsePartition
             item.DivergingEpoch = null;
             item.CurrentLeader = null;
             item.SnapshotId = null;
-            item.AbortedTransactions = null;
+            item._abortedTransactions = null;
             item.PreferredReadReplica = -1;
             item._records = null;
         }

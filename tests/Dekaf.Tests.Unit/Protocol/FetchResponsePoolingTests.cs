@@ -276,6 +276,15 @@ public class FetchResponsePoolingTests
     }
 
     [Test]
+    public async Task FetchResponsePartition_AccessAbortedTransactionsAfterReturn_ThrowsObjectDisposedException()
+    {
+        var partition = FetchResponsePartition.Rent();
+        partition.ReturnToPool();
+
+        await Assert.That(() => partition.AbortedTransactions).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
     public async Task FetchResponse_AccessResponsesAfterRentAgain_Succeeds()
     {
         var response = FetchResponse.Rent();
