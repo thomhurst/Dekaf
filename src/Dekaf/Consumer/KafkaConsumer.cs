@@ -1037,9 +1037,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Update high watermark from response (thread-safe with ConcurrentDictionary)
                 _highWatermarks[tp] = partitionResponse.HighWatermark;
 
-                var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
+                // Cache Records reference to avoid repeated Volatile.Read from the pool guard
+                var records = partitionResponse.Records;
 
-                if (hasRecords)
+                if (records is { Count: > 0 })
                 {
                     // We have new records - reset EOF state for this partition
                     lock (_prefetchLock)
@@ -1050,7 +1051,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var pending = new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
-                        partitionResponse.Records!,
+                        records,
                         partitionResponse.AbortedTransactions,
                         activityName: activityName);
 
@@ -2245,9 +2246,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Update high watermark from response (thread-safe with ConcurrentDictionary)
                 _highWatermarks[tp] = partitionResponse.HighWatermark;
 
-                var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
+                // Cache Records reference to avoid repeated Volatile.Read from the pool guard
+                var records = partitionResponse.Records;
 
-                if (hasRecords)
+                if (records is { Count: > 0 })
                 {
                     // We have new records - reset EOF state for this partition
                     lock (_prefetchLock)
@@ -2260,7 +2262,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     pendingItems.Add(new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
-                        partitionResponse.Records!,
+                        records,
                         partitionResponse.AbortedTransactions,
                         activityName: activityName));
                 }
