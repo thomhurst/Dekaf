@@ -635,6 +635,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
 
+        // When interceptors are configured, fall back to ProducerMessage overload
+        // so interceptors can inspect/modify the message before serialization.
+        if (_interceptors is not null)
+            return ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
         var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo);
         if (inThreadLocalCache ||
