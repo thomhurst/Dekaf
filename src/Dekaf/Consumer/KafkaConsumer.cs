@@ -918,11 +918,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
-                // Fast path: single broker avoids Task.WhenAll + ArraySegment boxing overhead
+                // Fast path: single broker skips Task.WhenAll's internal continuation array
+                // allocation and the ArraySegment boxing. Exception propagation is equivalent
+                // for a single task since WhenAll just rethrows the first exception.
                 if (brokerCount == 1)
+                {
                     await fetchTasks[0].ConfigureAwait(false);
+                }
                 else
+                {
                     await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -2017,11 +2023,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
-                // Fast path: single broker avoids Task.WhenAll + ArraySegment boxing overhead
+                // Fast path: single broker skips Task.WhenAll's internal continuation array
+                // allocation and the ArraySegment boxing. Exception propagation is equivalent
+                // for a single task since WhenAll just rethrows the first exception.
                 if (brokerCount == 1)
+                {
                     await fetchTasks[0].ConfigureAwait(false);
+                }
                 else
+                {
                     await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                }
 
                 // Enqueue results from all brokers (now on main thread, safe for Queue)
                 for (var j = 0; j < brokerCount; j++)
