@@ -1221,11 +1221,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// With depth 1, fetches are purely sequential. With depth 2, one eager fetch
     /// overlaps with the synchronous fetch. Higher values allow more overlapping
     /// fetches, improving throughput for single-broker setups.
+    /// The upper bound of 8 prevents excessive in-flight fetch requests per consumer,
+    /// which would saturate broker connections and increase memory usage from buffered
+    /// responses without proportional throughput gain.
     /// </summary>
     /// <param name="depth">The pipeline depth (1-8). Default is 2.</param>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
     {
+        // Capped at 8: beyond this, additional in-flight fetches saturate broker
+        // connections and buffer memory without meaningful throughput improvement.
         if (depth is < 1 or > 8)
             throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be between 1 and 8");
         _prefetchPipelineDepth = depth;
