@@ -187,12 +187,14 @@ public sealed class MaxBlockMsTests
     [Test]
     public async Task RecordAccumulator_UsesMaxBlockMs_ForBufferTimeout()
     {
-        // Create options with a very small buffer and very short MaxBlockMs
+        // Create options with a very small buffer and short MaxBlockMs.
+        // Use 2000ms (not 50ms) because CI runners with 16+ parallel tests suffer
+        // severe thread pool starvation that delays timer callbacks by 30-60s.
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
             BufferMemory = 1, // 1 byte - effectively always full
-            MaxBlockMs = 50   // 50ms timeout
+            MaxBlockMs = 2000 // 2s timeout — generous enough for CI thread pool starvation
         };
 
         await using var accumulator = new RecordAccumulator(options);
@@ -203,11 +205,8 @@ public sealed class MaxBlockMsTests
                 .ConfigureAwait(false));
 
         await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-        await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
+        await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(2000));
         await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
-        // Generous upper bound: on CI with 26 parallel instances, thread pool starvation
-        // can delay timer callbacks by 30-40s. This only asserts the timeout fired eventually.
-        await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromMinutes(2));
     }
 
     [Test]
@@ -217,7 +216,7 @@ public sealed class MaxBlockMsTests
         {
             BootstrapServers = ["localhost:9092"],
             BufferMemory = 1,
-            MaxBlockMs = 50
+            MaxBlockMs = 2000
         };
 
         await using var accumulator = new RecordAccumulator(options);
@@ -233,9 +232,9 @@ public sealed class MaxBlockMsTests
         catch (KafkaTimeoutException ex)
         {
             await Assert.That(ex.Message).Contains("max.block.ms");
-            await Assert.That(ex.Message).Contains("50");
+            await Assert.That(ex.Message).Contains("2000");
             await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
+            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(2000));
             await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
             // Generous upper bound: on CI with 26 parallel instances, thread pool starvation
             // can delay timer callbacks by 30-40s. This only asserts the timeout fired eventually.

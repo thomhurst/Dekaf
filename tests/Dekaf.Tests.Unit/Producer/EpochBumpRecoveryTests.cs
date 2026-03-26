@@ -519,8 +519,10 @@ public sealed class EpochBumpRecoveryTests
             accumulator.GetAndIncrementSequence(new TopicPartition("test", i), 100);
         }
 
-        // Reset while concurrent threads are incrementing
-        var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        // Reset while concurrent threads are incrementing.
+        // Use generous timeouts — CI runners with 16+ parallel tests suffer thread pool
+        // starvation that can delay Task.Run/Task.Delay by 10-30x.
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var tasks = new List<Task>();
 
         for (var i = 0; i < 4; i++)
@@ -538,7 +540,7 @@ public sealed class EpochBumpRecoveryTests
         // Reset a few times during concurrent access
         for (var i = 0; i < 5; i++)
         {
-            await Task.Delay(30);
+            await Task.Delay(200);
             accumulator.ResetSequenceNumbers();
         }
 
