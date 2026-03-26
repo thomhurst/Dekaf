@@ -842,8 +842,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         // No assignment — drain any in-flight fetch before waiting
                         if (inFlightPrefetch is not null)
                         {
-                            await inFlightPrefetch.ConfigureAwait(false);
-                            inFlightPrefetch = null;
+                            var pending = inFlightPrefetch;
+                            inFlightPrefetch = null; // null first, so the catch block doesn't re-drain
+                            await pending.ConfigureAwait(false);
                         }
                         await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                         continue;
@@ -857,8 +858,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         // At memory limit — drain any in-flight fetch before pausing
                         if (inFlightPrefetch is not null)
                         {
-                            await inFlightPrefetch.ConfigureAwait(false);
-                            inFlightPrefetch = null;
+                            var pending = inFlightPrefetch;
+                            inFlightPrefetch = null; // null first, so the catch block doesn't re-drain
+                            await pending.ConfigureAwait(false);
                         }
                         // Wait for consumer to signal memory is available instead of polling
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
@@ -870,8 +872,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Its network round-trip overlapped with the loop overhead above.
                     if (inFlightPrefetch is not null)
                     {
-                        await inFlightPrefetch.ConfigureAwait(false);
-                        inFlightPrefetch = null;
+                        var pending = inFlightPrefetch;
+                        inFlightPrefetch = null; // null first, so the catch block doesn't re-drain
+                        await pending.ConfigureAwait(false);
 
                         // Re-check memory limit after the in-flight fetch added data.
                         // If we're now at the limit, loop back to the memory check above
@@ -908,9 +911,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // an eager fetch from the previous iteration is still in flight.
                     if (inFlightPrefetch is not null)
                     {
-                        try { await inFlightPrefetch.ConfigureAwait(false); }
+                        var pending = inFlightPrefetch;
+                        inFlightPrefetch = null; // null first, so the finally block doesn't re-drain
+                        try { await pending.ConfigureAwait(false); }
                         catch (Exception) { consecutiveErrors++; }
-                        inFlightPrefetch = null;
                     }
                     consecutiveErrors++;
                     LogPrefetchLoopError(ex);
