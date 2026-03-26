@@ -1747,6 +1747,111 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Async version of <see cref="Append"/> for the fire-and-forget path.
+    /// Hot path: if <see cref="TryReserveMemory"/> succeeds, completes synchronously with no async state machine.
+    /// Cold path: awaits <see cref="ReserveMemoryAsync"/> when buffer memory is exhausted (backpressure).
+    /// </summary>
+    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
+    internal ValueTask<bool> AppendAsync(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        Header[]? headers,
+        int headerCount,
+        Action<RecordMetadata, Exception?>? callback,
+        CancellationToken cancellationToken)
+    {
+        if (_disposed)
+            return new ValueTask<bool>(false);
+
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+
+        // Hot path: non-blocking CAS reservation — no async state machine allocated
+        if (TryReserveMemory(recordSize))
+            return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
+                headers, headerCount, callback, recordSize));
+
+        // Cold path: buffer full, await async reservation (backpressure)
+        return AppendAsyncSlowPath(topic, partition, timestamp, key, value,
+            headers, headerCount, callback, recordSize, cancellationToken);
+    }
+
+    private bool AppendAfterReservation(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        Header[]? headers,
+        int headerCount,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize)
+    {
+        var pd = GetOrCreateDeque(topic, partition);
+        ReadyBatch? sealedBatch = null;
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            if (_disposed)
+            {
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
+                    null, callback, recordSize))
+                    return true;
+
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
+            }
+
+            var newBatch = RentBatch(new TopicPartition(topic, partition));
+            pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
+
+            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
+                null, callback, recordSize))
+            {
+                pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
+                _batchPool.Return(newBatch);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (sealedBatch is not null)
+        {
+            SignalWakeup();
+        }
+
+        return true;
+    }
+
+    private async ValueTask<bool> AppendAsyncSlowPath(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        Header[]? headers,
+        int headerCount,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize,
+        CancellationToken cancellationToken)
+    {
+        await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+        return AppendAfterReservation(topic, partition, timestamp, key, value,
+            headers, headerCount, callback, recordSize);
+    }
+
+    /// <summary>
     /// Non-blocking variant of Append for the ProduceAsync fast path.
     /// Returns false when buffer is full (caller falls back to async slow path)
     /// OR when the accumulator is disposed.
