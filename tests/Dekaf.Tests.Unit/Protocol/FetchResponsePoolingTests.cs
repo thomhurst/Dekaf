@@ -34,6 +34,7 @@ public class FetchResponsePoolingTests
 
         var reused = FetchResponse.Rent();
 
+        await Assert.That(reused).IsSameReferenceAs(response);
         await Assert.That(reused.ThrottleTimeMs).IsEqualTo(0);
         await Assert.That(reused.ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(reused.SessionId).IsEqualTo(0);
@@ -100,11 +101,14 @@ public class FetchResponsePoolingTests
         var topic = FetchResponseTopic.Rent();
         topic.Topic = "my-topic";
         topic.TopicId = Guid.NewGuid();
-        topic.Partitions = [FetchResponsePartition.Rent()];
+        // Use a non-pooled partition to avoid leaking a rented partition into the pool
+        // when ReturnToPool cascades.
+        topic.Partitions = [new FetchResponsePartition { PartitionIndex = 99 }];
         topic.ReturnToPool();
 
         var reused = FetchResponseTopic.Rent();
 
+        await Assert.That(reused).IsSameReferenceAs(topic);
         await Assert.That(reused.Topic).IsNull();
         await Assert.That(reused.TopicId).IsEqualTo(Guid.Empty);
         await Assert.That(reused.Partitions).IsEmpty();
@@ -140,6 +144,7 @@ public class FetchResponsePoolingTests
 
         var reused = FetchResponsePartition.Rent();
 
+        await Assert.That(reused).IsSameReferenceAs(partition);
         await Assert.That(reused.PartitionIndex).IsEqualTo(0);
         await Assert.That(reused.ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(reused.HighWatermark).IsEqualTo(0);
