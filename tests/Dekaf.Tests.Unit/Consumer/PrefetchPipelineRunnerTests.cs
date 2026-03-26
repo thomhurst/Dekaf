@@ -19,6 +19,7 @@ public class PrefetchPipelineRunnerTests
         // the eager fetch must complete before the next synchronous fetch begins.
         var fetchLog = new List<string>();
         var fetchCount = 0;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var runner = CreateRunner(
             prefetchRecords: async ct =>
@@ -28,15 +29,16 @@ public class PrefetchPipelineRunnerTests
                 await Task.Yield(); // Simulate async work
                 fetchLog.Add($"end-{id}");
 
-                // After 3 fetches, cancel to exit the loop
+                // After 3 fetches, explicitly cancel and exit immediately
                 if (id >= 3)
+                {
+                    cts.Cancel();
                     ct.ThrowIfCancellationRequested();
+                }
             },
             assignmentCount: 1,
             maxBytes: long.MaxValue, // No memory limit
             prefetchedBytes: 0);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         // The runner will:
         // Iteration 1: synchronous fetch (start-1, end-1), then eagerly start fetch 2
@@ -576,6 +578,7 @@ public class PrefetchPipelineRunnerTests
     {
         var fetchCount = 0;
         var shouldFail = true;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -592,7 +595,8 @@ public class PrefetchPipelineRunnerTests
                     shouldFail = false;
                     return ValueTask.CompletedTask;
                 }
-                // After success, cancel to exit
+                // After success verified, cancel to exit immediately
+                cts.Cancel();
                 ct.ThrowIfCancellationRequested();
                 return ValueTask.CompletedTask;
             },
@@ -606,7 +610,6 @@ public class PrefetchPipelineRunnerTests
             maxBytes: long.MaxValue,
             prefetchedBytes: 0);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
         // After the successful fetch, consecutiveErrors should be reset to 0

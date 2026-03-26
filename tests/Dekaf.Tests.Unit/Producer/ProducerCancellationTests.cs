@@ -68,7 +68,7 @@ public class ProducerCancellationTests
 
             // Start a background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(30000);
-            var drainTask = Task.Run(async () =>
+            var drainTask = Task.Factory.StartNew(async () =>
             {
                 while (!cts.Token.IsCancellationRequested)
                 {
@@ -81,10 +81,10 @@ public class ProducerCancellationTests
                     }
                     else
                     {
-                        await accumulator.WaitForWakeupAsync(100);
+                        await accumulator.WaitForWakeupAsync(10);
                     }
                 }
-            }, cts.Token);
+            }, cts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
             // Act - FlushAsync completes when the drain task processes the batch
             var startTime = Environment.TickCount64;
