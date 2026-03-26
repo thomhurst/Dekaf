@@ -13,6 +13,9 @@ public sealed class FetchResponse : IKafkaResponse
     // One instance per fetch cycle, so a small pool suffices.
     private static readonly FetchResponsePool s_pool = new();
 
+    private volatile bool _pooled;
+    private IReadOnlyList<FetchResponseTopic> _responses = Array.Empty<FetchResponseTopic>();
+
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 16;
@@ -35,7 +38,15 @@ public sealed class FetchResponse : IKafkaResponse
     /// <summary>
     /// Responses per topic.
     /// </summary>
-    public IReadOnlyList<FetchResponseTopic> Responses { get; internal set; } = Array.Empty<FetchResponseTopic>();
+    public IReadOnlyList<FetchResponseTopic> Responses
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_pooled, this);
+            return _responses;
+        }
+        internal set => _responses = value;
+    }
 
     /// <summary>
     /// Internal: Pooled memory owner for zero-copy parsing.
@@ -50,7 +61,12 @@ public sealed class FetchResponse : IKafkaResponse
     /// </summary>
     internal void ReturnToPool()
     {
-        foreach (var topic in Responses)
+        if (_pooled)
+            return;
+
+        _pooled = true;
+
+        foreach (var topic in _responses)
         {
             topic.ReturnToPool();
         }
@@ -58,7 +74,12 @@ public sealed class FetchResponse : IKafkaResponse
         s_pool.Return(this);
     }
 
-    internal static FetchResponse Rent() => s_pool.Rent();
+    internal static FetchResponse Rent()
+    {
+        var item = s_pool.Rent();
+        item._pooled = false;
+        return item;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -94,7 +115,7 @@ public sealed class FetchResponse : IKafkaResponse
             item.ThrottleTimeMs = 0;
             item.ErrorCode = ErrorCode.None;
             item.SessionId = 0;
-            item.Responses = Array.Empty<FetchResponseTopic>();
+            item._responses = Array.Empty<FetchResponseTopic>();
             item.PooledMemoryOwner = null;
         }
     }
@@ -107,6 +128,9 @@ public sealed class FetchResponseTopic
 {
     // Pool to reuse FetchResponseTopic instances. Typically 1-3 per fetch cycle.
     private static readonly FetchResponseTopicPool s_pool = new();
+
+    private volatile bool _pooled;
+    private IReadOnlyList<FetchResponsePartition> _partitions = Array.Empty<FetchResponsePartition>();
 
     /// <summary>
     /// Topic name (v0-v12).
@@ -121,14 +145,27 @@ public sealed class FetchResponseTopic
     /// <summary>
     /// Partition responses.
     /// </summary>
-    public IReadOnlyList<FetchResponsePartition> Partitions { get; internal set; } = Array.Empty<FetchResponsePartition>();
+    public IReadOnlyList<FetchResponsePartition> Partitions
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_pooled, this);
+            return _partitions;
+        }
+        internal set => _partitions = value;
+    }
 
     /// <summary>
     /// Returns this FetchResponseTopic and all nested partition objects to their pools.
     /// </summary>
     internal void ReturnToPool()
     {
-        foreach (var partition in Partitions)
+        if (_pooled)
+            return;
+
+        _pooled = true;
+
+        foreach (var partition in _partitions)
         {
             partition.ReturnToPool();
         }
@@ -136,7 +173,12 @@ public sealed class FetchResponseTopic
         s_pool.Return(this);
     }
 
-    internal static FetchResponseTopic Rent() => s_pool.Rent();
+    internal static FetchResponseTopic Rent()
+    {
+        var item = s_pool.Rent();
+        item._pooled = false;
+        return item;
+    }
 
     public static FetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -178,7 +220,7 @@ public sealed class FetchResponseTopic
         {
             item.Topic = null;
             item.TopicId = Guid.Empty;
-            item.Partitions = Array.Empty<FetchResponsePartition>();
+            item._partitions = Array.Empty<FetchResponsePartition>();
         }
     }
 }
@@ -193,6 +235,9 @@ public sealed class FetchResponsePartition
 
     // Pool to reuse FetchResponsePartition instances. Typically 1-6+ per fetch cycle.
     private static readonly FetchResponsePartitionPool s_pool = new();
+
+    private volatile bool _pooled;
+    private IReadOnlyList<RecordBatch>? _records;
 
     internal static List<RecordBatch> RentRecordBatchList() => s_recordBatchListPool.Rent();
 
@@ -251,15 +296,35 @@ public sealed class FetchResponsePartition
     /// <summary>
     /// Record batches.
     /// </summary>
-    public IReadOnlyList<RecordBatch>? Records { get; internal set; }
+    public IReadOnlyList<RecordBatch>? Records
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_pooled, this);
+            return _records;
+        }
+        internal set => _records = value;
+    }
 
     /// <summary>
     /// Returns this FetchResponsePartition to the pool. Does NOT return Records or AbortedTransactions
     /// since those are transferred to PendingFetchData and have separate lifecycles.
     /// </summary>
-    internal void ReturnToPool() => s_pool.Return(this);
+    internal void ReturnToPool()
+    {
+        if (_pooled)
+            return;
 
-    internal static FetchResponsePartition Rent() => s_pool.Rent();
+        _pooled = true;
+        s_pool.Return(this);
+    }
+
+    internal static FetchResponsePartition Rent()
+    {
+        var item = s_pool.Rent();
+        item._pooled = false;
+        return item;
+    }
 
     public static FetchResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
@@ -361,7 +426,7 @@ public sealed class FetchResponsePartition
             item.SnapshotId = null;
             item.AbortedTransactions = null;
             item.PreferredReadReplica = -1;
-            item.Records = null;
+            item._records = null;
         }
     }
 
