@@ -78,7 +78,7 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         string groupId = "test-group",
         IRebalanceListener? rebalanceListener = null,
         int heartbeatIntervalMs = 3000,
-        int rebalanceTimeoutMs = 10000) => new()
+        int rebalanceTimeoutMs = 30000) => new()
     {
         BootstrapServers = ["localhost:9092"],
         GroupId = groupId,
