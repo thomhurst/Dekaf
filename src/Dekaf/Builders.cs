@@ -798,7 +798,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
-    private int _prefetchPipelineDepth = 3;
+    private int _prefetchPipelineDepth = 2;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1222,7 +1222,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// overlaps with the synchronous fetch. Higher values allow more overlapping
     /// fetches, improving throughput for single-broker setups.
     /// </summary>
-    /// <param name="depth">The pipeline depth (1-8). Default is 3.</param>
+    /// <param name="depth">The pipeline depth (1-8). Default is 2.</param>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
     {

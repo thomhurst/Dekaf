@@ -1416,7 +1416,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private void CancelAllActiveWakeupSources()
     {
         foreach (var cts in _activeWakeupSources.Keys)
-            cts.Cancel();
+        {
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
     }
 
     public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
