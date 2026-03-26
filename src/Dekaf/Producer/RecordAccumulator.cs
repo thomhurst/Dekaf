@@ -1975,7 +1975,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         if (_disposed)
-            return default;
+            return new ValueTask<bool>(false);
 
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
@@ -2310,6 +2310,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // OperationCanceledException from caller's token propagates naturally
             // WaitAsync returning false (timeout) just means we loop and check deadline above
         }
+
+        // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
+        // Without this, a single ReleaseMemory (freeing ~1MB) would only wake one waiter
+        // even when space exists for many more.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)

@@ -112,6 +112,11 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// with zero allocation.</para>
     ///
     /// <para>The callback is invoked on a background thread. Do not perform blocking operations in the callback.</para>
+    ///
+    /// <para><b>Exception handling:</b> All exceptions (including <see cref="Errors.KafkaTimeoutException"/>
+    /// from buffer backpressure) are delivered to the callback rather than thrown, because the callback
+    /// is the designated error delivery mechanism. This differs from the no-callback overload, which
+    /// must throw <see cref="Errors.KafkaTimeoutException"/> since it has no other way to report errors.</para>
     /// </remarks>
     /// <param name="message">The message to produce.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>

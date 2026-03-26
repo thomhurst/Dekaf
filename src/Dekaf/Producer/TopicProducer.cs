@@ -112,7 +112,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     public ValueTask ProduceAsync(TKey? key, TValue value)
     {
         ThrowIfDisposed();
-        return _producer.ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = Topic, Key = key, Value = value });
+        return _producer.ProduceAsync(Topic, key, value);
     }
 
     /// <inheritdoc />

@@ -918,9 +918,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
     #region Fire-and-Forget Immunity
 
     [Test]
-    public async Task Producer_Send_NeverAffectedByCancellation()
+    public async Task Producer_FireAndForgetProduceAsync_NeverAffectedByCancellation()
     {
-        // Arrange - Send() doesn't use cancellation tokens
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -929,7 +928,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Act - Send messages (no cancellation token parameter)
+        // Fire-and-forget ProduceAsync has no cancellation token parameter
         for (int i = 0; i < 50; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -940,8 +939,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             });
         }
 
-        // Assert - Flush completes successfully (all messages were sent)
-        // Send() doesn't expose cancellation, so messages always get queued
+        // Flush completes successfully — all messages were queued
         { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
     }
 

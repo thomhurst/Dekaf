@@ -162,19 +162,15 @@ public class TopicProducerTests
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
-        mockProducer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>())
+        mockProducer.ProduceAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<string>())
             .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
 
         // Act
         await topicProducer.ProduceAsync("key", "value");
 
-        // Assert
-        await mockProducer.Received(1).ProduceAsync(
-            Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
-                m.Key == "key" &&
-                m.Value == "value"));
+        // Assert — delegates to the zero-allocation (topic, key, value) overload
+        await mockProducer.Received(1).ProduceAsync("my-topic", "key", "value");
     }
 
     [Test]
