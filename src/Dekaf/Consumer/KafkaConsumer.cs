@@ -819,6 +819,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // overlaps with the consumer draining the channel and with loop overhead (assignment
         // checks, memory limit checks, partition grouping). The next fetch is started eagerly
         // after the current one completes, provided memory limits allow it.
+        //
+        // Invariant: only one PrefetchRecordsAsync executes at a time. The eager task stored
+        // here is always awaited before the next synchronous PrefetchRecordsAsync call, so
+        // _wakeupCts (used inside PrefetchRecordsAsync) does not need additional synchronization.
+        //
+        // Memory limit note: because we pipeline one additional fetch, the prefetch buffer can
+        // temporarily exceed QueuedMaxMessagesKbytes by up to one fetch cycle's worth of data.
+        // This is the same magnitude as the pre-pipelining behavior (a single fetch can overshoot
+        // the limit) amplified by one additional fetch in flight.
         Task? inFlightPrefetch = null;
         try
         {
@@ -863,7 +872,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     {
                         await inFlightPrefetch.ConfigureAwait(false);
                         inFlightPrefetch = null;
-                        consecutiveErrors = 0;
 
                         // Re-check memory limit after the in-flight fetch added data.
                         // If we're now at the limit, loop back to the memory check above
@@ -883,6 +891,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                     if (currentPrefetchedBytes < maxBytes && !cancellationToken.IsCancellationRequested)
                     {
+                        // .AsTask() allocates once per fetch cycle (not per message), acceptable
+                        // per project allocation guidelines. Required to store the ValueTask as a
+                        // field for later awaiting (ValueTask can only be awaited once).
                         inFlightPrefetch = PrefetchRecordsAsync(cancellationToken).AsTask();
                     }
                 }
@@ -898,7 +909,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     if (inFlightPrefetch is not null)
                     {
                         try { await inFlightPrefetch.ConfigureAwait(false); }
-                        catch { /* Will be surfaced via the outer exception handling */ }
+                        catch (Exception) { consecutiveErrors++; }
                         inFlightPrefetch = null;
                     }
                     consecutiveErrors++;
