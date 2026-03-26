@@ -940,7 +940,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 }
 
                 // Buffer was full — appendResult is a real async ValueTask
-                return FinishProduceAsync(appendResult, activity: null, message.Topic);
+                // Use callback-aware finish so exceptions route to deliveryHandler, not thrown
+                return FinishProduceAsyncWithCallback(appendResult, deliveryHandler);
             }
             catch (Exception ex)
             {
@@ -2289,6 +2290,27 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         finally
         {
             activity?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Cold-path finish for the callback fire-and-forget overload.
+    /// All exceptions are delivered to the callback rather than thrown.
+    /// </summary>
+    private async ValueTask FinishProduceAsyncWithCallback(
+        ValueTask<bool> appendResult,
+        Action<RecordMetadata, Exception?> deliveryHandler)
+    {
+        try
+        {
+            var result = await appendResult.ConfigureAwait(false);
+            if (!result)
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+        catch (Exception ex)
+        {
+            try { deliveryHandler(default, ex); }
+            catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
         }
     }
 
