@@ -40,7 +40,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var result = accumulator.Append(
+            var result = accumulator.TryAppendWithCompletion(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -48,8 +48,7 @@ public class RecordAccumulatorTests
                 pooledValue,
                 null,
                 0,
-                completion,
-                null);
+                completion);
 
             await Assert.That(result).IsTrue();
 
@@ -108,7 +107,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.Append(
+            accumulator.TryAppendWithCompletion(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -116,8 +115,7 @@ public class RecordAccumulatorTests
                 pooledValue,
                 null,
                 0,
-                completion,
-                null);
+                completion);
 
             // Get the PartitionBatch and call Complete()
             var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
@@ -182,7 +180,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.Append(
+            accumulator.TryAppendWithCompletion(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -190,8 +188,7 @@ public class RecordAccumulatorTests
                 pooledValue,
                 null,
                 0,
-                completion,
-                null);
+                completion);
 
             // Get ReadyBatch
             var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
@@ -261,7 +258,7 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        var result = accumulator.Append(
+                        var result = accumulator.TryAppendWithCompletion(
                             topicPartition.Topic,
                             topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -269,8 +266,7 @@ public class RecordAccumulatorTests
                             pooledValue,
                             null,
                             0,
-                            completion,
-                            null);
+                            completion);
 
                         results.Add(result);
                     }
@@ -345,7 +341,7 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        var result = accumulator.Append(
+                        var result = accumulator.TryAppendWithCompletion(
                             topicPartition.Topic,
                             topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -353,8 +349,7 @@ public class RecordAccumulatorTests
                             pooledValue,
                             null,
                             0,
-                            completion,
-                            null);
+                            completion);
 
                         await Assert.That(result).IsTrue();
                     }
@@ -418,7 +413,7 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        var result = accumulator.Append(
+                        var result = accumulator.TryAppendWithCompletion(
                             topicPartition.Topic,
                             topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -426,8 +421,7 @@ public class RecordAccumulatorTests
                             pooledValue,
                             null,
                             0,
-                            completion,
-                            null);
+                            completion);
 
                         if (result)
                             successCount++;
@@ -475,14 +469,14 @@ public class RecordAccumulatorTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             // Fire-and-forget append - no completion source needed
-            var result = accumulator.Append(
+            var result = await accumulator.AppendAsync(
                 "test-topic",
                 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
                 null,
-                0, null, null);
+                0, null, CancellationToken.None);
 
             await Assert.That(result).IsTrue();
 
@@ -541,14 +535,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                var result = accumulator.Append(
+                var result = await accumulator.AppendAsync(
                     "test-topic",
                     0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    0, null, null);
+                    0, null, CancellationToken.None);
 
                 if (result) successCount++;
             }
@@ -600,14 +594,14 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(keyArray, keyData.Length);
             var pooledValue = new PooledMemory(valueArray, valueData.Length);
 
-            var result = accumulator.Append(
+            var result = await accumulator.AppendAsync(
                 "test-topic",
                 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
                 null,
-                0, null, null);
+                0, null, CancellationToken.None);
 
             await Assert.That(result).IsTrue();
 
@@ -651,14 +645,14 @@ public class RecordAccumulatorTests
         var pooledKey = new PooledMemory(null, 0, isNull: true);
         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-        var result = accumulator.Append(
+        var result = await accumulator.AppendAsync(
             "test-topic",
             0,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             pooledKey,
             pooledValue,
             null,
-            0, null, null);
+            0, null, CancellationToken.None);
 
         await Assert.That(result).IsFalse();
     }
@@ -679,7 +673,7 @@ public class RecordAccumulatorTests
 
             for (int t = 0; t < threadCount; t++)
             {
-                var task = Task.Run(() =>
+                var task = Task.Run(async () =>
                 {
                     var successCount = 0;
                     for (int i = 0; i < appendsPerThread; i++)
@@ -687,14 +681,14 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        if (accumulator.Append(
+                        if (await accumulator.AppendAsync(
                             "test-topic",
                             i % 3, // Distribute across 3 partitions
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             pooledKey,
                             pooledValue,
                             null,
-                            0, null, null))
+                            0, null, CancellationToken.None))
                         {
                             successCount++;
                         }
@@ -756,14 +750,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(keyArray, 10);
                 var pooledValue = new PooledMemory(valueArray, 10);
 
-                if (accumulator.Append(
+                if (await accumulator.AppendAsync(
                     "test-topic",
                     0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    0, null, null))
+                    0, null, CancellationToken.None))
                 {
                     successCount++;
                 }
@@ -855,12 +849,12 @@ public class RecordAccumulatorTests
 
         try
         {
-            var result = accumulator.Append(
+            var result = await accumulator.AppendAsync(
                 "test-topic", 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, 0, null, null);
+                null, 0, null, CancellationToken.None);
 
             await Assert.That(result).IsTrue();
 
@@ -897,11 +891,11 @@ public class RecordAccumulatorTests
 
             for (int i = 0; i < itemCount; i++)
             {
-                var result = accumulator.Append(
+                var result = await accumulator.AppendAsync(
                     "test-topic", 0, timestamp,
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, 0, null, null);
+                    null, 0, null, CancellationToken.None);
                 await Assert.That(result).IsTrue();
             }
 
@@ -935,12 +929,12 @@ public class RecordAccumulatorTests
         var accumulator = new RecordAccumulator(options);
         await accumulator.DisposeAsync();
 
-        var result = accumulator.Append(
+        var result = await accumulator.AppendAsync(
             "test-topic", 0,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             new PooledMemory(null, 0, isNull: true),
             new PooledMemory(null, 0, isNull: true),
-            null, 0, null, null);
+            null, 0, null, CancellationToken.None);
 
         await Assert.That(result).IsFalse();
     }
@@ -963,12 +957,12 @@ public class RecordAccumulatorTests
             var keyArray = ArrayPool<byte>.Shared.Rent(10);
             var valueArray = ArrayPool<byte>.Shared.Rent(20);
 
-            var result = accumulator.Append(
+            var result = await accumulator.AppendAsync(
                 "test-topic", 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(keyArray, 10),
                 new PooledMemory(valueArray, 20),
-                null, 0, null, null);
+                null, 0, null, CancellationToken.None);
 
             await Assert.That(result).IsTrue();
 
@@ -1114,7 +1108,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var result = accumulator.Append(
+            var result = accumulator.TryAppendWithCompletion(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -1122,8 +1116,7 @@ public class RecordAccumulatorTests
                 pooledValue,
                 null,
                 0,
-                completion,
-                null);
+                completion);
 
             await Assert.That(result).IsTrue();
 
@@ -1174,7 +1167,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.Append(
+            accumulator.TryAppendWithCompletion(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -1182,8 +1175,7 @@ public class RecordAccumulatorTests
                 pooledValue,
                 null,
                 0,
-                completion,
-                null);
+                completion);
 
             // Get ReadyBatch
             var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",

@@ -40,15 +40,15 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var result1 = accumulator.Append(
+            var result1 = await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             await Assert.That(result1).IsTrue();
 
-            var result2 = accumulator.Append(
+            var result2 = await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             await Assert.That(result2).IsTrue();
 
@@ -78,13 +78,13 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             // Verify memory is reserved
             var bufferedBytesBeforeRelease = accumulator.BufferedBytes;
@@ -137,17 +137,17 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 2, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             // Assert: Verify memory was reserved for all partitions
             var bufferedBytes = accumulator.BufferedBytes;
@@ -180,9 +180,9 @@ public class BufferMemoryTests
             // Append 10 messages
             for (int i = 0; i < 10; i++)
             {
-                var result = accumulator.Append(
+                var result = await accumulator.AppendAsync(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
+                    pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
                 await Assert.That(result).IsTrue();
             }
@@ -222,17 +222,17 @@ public class BufferMemoryTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             // First batch
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             var bufferedAfterFirst = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterFirst).IsGreaterThan(0);
 
             // Second batch to different partition
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             var bufferedAfterSecond = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst);
@@ -302,14 +302,14 @@ public class BufferMemoryTests
                     rentedArrays.Add(valueBytes); // Track for cleanup
                     var pooledValue = new PooledMemory(valueBytes, 200);
 
-                    accumulator.Append(
+                    await accumulator.AppendAsync(
                         "test-topic",
                         0,
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         pooledKey,
                         pooledValue,
                         null,
-                        0, null, null);
+                        0, null, CancellationToken.None);
                     messageCount++;
                 }
             }
@@ -371,9 +371,9 @@ public class BufferMemoryTests
 
                 var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
                 {
-                    accumulator.Append(
+                    await accumulator.AppendAsync(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, 0, null, null);
+                        pooledKey, pooledValue, null, 0, null, CancellationToken.None);
                     await Task.CompletedTask.ConfigureAwait(false);
                 });
 
@@ -411,9 +411,9 @@ public class BufferMemoryTests
 
             var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
             {
-                accumulator.Append(
+                await accumulator.AppendAsync(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
+                    pooledKey, pooledValue, null, 0, null, CancellationToken.None);
                 await Task.CompletedTask.ConfigureAwait(false);
             });
 
@@ -447,9 +447,9 @@ public class BufferMemoryTests
             {
                 for (int i = 0; i < 20; i++)
                 {
-                    accumulator.Append(
+                    await accumulator.AppendAsync(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, 0, null, null);
+                        pooledKey, pooledValue, null, 0, null, CancellationToken.None);
                     successCount++;
                 }
             }
@@ -488,9 +488,9 @@ public class BufferMemoryTests
             // After disposal, TryAppendFireAndForget should return false immediately
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
-            var resultAfterDisposal = accumulator.Append(
+            var resultAfterDisposal = await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             await Assert.That(resultAfterDisposal).IsFalse();
         }
@@ -520,11 +520,11 @@ public class BufferMemoryTests
         // Add fire-and-forget messages
         for (int i = 0; i < 10; i++)
         {
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, 0, null, null);
+                null, 0, null, CancellationToken.None);
         }
 
         // Dispose should complete quickly (completion loop processes batches)
@@ -552,11 +552,11 @@ public class BufferMemoryTests
         try
         {
             // Append to create batch
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, 0, null, null);
+                null, 0, null, CancellationToken.None);
 
             // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
@@ -621,11 +621,11 @@ public class BufferMemoryTests
             // Create multiple batches across different partitions
             for (int i = 0; i < batchCount; i++)
             {
-                accumulator.Append(
+                await accumulator.AppendAsync(
                     "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, 0, null, null);
+                    null, 0, null, CancellationToken.None);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -692,11 +692,11 @@ public class BufferMemoryTests
             // Add multiple fire-and-forget messages across 5 partitions
             for (int i = 0; i < 50; i++)
             {
-                accumulator.Append(
+                await accumulator.AppendAsync(
                     "test-topic", i % 5, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, 0, null, null);
+                    null, 0, null, CancellationToken.None);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -771,11 +771,11 @@ public class BufferMemoryTests
             // Create batches
             for (int i = 0; i < batchCount; i++)
             {
-                accumulator.Append(
+                await accumulator.AppendAsync(
                     "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, 0, null, null);
+                    null, 0, null, CancellationToken.None);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -825,11 +825,11 @@ public class BufferMemoryTests
         // Add some messages
         for (int i = 0; i < 10; i++)
         {
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, 0, null, null);
+                null, 0, null, CancellationToken.None);
         }
 
         // Disposal should complete quickly (completion loop stops)
@@ -842,12 +842,10 @@ public class BufferMemoryTests
     }
 
     [Test]
-    public async Task ReserveMemorySync_AdaptiveBackpressure_AcquiresPromptlyAfterRelease()
+    public async Task ReserveMemoryAsync_AcquiresPromptlyAfterRelease()
     {
-        // Verifies that after a semaphore wake-up, the adaptive spin budget
-        // lets the thread acquire newly-freed memory without re-entering
-        // the kernel wait. Without spinWait.Reset(), the thread would fall
-        // straight back to the 100ms semaphore wait.
+        // Verifies that after buffer space is freed, a pending ReserveMemoryAsync
+        // completes promptly.
 
         // Small buffer: just enough for one batch overhead (~80 bytes)
         var options = CreateTestOptions(bufferMemory: 200, maxBlockMs: 5000);
@@ -859,50 +857,38 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, CancellationToken.None);
 
             var bufferedBefore = accumulator.BufferedBytes;
 
-            // Start a background task that will try to reserve more memory (will block)
-            var reserveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            var reserveTask = Task.Run(() =>
+            // Start a background task that will try to reserve more memory (will block async)
+            var sw = Stopwatch.StartNew();
+            var reserveTask = Task.Run(async () =>
             {
-                reserveStarted.SetResult();
-                var sw = Stopwatch.StartNew();
-                // This will block because buffer is full, then succeed after release
-                accumulator.ReserveMemorySync(10);
-                sw.Stop();
-                return sw.ElapsedMilliseconds;
+                await accumulator.ReserveMemoryAsync(10, CancellationToken.None);
             });
 
-            // Wait for the reserve task to start, then yield to let it enter the wait.
-            // Using Task.Yield instead of Task.Delay(50) for deterministic synchronization;
-            // the completion timeout below guards correctness regardless of scheduling.
-            await reserveStarted.Task;
+            // Yield to let the reserve task start
             await Task.Yield();
 
-            // Release memory — this signals the semaphore
+            // Release memory — this should unblock the async waiter
             accumulator.ClearCurrentBatch("test-topic", 0);
             accumulator.ReleaseMemory((int)bufferedBefore);
 
-            // The reserve should complete promptly (well under 100ms after signal).
-            // With adaptive backpressure (spinWait.Reset), the thread spins after
-            // wake-up and catches the freed memory. Without it, the thread would
-            // re-block for up to 100ms.
+            // The reserve should complete promptly
             var completedInTime = await Task.WhenAny(
                 reserveTask,
                 Task.Delay(2000) // generous timeout for CI
             ) == reserveTask;
 
+            sw.Stop();
             await Assert.That(completedInTime).IsTrue();
 
-            var elapsedMs = await reserveTask;
             // Should be well under 1 second (typically < 100ms).
             // Using 1000ms as upper bound to account for slow CI runners.
-            await Assert.That(elapsedMs).IsLessThan(1000);
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(1000);
         }
         finally
         {

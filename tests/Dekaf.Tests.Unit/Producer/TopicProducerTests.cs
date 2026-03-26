@@ -50,7 +50,7 @@ public class TopicProducerTests
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
 
         // Act
-        var result = await topicProducer.ProduceAsync("key", "value");
+        var result = await topicProducer.ProduceAsync("key", "value", CancellationToken.None);
 
         // Assert
         await Assert.That(result.Topic).IsEqualTo("my-topic");
@@ -77,7 +77,7 @@ public class TopicProducerTests
         var headers = Headers.Create("header-key", "header-value");
 
         // Act
-        var result = await topicProducer.ProduceAsync("key", "value", headers);
+        var result = await topicProducer.ProduceAsync("key", "value", headers, CancellationToken.None);
 
         // Assert
         await Assert.That(result.Offset).IsEqualTo(42);
@@ -158,55 +158,62 @@ public class TopicProducerTests
     }
 
     [Test]
-    public async Task Send_KeyValue_DelegatesToInnerProducer()
+    public async Task ProduceAsync_FireAndForget_KeyValue_DelegatesToInnerProducer()
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
+        mockProducer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>())
+            .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
 
         // Act
-        topicProducer.Produce("key", "value");
+        await topicProducer.ProduceAsync("key", "value");
 
         // Assert
-        mockProducer.Received(1).Produce("my-topic", "key", "value");
-        await Task.CompletedTask; // For async test assertion
+        await mockProducer.Received(1).ProduceAsync(
+            Arg.Is<ProducerMessage<string, string>>(m =>
+                m.Topic == "my-topic" &&
+                m.Key == "key" &&
+                m.Value == "value"));
     }
 
     [Test]
-    public async Task Send_WithHeaders_DelegatesToInnerProducer()
+    public async Task ProduceAsync_FireAndForget_WithHeaders_DelegatesToInnerProducer()
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
+        mockProducer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>())
+            .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
         var headers = Headers.Create("key", "value");
 
         // Act
-        topicProducer.Produce("key", "value", headers);
+        await topicProducer.ProduceAsync("key", "value", headers);
 
         // Assert
-        mockProducer.Received(1).Produce(
+        await mockProducer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
                 m.Topic == "my-topic" &&
                 m.Headers != null));
-        await Task.CompletedTask;
     }
 
     [Test]
-    public async Task Send_WithCallback_DelegatesToInnerProducer()
+    public async Task ProduceAsync_FireAndForget_WithCallback_DelegatesToInnerProducer()
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
+        mockProducer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>(), Arg.Any<Action<RecordMetadata, Exception?>>())
+            .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
         Action<RecordMetadata, Exception?> callback = (_, _) => { };
 
         // Act
-        topicProducer.Produce("key", "value", callback);
+        await topicProducer.ProduceAsync("key", "value", callback);
 
         // Assert
-        mockProducer.Received(1).Produce(
+        await mockProducer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m => m.Topic == "my-topic"),
             Arg.Any<Action<RecordMetadata, Exception?>>());
-        await Task.CompletedTask;
     }
 
     [Test]
@@ -342,19 +349,18 @@ public class TopicProducerTests
     }
 
     [Test]
-    public async Task Send_AfterDispose_ThrowsObjectDisposedException()
+    public async Task ProduceAsync_FireAndForget_AfterDispose_ThrowsObjectDisposedException()
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
         await topicProducer.DisposeAsync();
 
-        // Act & Assert
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+        // Act & Assert - ProduceAsync throws synchronously before returning ValueTask
+        await Assert.That(() =>
         {
-            topicProducer.Produce("key", "value");
-            return Task.CompletedTask;
-        });
+            topicProducer.ProduceAsync("key", "value");
+        }).Throws<ObjectDisposedException>();
     }
 
     [Test]

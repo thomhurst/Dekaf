@@ -51,7 +51,7 @@ public class RecordAccumulatorConcurrencyTests
                     var key = new PooledMemory(null, 0, isNull: true);
                     var value = new PooledMemory(null, 0, isNull: true);
 
-                    var result = accumulator.Append(
+                    var result = accumulator.TryAppendWithCompletion(
                         "test-topic",
                         partition,
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -59,8 +59,7 @@ public class RecordAccumulatorConcurrencyTests
                         value,
                         null,
                         0,
-                        completion,
-                        null);
+                        completion);
 
                     if (result)
                         Interlocked.Increment(ref successCount);
@@ -105,7 +104,7 @@ public class RecordAccumulatorConcurrencyTests
                     var key = new PooledMemory(null, 0, isNull: true);
                     var value = new PooledMemory(null, 0, isNull: true);
 
-                    var result = accumulator.Append(
+                    var result = accumulator.TryAppendWithCompletion(
                         "test-topic",
                         0, // All tasks target partition 0
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -113,8 +112,7 @@ public class RecordAccumulatorConcurrencyTests
                         value,
                         null,
                         0,
-                        completion,
-                        null);
+                        completion);
 
                     if (result)
                         Interlocked.Increment(ref successCount);
@@ -282,7 +280,7 @@ public class RecordAccumulatorConcurrencyTests
                         var key = new PooledMemory(null, 0, isNull: true);
                         var value = new PooledMemory(null, 0, isNull: true);
 
-                        var result = accumulator.Append(
+                        var result = accumulator.TryAppendWithCompletion(
                             "test-topic",
                             taskIndex,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -290,8 +288,7 @@ public class RecordAccumulatorConcurrencyTests
                             value,
                             null,
                             0,
-                            completion,
-                            null);
+                            completion);
 
                         if (result)
                             Interlocked.Increment(ref successCount);
@@ -384,7 +381,7 @@ public class RecordAccumulatorConcurrencyTests
                     var key = new PooledMemory(null, 0, isNull: true);
                     var value = new PooledMemory(null, 0, isNull: true);
 
-                    var result = accumulator.Append(
+                    var result = accumulator.TryAppendWithCompletion(
                         "test-topic",
                         taskIndex % 2, // Two partitions
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -392,8 +389,7 @@ public class RecordAccumulatorConcurrencyTests
                         value,
                         null,
                         0,
-                        completion,
-                        null);
+                        completion);
 
                     if (result)
                         Interlocked.Increment(ref successCount);
@@ -448,7 +444,7 @@ public class RecordAccumulatorConcurrencyTests
                         var key = new PooledMemory(null, 0, isNull: true);
                         var value = new PooledMemory(null, 0, isNull: true);
 
-                        var result = accumulator.Append(
+                        var result = accumulator.TryAppendWithCompletion(
                             "test-topic",
                             taskIndex,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -456,8 +452,7 @@ public class RecordAccumulatorConcurrencyTests
                             value,
                             null,
                             0,
-                            completion,
-                            null);
+                            completion);
 
                         if (result)
                             Interlocked.Increment(ref successCount);
@@ -530,13 +525,13 @@ public class RecordAccumulatorConcurrencyTests
             for (var i = 0; i < 20; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append(
+                accumulator.TryAppendWithCompletion(
                     "test-topic",
                     i % 4,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, 0, completion, null);
+                    null, 0, completion);
             }
 
             // Run flush and more appends concurrently
@@ -549,13 +544,13 @@ public class RecordAccumulatorConcurrencyTests
                     try
                     {
                         var completion = pool.Rent();
-                        accumulator.Append(
+                        accumulator.TryAppendWithCompletion(
                             "test-topic",
                             i % 4,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             new PooledMemory(null, 0, isNull: true),
                             new PooledMemory(null, 0, isNull: true),
-                            null, 0, completion, null);
+                            null, 0, completion);
                     }
                     catch (ObjectDisposedException)
                     {

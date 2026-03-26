@@ -82,9 +82,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Act: Call Ready()
@@ -119,9 +119,9 @@ public class RecordAccumulatorReadyTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
             var completion = pool.Rent();
 
-            accumulator.Append("test-topic", 0,
+            accumulator.TryAppendWithCompletion("test-topic", 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, completion, null);
+                pooledKey, pooledValue, null, 0, completion);
 
             // Act: Call Ready()
             var readyNodes = new HashSet<int>();
@@ -156,9 +156,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Mute the partition before calling Ready
@@ -197,9 +197,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Act: Ready() with no metadata
@@ -237,9 +237,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // First Ready() - drains the notification
@@ -278,9 +278,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Mute the partition and drain the notification queue
@@ -324,16 +324,16 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 3,
+                accumulator.TryAppendWithCompletion("test-topic", 3,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Append one record to partition 7 (not enough to seal)
             var completion2 = pool.Rent();
-            accumulator.Append("test-topic", 7,
+            accumulator.TryAppendWithCompletion("test-topic", 7,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, completion2, null);
+                pooledKey, pooledValue, null, 0, completion2);
 
             // Act
             var readyNodes = new HashSet<int>();
@@ -370,9 +370,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Drain the sealed batch via Ready() + Drain()
@@ -428,9 +428,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", 0,
+                accumulator.TryAppendWithCompletion("test-topic", 0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
 
             // Drain the sealed batch via Ready() + Drain()
@@ -479,9 +479,9 @@ public class RecordAccumulatorReadyTests
 
             // Append one record (batch won't seal from size)
             var completion = pool.Rent();
-            accumulator.Append("test-topic", 0,
+            accumulator.TryAppendWithCompletion("test-topic", 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, completion, null);
+                pooledKey, pooledValue, null, 0, completion);
 
             // Seal via linger expiry (doesn't wait for delivery like FlushAsync does)
             await accumulator.ExpireLingerAsync(CancellationToken.None);
@@ -522,9 +522,9 @@ public class RecordAccumulatorReadyTests
             for (var i = 0; i < 10; i++)
             {
                 var completion = pool.Rent();
-                accumulator.Append("test-topic", p,
+                accumulator.TryAppendWithCompletion("test-topic", p,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion, null);
+                    pooledKey, pooledValue, null, 0, completion);
             }
         }
 
@@ -568,9 +568,9 @@ public class RecordAccumulatorReadyTests
         for (var i = 0; i < 30; i++)
         {
             var completion = pool.Rent();
-            accumulator.Append("test-topic", 0,
+            accumulator.TryAppendWithCompletion("test-topic", 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, completion, null);
+                pooledKey, pooledValue, null, 0, completion);
         }
 
         // Ready() consumes all notifications for partition 0

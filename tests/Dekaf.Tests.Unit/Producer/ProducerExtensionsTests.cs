@@ -23,7 +23,7 @@ public sealed class ProducerExtensionsTests
             .Returns(ValueTask.FromResult(expectedMetadata));
 
         var headers = Headers.Create("h1", "v1");
-        var result = await producer.ProduceAsync("my-topic", "key", "value", headers);
+        var result = await producer.ProduceAsync("my-topic", "key", "value", headers, CancellationToken.None);
 
         await Assert.That(result.Offset).IsEqualTo(42);
         await producer.Received(1).ProduceAsync(
@@ -42,7 +42,7 @@ public sealed class ProducerExtensionsTests
         var headers = Headers.Create("h1", "v1");
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
-            await producer!.ProduceAsync("topic", "key", "value", headers));
+            await producer!.ProduceAsync("topic", "key", "value", headers, CancellationToken.None));
     }
 
     [Test]
@@ -52,7 +52,7 @@ public sealed class ProducerExtensionsTests
         var headers = Headers.Create("h1", "v1");
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
-            await producer.ProduceAsync(null!, "key", "value", headers));
+            await producer.ProduceAsync(null!, "key", "value", headers, CancellationToken.None));
     }
 
     #endregion
@@ -105,45 +105,44 @@ public sealed class ProducerExtensionsTests
 
     #endregion
 
-    #region Send with Headers
+    #region ProduceAsync with Headers (fire-and-forget)
 
     [Test]
-    public async Task Send_WithHeaders_DelegatesToProducer()
+    public async Task ProduceAsync_FireAndForget_WithHeaders_DelegatesToProducer()
     {
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var headers = Headers.Create("h1", "v1");
+        producer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>())
+            .Returns(default(ValueTask));
 
-        producer.Produce("my-topic", "key", "value", headers);
+        await producer.ProduceAsync("my-topic", "key", "value", headers);
 
-        producer.Received(1).Produce(
+        await producer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
                 m.Topic == "my-topic" &&
                 m.Key == "key" &&
                 m.Value == "value" &&
                 m.Headers != null));
-        await Task.CompletedTask;
     }
 
     [Test]
-    public async Task Send_WithHeaders_NullProducer_ThrowsArgumentNullException()
+    public async Task ProduceAsync_FireAndForget_WithHeaders_NullProducer_ThrowsArgumentNullException()
     {
         IKafkaProducer<string, string>? producer = null;
         var headers = Headers.Create("h1", "v1");
 
-        var act = () => producer!.Produce("topic", "key", "value", headers);
-
-        await Assert.That(act).Throws<ArgumentNullException>();
+        await Assert.ThrowsAsync<ArgumentNullException>(async () =>
+            await producer!.ProduceAsync("topic", "key", "value", headers));
     }
 
     [Test]
-    public async Task Send_WithHeaders_NullTopic_ThrowsArgumentNullException()
+    public async Task ProduceAsync_FireAndForget_WithHeaders_NullTopic_ThrowsArgumentNullException()
     {
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var headers = Headers.Create("h1", "v1");
 
-        var act = () => producer.Produce(null!, "key", "value", headers);
-
-        await Assert.That(act).Throws<ArgumentNullException>();
+        await Assert.ThrowsAsync<ArgumentNullException>(async () =>
+            await producer.ProduceAsync(null!, "key", "value", headers));
     }
 
     #endregion
