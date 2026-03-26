@@ -154,7 +154,8 @@ internal sealed class PooledMemoryStream : Stream
         // Return the old buffer if we own it (we grew it)
         if (_ownsBuffer)
         {
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            // No need to clear - contains serialized Avro payloads, not sensitive data
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
         }
 
         _buffer = newBuffer;
@@ -168,7 +169,8 @@ internal sealed class PooledMemoryStream : Stream
 
         if (disposing && _ownsBuffer)
         {
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            // No need to clear - contains serialized Avro payloads, not sensitive data
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
             _buffer = null!;
         }
 
