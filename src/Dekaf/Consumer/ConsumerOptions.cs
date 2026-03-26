@@ -99,7 +99,7 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Fetch maximum wait time in milliseconds.
     /// </summary>
-    public int FetchMaxWaitMs { get; init; } = 500;
+    public int FetchMaxWaitMs { get; init; } = 200;
 
     /// <summary>
     /// Maximum poll records.

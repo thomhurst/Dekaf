@@ -771,7 +771,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _fetchMinBytes = 1;
     private int _fetchMaxBytes = 52428800;
     private int _maxPartitionFetchBytes = 1048576;
-    private int _fetchMaxWaitMs = 500;
+    private int _fetchMaxWaitMs = 200;
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
     private int? _heartbeatIntervalMs;
@@ -1011,7 +1011,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Sets the maximum time the server will block before responding to a fetch request
     /// if there isn't sufficient data to satisfy <see cref="WithFetchMinBytes"/>.
     /// Equivalent to Kafka's <c>fetch.max.wait.ms</c> configuration.
-    /// Default is 500ms.
+    /// Default is 200ms.
     /// </summary>
     /// <param name="maxWait">The maximum wait duration. Must be positive.</param>
     /// <returns>The builder instance for method chaining.</returns>
@@ -1261,7 +1261,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>MaxPollRecords: 1000 (larger batches)</description></item>
     /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
-    /// <item><description>FetchMaxWaitMs: 500ms (allow batching)</description></item>
+    /// <item><description>FetchMaxWaitMs: 200ms (allow batching)</description></item>
     /// </list>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
@@ -1270,7 +1270,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         _maxPollRecords = 1000;
         _fetchMinBytes = 1024;
-        _fetchMaxWaitMs = 500;
+        _fetchMaxWaitMs = 200;
         return this;
     }
 
