@@ -42,7 +42,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </remarks>
     ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Produces a message to the specified topic.
@@ -55,7 +55,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         string topic,
         TKey? key,
         TValue value,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Produces a message without waiting for acknowledgment (fire-and-forget with async backpressure).

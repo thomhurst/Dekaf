@@ -166,7 +166,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act
-        await producer.ProduceAsync("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
+        await producer.FireAsync("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         cts.Token.Register(() => callbackInvoked.TrySetCanceled());

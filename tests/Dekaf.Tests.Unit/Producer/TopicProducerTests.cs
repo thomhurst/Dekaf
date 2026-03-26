@@ -167,7 +167,7 @@ public class TopicProducerTests
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
 
         // Act
-        await topicProducer.ProduceAsync("key", "value");
+        await topicProducer.FireAsync("key", "value");
 
         // Assert — delegates to the zero-allocation (topic, key, value) overload
         await mockProducer.Received(1).FireAsync("my-topic", "key", "value");
@@ -184,7 +184,7 @@ public class TopicProducerTests
         var headers = Headers.Create("key", "value");
 
         // Act
-        await topicProducer.ProduceAsync("key", "value", headers);
+        await topicProducer.FireAsync("key", "value", headers);
 
         // Assert
         await mockProducer.Received(1).FireAsync(
@@ -204,7 +204,7 @@ public class TopicProducerTests
         Action<RecordMetadata, Exception?> callback = (_, _) => { };
 
         // Act
-        await topicProducer.ProduceAsync("key", "value", callback);
+        await topicProducer.FireAsync("key", "value", callback);
 
         // Assert
         await mockProducer.Received(1).FireAsync(
@@ -332,7 +332,7 @@ public class TopicProducerTests
     }
 
     [Test]
-    public async Task ProduceAsync_AfterDispose_ThrowsObjectDisposedException()
+    public async Task FireAsync_AfterDispose_ThrowsObjectDisposedException_Awaited()
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
@@ -341,21 +341,21 @@ public class TopicProducerTests
 
         // Act & Assert
         await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
-            await topicProducer.ProduceAsync("key", "value"));
+            await topicProducer.FireAsync("key", "value"));
     }
 
     [Test]
-    public async Task ProduceAsync_FireAndForget_AfterDispose_ThrowsObjectDisposedException()
+    public async Task FireAsync_AfterDispose_ThrowsObjectDisposedException()
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
         await topicProducer.DisposeAsync();
 
-        // Act & Assert - ProduceAsync throws synchronously before returning ValueTask
+        // Act & Assert - FireAsync throws synchronously before returning ValueTask
         await Assert.That(() =>
         {
-            topicProducer.ProduceAsync("key", "value");
+            topicProducer.FireAsync("key", "value");
         }).Throws<ObjectDisposedException>();
     }
 

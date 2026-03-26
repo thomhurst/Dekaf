@@ -81,7 +81,7 @@ public static class ProducerExtensions
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="headers">The message headers.</param>
-    public static ValueTask ProduceAsync<TKey, TValue>(
+    public static ValueTask FireAsync<TKey, TValue>(
         this IKafkaProducer<TKey, TValue> producer,
         string topic,
         TKey? key,

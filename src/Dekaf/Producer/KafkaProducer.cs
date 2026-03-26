@@ -2282,7 +2282,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not ObjectDisposedException)
         {
             LogFireAndForgetProduceFailed(ex, topic);
         }

@@ -109,21 +109,21 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public ValueTask ProduceAsync(TKey? key, TValue value)
+    public ValueTask FireAsync(TKey? key, TValue value)
     {
         ThrowIfDisposed();
         return _producer.FireAsync(Topic, key, value);
     }
 
     /// <inheritdoc />
-    public ValueTask ProduceAsync(TKey? key, TValue value, Headers headers)
+    public ValueTask FireAsync(TKey? key, TValue value, Headers headers)
     {
         ThrowIfDisposed();
         return _producer.FireAsync(new ProducerMessage<TKey, TValue> { Topic = Topic, Key = key, Value = value, Headers = headers });
     }
 
     /// <inheritdoc />
-    public ValueTask ProduceAsync(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler)
+    public ValueTask FireAsync(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         ThrowIfDisposed();
         return _producer.FireAsync(new ProducerMessage<TKey, TValue> { Topic = Topic, Key = key, Value = value }, deliveryHandler);

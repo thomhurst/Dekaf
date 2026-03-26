@@ -104,7 +104,7 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    ValueTask ProduceAsync(TKey? key, TValue value);
+    ValueTask FireAsync(TKey? key, TValue value);
 
     /// <summary>
     /// Produces a message with headers without waiting for acknowledgment (fire-and-forget with async backpressure).
@@ -116,7 +116,7 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="headers">The message headers.</param>
-    ValueTask ProduceAsync(TKey? key, TValue value, Headers headers);
+    ValueTask FireAsync(TKey? key, TValue value, Headers headers);
 
     /// <summary>
     /// Produces a message with a delivery callback (fire-and-forget with async backpressure).
@@ -128,7 +128,7 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    ValueTask ProduceAsync(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler);
+    ValueTask FireAsync(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Produces multiple messages and waits for all acknowledgments.

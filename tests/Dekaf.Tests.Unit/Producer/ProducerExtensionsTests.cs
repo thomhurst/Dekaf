@@ -115,7 +115,7 @@ public sealed class ProducerExtensionsTests
         producer.FireAsync(Arg.Any<ProducerMessage<string, string>>())
             .Returns(default(ValueTask));
 
-        await producer.ProduceAsync("my-topic", "key", "value", headers);
+        await producer.FireAsync("my-topic", "key", "value", headers);
 
         await producer.Received(1).FireAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
@@ -132,17 +132,17 @@ public sealed class ProducerExtensionsTests
         var headers = Headers.Create("h1", "v1");
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
-            await producer!.ProduceAsync("topic", "key", "value", headers));
+            await producer!.FireAsync("topic", "key", "value", headers));
     }
 
     [Test]
-    public async Task ProduceAsync_FireAndForget_WithHeaders_NullTopic_ThrowsArgumentNullException()
+    public async Task FireAsync_WithHeaders_NullTopic_ThrowsArgumentNullException()
     {
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var headers = Headers.Create("h1", "v1");
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
-            await producer.ProduceAsync(null!, "key", "value", headers));
+            await producer.FireAsync(null!, "key", "value", headers));
     }
 
     #endregion
