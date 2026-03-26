@@ -583,10 +583,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var activity = StartPublishActivity(ref message);
 
         // Fast path: try thread-local cached topic metadata first
-        if (TryGetCachedTopicInfo(message.Topic, out var topicInfo) ||
+        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
+        if (inThreadLocalCache ||
             (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
-            if (!TryGetCachedTopicInfo(message.Topic, out _))
+            if (!inThreadLocalCache)
                 UpdateCachedTopicInfo(message.Topic, topicInfo!);
 
             try
@@ -635,10 +636,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ThrowIfNotInitialized();
 
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
-        if (TryGetCachedTopicInfo(topic, out var topicInfo) ||
+        var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo);
+        if (inThreadLocalCache ||
             (_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
-            if (!TryGetCachedTopicInfo(topic, out _))
+            if (!inThreadLocalCache)
                 UpdateCachedTopicInfo(topic, topicInfo!);
 
             try
@@ -913,10 +915,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         message = ApplyOnSendInterceptors(message);
 
         // Fast path: try thread-local cached topic metadata first
-        if (TryGetCachedTopicInfo(message.Topic, out var topicInfo) ||
+        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
+        if (inThreadLocalCache ||
             (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
-            if (!TryGetCachedTopicInfo(message.Topic, out _))
+            if (!inThreadLocalCache)
                 UpdateCachedTopicInfo(message.Topic, topicInfo!);
 
             try
