@@ -72,7 +72,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             Topic = topic,
             Key = "test-key",
             Value = record
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 

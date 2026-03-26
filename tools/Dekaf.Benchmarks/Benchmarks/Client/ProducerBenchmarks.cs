@@ -1,3 +1,4 @@
+using System.Threading;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
@@ -123,7 +124,7 @@ public class ProducerBenchmarks
             Topic = Topic,
             Key = "key",
             Value = _messageValue
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
     }
 
     // ===== Batch Produce =====
@@ -159,7 +160,7 @@ public class ProducerBenchmarks
                 Topic = Topic,
                 Key = $"key-{i}",
                 Value = _messageValue
-            }).AsTask());
+            }, CancellationToken.None).AsTask());
         }
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -183,11 +184,11 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("FireAndForget")]
     [Benchmark]
-    public void Dekaf_FireAndForget()
+    public async Task Dekaf_FireAndForget()
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _dekafProducer.Produce(Topic, $"key-{i}", _messageValue);
+            await _dekafProducer.ProduceAsync(Topic, $"key-{i}", _messageValue);
         }
     }
 }

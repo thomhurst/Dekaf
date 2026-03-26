@@ -31,7 +31,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "key-1",
             Value = "value-1"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
@@ -202,7 +202,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
 
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
         }

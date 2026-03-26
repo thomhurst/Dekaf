@@ -39,7 +39,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = "round-trip-key",
             Value = "round-trip-value"
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -358,7 +358,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Key = "key",
             Value = "value-partition-2",
             Partition = 2
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);

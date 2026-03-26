@@ -29,7 +29,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "ordering-key",
@@ -97,7 +97,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<int, string>
+                await producer.ProduceAsync(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,
@@ -231,7 +231,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "volume-key",
@@ -284,7 +284,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "faf-key",
@@ -396,7 +396,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         {
             for (var p = 0; p < partitionCount; p++)
             {
-                producer.Produce(new ProducerMessage<int, string>
+                await producer.ProduceAsync(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,

@@ -205,7 +205,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = 12345,
                 Value = $"same-key-msg-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(result);
         }
 
@@ -233,7 +233,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = fixedGuid,
                 Value = $"guid-msg-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(result);
         }
 
@@ -309,15 +309,15 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var intTask = intProducer.ProduceAsync(new ProducerMessage<int, string>
         {
             Topic = intTopic, Key = 100, Value = "int-event"
-        });
+        }, CancellationToken.None);
         var guidTask = guidProducer.ProduceAsync(new ProducerMessage<Guid, string>
         {
             Topic = guidTopic, Key = guidKey, Value = "guid-event"
-        });
+        }, CancellationToken.None);
         var bytesTask = bytesProducer.ProduceAsync(new ProducerMessage<string, byte[]>
         {
             Topic = bytesTopic, Key = "bytes-key", Value = [0xAB, 0xCD]
-        });
+        }, CancellationToken.None);
 
         await intTask;
         await guidTask;

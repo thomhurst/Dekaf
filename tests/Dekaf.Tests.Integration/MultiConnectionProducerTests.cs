@@ -140,7 +140,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(topic, $"key-{i % 50}", $"flush-msg-{i}");
+            await producer.ProduceAsync(topic, $"key-{i % 50}", $"flush-msg-{i}");
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -268,7 +268,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         for (var i = 0; i < 1_000; i++)
         {
-            producer.Produce(topic, $"key-{i}", $"dispose-msg-{i}");
+            await producer.ProduceAsync(topic, $"key-{i}", $"dispose-msg-{i}");
         }
 
         await producer.DisposeAsync();

@@ -271,7 +271,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"large-batch-{i}",
                 Value = $"compressed-payload-{i}-{new string('D', 500)}" // Compressible repeated data
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)

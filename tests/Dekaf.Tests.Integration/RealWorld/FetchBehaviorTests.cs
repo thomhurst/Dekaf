@@ -25,7 +25,7 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         const int messageCount = 500;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

@@ -31,7 +31,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
             Topic = topic,
             Key = "pre-key",
             Value = "pre-value"
-        });
+        }, CancellationToken.None);
         await Assert.That(preResult.Offset).IsGreaterThanOrEqualTo(0);
 
         // Act: brief network interruption (3 seconds)
@@ -52,7 +52,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
                 Topic = topic,
                 Key = "post-key",
                 Value = "post-value"
-            });
+            }, CancellationToken.None);
             await Assert.That(postResult.Topic).IsEqualTo(topic);
             await Assert.That(postResult.Offset).IsGreaterThanOrEqualTo(0);
         }
@@ -105,7 +105,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
             Topic = topic1,
             Key = "t1-key",
             Value = "t1-value"
-        });
+        }, CancellationToken.None);
         await Assert.That(result1.Offset).IsGreaterThanOrEqualTo(0);
 
         // Act: network interruption
@@ -129,7 +129,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
                 Topic = topic2,
                 Key = "t2-key",
                 Value = "t2-value"
-            });
+            }, CancellationToken.None);
 
             await Assert.That(result2.Topic).IsEqualTo(topic2);
             await Assert.That(result2.Offset).IsGreaterThanOrEqualTo(0);

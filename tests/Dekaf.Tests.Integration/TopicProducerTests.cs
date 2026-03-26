@@ -20,7 +20,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act
-        var metadata = await producer.ProduceAsync("key1", "value1");
+        var metadata = await producer.ProduceAsync("key1", "value1", CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -40,7 +40,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var headers = Headers.Create("trace-id", "abc123");
 
         // Act
-        var metadata = await producer.ProduceAsync("key1", "value1", headers);
+        var metadata = await producer.ProduceAsync("key1", "value1", headers, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -57,7 +57,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act
-        var metadata = await producer.ProduceAsync(partition: 1, "key1", "value1");
+        var metadata = await producer.ProduceAsync(partition: 1, "key1", "value1", CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -83,7 +83,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         };
 
         // Act
-        var metadata = await producer.ProduceAsync(message);
+        var metadata = await producer.ProduceAsync(message, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -100,7 +100,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act - fire-and-forget
-        producer.Produce("key1", "value1");
+        await producer.ProduceAsync("key1", "value1");
         await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming
@@ -133,7 +133,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var headers = Headers.Create("custom-header", "header-value");
 
         // Act
-        producer.Produce("key1", "value1", headers);
+        await producer.ProduceAsync("key1", "value1", headers);
         await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming
@@ -166,7 +166,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act
-        producer.Produce("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
+        await producer.ProduceAsync("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         cts.Token.Register(() => callbackInvoked.TrySetCanceled());
@@ -244,7 +244,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .WithAcks(Acks.All)
             .BuildForTopicAsync(topic);
 
-        var metadata = await producer.ProduceAsync("key", "value");
+        var metadata = await producer.ProduceAsync("key", "value", CancellationToken.None);
 
         // Assert
         await Assert.That(producer.Topic).IsEqualTo(topic);
@@ -266,7 +266,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Act
         var topicProducer = baseProducer.ForTopic(topic);
-        var metadata = await topicProducer.ProduceAsync("key", "value");
+        var metadata = await topicProducer.ProduceAsync("key", "value", CancellationToken.None);
 
         // Assert
         await Assert.That(topicProducer.Topic).IsEqualTo(topic);
@@ -276,7 +276,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await topicProducer.DisposeAsync();
 
         // Base producer should still work
-        var metadata2 = await baseProducer.ProduceAsync(topic, "key2", "value2");
+        var metadata2 = await baseProducer.ProduceAsync(topic, "key2", "value2", CancellationToken.None);
         await Assert.That(metadata2.Topic).IsEqualTo(topic);
     }
 
@@ -298,8 +298,8 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var producer2 = baseProducer.ForTopic(topic2);
 
         // Produce to both topics
-        var metadata1 = await producer1.ProduceAsync("key1", "value1");
-        var metadata2 = await producer2.ProduceAsync("key2", "value2");
+        var metadata1 = await producer1.ProduceAsync("key1", "value1", CancellationToken.None);
+        var metadata2 = await producer2.ProduceAsync("key2", "value2", CancellationToken.None);
 
         // Assert both succeeded
         await Assert.That(metadata1.Topic).IsEqualTo(topic1);
@@ -310,7 +310,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await producer2.DisposeAsync();
 
         // Base producer should still work after topic producers are disposed
-        var metadata3 = await baseProducer.ProduceAsync(topic1, "key3", "value3");
+        var metadata3 = await baseProducer.ProduceAsync(topic1, "key3", "value3", CancellationToken.None);
         await Assert.That(metadata3.Topic).IsEqualTo(topic1);
     }
 
@@ -326,7 +326,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Act - produce concurrently
         var tasks = Enumerable.Range(0, messageCount)
-            .Select(i => producer.ProduceAsync($"key-{i}", $"value-{i}").AsTask())
+            .Select(i => producer.ProduceAsync($"key-{i}", $"value-{i}", CancellationToken.None).AsTask())
             .ToArray();
 
         var results = await Task.WhenAll(tasks);
@@ -367,7 +367,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Act - send multiple fire-and-forget messages
         for (var i = 0; i < 10; i++)
         {
-            producer.Produce($"key-{i}", $"value-{i}");
+            await producer.ProduceAsync($"key-{i}", $"value-{i}");
         }
 
         // Flush should complete delivery

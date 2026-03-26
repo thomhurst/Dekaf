@@ -43,7 +43,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
             Topic = topic,
             Key = "di-key",
             Value = "di-value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 

@@ -38,7 +38,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                         Topic = topic,
                         Key = $"task-{taskId}",
                         Value = $"task-{taskId}-msg-{i}"
-                    });
+                    }, CancellationToken.None);
                     allResults.Add(result);
                 }
                 catch (Exception ex)
@@ -69,11 +69,11 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         const int awaitedCount = 20;
 
         // Fire-and-forget from one task
-        var ffTask = Task.Run(() =>
+        var ffTask = Task.Run(async () =>
         {
             for (var i = 0; i < fireAndForgetCount; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"ff-{i}",
@@ -93,7 +93,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                     Topic = topic,
                     Key = $"awaited-{i}",
                     Value = $"awaited-value-{i}"
-                });
+                }, CancellationToken.None);
                 awaitedResults.Add(result);
             }
         });
@@ -201,7 +201,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                         Topic = topic,
                         Key = $"producer-{producerId}-key-{i}",
                         Value = $"producer-{producerId}-value-{i}"
-                    });
+                    }, CancellationToken.None);
                     producerResults.Add(result);
                 }
 
@@ -300,7 +300,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         // Send all messages with callbacks
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(
+            await producer.ProduceAsync(
                 new ProducerMessage<string, string>
                 {
                     Topic = topic,

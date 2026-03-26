@@ -44,7 +44,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "tls-key",
             Value = "tls-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -75,7 +75,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();
@@ -210,7 +210,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = "does-not-matter",
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(act).Throws<KafkaException>();
     }
@@ -240,7 +240,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = "does-not-matter",
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(act).Throws<KafkaException>();
     }
@@ -282,7 +282,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "trust-key",
             Value = "trust-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -316,7 +316,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "ca-path-key",
             Value = "ca-path-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -348,7 +348,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "no-val-key",
             Value = "no-val-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -387,7 +387,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "mtls-key",
             Value = "mtls-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -423,7 +423,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "mtls-file-key",
             Value = "mtls-file-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -453,7 +453,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "mtls-factory-key",
             Value = "mtls-factory-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -543,7 +543,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "tls12-key",
             Value = "tls12-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -578,7 +578,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = "tls13-key",
             Value = "tls13-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -612,7 +612,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Topic = topic,
             Key = expectedKey,
             Value = expectedValue
-        });
+        }, CancellationToken.None);
 
         // Act - consume
         await using var consumer = await Kafka.CreateConsumer<string, string>()

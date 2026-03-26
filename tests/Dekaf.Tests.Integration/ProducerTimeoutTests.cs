@@ -33,7 +33,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "linger-key",
             Value = "linger-value"
-        });
+        }, CancellationToken.None);
 
         // The message should be delivered after the linger timer expires (~100ms),
         // not after the batch fills up.
@@ -164,7 +164,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Send fire-and-forget messages
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"flush-key-{i}",
@@ -220,7 +220,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Send messages via fire-and-forget
         for (var i = 0; i < 10; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

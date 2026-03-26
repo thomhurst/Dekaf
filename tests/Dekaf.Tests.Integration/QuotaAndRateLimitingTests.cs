@@ -127,7 +127,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = messageValue
-                });
+                }, CancellationToken.None);
                 results.Add(result);
             }
 
@@ -310,7 +310,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                     Topic = throttledTopic,
                     Key = $"throttled-key-{i}",
                     Value = messageValue
-                });
+                }, CancellationToken.None);
                 results.Add(result);
             }
 
@@ -378,7 +378,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = messageValue
-            }).AsTask());
+            }, CancellationToken.None).AsTask());
         }
 
         var results = new List<RecordMetadata>();

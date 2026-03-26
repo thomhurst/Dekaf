@@ -30,7 +30,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -69,7 +69,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
                         Topic = topic,
                         Key = $"thread-{threadId}-key-{i}",
                         Value = $"thread-{threadId}-value-{i}"
-                    }).ConfigureAwait(false);
+                    }, CancellationToken.None).ConfigureAwait(false);
                     allResults.Add(result);
                 }
                 catch (Exception ex)
@@ -116,7 +116,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = "same-key",
                 Value = $"value-{i:D4}"
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();
@@ -154,7 +154,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             Topic = topic,
             Key = "reliable-key",
             Value = "reliable-value"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -203,7 +203,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = $"key-{i:D4}",
                 Value = $"value-{i:D4}"
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in produceTasks)

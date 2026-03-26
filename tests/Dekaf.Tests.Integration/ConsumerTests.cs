@@ -1051,7 +1051,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         const int totalMessages = 1000;
         for (var i = 0; i < totalMessages; i++)
         {
-            producer.Produce(topic, $"key-{i}", $"value-{i}");
+            await producer.ProduceAsync(topic, $"key-{i}", $"value-{i}");
         }
 
         await producer.FlushWithTimeoutAsync();

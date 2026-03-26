@@ -41,7 +41,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = messageValue
-            }));
+            }, CancellationToken.None));
         }
 
         // All should eventually complete (backpressure unblocks as batches are sent)
@@ -87,7 +87,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = messageValue
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();
@@ -153,7 +153,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
                         Topic = topic,
                         Key = $"task-{taskId}-key-{i}",
                         Value = $"task-{taskId}-value-{i}"
-                    }).ConfigureAwait(false);
+                    }, CancellationToken.None).ConfigureAwait(false);
                     allResults.Add(result);
                 }
             }));
@@ -189,7 +189,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // Act - fire-and-forget with small buffer
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -252,7 +252,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = messageValue
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();

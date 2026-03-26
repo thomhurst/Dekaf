@@ -94,7 +94,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire all produces rapidly to stress pipelining
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "throughput-key",
@@ -154,7 +154,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire-and-forget all messages then flush
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "single-part-key",
@@ -215,7 +215,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-msg-{i}",
@@ -300,7 +300,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                     Topic = topic,
                     Key = $"producer-{producerId}-key",
                     Value = $"producer-{producerId}-seq-{i:D4}"
-                });
+                }, CancellationToken.None);
                 allMetadata.Add((producerId, i, metadata));
             }
 
@@ -380,7 +380,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-msg-{i}",
@@ -459,7 +459,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire-and-forget all messages — forces many batches into the same drain
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "chain-key",
@@ -523,7 +523,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             for (var i = 0; i < messagesPerWave; i++)
             {
                 var seq = wave * messagesPerWave + i;
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{i % 4}-key",
@@ -603,7 +603,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire-and-forget to both partitions rapidly
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"p{i % 2}-key",
@@ -678,7 +678,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         for (var i = 0; i < messagesPerPartition; i++)
         {
             // Partition 0
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "p0-key",
@@ -686,7 +686,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 Partition = 0
             });
             // Partition 1
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "p1-key",
@@ -758,7 +758,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-msg-{i}",
@@ -830,7 +830,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "mixed-key",
@@ -898,7 +898,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             {
                 var p = i % 4;
                 var seq = partitionSeq[p]++;
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-key",
@@ -992,7 +992,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             {
                 var p = i % 8;
                 var seq = partitionSeq[p]++;
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-key",
@@ -1078,7 +1078,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 for (var p = 0; p < 4; p++)
                 {
                     var seq = burst * (messagesPerPartition / 10) + i;
-                    producer.Produce(new ProducerMessage<string, string>
+                    await producer.ProduceAsync(new ProducerMessage<string, string>
                     {
                         Topic = topic,
                         Key = $"p{p}-key",
@@ -1155,7 +1155,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var p = 0; p < 16; p++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-key",

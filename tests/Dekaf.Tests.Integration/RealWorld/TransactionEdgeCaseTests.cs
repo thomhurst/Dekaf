@@ -223,7 +223,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"seq-key-{i}",
                 Value = $"seq-value-{i}"
-            });
+            }, CancellationToken.None);
             await txn.CommitAsync();
             offsets.Add(metadata.Offset);
         }

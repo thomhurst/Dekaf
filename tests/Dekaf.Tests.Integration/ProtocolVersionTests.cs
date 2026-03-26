@@ -229,7 +229,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);

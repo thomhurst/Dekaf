@@ -116,7 +116,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key-good",
             Value = "normal-value"
-        });
+        }, CancellationToken.None);
 
         // Assert - producer internal state was not corrupted
         await Assert.That(metadata.Topic).IsEqualTo(topic);

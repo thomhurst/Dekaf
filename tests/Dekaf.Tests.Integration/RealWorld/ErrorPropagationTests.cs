@@ -52,15 +52,14 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.DisposeAsync().ConfigureAwait(false);
 
         // Act & Assert
-        await Assert.That(() =>
+        await Assert.That(async () =>
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "key",
                 Value = "value"
             });
-            return Task.CompletedTask;
         }).Throws<ObjectDisposedException>();
     }
 
@@ -209,7 +208,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         // Send fire-and-forget messages
         for (var i = 0; i < 10; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

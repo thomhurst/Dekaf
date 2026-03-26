@@ -32,7 +32,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = "consistent-key",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
 
@@ -184,7 +184,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                     Topic = topic,
                     Key = "shared-key",
                     Value = $"producer-{p}-msg-{i}"
-                });
+                }, CancellationToken.None);
                 allResults.Add(metadata);
             }
         }).ToArray();
@@ -211,7 +211,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         const int messageCount = 200;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "ordered-key",
@@ -267,7 +267,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = $"unique-key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             partitionsSeen.Add(metadata.Partition);
         }
 
@@ -356,7 +356,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                     Key = $"task-{taskId}",
                     Value = $"task-{taskId}-seq-{i:D3}",
                     Partition = 0
-                });
+                }, CancellationToken.None);
                 results.Add(metadata);
             }
             allMetadata[taskId] = results;
@@ -492,7 +492,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             if (i % 2 == 0)
             {
                 // Fire-and-forget
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic, Key = "mixed", Value = $"seq-{i:D4}"
                 });
@@ -553,7 +553,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         for (var i = 0; i < messageCount; i++)
         {
             // Use Send() for maximum throughput pressure on the pipeline
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "stress",

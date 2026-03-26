@@ -67,7 +67,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = $"batch-key-{i}",
                 Value = $"batch-compressed-value-{i}-{new string('x', 100)}"
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -167,7 +167,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
                 Topic = topic,
                 Key = key,
                 Value = value
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in tasks)

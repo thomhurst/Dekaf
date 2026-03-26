@@ -136,7 +136,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Act - produce 10K small messages using fire-and-forget for speed
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(topic, $"k{i}", $"v{i}");
+            await producer.ProduceAsync(topic, $"k{i}", $"v{i}");
         }
 
         await producer.FlushWithTimeoutAsync();

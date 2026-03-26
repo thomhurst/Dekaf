@@ -41,7 +41,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "plain-key",
             Value = "plain-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -117,7 +117,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "scram256-key",
             Value = "scram256-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -193,7 +193,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             Topic = topic,
             Key = "scram512-key",
             Value = "scram512-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);

@@ -67,7 +67,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"batch-key-{i}",
                 Value = $"batch-compressed-value-{i}-{new string('x', 100)}" // Compressible data
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -203,7 +203,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"ht-key-{i}",
                 Value = $"high-throughput-compressed-message-{i}-payload"
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -261,7 +261,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = key,
                 Value = value
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in tasks)

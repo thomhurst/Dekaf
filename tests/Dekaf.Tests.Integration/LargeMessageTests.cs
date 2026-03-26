@@ -39,7 +39,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = "large-key",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         // Assert - message produced successfully
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -277,7 +277,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = "batch-boundary-key",
             Value = nearBatchValue
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -324,7 +324,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = "exceeds-batch-key",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -368,7 +368,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Topic = topic,
             Key = largeKey,
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -424,7 +424,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             Key = "combined-key",
             Value = largeValue,
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);

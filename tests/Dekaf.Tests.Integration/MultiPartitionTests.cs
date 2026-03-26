@@ -49,7 +49,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Topic = topic,
                 Key = "consistent-key",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
         LogPhase("produce done", sw);
@@ -90,7 +90,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Topic = topic,
                 Key = $"different-key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
         LogPhase("produce done", sw);
@@ -526,7 +526,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Topic = topic,
                 Key = "consistent-key",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
 
             if (expectedPartition < 0)
             {

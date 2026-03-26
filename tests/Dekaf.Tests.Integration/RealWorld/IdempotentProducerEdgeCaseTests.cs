@@ -33,7 +33,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             offsets.Add(metadata.Offset);
         }
 
@@ -88,7 +88,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
                     Topic = topic,
                     Key = $"task-{t}-key-{i}",
                     Value = $"task-{t}-value-{i}"
-                });
+                }, CancellationToken.None);
                 allMetadata.Add(metadata);
             }
         }).ToArray();
@@ -138,7 +138,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         const int messageCount = 200;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

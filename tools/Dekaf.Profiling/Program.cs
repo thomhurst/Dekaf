@@ -144,7 +144,7 @@ public static class Program
         // Warmup
         for (var i = 0; i < 100; i++)
         {
-            producer.Produce(Topic, "warmup", "warmup");
+            await producer.ProduceAsync(Topic, "warmup", "warmup");
         }
         await producer.FlushAsync().ConfigureAwait(false);
 
@@ -163,7 +163,7 @@ public static class Program
             for (var i = 0; i < batchSize && !cts.Token.IsCancellationRequested; i++)
             {
                 // Use pre-allocated key to avoid string interpolation allocation
-                producer.Produce(Topic, GetKey(count), messageValue);
+                await producer.ProduceAsync(Topic, GetKey(count), messageValue);
                 count++;
             }
         }
@@ -249,7 +249,7 @@ public static class Program
         // Warmup
         for (var i = 0; i < 100; i++)
         {
-            producer.Produce(Topic, "warmup", "warmup");
+            await producer.ProduceAsync(Topic, "warmup", "warmup");
         }
         await producer.FlushAsync().ConfigureAwait(false);
 
@@ -276,7 +276,7 @@ public static class Program
                     Topic = Topic,
                     Key = GetKey(count + i),
                     Value = messageValue
-                }).AsTask();
+                }, CancellationToken.None).AsTask();
             }
 
             try
@@ -312,7 +312,7 @@ public static class Program
         {
             for (var i = 0; i < messagesToSeed; i++)
             {
-                producer.Produce(Topic, GetKey(i), messageValue);
+                await producer.ProduceAsync(Topic, GetKey(i), messageValue);
             }
             await producer.FlushAsync().ConfigureAwait(false);
         }
@@ -411,7 +411,7 @@ public static class Program
         {
             for (var i = 0; i < batchSize && !cts.Token.IsCancellationRequested; i++)
             {
-                producer.Produce(roundtripTopic, GetKey(produced), messageValue);
+                await producer.ProduceAsync(roundtripTopic, GetKey(produced), messageValue);
                 produced++;
             }
 

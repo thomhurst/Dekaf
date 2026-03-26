@@ -143,7 +143,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Assert: produce should succeed
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -529,7 +529,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            });
+            }, CancellationToken.None);
 
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
         }
