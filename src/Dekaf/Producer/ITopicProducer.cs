@@ -92,44 +92,43 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Produces a message without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message without waiting for acknowledgment (fire-and-forget with async backpressure).
     /// </summary>
     /// <remarks>
-    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
-    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
-    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// <para>When the internal buffer is full, this method applies async backpressure by awaiting
+    /// until buffer space becomes available (up to <see cref="ProducerOptions.MaxBlockMs"/>).
+    /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
+    /// with zero allocation.</para>
     ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing.</para>
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    void Produce(TKey? key, TValue value);
+    ValueTask ProduceAsync(TKey? key, TValue value);
 
     /// <summary>
-    /// Produces a message with headers without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message with headers without waiting for acknowledgment (fire-and-forget with async backpressure).
     /// </summary>
     /// <remarks>
-    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
-    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
-    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// <para>When the internal buffer is full, this method applies async backpressure by awaiting
+    /// until buffer space becomes available (up to <see cref="ProducerOptions.MaxBlockMs"/>).</para>
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="headers">The message headers.</param>
-    void Produce(TKey? key, TValue value, Headers headers);
+    ValueTask ProduceAsync(TKey? key, TValue value, Headers headers);
 
     /// <summary>
-    /// Produces a message with a delivery callback (fire-and-forget with notification).
+    /// Produces a message with a delivery callback (fire-and-forget with async backpressure).
     /// </summary>
     /// <remarks>
-    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
-    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
-    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// <para>When the internal buffer is full, this method applies async backpressure by awaiting
+    /// until buffer space becomes available (up to <see cref="ProducerOptions.MaxBlockMs"/>).</para>
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    void Produce(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler);
+    ValueTask ProduceAsync(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Produces multiple messages and waits for all acknowledgments.

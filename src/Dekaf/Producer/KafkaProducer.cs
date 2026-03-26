@@ -570,7 +570,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public void Produce(ProducerMessage<TKey, TValue> message)
+    public ValueTask ProduceAsync(ProducerMessage<TKey, TValue> message)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -582,44 +582,101 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var activity = StartPublishActivity(ref message);
 
-        try
+        // Fast path: try thread-local cached topic metadata first
+        if (TryGetCachedTopicInfo(message.Topic, out var topicInfo) ||
+            (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
-            // Fast path: synchronous fire-and-forget produce with cached metadata (99%+ of calls).
-            if (TryProduceSyncFireAndForget(message))
+            if (!TryGetCachedTopicInfo(message.Topic, out _))
+                UpdateCachedTopicInfo(message.Topic, topicInfo!);
+
+            try
             {
-                activity?.SetStatus(ActivityStatusCode.Ok);
-                return;
+                // Serialize to thread-local buffers
+                var cache = GetOrCreateCache();
+                var keyIsNull = message.Key is null;
+                int keyLength = 0;
+
+                if (!keyIsNull)
+                {
+                    var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+                    cache.SerializationContext.Topic = message.Topic;
+                    cache.SerializationContext.Component = SerializationComponent.Key;
+                    cache.SerializationContext.Headers = message.Headers;
+                    _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
+                    keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+                    keyLength = keyWriter.WrittenCount;
+                }
+
+                var valueIsNull = message.Value is null;
+                int valueLength = 0;
+
+                if (!valueIsNull)
+                {
+                    var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+                    cache.SerializationContext.Topic = message.Topic;
+                    cache.SerializationContext.Component = SerializationComponent.Value;
+                    cache.SerializationContext.Headers = message.Headers;
+                    _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
+                    valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+                    valueLength = valueWriter.WrittenCount;
+                }
+
+                var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+                var partition = message.Partition
+                    ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo!.PartitionCount);
+
+                var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+                Header[]? pooledHeaderArray = null;
+                var headerCount = 0;
+                if (message.Headers is not null && message.Headers.Count > 0)
+                {
+                    RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+                }
+
+                var appendResult = _accumulator.AppendFromSpansAsync(
+                    message.Topic, partition, timestampMs,
+                    keySpan, keyIsNull,
+                    valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+                    valueIsNull,
+                    pooledHeaderArray, headerCount, null, CancellationToken.None);
+
+                if (appendResult.IsCompletedSuccessfully)
+                {
+                    // Hot path complete — fully synchronous, zero allocation
+                    if (!appendResult.Result)
+                        throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                    activity?.SetStatus(ActivityStatusCode.Ok);
+                    activity?.Dispose();
+                    return default;
+                }
+
+                // Buffer was full — appendResult is a real async ValueTask
+                return FinishProduceAsync(appendResult, activity);
             }
-
-            // Topic cache miss — wait synchronously for metadata (like Java's waitOnMetadata).
-            // This avoids launching async tasks per message which causes thundering herd under load.
-            EnsureTopicMetadataSync(message.Topic);
-
-            // Retry with metadata now cached
-            if (TryProduceSyncFireAndForget(message))
+            catch (KafkaTimeoutException)
             {
-                activity?.SetStatus(ActivityStatusCode.Ok);
-                return;
+                // BufferMemory backpressure timeout must propagate
+                if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, null!);
+                activity?.Dispose();
+                throw;
             }
+            catch (Exception ex)
+            {
+                // Fire-and-forget: swallow exception but log
+                LogFireAndForgetProduceFailed(ex, message.Topic);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                activity?.Dispose();
+                return default;
+            }
+        }
 
-            // Final fallback: metadata fetch succeeded but topic is in a transient state.
-            // Use async path for this rare edge case.
-            ProduceFireAndForgetAsync(message);
-        }
-        catch (Exception ex) when (activity is not null)
-        {
-            Diagnostics.DekafDiagnostics.RecordException(activity, ex);
-            throw;
-        }
-        finally
-        {
-            // Span covers only "message accepted into client buffer" for fire-and-forget
-            activity?.Dispose();
-        }
+        // Metadata miss — full async path
+        return ProduceAsyncFireAndForgetSlow(message, activity);
     }
 
     /// <inheritdoc />
-    public void Produce(string topic, TKey? key, TValue value)
+    public ValueTask ProduceAsync(string topic, TKey? key, TValue value)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -629,107 +686,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // When interceptors are present, we must create a ProducerMessage so interceptors can operate
         if (_interceptors is not null)
         {
-            Produce(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
-            return;
+            return ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
         }
 
-        // Fast path: synchronous fire-and-forget produce with cached metadata.
-        if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
-        {
-            return;
-        }
-
-        // Topic cache miss — wait synchronously for metadata (like Java's waitOnMetadata).
-        // This avoids launching async tasks per message which causes thundering herd under load.
-        EnsureTopicMetadataSync(topic);
-
-        // Retry with metadata now cached
-        if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
-        {
-            return;
-        }
-
-        // Final fallback for edge cases (topic in transient state after metadata fetch).
-        // Call ProduceFireAndForgetAsync directly to avoid redundant EnsureTopicMetadataSync
-        // in the Send(ProducerMessage) overload.
-        ProduceFireAndForgetAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
-    }
-
-    /// <summary>
-    /// Attempts synchronous fire-and-forget produce directly from parameters when metadata is cached.
-    /// This is the fastest path as it avoids both ProducerMessage and PooledValueTaskSource allocation.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryProduceSyncFireAndForgetDirect(
-        string topic,
-        TKey? key,
-        TValue value,
-        int? partition,
-        DateTimeOffset? timestamp,
-        Headers? headers)
-    {
-        // FAST PATH: Check thread-local cached topic metadata.
-        // Avoids MetadataManager dictionary lookup for consecutive messages to the same topic.
-        // Cache refreshes periodically (~1 second) to pick up background metadata updates.
-        if (TryGetCachedTopicInfo(topic, out var topicInfo))
-        {
-            try
-            {
-                ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo!);
-            }
-            catch (KafkaTimeoutException)
-            {
-                // CRITICAL: BufferMemory backpressure timeout must propagate to caller
-                // This indicates producer is faster than network can drain
-                throw;
-            }
-            catch (Exception ex)
-            {
-                LogFireAndForgetProduceFailed(ex, topic);
-            }
-            return true;
-        }
-
-        // SLOW PATH: Full metadata check with caching
-        // Check if metadata is initialized (sync check)
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false; // Need async initialization
-        }
-
-        // Try to get topic metadata from cache
-        if (!_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) || topicInfo is null)
-        {
-            return false; // Cache miss, need async refresh
-        }
-
-        if (topicInfo.PartitionCount == 0)
-        {
-            return false; // Invalid topic state, let async path handle error
-        }
-
-        // Update thread-local cache for next call
-        UpdateCachedTopicInfo(topic, topicInfo);
-
-        // All checks passed - we can proceed synchronously without completion tracking
-        try
-        {
-            ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo);
-        }
-        catch (KafkaTimeoutException)
-        {
-            // CRITICAL: BufferMemory backpressure timeout must propagate to caller
-            // This indicates producer is faster than network can drain
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Fire-and-forget: swallow exception but log for diagnostics
-            // This matches Confluent.Kafka behavior where Produce() doesn't throw
-            // for production errors in fire-and-forget mode
-            LogFireAndForgetProduceFailed(ex, topic);
-        }
-        return true;
+        // Delegate to the ProducerMessage overload — it handles fast/slow paths uniformly
+        return ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
     /// <summary>
@@ -776,183 +737,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
         // while still detecting stale metadata reasonably quickly
         cache.CachedTopicValidUntilTicks = Environment.TickCount64 + 1000;
-    }
-
-    /// <summary>
-    /// Core synchronous fire-and-forget produce logic that works directly from parameters.
-    /// Avoids ProducerMessage allocation entirely.
-    ///
-    /// Design: True fast path / slow path split
-    /// - Fast path: Check cached batch, append if space available (no side effects)
-    /// - Slow path: Handle all complexity (batch creation, rotation, dictionary ops)
-    /// </summary>
-    private void ProduceSyncCoreFireAndForgetDirect(
-        string topic,
-        TKey? keyObj,
-        TValue value,
-        int? partitionOverride,
-        DateTimeOffset? timestampOverride,
-        Headers? headers,
-        TopicInfo topicInfo)
-    {
-        // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
-        var cache = GetOrCreateCache();
-        var keyIsNull = keyObj is null;
-        int keyLength = 0;
-
-        if (!keyIsNull)
-        {
-            var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-            cache.SerializationContext.Topic = topic;
-            cache.SerializationContext.Component = SerializationComponent.Key;
-            cache.SerializationContext.Headers = headers;
-            _keySerializer.Serialize(keyObj!, ref keyWriter, cache.SerializationContext);
-            keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
-            keyLength = keyWriter.WrittenCount;
-        }
-
-        var valueIsNull = value is null;
-        int valueLength = 0;
-
-        if (!valueIsNull)
-        {
-            var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-            cache.SerializationContext.Topic = topic;
-            cache.SerializationContext.Component = SerializationComponent.Value;
-            cache.SerializationContext.Headers = headers;
-            _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
-            valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-            valueLength = valueWriter.WrittenCount;
-        }
-
-        // Step 2: Compute partition using serialized key bytes
-        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-        var partition = partitionOverride
-            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-
-        // Step 3: Get timestamp
-        var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-        // Step 4: Convert headers
-        Header[]? pooledHeaderArray = null;
-        var headerCount = 0;
-        if (headers is not null && headers.Count > 0)
-        {
-            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
-        }
-
-        // Step 5: Append to accumulator (under deque lock for ordering safety)
-        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, pooledHeaderArray, headerCount);
-    }
-
-    /// <summary>
-    /// Appends a fire-and-forget record via the accumulator (under deque lock).
-    /// Uses arena-based zero-copy when possible, falling back to ArrayPool rentals.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private void AppendWithSlowPath(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        Header[]? pooledHeaderArray,
-        int headerCount,
-        Action<RecordMetadata, Exception?>? callback = null)
-    {
-        // Pass raw spans from thread-local buffers directly to the accumulator.
-        // The accumulator will try arena allocation first, falling back to ArrayPool.
-        var cache = GetOrCreateCache();
-        var keySpan = !keyIsNull && keyLength > 0
-            ? cache.KeySerializationBuffer.AsSpan(0, keyLength)
-            : ReadOnlySpan<byte>.Empty;
-
-        var valueSpan = !valueIsNull && valueLength > 0
-            ? cache.ValueSerializationBuffer.AsSpan(0, valueLength)
-            : ReadOnlySpan<byte>.Empty;
-
-        if (!_accumulator.AppendFromSpans(
-            topic,
-            partition,
-            timestampMs,
-            keySpan,
-            keyIsNull,
-            valueSpan,
-            valueIsNull,
-            pooledHeaderArray,
-            headerCount,
-            callback))
-        {
-            if (pooledHeaderArray is not null)
-                ArrayPool<Header>.Shared.Return(pooledHeaderArray, clearArray: false);
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-        }
-    }
-
-    /// <summary>
-    /// Attempts synchronous fire-and-forget produce when metadata is initialized and cached.
-    /// This is the fastest path for fire-and-forget operations as it:
-    /// 1. Does NOT rent a PooledValueTaskSource
-    /// 2. Does NOT store the completion source in the batch
-    /// 3. Completely bypasses result tracking overhead
-    /// Returns true if successful, false if async path is needed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryProduceSyncFireAndForget(ProducerMessage<TKey, TValue> message)
-    {
-        // FAST PATH: Check thread-local cached topic metadata.
-        if (TryGetCachedTopicInfo(message.Topic, out var topicInfo))
-        {
-            try
-            {
-                ProduceSyncCoreFireAndForgetDirect(
-                    message.Topic,
-                    message.Key,
-                    message.Value,
-                    message.Partition,
-                    message.Timestamp,
-                    message.Headers,
-                    topicInfo!);
-            }
-            catch (Exception ex)
-            {
-                LogFireAndForgetProduceFailed(ex, message.Topic);
-            }
-            return true;
-        }
-
-        // Metadata manager cache check (callers guarantee metadata is initialized via InitializeAsync).
-        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
-        {
-            return false; // Topic cache miss — caller will fetch inline
-        }
-
-        if (topicInfo.PartitionCount == 0)
-        {
-            return false;
-        }
-
-        // Update thread-local cache for next call
-        UpdateCachedTopicInfo(message.Topic, topicInfo);
-
-        try
-        {
-            ProduceSyncCoreFireAndForgetDirect(
-                message.Topic,
-                message.Key,
-                message.Value,
-                message.Partition,
-                message.Timestamp,
-                message.Headers,
-                topicInfo);
-        }
-        catch (Exception ex)
-        {
-            LogFireAndForgetProduceFailed(ex, message.Topic);
-        }
-        return true;
     }
 
     /// <summary>
@@ -1143,7 +927,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
+    public ValueTask ProduceAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -1155,119 +939,86 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: synchronous produce with handler using cached metadata (99%+ of calls).
-        if (TryProduceSyncWithHandler(message, deliveryHandler))
+        // Fast path: try thread-local cached topic metadata first
+        if (TryGetCachedTopicInfo(message.Topic, out var topicInfo) ||
+            (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
-            return;
+            if (!TryGetCachedTopicInfo(message.Topic, out _))
+                UpdateCachedTopicInfo(message.Topic, topicInfo!);
+
+            try
+            {
+                // Serialize to thread-local buffers
+                var cache = GetOrCreateCache();
+                var keyIsNull = message.Key is null;
+                int keyLength = 0;
+
+                if (!keyIsNull)
+                {
+                    var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+                    cache.SerializationContext.Topic = message.Topic;
+                    cache.SerializationContext.Component = SerializationComponent.Key;
+                    cache.SerializationContext.Headers = message.Headers;
+                    _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
+                    keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+                    keyLength = keyWriter.WrittenCount;
+                }
+
+                var valueIsNull = message.Value is null;
+                int valueLength = 0;
+
+                if (!valueIsNull)
+                {
+                    var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+                    cache.SerializationContext.Topic = message.Topic;
+                    cache.SerializationContext.Component = SerializationComponent.Value;
+                    cache.SerializationContext.Headers = message.Headers;
+                    _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
+                    valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+                    valueLength = valueWriter.WrittenCount;
+                }
+
+                var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+                var partition = message.Partition
+                    ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo!.PartitionCount);
+
+                var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+                Header[]? pooledHeaderArray = null;
+                var headerCount = 0;
+                if (message.Headers is not null && message.Headers.Count > 0)
+                {
+                    RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+                }
+
+                var appendResult = _accumulator.AppendFromSpansAsync(
+                    message.Topic, partition, timestampMs,
+                    keySpan, keyIsNull,
+                    valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+                    valueIsNull,
+                    pooledHeaderArray, headerCount, deliveryHandler, CancellationToken.None);
+
+                if (appendResult.IsCompletedSuccessfully)
+                {
+                    // Hot path complete — fully synchronous, zero allocation
+                    if (!appendResult.Result)
+                        throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                    return default;
+                }
+
+                // Buffer was full — appendResult is a real async ValueTask
+                return FinishProduceAsync(appendResult, activity: null);
+            }
+            catch (Exception ex)
+            {
+                // Deliver exception to callback - don't throw for fire-and-forget style
+                try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                return default;
+            }
         }
 
-        // Topic cache miss — delegate to async path which fetches metadata without blocking.
-        ProduceFireAndForgetWithHandlerAsync(message, deliveryHandler);
-    }
-
-    /// <summary>
-    /// Attempts synchronous produce with delivery handler when metadata is initialized and cached.
-    /// Returns true if successful, false if async path is needed.
-    /// Uses batch-embedded callbacks for zero-allocation - callbacks are invoked inline on sender thread.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
-    {
-        // Callers guarantee metadata is initialized via InitializeAsync.
-        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
-        {
-            return false; // Topic cache miss — caller will fetch inline
-        }
-
-        if (topicInfo.PartitionCount == 0)
-        {
-            return false;
-        }
-
-        // All checks passed - proceed synchronously using direct callback path (no PooledValueTaskSource needed)
-        try
-        {
-            ProduceSyncCoreWithCallbackDirect(
-                message.Topic,
-                message.Key,
-                message.Value,
-                message.Partition,
-                message.Timestamp,
-                message.Headers,
-                topicInfo,
-                deliveryHandler);
-        }
-        catch (Exception ex)
-        {
-            // Deliver exception to callback - don't throw for fire-and-forget style
-            try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
-        }
-        return true;
-    }
-
-    /// <summary>
-    /// Core produce logic with delivery callback stored directly in the batch.
-    /// Similar to ProduceSyncCoreFireAndForgetDirect but tracks callbacks for delivery notification.
-    /// Callbacks are invoked inline on the sender thread when the batch completes.
-    /// </summary>
-    private void ProduceSyncCoreWithCallbackDirect(
-        string topic,
-        TKey? keyObj,
-        TValue value,
-        int? partitionOverride,
-        DateTimeOffset? timestampOverride,
-        Headers? headers,
-        TopicInfo topicInfo,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
-        var cache = GetOrCreateCache();
-        var keyIsNull = keyObj is null;
-        int keyLength = 0;
-
-        if (!keyIsNull)
-        {
-            var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-            cache.SerializationContext.Topic = topic;
-            cache.SerializationContext.Component = SerializationComponent.Key;
-            cache.SerializationContext.Headers = headers;
-            _keySerializer.Serialize(keyObj!, ref keyWriter, cache.SerializationContext);
-            keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
-            keyLength = keyWriter.WrittenCount;
-        }
-
-        var valueIsNull = value is null;
-        int valueLength = 0;
-
-        if (!valueIsNull)
-        {
-            var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-            cache.SerializationContext.Topic = topic;
-            cache.SerializationContext.Component = SerializationComponent.Value;
-            cache.SerializationContext.Headers = headers;
-            _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
-            valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-            valueLength = valueWriter.WrittenCount;
-        }
-
-        // Step 2: Compute partition using serialized key bytes
-        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-        var partition = partitionOverride
-            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-
-        // Step 3: Get timestamp
-        var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-        // Step 4: Convert headers
-        Header[]? pooledHeaderArray = null;
-        var headerCount = 0;
-        if (headers is not null && headers.Count > 0)
-        {
-            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
-        }
-
-        // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
-        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, pooledHeaderArray, headerCount, callback);
+        // Metadata miss — full async path
+        return ProduceAsyncWithCallbackSlow(message, deliveryHandler);
     }
 
     private async ValueTask ProduceInternalAsync(
@@ -2424,79 +2175,226 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Synchronously waits for topic metadata to become available.
-    /// Kept out of the inlined fast path to avoid code bloat.
-    /// Coalesces concurrent requests for the same topic via MetadataManager.
+    /// Async slow path for fire-and-forget produce when topic metadata is not cached.
+    /// Fetches metadata asynchronously, serializes, and appends to the accumulator.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void EnsureTopicMetadataSync(string topic)
-    {
-        var topicInfo = _metadataManager.WaitForTopicMetadataSync(
-            topic, _options.MaxBlockMs);
-
-        if (topicInfo is not null)
-        {
-            UpdateCachedTopicInfo(topic, topicInfo);
-        }
-    }
-
-    /// <summary>
-    /// Handles fire-and-forget produce when topic metadata is not cached.
-    /// Delegates to the async produce path which fetches metadata without blocking.
-    /// Uses ObserveForFireAndForget to ensure the PooledValueTaskSource is returned to the pool.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private void ProduceFireAndForgetAsync(ProducerMessage<TKey, TValue> message)
-    {
-        // Apply synchronous backpressure when buffer is full.
-        // The sync fast path applies this via ReserveMemorySync, but this async fallback
-        // (taken when metadata isn't cached) would otherwise dispatch unbounded fire-and-forget
-        // Tasks that saturate the thread pool and starve the sender loop.
-        _accumulator.WaitForBufferSpace();
-
-        var completion = _valueTaskSourcePool.Rent();
-        _ = ProduceInternalFireAndForgetAsync(message, completion);
-    }
-
-    /// <summary>
-    /// Handles fire-and-forget produce with delivery handler when topic metadata is not cached.
-    /// Sets the delivery handler on the completion source so it's invoked by the batch pipeline.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private void ProduceFireAndForgetWithHandlerAsync(
+    private async ValueTask ProduceAsyncFireAndForgetSlow(
         ProducerMessage<TKey, TValue> message,
-        Action<RecordMetadata, Exception?> deliveryHandler)
-    {
-        _accumulator.WaitForBufferSpace();
-
-        var completion = _valueTaskSourcePool.Rent();
-        completion.SetDeliveryHandler(deliveryHandler);
-        _ = ProduceInternalFireAndForgetAsync(message, completion);
-    }
-
-    /// <summary>
-    /// Runs ProduceInternalAsync and ensures the completion source is observed for pool return.
-    /// On failure, completes the source with the exception so the delivery handler is invoked
-    /// and the source is returned to the pool.
-    /// </summary>
-    private async Task ProduceInternalFireAndForgetAsync(
-        ProducerMessage<TKey, TValue> message,
-        PooledValueTaskSource<RecordMetadata> completion)
+        Activity? activity)
     {
         try
         {
-            await ProduceInternalAsync(message, completion, CancellationToken.None).ConfigureAwait(false);
-            // Message is now in the accumulator. ObserveForFireAndForget ensures the
-            // completion source is returned to the pool when the batch pipeline completes it.
-            completion.ObserveForFireAndForget();
+            // Fetch metadata with MaxBlockMs timeout
+            using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
+
+            TopicInfo? topicInfo;
+            try
+            {
+                topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new KafkaTimeoutException(
+                    $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+            }
+
+            if (topicInfo is null || topicInfo.PartitionCount == 0)
+            {
+                var ex = new ProduceException($"Topic '{message.Topic}' not found or has no partitions") { Topic = message.Topic };
+                LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
+                return;
+            }
+
+            UpdateCachedTopicInfo(message.Topic, topicInfo);
+
+            // Serialize and append
+            var cache = GetOrCreateCache();
+            var keyIsNull = message.Key is null;
+            int keyLength = 0;
+
+            if (!keyIsNull)
+            {
+                var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+                cache.SerializationContext.Topic = message.Topic;
+                cache.SerializationContext.Component = SerializationComponent.Key;
+                cache.SerializationContext.Headers = message.Headers;
+                _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
+                keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+                keyLength = keyWriter.WrittenCount;
+            }
+
+            var valueIsNull = message.Value is null;
+            int valueLength = 0;
+
+            if (!valueIsNull)
+            {
+                var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+                cache.SerializationContext.Topic = message.Topic;
+                cache.SerializationContext.Component = SerializationComponent.Value;
+                cache.SerializationContext.Headers = message.Headers;
+                _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
+                valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+                valueLength = valueWriter.WrittenCount;
+            }
+
+            var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+            var partition = message.Partition
+                ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+            Header[]? pooledHeaderArray = null;
+            var headerCount = 0;
+            if (message.Headers is not null && message.Headers.Count > 0)
+            {
+                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+            }
+
+            var appendResult = await _accumulator.AppendFromSpansAsync(
+                message.Topic, partition, timestampMs,
+                keySpan, keyIsNull,
+                valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+                valueIsNull,
+                pooledHeaderArray, headerCount, null, CancellationToken.None).ConfigureAwait(false);
+
+            if (!appendResult)
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        catch (KafkaTimeoutException)
+        {
+            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, null!);
+            throw;
         }
         catch (Exception ex)
         {
-            // Complete the source so the delivery handler (if any) is invoked and
-            // the source is returned to the pool.
-            completion.TrySetException(ex);
-            completion.ObserveForFireAndForget();
-            LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
+            LogFireAndForgetProduceFailed(ex, message.Topic);
+        }
+        finally
+        {
+            activity?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Async slow path for fire-and-forget produce with delivery callback when metadata is not cached.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private async ValueTask ProduceAsyncWithCallbackSlow(
+        ProducerMessage<TKey, TValue> message,
+        Action<RecordMetadata, Exception?> deliveryHandler)
+    {
+        try
+        {
+            // Fetch metadata with MaxBlockMs timeout
+            using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
+
+            TopicInfo? topicInfo;
+            try
+            {
+                topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new KafkaTimeoutException(
+                    $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+            }
+
+            if (topicInfo is null || topicInfo.PartitionCount == 0)
+            {
+                throw new ProduceException($"Topic '{message.Topic}' not found or has no partitions") { Topic = message.Topic };
+            }
+
+            UpdateCachedTopicInfo(message.Topic, topicInfo);
+
+            // Serialize and append with callback
+            var cache = GetOrCreateCache();
+            var keyIsNull = message.Key is null;
+            int keyLength = 0;
+
+            if (!keyIsNull)
+            {
+                var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+                cache.SerializationContext.Topic = message.Topic;
+                cache.SerializationContext.Component = SerializationComponent.Key;
+                cache.SerializationContext.Headers = message.Headers;
+                _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
+                keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+                keyLength = keyWriter.WrittenCount;
+            }
+
+            var valueIsNull = message.Value is null;
+            int valueLength = 0;
+
+            if (!valueIsNull)
+            {
+                var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+                cache.SerializationContext.Topic = message.Topic;
+                cache.SerializationContext.Component = SerializationComponent.Value;
+                cache.SerializationContext.Headers = message.Headers;
+                _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
+                valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+                valueLength = valueWriter.WrittenCount;
+            }
+
+            var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+            var partition = message.Partition
+                ?? _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+            Header[]? pooledHeaderArray = null;
+            var headerCount = 0;
+            if (message.Headers is not null && message.Headers.Count > 0)
+            {
+                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+            }
+
+            var appendResult = await _accumulator.AppendFromSpansAsync(
+                message.Topic, partition, timestampMs,
+                keySpan, keyIsNull,
+                valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+                valueIsNull,
+                pooledHeaderArray, headerCount, deliveryHandler, CancellationToken.None).ConfigureAwait(false);
+
+            if (!appendResult)
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+        catch (Exception ex)
+        {
+            // Deliver exception to callback
+            try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+        }
+    }
+
+    /// <summary>
+    /// Awaits an in-flight append and disposes the activity on completion.
+    /// </summary>
+    private async ValueTask FinishProduceAsync(ValueTask<bool> appendResult, Activity? activity)
+    {
+        try
+        {
+            var result = await appendResult.ConfigureAwait(false);
+            if (!result)
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        catch (KafkaTimeoutException)
+        {
+            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, null!);
+            throw;
+        }
+        catch (Exception ex) when (ex is not ObjectDisposedException)
+        {
+            LogFireAndForgetProduceFailed(ex, "unknown");
+        }
+        finally
+        {
+            activity?.Dispose();
         }
     }
 

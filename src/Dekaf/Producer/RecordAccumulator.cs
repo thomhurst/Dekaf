@@ -40,39 +40,6 @@ internal ref struct SpinLockGuard
     }
 }
 
-/// <summary>
-/// Per-waiter node for FIFO sync waiter queue. Each blocked thread in ReserveMemorySync or
-/// WaitForBufferSpace gets its own node so ReleaseMemory can wake waiters one-at-a-time
-/// instead of broadcasting (thundering herd). Nodes are pooled to reduce GC pressure during
-/// sustained backpressure. Safety invariant: a node is only returned to the pool after it has
-/// been dequeued from <c>_syncWaiterQueue</c> by <see cref="RecordAccumulator.WakeNextSyncWaiter"/>
-/// (which sets the event), so no concurrent thread can signal a recycled node.
-/// </summary>
-internal sealed class SyncWaiterNode
-{
-    /// <summary>
-    /// The event this waiter blocks on. Starts unsignaled; signaled by ReleaseMemory
-    /// when this node reaches the front of the queue.
-    /// </summary>
-    public readonly ManualResetEventSlim Event = new(false);
-
-    /// <summary>
-    /// Set to true when the owning thread is done with this node.
-    /// WakeNextSyncWaiter skips cancelled nodes to avoid consuming a signal
-    /// that no thread is waiting on.
-    /// </summary>
-    public volatile bool Cancelled;
-
-    /// <summary>
-    /// Resets this node for reuse. Must only be called after the node has been dequeued
-    /// from the waiter queue and is no longer referenced by any other thread.
-    /// </summary>
-    internal void Reset()
-    {
-        Cancelled = false;
-        Event.Reset();
-    }
-}
 
 /// <summary>
 /// Debug-only tracking for message flow through the producer pipeline.
@@ -860,16 +827,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Adaptive connection scaling: counts slow-path entries in ReserveMemorySync/Async
+    // Adaptive connection scaling: counts slow-path entries in ReserveMemoryAsync
     private long _bufferPressureEvents;
-    // FIFO waiter queue: each blocked thread gets its own SyncWaiterNode so
-    // ReleaseMemory wakes waiters one-at-a-time instead of broadcasting (thundering herd).
-    private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterQueue = new();
-    // Pool of reusable SyncWaiterNode instances to reduce GC pressure during backpressure.
-    // Bounded to avoid holding excess memory when backpressure subsides.
-    private const int MaxPooledWaiterNodes = 64;
-    private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterNodePool = new();
-    private int _pooledNodeCount;
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1526,7 +1485,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
-                if (!Append(
+                if (!await AppendWithCompletionAsync(
                     workItem.Topic,
                     workItem.Partition,
                     workItem.Timestamp,
@@ -1535,7 +1494,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Headers,
                     workItem.HeaderCount,
                     workItem.Completion,
-                    null))
+                    workItem.CancellationToken).ConfigureAwait(false))
                 {
                     CleanupWorkItemResources(in workItem);
                     workItem.Completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
@@ -1663,91 +1622,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Unified append method matching Java's RecordAccumulator.append().
-    /// All produce paths (ProduceAsync, Send, Send+callback) go through this single method.
-    /// Synchronized on the per-partition deque lock to guarantee ordering.
-    /// </summary>
-    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
-    internal bool Append(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        Header[]? headers,
-        int headerCount,
-        PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback)
-    {
-        if (_disposed)
-            return false;
-
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
-        ReserveMemorySync(recordSize);
-
-        // Track pending awaited produce BEFORE append to prevent race condition:
-        // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
-        // after the message is in the batch but before the counter is incremented.
-        if (completionSource is not null)
-            Interlocked.Increment(ref _pendingAwaitedProduceCount);
-
-        var pd = GetOrCreateDeque(topic, partition);
-        ReadyBatch? sealedBatch = null;
-
-        {
-            using var guard = new SpinLockGuard(ref pd.Lock);
-
-            // Check disposal under lock
-            if (_disposed)
-            {
-                if (completionSource is not null)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                return false;
-            }
-
-            // Try append to current batch
-            if (pd.CurrentBatch is { } currentBatch)
-            {
-                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                    completionSource, callback, recordSize))
-                    return true;
-
-                // Current batch is full — seal it (compress + enqueue under lock)
-                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
-            }
-
-            // Create new batch
-            var newBatch = RentBatch(new TopicPartition(topic, partition));
-            pd.CurrentBatch = newBatch;
-            Interlocked.Increment(ref _unsealedBatchCount);
-
-            // Append to new batch — must succeed since batch is empty
-            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                completionSource, callback, recordSize))
-            {
-                // Record too large for a single batch
-                pd.CurrentBatch = null;
-                Interlocked.Decrement(ref _unsealedBatchCount);
-                _batchPool.Return(newBatch);
-                if (completionSource is not null)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                throw new KafkaException(ErrorCode.MessageTooLarge,
-                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
-            }
-        }
-
-        if (sealedBatch is not null)
-        {
-            SignalWakeup();
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Async version of <see cref="Append"/> for the fire-and-forget path.
+    /// Async append method for the fire-and-forget path.
     /// Hot path: if <see cref="TryReserveMemory"/> succeeds, completes synchronously with no async state machine.
     /// Cold path: awaits <see cref="ReserveMemoryAsync"/> when buffer memory is exhausted (backpressure).
     /// </summary>
@@ -1849,6 +1724,115 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
         return AppendAfterReservation(topic, partition, timestamp, key, value,
             headers, headerCount, callback, recordSize);
+    }
+
+    /// <summary>
+    /// Async append with completion source tracking for the ProduceAsync path.
+    /// Used by append workers to process work items with async backpressure.
+    /// </summary>
+    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
+    private ValueTask<bool> AppendWithCompletionAsync(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        Header[]? headers,
+        int headerCount,
+        PooledValueTaskSource<RecordMetadata> completionSource,
+        CancellationToken cancellationToken)
+    {
+        if (_disposed)
+            return new ValueTask<bool>(false);
+
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+
+        // Hot path: non-blocking CAS reservation
+        if (TryReserveMemory(recordSize))
+            return new ValueTask<bool>(AppendWithCompletionAfterReservation(
+                topic, partition, timestamp, key, value, headers, headerCount, completionSource, recordSize));
+
+        // Cold path: buffer full, await async reservation
+        return AppendWithCompletionAsyncSlowPath(
+            topic, partition, timestamp, key, value, headers, headerCount, completionSource, recordSize, cancellationToken);
+    }
+
+    private bool AppendWithCompletionAfterReservation(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        Header[]? headers,
+        int headerCount,
+        PooledValueTaskSource<RecordMetadata> completionSource,
+        int recordSize)
+    {
+        // Track pending awaited produce BEFORE append
+        Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
+        var pd = GetOrCreateDeque(topic, partition);
+        ReadyBatch? sealedBatch = null;
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            if (_disposed)
+            {
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
+                    completionSource, null, recordSize))
+                    return true;
+
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
+            }
+
+            var newBatch = RentBatch(new TopicPartition(topic, partition));
+            pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
+
+            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
+                completionSource, null, recordSize))
+            {
+                pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
+                _batchPool.Return(newBatch);
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (sealedBatch is not null)
+        {
+            SignalWakeup();
+        }
+
+        return true;
+    }
+
+    private async ValueTask<bool> AppendWithCompletionAsyncSlowPath(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        Header[]? headers,
+        int headerCount,
+        PooledValueTaskSource<RecordMetadata> completionSource,
+        int recordSize,
+        CancellationToken cancellationToken)
+    {
+        await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+        return AppendWithCompletionAfterReservation(
+            topic, partition, timestamp, key, value, headers, headerCount, completionSource, recordSize);
     }
 
     /// <summary>
@@ -1960,83 +1944,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Appends a record from raw span data, using arena-based zero-copy when possible.
-    /// This avoids per-message ArrayPool rentals on the fire-and-forget slow path.
-    /// </summary>
-    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
-    internal bool AppendFromSpans(
-        string topic,
-        int partition,
-        long timestamp,
-        ReadOnlySpan<byte> keyData,
-        bool keyIsNull,
-        ReadOnlySpan<byte> valueData,
-        bool valueIsNull,
-        Header[]? headers,
-        int headerCount,
-        Action<RecordMetadata, Exception?>? callback)
-    {
-        if (_disposed)
-            return false;
-
-        var keyLength = keyIsNull ? 0 : keyData.Length;
-        var valueLength = valueIsNull ? 0 : valueData.Length;
-        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
-        ReserveMemorySync(recordSize);
-
-        var pd = GetOrCreateDeque(topic, partition);
-        ReadyBatch? sealedBatch = null;
-
-        {
-            using var guard = new SpinLockGuard(ref pd.Lock);
-
-            // Check disposal under lock
-            if (_disposed)
-            {
-                ReleaseMemory(recordSize);
-                return false;
-            }
-
-            // Try append to current batch
-            if (pd.CurrentBatch is { } currentBatch)
-            {
-                if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                    headers, headerCount, callback, recordSize))
-                    return true;
-
-                // Current batch is full — seal it (compress + enqueue under lock)
-                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
-            }
-
-            // Create new batch
-            var newBatch = RentBatch(new TopicPartition(topic, partition));
-            pd.CurrentBatch = newBatch;
-            Interlocked.Increment(ref _unsealedBatchCount);
-
-            // Append to new batch — must succeed since batch is empty
-            if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                headers, headerCount, callback, recordSize))
-            {
-                // Record too large for a single batch
-                pd.CurrentBatch = null;
-                Interlocked.Decrement(ref _unsealedBatchCount);
-                _batchPool.Return(newBatch);
-                ReleaseMemory(recordSize);
-                throw new KafkaException(ErrorCode.MessageTooLarge,
-                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
-            }
-        }
-
-        if (sealedBatch is not null)
-        {
-            SignalWakeup();
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Async version of <see cref="AppendFromSpans"/> that handles backpressure without blocking.
+    /// Async version of AppendFromSpans that handles backpressure without blocking.
     /// Hot path: non-blocking CAS reservation — no async state machine allocated.
     /// Cold path: copies span data to <see cref="PooledMemory"/> before awaiting memory reservation.
     /// </summary>
@@ -2261,12 +2169,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public long BufferedBytes => Volatile.Read(ref _bufferedBytes);
 
     /// <summary>
-    /// Gets the current number of pooled <see cref="SyncWaiterNode"/> instances.
-    /// Exposed for testing only.
-    /// </summary>
-    internal int PooledWaiterNodeCount => Volatile.Read(ref _pooledNodeCount);
-
-    /// <summary>
     /// Gets the maximum buffer memory limit in bytes.
     /// </summary>
     public ulong MaxBufferMemory => _maxBufferMemory;
@@ -2313,7 +2215,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Contention path: progressive backoff only when there's actual contention.
         // Capped at the no-yield phase to stay lightweight — callers (ReserveMemoryAsync,
-        // ReserveMemorySync) already wrap this in their own retry loops with proper blocking.
+        // ReserveMemoryAsync) already wrap this in their own retry loops with proper blocking.
         var spinner = new SpinWait();
         while (!spinner.NextSpinWillYield)
         {
@@ -2398,93 +2300,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
     }
 
-    internal void ReserveMemorySync(int recordSize)
-    {
-        // Fast path: try to reserve immediately
-        if (TryReserveMemory(recordSize))
-        {
-            return;
-        }
-
-        // Spin-wait phase: when the buffer is nearly full and draining rapidly, memory
-        // often frees up within microseconds. A short spin avoids the expensive kernel
-        // context switch that ManualResetEventSlim.Wait would incur.
-        // Gate on waiter queue emptiness: if other threads are already waiting in the
-        // kernel queue, spinning just burns CPU competing with the drain-side threads
-        // that need to free memory. Skip straight to the kernel wait in that case.
-        if (_syncWaiterQueue.IsEmpty)
-        {
-            var spinner = new SpinWait();
-            while (!spinner.NextSpinWillYield)
-            {
-                if (_disposed)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-                spinner.SpinOnce();
-
-                if (TryReserveMemory(recordSize))
-                {
-                    // Intentionally not incrementing _bufferPressureEvents here:
-                    // transient pressure that resolves within a sub-microsecond spin
-                    // should not trigger adaptive connection scaling, which targets
-                    // sustained backpressure requiring kernel waits.
-                    return;
-                }
-            }
-        }
-
-        // Track for adaptive connection scaling
-        Interlocked.Increment(ref _bufferPressureEvents);
-
-        // Enqueue a FIFO waiter node and block on its individual event.
-        // Only one waiter is woken per ReleaseMemory call, eliminating thundering herd.
-        var currentTicks = Environment.TickCount64;
-        var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
-            ? currentTicks + _options.MaxBlockMs
-            : long.MaxValue;
-
-        while (true)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-            var remainingMs = deadline - Environment.TickCount64;
-            if (remainingMs <= 0)
-                ThrowBufferMemoryTimeout(recordSize, currentTicks);
-
-            if (TryReserveMemory(recordSize))
-                break;
-
-            // Rent from pool or allocate. One node per iteration avoids double-enqueue on timeout.
-            var waiter = RentWaiterNode();
-            _syncWaiterQueue.Enqueue(waiter);
-
-            // Re-check after enqueue: ReleaseMemory may have fired between the check
-            // above and the enqueue, finding an empty queue. Without this, the thread
-            // sleeps through available space until the next ReleaseMemory or timeout.
-            if (TryReserveMemory(recordSize))
-            {
-                // Node is still in the queue — do NOT return to pool.
-                // WakeNextSyncWaiter will skip it (Cancelled = true) and discard it.
-                waiter.Cancelled = true;
-                break;
-            }
-
-            var signaled = waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-            waiter.Cancelled = true;
-
-            // Only return to pool when the node was signaled, meaning WakeNextSyncWaiter
-            // already dequeued it. Timed-out nodes may still be in the queue.
-            if (signaled)
-                ReturnWaiterNode(waiter);
-        }
-
-        // Chain-wake: if space still remains after our reservation, wake the next
-        // waiter in FIFO order so it can attempt its CAS without waiting for ReleaseMemory.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            WakeNextSyncWaiter();
-    }
-
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
     {
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
@@ -2497,188 +2312,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
             $"Producer is generating messages faster than the network can send them. " +
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
-    }
-
-    /// <summary>
-    /// Blocks the caller while the buffer is at capacity.
-    /// Unlike <see cref="ReserveMemorySync"/>, this does NOT reserve any bytes — it is a pure
-    /// gate that prevents unbounded work from being queued when the buffer is full.
-    /// Used by the fire-and-forget async fallback path in <c>Send()</c>, which otherwise
-    /// bypasses synchronous backpressure entirely (messages are dispatched as fire-and-forget
-    /// Tasks that each call <see cref="ReserveMemoryAsync"/> independently). Without this gate,
-    /// a tight <c>Send()</c> loop during a metadata cache miss can queue hundreds of thousands
-    /// of Tasks, saturating the thread pool and preventing the sender loop from draining batches.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="DisposeAsync"/> promptly unblocks all waiting threads via
-    /// <see cref="WakeAllSyncWaiters"/>; each waiter then hits the <c>_disposed</c> check.
-    /// <para/>
-    /// Both this method and <see cref="ReserveMemorySync"/> use the shared FIFO waiter queue.
-    /// <see cref="ReleaseMemory"/> wakes waiters one-at-a-time in FIFO order via
-    /// <see cref="WakeNextSyncWaiter"/>, with chain-wake propagation when space remains.
-    /// </remarks>
-    internal void WaitForBufferSpace()
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-        // Fast path: buffer has space — the common case.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            return;
-
-        // Spin-wait phase: same rationale as ReserveMemorySync — avoid kernel transition
-        // when buffer space frees up within microseconds. Only spin if no other threads
-        // are already waiting; otherwise go straight to the kernel wait.
-        if (_syncWaiterQueue.IsEmpty)
-        {
-            var spinner = new SpinWait();
-            while (!spinner.NextSpinWillYield)
-            {
-                if (_disposed)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-                spinner.SpinOnce();
-
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-                {
-                    // Intentionally not incrementing _bufferPressureEvents:
-                    // transient pressure that resolves within a sub-microsecond spin
-                    // should not trigger adaptive connection scaling.
-                    return;
-                }
-            }
-        }
-
-        // Track for adaptive connection scaling
-        Interlocked.Increment(ref _bufferPressureEvents);
-
-        var startTicks = Environment.TickCount64;
-
-        while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-            var elapsed = Environment.TickCount64 - startTicks;
-            if (elapsed >= _options.MaxBlockMs)
-                ThrowBufferFullTimeout(startTicks);
-
-            var remainingMs = _options.MaxBlockMs - elapsed;
-
-            var waiter = RentWaiterNode();
-            _syncWaiterQueue.Enqueue(waiter);
-
-            // Re-check after enqueue to avoid sleeping through freed space
-            if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            {
-                // Node is still in the queue — do NOT return to pool.
-                waiter.Cancelled = true;
-                break;
-            }
-
-            var signaled = waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-            waiter.Cancelled = true;
-
-            // Only return to pool when the node was signaled (already dequeued).
-            if (signaled)
-                ReturnWaiterNode(waiter);
-        }
-
-        // Chain-wake: if space still remains, wake the next waiter.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            WakeNextSyncWaiter();
-    }
-
-    private void ThrowBufferFullTimeout(long startTicks)
-    {
-        var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startTicks);
-        throw new KafkaTimeoutException(
-            TimeoutKind.MaxBlock,
-            elapsed,
-            configured,
-            $"Buffer is full ({Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes) and did not " +
-            $"drain within max.block.ms ({_options.MaxBlockMs}ms). " +
-            $"Producer is generating messages faster than the network can send them. " +
-            $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
-    }
-
-
-    /// <summary>
-    /// Dequeues and signals the next non-cancelled waiter in FIFO order (if any).
-    /// Skips stale entries from threads that succeeded before waiting.
-    /// Called from ReleaseMemory and chain-wake paths.
-    /// </summary>
-    private void WakeNextSyncWaiter()
-    {
-        while (_syncWaiterQueue.TryDequeue(out var waiter))
-        {
-            if (!waiter.Cancelled)
-            {
-                waiter.Event.Set();
-                return;
-            }
-
-            // Cancelled nodes were left in the queue by timed-out or early-exit threads.
-            // Now that we've dequeued them, no other thread references them — safe to pool.
-            ReturnWaiterNode(waiter);
-        }
-    }
-
-    /// <summary>
-    /// Wakes ALL queued sync waiters. Used during disposal to unblock all waiting threads
-    /// so they can observe <c>_disposed</c> and throw <see cref="ObjectDisposedException"/>.
-    /// </summary>
-    private void WakeAllSyncWaiters()
-    {
-        // Signal only — disposal is handled by each owning thread after Wait() returns.
-        while (_syncWaiterQueue.TryDequeue(out var waiter))
-            waiter.Event.Set();
-    }
-
-    /// <summary>
-    /// Rents a <see cref="SyncWaiterNode"/> from the pool, or allocates a new one if the pool is empty.
-    /// </summary>
-    /// <remarks>
-    /// Reset-on-return is safe here because nodes are only returned after being fully
-    /// dequeued from <c>_syncWaiterQueue</c> — no other thread holds a reference.
-    /// This differs from <c>PartitionBatch</c> which requires reset-on-rent because
-    /// multiple code paths may inspect a batch between return and next rental.
-    /// </remarks>
-    private SyncWaiterNode RentWaiterNode()
-    {
-        if (_syncWaiterNodePool.TryDequeue(out var node))
-        {
-            Interlocked.Decrement(ref _pooledNodeCount);
-            return node;
-        }
-
-        return new SyncWaiterNode();
-    }
-
-    /// <summary>
-    /// Returns a <see cref="SyncWaiterNode"/> to the pool after resetting it.
-    /// Only call this for nodes that have been dequeued from <c>_syncWaiterQueue</c>
-    /// (i.e., signaled by <see cref="WakeNextSyncWaiter"/>). Nodes that are still
-    /// in the queue (early-exit or timeout paths) must NOT be returned — they will
-    /// be skipped and discarded by a future <see cref="WakeNextSyncWaiter"/> call.
-    /// </summary>
-    private void ReturnWaiterNode(SyncWaiterNode node)
-    {
-        // Skip pooling during disposal to avoid racing with the disposal drain
-        // in DisposeInner that calls Event.Dispose() on all pooled nodes.
-        if (_disposed)
-            return;
-
-        // Advisory bound: non-atomic check-then-enqueue means the pool can transiently
-        // hold up to (MaxPooledWaiterNodes + concurrency) nodes, which is acceptable.
-        // Uses Interlocked counter for O(1) check (ConcurrentQueue.Count traverses segments).
-        if (Volatile.Read(ref _pooledNodeCount) >= MaxPooledWaiterNodes)
-            return; // Let GC collect the excess node
-
-        node.Reset();
-        _syncWaiterNodePool.Enqueue(node);
-        Interlocked.Increment(ref _pooledNodeCount);
     }
 
     /// <summary>
@@ -2706,9 +2339,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
-        // Signal that space is available — wake sync waiters one-at-a-time (FIFO)
-        // and async waiters via semaphore.
-        WakeNextSyncWaiter();
+        // Signal that space is available — wake async waiters via semaphore.
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
@@ -3250,9 +2881,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
         CompleteAppendWorkerChannels();
 
-        // Wake ALL threads blocked in ReserveMemorySync/WaitForBufferSpace so they
-        // recheck _disposed promptly instead of waiting for the timeout.
-        WakeAllSyncWaiters();
+        // Wake async waiters blocked in ReserveMemoryAsync so they recheck _disposed.
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         // Cancel the disposal token to interrupt any remaining blocked operations
@@ -3268,7 +2897,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Wait for append workers to exit now that disposal token has been cancelled.
-        // Workers blocked in ReserveMemorySync/Async will be woken by the semaphore
+        // Workers blocked in ReserveMemoryAsync will be woken by the semaphore
         // releases above and exit via the _disposed check.
         if (_appendWorkerTasks is not null)
         {
@@ -3388,10 +3017,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.Clear();
 
         // Dispose resources to prevent leaks
-        while (_syncWaiterQueue.TryDequeue(out var queuedNode))
-            queuedNode.Event.Dispose();
-        while (_syncWaiterNodePool.TryDequeue(out var pooledNode))
-            pooledNode.Event.Dispose();
         _wakeupSignal?.Dispose();
         _disposalCts?.Dispose();
         _asyncBufferSpaceSignal?.Dispose();
