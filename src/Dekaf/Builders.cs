@@ -164,8 +164,9 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Sets the number of TCP connections to maintain per broker.
-    /// Multiple connections enable parallel request handling for non-idempotent producers,
-    /// improving throughput by reducing write lock contention.
+    /// Multiple connections enable parallel request handling, improving throughput by
+    /// reducing write lock contention. Idempotent producers use partition affinity
+    /// (partition % connectionCount) to preserve sequence ordering.
     /// </summary>
     /// <param name="connectionsPerBroker">
     /// Number of connections per broker. Must be at least 1.
@@ -183,16 +184,17 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Configures the maximum connections for adaptive connection scaling.
-    /// Adaptive scaling is enabled by default for non-idempotent producers — this method
-    /// only needs to be called to change the maximum from the default of 10.
+    /// Adaptive scaling is enabled by default — this method only needs to be called
+    /// to change the maximum from the default of 10.
     /// <para>
     /// When sustained backpressure is detected, the producer will automatically add connections
     /// per broker (up to <paramref name="maxConnections"/>) to increase drain throughput.
-    /// Idempotent producers ignore this setting (partition affinity requires fixed connection count).
+    /// Idempotent producers use partition affinity to preserve sequence ordering across
+    /// connections. Transactional producers ignore this setting.
     /// </para>
     /// <para>
-    /// Connections are only scaled up, never down. Connections added during a traffic spike
-    /// persist for the lifetime of the producer.
+    /// Connections scale both up and down. Connections added during a traffic spike
+    /// are removed after sustained low utilization.
     /// </para>
     /// </summary>
     /// <param name="maxConnections">Maximum connections per broker. Default: 10.</param>

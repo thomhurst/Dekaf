@@ -444,5 +444,35 @@ public class AdaptiveScalingTests
         }).Throws<InvalidOperationException>();
     }
 
+    [Test]
+    public async Task IdempotentProducer_WithAdaptiveScaling_DoesNotThrow()
+    {
+        // Idempotent producers should support adaptive scaling (partition affinity
+        // preserves sequence ordering across connections).
+        await Assert.That(async () =>
+        {
+            await using var producer = Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithIdempotence(true)
+                .WithAdaptiveConnections(maxConnections: 5)
+                .Build();
+        }).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task TransactionalProducer_WithConnectionsPerBrokerGreaterThan1_Throws()
+    {
+        // Transactional producers require a single connection per broker for
+        // transaction coordinator requests.
+        await Assert.That(() =>
+        {
+            Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithTransactionalId("txn-1")
+                .WithConnectionsPerBroker(2)
+                .Build();
+        }).Throws<InvalidOperationException>();
+    }
+
     #endregion
 }

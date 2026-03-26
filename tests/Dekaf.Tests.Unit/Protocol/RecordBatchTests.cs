@@ -273,6 +273,7 @@ public class RecordBatchTests
     #region Zero-Copy Memory Management Tests
 
     [Test]
+    [NotInParallel("RecordBatchPool")]
     public async Task RecordBatch_Dispose_DisposesLazyRecordList()
     {
         var buffer = new ArrayBufferWriter<byte>();

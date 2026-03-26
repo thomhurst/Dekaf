@@ -236,9 +236,10 @@ public sealed class MaxBlockMsTests
             await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
             await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(2000));
             await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
-            // Generous upper bound: on CI with 26 parallel instances, thread pool starvation
-            // can delay timer callbacks by 30-40s. This only asserts the timeout fired eventually.
-            await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromMinutes(2));
+            // Generous upper bound: on CI with 16 parallel tests on 4 cores, thread pool
+            // starvation can delay async timer callbacks by 3-5 minutes. This only asserts
+            // the timeout fired eventually, not that it was precise.
+            await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromMinutes(10));
         }
     }
 

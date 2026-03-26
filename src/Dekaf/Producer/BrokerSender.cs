@@ -386,8 +386,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
-    // Idempotent producers require partition affinity for sequence ordering; non-idempotent
-    // producers use round-robin for better distribution with skewed partition traffic.
+    // Idempotent producers use partition affinity for per-partition sequence ordering across
+    // multiple connections; non-idempotent producers use round-robin for better distribution.
     private IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
     private readonly bool _requirePartitionAffinity;
@@ -404,6 +404,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _lowUtilizationStartTicks; // When low utilization was first detected (0 = not tracking)
     private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
     private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
+
+    // Deferred scale-up for idempotent producers: when partition affinity is required,
+    // applying a scale-up immediately would remap partitions (P % N -> P % M) while
+    // in-flight batches are still on the old connection, causing OutOfOrderSequenceNumber
+    // errors. We defer updating _connectionCount until _totalPendingResponseCount == 0.
+    private int _deferredScaleUpCount; // 0 = no deferred scale-up pending
+
+    // Deferred scale-down for idempotent producers: same partition affinity issue as
+    // scale-up. Shrinking from N to N-1 remaps partitions (P % N -> P % (N-1)), so we
+    // must wait for all in-flight requests to drain before applying the connection count change.
+    private IKafkaConnection? _deferredScaleDownConnection; // null = no deferred scale-down pending
 
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
@@ -506,16 +517,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
-        // Idempotent producers require partition affinity (partition % connectionCount) to
-        // preserve per-partition sequence ordering. Non-idempotent producers use round-robin
-        // for better utilization when partition distribution is skewed.
+        // Idempotent producers use partition affinity (partition % connectionCount) to
+        // preserve per-partition sequence ordering across connections. Non-idempotent
+        // producers use round-robin for better utilization with skewed partition traffic.
         _connectionCount = options.ConnectionsPerBroker;
         _requirePartitionAffinity = options.EnableIdempotence;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
-        // Adaptive scaling: only for non-idempotent producers (idempotent requires fixed partition affinity)
-        _adaptiveScalingEnabled = options.EnableAdaptiveConnections && !options.EnableIdempotence;
+        // Adaptive scaling: available for all non-transactional producers.
+        // Idempotent producers use partition affinity (partition % N) which preserves
+        // per-partition sequence ordering across multiple connections. Transactions
+        // are excluded because coordinator requests require a single connection.
+        _adaptiveScalingEnabled = options.EnableAdaptiveConnections && options.TransactionalId is null;
         _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
 
@@ -720,7 +734,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // ── 4b. Adaptive connection scaling (non-idempotent only) ──
+                // ── 4b. Adaptive connection scaling (all non-transactional producers) ──
                 if (_adaptiveScalingEnabled)
                 {
                     var scaledToCount = MaybeScaleConnections();
@@ -2564,6 +2578,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _drainingConnection = null;
         }
 
+        // Dispose deferred scale-down connection if present. This connection was removed from
+        // _pinnedConnections by the shrink task but hasn't been applied via ApplyScaleDown yet
+        // (waiting for in-flight requests to drain). It's not tracked anywhere else, so we must
+        // dispose it explicitly here to avoid a resource leak.
+        if (_deferredScaleDownConnection is not null)
+        {
+            try { await _deferredScaleDownConnection.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            _deferredScaleDownConnection = null;
+        }
+
         var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
         {
@@ -2621,6 +2646,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Phase 0: Poll draining connection for disposal
         MaybeDrainAndDisposeConnection();
 
+        // Phase 0b: Apply deferred scale-up once in-flight requests have drained
+        if (_deferredScaleUpCount > 0 && _totalPendingResponseCount == 0)
+        {
+            var count = _deferredScaleUpCount;
+            _deferredScaleUpCount = 0;
+            return ApplyScaleUp(count);
+        }
+
+        // Phase 0c: Apply deferred scale-down once in-flight requests have drained
+        if (_deferredScaleDownConnection is not null && _totalPendingResponseCount == 0)
+        {
+            var conn = _deferredScaleDownConnection;
+            _deferredScaleDownConnection = null;
+            return ApplyScaleDown(conn);
+        }
+
         // Phase 1a: Check if a pending background scale-up completed
         if (_pendingScaleTask is not null)
         {
@@ -2635,29 +2676,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
                 {
-                    var oldCount = _connectionCount;
-                    _connectionCount = actualCount;
-                    _totalMaxInFlight = _connectionCount * _maxInFlight;
-                    // Only reset on successful growth — intentional. If the pool returned fewer
-                    // connections than requested, stale pressure keeps accumulating so the next
-                    // cooldown window retries with the full delta rather than starting from zero.
-                    _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+                    // Idempotent producers use partition affinity (partition % N). If we
+                    // update _connectionCount while in-flight batches exist, partitions
+                    // remap and new batches could arrive on a different connection than
+                    // the in-flight ones, causing OutOfOrderSequenceNumber errors.
+                    // Defer the update until all in-flight responses have drained.
+                    if (_requirePartitionAffinity && _totalPendingResponseCount > 0)
+                    {
+                        _deferredScaleUpCount = actualCount;
+                        return 0;
+                    }
 
-                    var newPinned = new IKafkaConnection?[actualCount];
-                    Array.Copy(_pinnedConnections, newPinned, oldCount);
-                    _pinnedConnections = newPinned;
-
-                    var newPending = new List<PendingResponse>[actualCount];
-                    Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
-                    for (var i = oldCount; i < actualCount; i++)
-                        newPending[i] = new List<PendingResponse>();
-                    _pendingResponsesByConnection = newPending;
-
-                    // Reset low utilization tracking — we just scaled up
-                    _lowUtilizationStartTicks = 0;
-
-                    LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
-                    return actualCount;
+                    return ApplyScaleUp(actualCount);
                 }
             }
             else if (task.Exception is not null)
@@ -2682,6 +2712,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var removedConnection = task.Result;
                 if (removedConnection is not null)
                 {
+                    // Same affinity concern as scale-up: shrinking from N to N-1 remaps
+                    // partitions (P % N -> P % (N-1)). Defer until all in-flight drained.
+                    if (_requirePartitionAffinity && _totalPendingResponseCount > 0)
+                    {
+                        _deferredScaleDownConnection = removedConnection;
+                        return 0;
+                    }
+
                     return ApplyScaleDown(removedConnection);
                 }
             }
@@ -2692,6 +2730,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             return 0;
         }
+
+        // If a deferred scale operation is waiting for in-flight requests to drain,
+        // don't start new scale operations — the deferred one takes priority.
+        // This guard also prevents a second _pendingScaleTask from being launched while
+        // a deferred value is pending, ensuring Phase 1a never observes a stale task
+        // completion that could overwrite the deferred count.
+        if (_deferredScaleUpCount > 0 || _deferredScaleDownConnection is not null)
+            return 0;
 
         var now = Environment.TickCount64;
 
@@ -2751,10 +2797,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (now - _lowUtilizationStartTicks < ScaleDownSustainedMs)
             return 0; // Not sustained long enough
 
-        // Check that the last connection has no in-flight requests before shrinking
-        var lastConnIdx = _connectionCount - 1;
-        if (_pendingResponsesByConnection[lastConnIdx].Count > 0)
-            return 0; // Still has in-flight requests — wait for them to complete
+        // When partition affinity is required, ALL connections must be drained before
+        // shrinking — not just the last one — because partitions remap (P % N -> P % (N-1))
+        // and in-flight batches on any connection could conflict with new batches post-remap.
+        // Without affinity, only the last connection needs to be idle.
+        if (_requirePartitionAffinity)
+        {
+            if (_totalPendingResponseCount > 0)
+                return 0; // Still has in-flight requests across connections — wait for drain
+        }
+        else
+        {
+            var lastConnIdx = _connectionCount - 1;
+            if (_pendingResponsesByConnection[lastConnIdx].Count > 0)
+                return 0; // Still has in-flight requests on last connection — wait
+        }
 
         // Sustained low utilization with no in-flight on last connection — initiate scale-down
         var targetShrinkCount = _connectionCount - 1;
@@ -2765,6 +2822,37 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _brokerId, targetShrinkCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    /// <summary>
+    /// Applies a scale-up by expanding send-loop arrays and updating the connection count.
+    /// Returns the new connection count.
+    /// </summary>
+    private int ApplyScaleUp(int actualCount)
+    {
+        var oldCount = _connectionCount;
+        _connectionCount = actualCount;
+        _totalMaxInFlight = _connectionCount * _maxInFlight;
+        // Only reset on successful growth — intentional. If the pool returned fewer
+        // connections than requested, stale pressure keeps accumulating so the next
+        // cooldown window retries with the full delta rather than starting from zero.
+        _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+
+        var newPinned = new IKafkaConnection?[actualCount];
+        Array.Copy(_pinnedConnections, newPinned, oldCount);
+        _pinnedConnections = newPinned;
+
+        var newPending = new List<PendingResponse>[actualCount];
+        Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
+        for (var i = oldCount; i < actualCount; i++)
+            newPending[i] = new List<PendingResponse>();
+        _pendingResponsesByConnection = newPending;
+
+        // Reset low utilization tracking — we just scaled up
+        _lowUtilizationStartTicks = 0;
+
+        LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
+        return actualCount;
     }
 
     /// <summary>
