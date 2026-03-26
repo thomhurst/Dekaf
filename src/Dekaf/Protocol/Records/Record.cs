@@ -1,4 +1,3 @@
-using System.Buffers;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
@@ -22,6 +21,7 @@ public readonly record struct Record
     /// <summary>
     /// The number of valid headers in the Headers array.
     /// Required because the array may be rented from ArrayPool and oversized.
+    /// When 0 and Headers is not null, defaults to Headers.Length.
     /// </summary>
     public int HeaderCount { get; init; }
 
@@ -42,9 +42,9 @@ public readonly record struct Record
     internal int CachedBodySize { get; init; }
 
     /// <summary>
-    /// Gets the effective header count.
+    /// Gets the effective header count, handling both exact-sized and pooled arrays.
     /// </summary>
-    private int EffectiveHeaderCount => HeaderCount;
+    private int EffectiveHeaderCount => Headers is null ? 0 : (HeaderCount > 0 ? HeaderCount : Headers.Length);
 
     /// <summary>
     /// Writes the record to the protocol writer.
@@ -127,10 +127,8 @@ public readonly record struct Record
 
         if (headerCount > 0)
         {
-            // Rent from ArrayPool to eliminate per-message heap allocation.
-            // The rented array may be oversized; HeaderCount tracks valid elements.
-            // Arrays are returned to the pool by LazyRecordList.Dispose().
-            headers = ArrayPool<Header>.Shared.Rent(headerCount);
+            // Use array directly instead of List to avoid List's internal array allocation
+            headers = new Header[headerCount];
             for (var i = 0; i < headerCount; i++)
             {
                 headers[i] = Header.Read(ref reader);
@@ -148,7 +146,7 @@ public readonly record struct Record
             Value = value,
             IsValueNull = isValueNull,
             Headers = headers,
-            HeaderCount = headerCount
+            HeaderCount = headers?.Length ?? 0
         };
     }
 
