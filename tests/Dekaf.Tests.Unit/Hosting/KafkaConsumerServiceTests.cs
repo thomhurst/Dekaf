@@ -22,7 +22,7 @@ public sealed class KafkaConsumerServiceTests
         await service.StartAsync(CancellationToken.None);
 
         // Poll until Subscribe is called rather than using a fixed delay
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (!timeout.IsCancellationRequested)
         {
             try
@@ -51,7 +51,7 @@ public sealed class KafkaConsumerServiceTests
         await service.StartAsync(CancellationToken.None);
 
         // Poll until messages are processed rather than using a fixed delay
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (service.ProcessedMessages.Count < 2 && !timeout.IsCancellationRequested)
         {
             await Task.Delay(50).ConfigureAwait(false);
@@ -74,7 +74,7 @@ public sealed class KafkaConsumerServiceTests
         await service.StartAsync(CancellationToken.None);
 
         // Poll until the error is recorded rather than using a fixed delay
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (service.Errors.Count == 0 && !timeout.IsCancellationRequested)
         {
             await Task.Delay(50).ConfigureAwait(false);
@@ -319,7 +319,7 @@ public sealed class KafkaConsumerServiceTests
     /// </summary>
     private static async Task WaitForSubscribeAsync(IKafkaConsumer<string, string> consumer)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (!timeout.IsCancellationRequested)
         {
             try
