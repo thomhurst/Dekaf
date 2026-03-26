@@ -677,7 +677,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             }
                             else
                             {
-                                // Channel completed normally — prefetch loop has stopped (e.g., shutdown)
+                                // Channel completed without error — prefetch loop has stopped.
+                                // Currently unreachable: TryComplete() is only called with a KafkaException,
+                                // never with null. This guard prevents a silent infinite loop if a future
+                                // code path adds graceful channel completion (e.g., during rebalance).
                                 break;
                             }
                         }
