@@ -812,69 +812,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
     }
 
-    private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
+    private Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
-        var consecutiveErrors = 0;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+        // Delegate to the extracted PrefetchPipelineRunner for testability.
+        // See PrefetchPipelineRunner.cs for the pipelining invariants and memory limit notes.
+        var runner = new PrefetchPipelineRunner(
+            ensureAssignment: EnsureAssignmentAsync,
+            getAssignmentCount: () => _assignment.Count,
+            getMaxBytes: () => (long)_options.QueuedMaxMessagesKbytes * 1024,
+            getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
+            prefetchRecords: PrefetchRecordsAsync,
+            waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
+            logError: LogPrefetchLoopError,
+            logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
+            channelWriter: _prefetchChannel.Writer);
 
-                    if (_assignment.Count == 0)
-                    {
-                        await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // Check memory limit
-                    var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
-                    var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
-                    if (currentPrefetchedBytes >= maxBytes)
-                    {
-                        // Wait for consumer to signal memory is available instead of polling
-                        LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
-                        await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // Fetch records into prefetch channel
-                    await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
-                    consecutiveErrors = 0; // Reset on success
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    consecutiveErrors++;
-                    LogPrefetchLoopError(ex);
-
-                    // After persistent failures, surface the error to the consumer instead of
-                    // looping silently forever. Without this, ConsumeAsync hangs indefinitely
-                    // when the prefetch loop can never produce data (e.g., broker unreachable,
-                    // metadata never resolves, persistent connection errors).
-                    if (consecutiveErrors >= 50) // ~5 seconds of continuous failures (50 * 100ms)
-                    {
-                        _prefetchChannel.Writer.TryComplete(
-                            new KafkaException(ErrorCode.UnknownServerError,
-                                $"Prefetch loop failed {consecutiveErrors} consecutive times, last error: {ex.Message}", ex));
-                        return;
-                    }
-
-                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
-        finally
-        {
-            // CRITICAL: Complete the prefetch channel when loop exits to prevent consumer hang
-            // Without this, ConsumeAsync would wait indefinitely on ReadAsync after prefetch stops
-            _prefetchChannel.Writer.TryComplete();
-        }
+        return runner.RunAsync(cancellationToken);
     }
 
     private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
