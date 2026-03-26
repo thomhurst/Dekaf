@@ -812,152 +812,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
     }
 
-    private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
+    private Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
-        var consecutiveErrors = 0;
-        // Pipelined prefetch: stores the next in-flight fetch task so the network round-trip
-        // overlaps with the consumer draining the channel and with loop overhead (assignment
-        // checks, memory limit checks, partition grouping). The next fetch is started eagerly
-        // after the current one completes, provided memory limits allow it.
-        //
-        // Invariant: only one PrefetchRecordsAsync executes at a time. The eager task stored
-        // here is always awaited before the next synchronous PrefetchRecordsAsync call, so
-        // _wakeupCts (used inside PrefetchRecordsAsync) does not need additional synchronization.
-        //
-        // Memory limit note: because we pipeline one additional fetch, the prefetch buffer can
-        // temporarily exceed QueuedMaxMessagesKbytes by up to one fetch cycle's worth of data.
-        // This is the same magnitude as the pre-pipelining behavior (a single fetch can overshoot
-        // the limit) amplified by one additional fetch in flight.
-        Task? inFlightPrefetch = null;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+        // Delegate to the extracted PrefetchPipelineRunner for testability.
+        // See PrefetchPipelineRunner.cs for the pipelining invariants and memory limit notes.
+        var runner = new PrefetchPipelineRunner(
+            ensureAssignment: EnsureAssignmentAsync,
+            getAssignmentCount: () => _assignment.Count,
+            getMaxBytes: () => (long)_options.QueuedMaxMessagesKbytes * 1024,
+            getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
+            prefetchRecords: PrefetchRecordsAsync,
+            waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
+            logError: LogPrefetchLoopError,
+            logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
+            channelWriter: _prefetchChannel.Writer);
 
-                    if (_assignment.Count == 0)
-                    {
-                        // No assignment — drain any in-flight fetch before waiting
-                        if (inFlightPrefetch is not null)
-                        {
-                            var pending = inFlightPrefetch;
-                            inFlightPrefetch = null; // null first, so the catch block doesn't re-drain
-                            await pending.ConfigureAwait(false);
-                        }
-                        await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // Check memory limit
-                    var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
-                    var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
-                    if (currentPrefetchedBytes >= maxBytes)
-                    {
-                        // At memory limit — drain any in-flight fetch before pausing
-                        if (inFlightPrefetch is not null)
-                        {
-                            var pending = inFlightPrefetch;
-                            inFlightPrefetch = null; // null first, so the catch block doesn't re-drain
-                            await pending.ConfigureAwait(false);
-                        }
-                        // Wait for consumer to signal memory is available instead of polling
-                        LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
-                        await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // If we have an in-flight fetch from the previous iteration, await it.
-                    // Its network round-trip overlapped with the loop overhead above.
-                    if (inFlightPrefetch is not null)
-                    {
-                        var pending = inFlightPrefetch;
-                        inFlightPrefetch = null; // null first, so the catch block doesn't re-drain
-                        await pending.ConfigureAwait(false);
-
-                        // Re-check memory limit after the in-flight fetch added data.
-                        // If we're now at the limit, loop back to the memory check above
-                        // instead of eagerly issuing another fetch.
-                        currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
-                        if (currentPrefetchedBytes >= maxBytes)
-                            continue;
-                    }
-
-                    // Fetch records into prefetch channel
-                    await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
-                    consecutiveErrors = 0; // Reset on success
-
-                    // Pipeline: eagerly start the next fetch if memory allows.
-                    // The network round-trip will overlap with the consumer processing the
-                    // data we just enqueued and with the next iteration's assignment/memory checks.
-                    currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
-                    if (currentPrefetchedBytes < maxBytes && !cancellationToken.IsCancellationRequested)
-                    {
-                        // .AsTask() allocates once per fetch cycle (not per message), acceptable
-                        // per project allocation guidelines. Required to store the ValueTask as a
-                        // field for later awaiting (ValueTask can only be awaited once).
-                        inFlightPrefetch = PrefetchRecordsAsync(cancellationToken).AsTask();
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    // Drain in-flight fetch to observe its exception and prevent unobserved task leaks.
-                    // The exception may have come from EnsureAssignmentAsync or another call while
-                    // an eager fetch from the previous iteration is still in flight.
-                    if (inFlightPrefetch is not null)
-                    {
-                        var pending = inFlightPrefetch;
-                        inFlightPrefetch = null; // null first, so the finally block doesn't re-drain
-                        try { await pending.ConfigureAwait(false); }
-                        catch (Exception) { consecutiveErrors++; }
-                    }
-                    consecutiveErrors++;
-                    LogPrefetchLoopError(ex);
-
-                    // After persistent failures, surface the error to the consumer instead of
-                    // looping silently forever. Without this, ConsumeAsync hangs indefinitely
-                    // when the prefetch loop can never produce data (e.g., broker unreachable,
-                    // metadata never resolves, persistent connection errors).
-                    if (consecutiveErrors >= 50) // ~5 seconds of continuous failures (50 * 100ms)
-                    {
-                        _prefetchChannel.Writer.TryComplete(
-                            new KafkaException(ErrorCode.UnknownServerError,
-                                $"Prefetch loop failed {consecutiveErrors} consecutive times, last error: {ex.Message}", ex));
-                        return;
-                    }
-
-                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
-        finally
-        {
-            // Drain any in-flight fetch to observe exceptions and prevent fire-and-forget leaks
-            if (inFlightPrefetch is not null)
-            {
-                try
-                {
-                    await inFlightPrefetch.ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Expected during shutdown
-                }
-                catch (Exception ex)
-                {
-                    LogPrefetchLoopError(ex);
-                }
-            }
-
-            // CRITICAL: Complete the prefetch channel when loop exits to prevent consumer hang
-            // Without this, ConsumeAsync would wait indefinitely on ReadAsync after prefetch stops
-            _prefetchChannel.Writer.TryComplete();
-        }
+        return runner.RunAsync(cancellationToken);
     }
 
     private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
