@@ -1261,7 +1261,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>MaxPollRecords: 1000 (larger batches)</description></item>
     /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
-    /// <item><description>FetchMaxWaitMs: 200ms (allow batching)</description></item>
+    /// <item><description>FetchMaxWaitMs: 500ms (intentionally higher than the 200ms default to allow the broker to accumulate more data)</description></item>
     /// </list>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
@@ -1270,7 +1270,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         _maxPollRecords = 1000;
         _fetchMinBytes = 1024;
-        _fetchMaxWaitMs = 200;
+        _fetchMaxWaitMs = 500;
         return this;
     }
 
