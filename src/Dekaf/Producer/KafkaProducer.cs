@@ -652,12 +652,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 }
 
                 // Buffer was full — appendResult is a real async ValueTask
-                return FinishProduceAsync(appendResult, activity);
+                return FinishProduceAsync(appendResult, activity, message.Topic);
             }
-            catch (KafkaTimeoutException)
+            catch (KafkaTimeoutException ex)
             {
                 // BufferMemory backpressure timeout must propagate
-                if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, null!);
+                if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
                 activity?.Dispose();
                 throw;
             }
@@ -665,7 +665,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // Fire-and-forget: swallow exception but log
                 LogFireAndForgetProduceFailed(ex, message.Topic);
-                activity?.SetStatus(ActivityStatusCode.Ok);
                 activity?.Dispose();
                 return default;
             }
@@ -683,13 +682,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
 
-        // When interceptors are present, we must create a ProducerMessage so interceptors can operate
-        if (_interceptors is not null)
-        {
-            return ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
-        }
-
-        // Delegate to the ProducerMessage overload — it handles fast/slow paths uniformly
+        // Delegate to the ProducerMessage overload — it handles interceptors and fast/slow paths uniformly
         return ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
@@ -1007,7 +1000,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 }
 
                 // Buffer was full — appendResult is a real async ValueTask
-                return FinishProduceAsync(appendResult, activity: null);
+                return FinishProduceAsync(appendResult, activity: null, message.Topic);
             }
             catch (Exception ex)
             {
@@ -2264,9 +2257,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             activity?.SetStatus(ActivityStatusCode.Ok);
         }
-        catch (KafkaTimeoutException)
+        catch (KafkaTimeoutException ex)
         {
-            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, null!);
+            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
             throw;
         }
         catch (Exception ex)
@@ -2374,7 +2367,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <summary>
     /// Awaits an in-flight append and disposes the activity on completion.
     /// </summary>
-    private async ValueTask FinishProduceAsync(ValueTask<bool> appendResult, Activity? activity)
+    private async ValueTask FinishProduceAsync(ValueTask<bool> appendResult, Activity? activity, string topic)
     {
         try
         {
@@ -2383,14 +2376,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
             activity?.SetStatus(ActivityStatusCode.Ok);
         }
-        catch (KafkaTimeoutException)
+        catch (KafkaTimeoutException ex)
         {
-            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, null!);
+            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
             throw;
         }
         catch (Exception ex) when (ex is not ObjectDisposedException)
         {
-            LogFireAndForgetProduceFailed(ex, "unknown");
+            LogFireAndForgetProduceFailed(ex, topic);
         }
         finally
         {

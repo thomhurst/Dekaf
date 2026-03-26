@@ -2214,8 +2214,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Contention path: progressive backoff only when there's actual contention.
-        // Capped at the no-yield phase to stay lightweight — callers (ReserveMemoryAsync,
-        // ReserveMemoryAsync) already wrap this in their own retry loops with proper blocking.
+        // Capped at the no-yield phase to stay lightweight — callers (ReserveMemoryAsync)
+        // already wrap this in their own retry loops with proper async waiting.
         var spinner = new SpinWait();
         while (!spinner.NextSpinWillYield)
         {
