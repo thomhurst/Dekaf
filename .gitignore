@@ -13,6 +13,9 @@
 # Git worktrees
 .worktrees/
 
+# JetBrains Rider
+.idea/
+
 # Build results
 results/
 [Dd]ebug/
