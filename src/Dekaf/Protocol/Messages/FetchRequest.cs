@@ -1,3 +1,5 @@
+using Dekaf.Producer;
+
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>
@@ -6,6 +8,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 {
+    // Pool to reuse FetchRequest instances across fetch cycles.
+    // One instance per fetch cycle per broker, so a small pool suffices.
+    private static readonly FetchRequestPool s_pool = new();
+
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 0;
     // Note: Fetch v13+ requires TopicId (UUID) which we don't track yet.
@@ -15,62 +21,94 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
     /// <summary>
     /// Cluster ID (v12+).
     /// </summary>
-    public string? ClusterId { get; init; }
+    public string? ClusterId { get; internal set; }
 
     /// <summary>
     /// Replica ID. -1 for normal consumers.
     /// </summary>
-    public int ReplicaId { get; init; } = -1;
+    public int ReplicaId { get; internal set; } = -1;
 
     /// <summary>
     /// Replica state (v15+).
     /// </summary>
-    public ReplicaState? ReplicaState { get; init; }
+    public ReplicaState? ReplicaState { get; internal set; }
 
     /// <summary>
     /// Maximum wait time in milliseconds.
     /// </summary>
-    public required int MaxWaitMs { get; init; }
+    public int MaxWaitMs { get; internal set; }
 
     /// <summary>
     /// Minimum bytes to return.
     /// </summary>
-    public required int MinBytes { get; init; }
+    public int MinBytes { get; internal set; }
 
     /// <summary>
     /// Maximum bytes to return (v3+).
     /// </summary>
-    public int MaxBytes { get; init; } = 0x7FFFFFFF;
+    public int MaxBytes { get; internal set; } = 0x7FFFFFFF;
 
     /// <summary>
     /// Isolation level (v4+).
     /// </summary>
-    public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadUncommitted;
+    public IsolationLevel IsolationLevel { get; internal set; } = IsolationLevel.ReadUncommitted;
 
     /// <summary>
     /// Fetch session ID (v7+).
     /// </summary>
-    public int SessionId { get; init; }
+    public int SessionId { get; internal set; }
 
     /// <summary>
     /// Fetch session epoch (v7+).
     /// </summary>
-    public int SessionEpoch { get; init; } = -1;
+    public int SessionEpoch { get; internal set; } = -1;
 
     /// <summary>
     /// Topics to fetch.
     /// </summary>
-    public required IReadOnlyList<FetchRequestTopic> Topics { get; init; }
+    public IReadOnlyList<FetchRequestTopic> Topics { get; internal set; } = Array.Empty<FetchRequestTopic>();
 
     /// <summary>
     /// Topics to forget from the session (v7+).
     /// </summary>
-    public IReadOnlyList<ForgottenTopic>? ForgottenTopicsData { get; init; }
+    public IReadOnlyList<ForgottenTopic>? ForgottenTopicsData { get; internal set; }
 
     /// <summary>
     /// Rack ID for rack-aware fetching (v11+).
     /// </summary>
-    public string? RackId { get; init; }
+    public string? RackId { get; internal set; }
+
+    /// <summary>
+    /// Rents a <see cref="FetchRequest"/> from the pool.
+    /// </summary>
+    internal static FetchRequest Rent() => s_pool.Rent();
+
+    /// <summary>
+    /// Returns this <see cref="FetchRequest"/> to the pool for reuse.
+    /// Call after the request has been serialized and sent.
+    /// </summary>
+    internal void ReturnToPool() => s_pool.Return(this);
+
+    private sealed class FetchRequestPool() : ObjectPool<FetchRequest>(maxPoolSize: 16)
+    {
+        protected override FetchRequest Create() => new();
+
+        protected override void Reset(FetchRequest item)
+        {
+            item.ClusterId = null;
+            item.ReplicaId = -1;
+            item.ReplicaState = null;
+            item.MaxWaitMs = 0;
+            item.MinBytes = 0;
+            item.MaxBytes = 0x7FFFFFFF;
+            item.IsolationLevel = IsolationLevel.ReadUncommitted;
+            item.SessionId = 0;
+            item.SessionEpoch = -1;
+            item.Topics = Array.Empty<FetchRequestTopic>();
+            item.ForgottenTopicsData = null;
+            item.RackId = null;
+        }
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 12;
     public static short GetRequestHeaderVersion(short version) => version >= 12 ? (short)2 : (short)1;

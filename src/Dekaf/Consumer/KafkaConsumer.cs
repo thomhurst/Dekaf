@@ -953,21 +953,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Build fetch request
         var topicData = BuildFetchRequestTopics(partitions);
 
-        var request = new FetchRequest
-        {
-            MaxWaitMs = _options.FetchMaxWaitMs,
-            MinBytes = _options.FetchMinBytes,
-            MaxBytes = _options.FetchMaxBytes,
-            IsolationLevel = _options.IsolationLevel,
-            Topics = topicData
-        };
+        var request = FetchRequest.Rent();
+        request.MaxWaitMs = _options.FetchMaxWaitMs;
+        request.MinBytes = _options.FetchMinBytes;
+        request.MaxBytes = _options.FetchMaxBytes;
+        request.IsolationLevel = _options.IsolationLevel;
+        request.Topics = topicData;
 
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        var response = await connection.SendAsync<FetchRequest, FetchResponse>(
-            request,
-            (short)apiVersion,
-            cancellationToken).ConfigureAwait(false);
+        FetchResponse response;
+        try
+        {
+            response = await connection.SendAsync<FetchRequest, FetchResponse>(
+                request,
+                (short)apiVersion,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            request.ReturnToPool();
+        }
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
@@ -2170,21 +2176,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Build fetch request - use imperative code to avoid LINQ allocations
         var topicData = BuildFetchRequestTopics(partitions);
 
-        var request = new FetchRequest
-        {
-            MaxWaitMs = _options.FetchMaxWaitMs,
-            MinBytes = _options.FetchMinBytes,
-            MaxBytes = _options.FetchMaxBytes,
-            IsolationLevel = _options.IsolationLevel,
-            Topics = topicData
-        };
+        var request = FetchRequest.Rent();
+        request.MaxWaitMs = _options.FetchMaxWaitMs;
+        request.MinBytes = _options.FetchMinBytes;
+        request.MaxBytes = _options.FetchMaxBytes;
+        request.IsolationLevel = _options.IsolationLevel;
+        request.Topics = topicData;
 
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        var response = await connection.SendAsync<FetchRequest, FetchResponse>(
-            request,
-            (short)apiVersion,
-            cancellationToken).ConfigureAwait(false);
+        FetchResponse response;
+        try
+        {
+            response = await connection.SendAsync<FetchRequest, FetchResponse>(
+                request,
+                (short)apiVersion,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            request.ReturnToPool();
+        }
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
