@@ -670,6 +670,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                     _pendingFetches.Enqueue(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
                                 }
+                                else
+                                {
+                                    System.Diagnostics.Debug.Fail("WaitToReadAsync signalled data available but TryRead returned false");
+                                }
                             }
                             else
                             {
