@@ -795,10 +795,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                 // Update _positions for the current pending fetch if caller breaks out mid-iteration.
                 // This ensures auto-commit/GetPosition() reflect the last yielded offset.
+                // Only the head can be partially-iterated; all prior pending fetches were already
+                // flushed at the batch boundary before being dequeued.
                 if (_pendingFetches.TryPeek(out var currentPending) && currentPending.LastYieldedOffset >= 0)
                 {
                     _positions[currentPending.TopicPartition] = currentPending.LastYieldedOffset + 1;
                 }
+
+                // _fetchPositions is intentionally left alone here — the prefetch thread manages it
+                // via UpdateFetchPositionsFromPrefetch (matching the if (!_prefetchEnabled) guard
+                // in the normal-exit path above).
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
