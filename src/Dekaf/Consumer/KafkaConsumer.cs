@@ -918,7 +918,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
-                await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                // ReadOnlySpan overload (.NET 9+) avoids internal array copy and ArraySegment boxing
+                await Task.WhenAll(new ReadOnlySpan<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
             }
             finally
             {
@@ -2022,7 +2023,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
-                await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                // ReadOnlySpan overload: same zero-copy benefit as above
+                await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
 
                 // Enqueue results from all brokers (now on main thread, safe for Queue)
                 for (var j = 0; j < brokerCount; j++)
@@ -2124,7 +2126,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 leaderTasks[i] = ResolvePartitionLeaderAsync(assignmentArray[i], cancellationToken);
             }
 
-            await Task.WhenAll(new ArraySegment<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, assignmentCount)).ConfigureAwait(false);
+            await Task.WhenAll(new ReadOnlySpan<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, assignmentCount)).ConfigureAwait(false);
         }
         finally
         {
