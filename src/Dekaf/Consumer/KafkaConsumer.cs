@@ -664,11 +664,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // (unlike ReadAsync which wraps in ChannelClosedException).
                             if (await _prefetchChannel.Reader.WaitToReadAsync(timeoutCts.Token).ConfigureAwait(false))
                             {
+                                // TryRead cannot miss: SingleReader = true guarantees no concurrent drain
                                 if (_prefetchChannel.Reader.TryRead(out var fetched))
                                 {
                                     _pendingFetches.Enqueue(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
                                 }
+                            }
+                            else
+                            {
+                                // Channel completed normally — prefetch loop has stopped (e.g., shutdown)
+                                break;
                             }
                         }
                         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
