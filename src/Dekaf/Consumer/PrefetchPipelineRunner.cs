@@ -225,6 +225,10 @@ internal sealed class PrefetchPipelineRunner
             {
                 await pending.ConfigureAwait(false);
             }
+            catch (OperationCanceledException)
+            {
+                // Cancellation is not an error — expected during shutdown/wakeup
+            }
             catch (Exception inFlightEx)
             {
                 ConsecutiveErrors++;
