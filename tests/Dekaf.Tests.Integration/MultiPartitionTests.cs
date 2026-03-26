@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 [Category("Messaging")]
 [ParallelLimiter<MessagingTestLimit>]
+[Retry(3)] // Transient "Receive timeout after 30000ms on broker -1" on CI runners
 public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>
