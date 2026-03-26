@@ -629,7 +629,7 @@ public class PrefetchPipelineRunnerTests
             prefetchRecords: async ct =>
             {
                 var concurrent = Interlocked.Increment(ref currentConcurrent);
-                if (concurrent > Interlocked.CompareExchange(ref maxConcurrent, 0, 0))
+                if (concurrent > Volatile.Read(ref maxConcurrent))
                     Interlocked.Exchange(ref maxConcurrent, concurrent);
 
                 var id = Interlocked.Increment(ref fetchCount);
