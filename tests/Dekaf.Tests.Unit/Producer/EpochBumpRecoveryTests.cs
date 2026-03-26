@@ -311,6 +311,7 @@ public sealed class EpochBumpRecoveryTests
                 OffsetDelta = 0,
                 IsKeyNull = true,
                 Value = "val"u8.ToArray(),
+                HeaderCount = 2,
                 Headers = new Header[]
                 {
                     new("trace-id", "abc123"u8.ToArray()),

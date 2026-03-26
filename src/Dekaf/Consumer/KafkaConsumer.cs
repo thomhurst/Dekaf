@@ -2284,16 +2284,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// Returns headers as an IReadOnlyList. Returns null if empty.
     /// Uses ArraySegment to handle oversized arrays from ArrayPool rentals.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders, int headerCount)
     {
-        // Return null for empty to avoid exposing empty lists
         if (recordHeaders is null || headerCount == 0)
             return null;
 
-        // ArraySegment<T> implements IReadOnlyList<T> and respects the count,
-        // so oversized pooled arrays only expose valid elements.
-        return new ArraySegment<Header>(recordHeaders, 0, headerCount);
+        var owned = new Header[headerCount];
+        Array.Copy(recordHeaders, owned, headerCount);
+        return owned;
     }
 
     /// <summary>

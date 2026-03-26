@@ -863,7 +863,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 var record = _parsedRecords[i];
                 if (record.Headers is not null && record.HeaderCount > 0)
                 {
-                    ArrayPool<Header>.Shared.Return(record.Headers, clearArray: true);
+                    ArrayPool<Header>.Shared.Return(record.Headers, clearArray: false);
                 }
             }
         }
