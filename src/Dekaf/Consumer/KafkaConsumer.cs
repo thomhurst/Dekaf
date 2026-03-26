@@ -964,7 +964,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        var response = await connection.SendAsync<FetchRequest, FetchResponse>(
+        var response = await connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
             request,
             (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
@@ -2181,7 +2181,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        var response = await connection.SendAsync<FetchRequest, FetchResponse>(
+        var response = await connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
             request,
             (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
