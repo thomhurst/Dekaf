@@ -2292,19 +2292,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     /// <summary>
     /// Returns headers as a read-only list. Returns null if empty.
-    /// Uses ArraySegment to handle pooled arrays that may be oversized.
+    /// Copies headers out of the pooled array into an owned array for safe exposure via ConsumeResult.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders, int headerCount)
     {
-        // Return null for empty to avoid exposing empty lists
         if (recordHeaders is null || headerCount == 0)
             return null;
 
-        // Use ArraySegment to expose only the valid portion of the pooled (potentially oversized) array.
-        // Boxing the ArraySegment allocates ~48 bytes, replacing the previous per-message Header[] allocation
-        // which was 24 + headerCount * ~40 bytes — a net reduction for typical header counts.
-        return new ArraySegment<Header>(recordHeaders, 0, headerCount);
+        // Copy out of the pooled array before the batch is returned to the pool.
+        // ConsumeResult is a public API; callers may store results beyond batch lifetime.
+        // Without this copy, accessing .Headers after batch disposal reads from a recycled array.
+        var owned = new Header[headerCount];
+        Array.Copy(recordHeaders, owned, headerCount);
+        return owned;
     }
 
     /// <summary>

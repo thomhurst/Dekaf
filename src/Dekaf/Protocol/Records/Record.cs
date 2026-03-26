@@ -165,9 +165,9 @@ public readonly record struct Record
     /// </summary>
     internal void ReturnPooledHeaders()
     {
-        if (IsHeadersPooled && Headers is not null)
+        if (IsHeadersPooled)
         {
-            ArrayPool<Header>.Shared.Return(Headers, clearArray: true);
+            ArrayPool<Header>.Shared.Return(Headers!, clearArray: true);
         }
     }
 
