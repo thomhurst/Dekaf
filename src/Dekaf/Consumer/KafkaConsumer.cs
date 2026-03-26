@@ -659,19 +659,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                         try
                         {
-                            var fetched = await _prefetchChannel.Reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
-                            _pendingFetches.Enqueue(fetched);
-                            TrackPrefetchedBytes(fetched, release: true);
+                            // Use WaitToReadAsync + TryRead to avoid OperationCanceledException allocation on timeout.
+                            // When the channel is completed with an error, WaitToReadAsync throws it directly
+                            // (unlike ReadAsync which wraps in ChannelClosedException).
+                            if (await _prefetchChannel.Reader.WaitToReadAsync(timeoutCts.Token).ConfigureAwait(false))
+                            {
+                                // TryRead cannot miss: SingleReader = true guarantees no concurrent drain
+                                if (_prefetchChannel.Reader.TryRead(out var fetched))
+                                {
+                                    _pendingFetches.Enqueue(fetched);
+                                    TrackPrefetchedBytes(fetched, release: true);
+                                }
+                                else
+                                {
+                                    System.Diagnostics.Debug.Fail("WaitToReadAsync signalled data available but TryRead returned false");
+                                }
+                            }
+                            else
+                            {
+                                // Channel completed without error — prefetch loop has stopped.
+                                // Currently unreachable: TryComplete() is only called with a KafkaException,
+                                // never with null. This guard prevents a silent infinite loop if a future
+                                // code path adds graceful channel completion (e.g., during rebalance).
+                                break;
+                            }
                         }
                         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                         {
                             // Prefetch not ready - check for EOF events before continuing
                             // (EOF events are queued by prefetch loop when partition is caught up)
-                        }
-                        catch (ChannelClosedException ex) when (ex.InnerException is KafkaException kafkaEx)
-                        {
-                            // Rethrow the original KafkaException from the prefetch task
-                            throw kafkaEx;
                         }
                     }
                 }
