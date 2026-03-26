@@ -687,6 +687,115 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
+    public async Task RunAsync_PipelineDepth4_MultipleEagerFetches()
+    {
+        // With pipeline depth 4, the runner should enqueue up to 3 eager in-flight
+        // fetches after each synchronous fetch. This test uses deterministic
+        // synchronization to prove that exactly 3 concurrent eager fetches start
+        // after the synchronous fetch completes.
+        var fetchCount = 0;
+        var allEagerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var eagerCanComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var concurrentCount = 0;
+        var maxConcurrent = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: async ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+
+                if (id == 1)
+                {
+                    // Synchronous fetch — completes immediately.
+                    return;
+                }
+
+                // Eager fetches (ids 2, 3, 4): track concurrency and wait at a barrier.
+                if (id is >= 2 and <= 4)
+                {
+                    var current = Interlocked.Increment(ref concurrentCount);
+                    var observed = Volatile.Read(ref maxConcurrent);
+                    if (current > observed)
+                        Interlocked.CompareExchange(ref maxConcurrent, current, observed);
+
+                    // When all 3 eager fetches are running, signal the barrier.
+                    if (current == 3)
+                        allEagerStarted.TrySetResult();
+
+                    // Wait for the test to release the barrier.
+                    await eagerCanComplete.Task;
+                    Interlocked.Decrement(ref concurrentCount);
+                    return;
+                }
+
+                // After the first batch of eager fetches, cancel to exit.
+                ct.ThrowIfCancellationRequested();
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: 4);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var runTask = runner.RunAsync(cts.Token);
+
+        // Wait until all 3 eager fetches are concurrently in progress.
+        await allEagerStarted.Task;
+
+        // Release the eager fetches so the runner can continue.
+        eagerCanComplete.SetResult();
+
+        // Cancel after the eager batch completes to stop the loop.
+        await cts.CancelAsync();
+
+        await runTask;
+
+        // Exactly 3 eager fetches ran concurrently (pipeline depth 4 - 1 = 3).
+        await Assert.That(maxConcurrent).IsEqualTo(3);
+        // At least 4 total fetches: 1 synchronous + 3 eager.
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(4);
+    }
+
+    [Test]
+    public async Task RunAsync_PipelineDepth4_RespectsMemoryLimit()
+    {
+        // Even with pipeline depth 4, eager fetches should not start if memory limit is exceeded.
+        var fetchCount = 0;
+        long prefetchedBytes = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                {
+                    // Synchronous fetch succeeds, but fills memory
+                    Interlocked.Exchange(ref prefetchedBytes, 2048);
+                    return ValueTask.CompletedTask;
+                }
+                Assert.Fail("prefetchRecords called more times than expected — memory limit should have prevented eager fetches");
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: 1024,
+            getPrefetchedBytes: () => Interlocked.Read(ref prefetchedBytes),
+            waitForMemoryAvailable: ct =>
+            {
+                ct.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            },
+            pipelineDepth: 4);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // Only 1 fetch — no eager fetches because memory limit was exceeded
+        await Assert.That(fetchCount).IsEqualTo(1);
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task RunAsync_PipelineDepth2_RespectsMemoryLimit()
     {
         // Even with pipeline depth 2, eager fetches should not start if memory limit is exceeded.
