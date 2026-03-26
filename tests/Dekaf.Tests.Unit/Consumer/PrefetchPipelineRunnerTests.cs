@@ -84,7 +84,7 @@ public class PrefetchPipelineRunnerTests
                 if (id == 2)
                     return ValueTask.FromException(new InvalidOperationException("eager fetch failed")); // Eager fetch fails
                 // Should not be called again
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             ensureAssignment: ct =>
@@ -146,7 +146,7 @@ public class PrefetchPipelineRunnerTests
                     return ValueTask.FromException(new InvalidOperationException("eager fetch failed"));
                 }
                 // Should not reach here in this test
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             ensureAssignment: ct =>
@@ -208,7 +208,7 @@ public class PrefetchPipelineRunnerTests
                     return ValueTask.CompletedTask;
                 }
                 // No more fetches expected
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             getAssignmentCount: () => assignmentCount,
@@ -250,7 +250,7 @@ public class PrefetchPipelineRunnerTests
                     Interlocked.Exchange(ref prefetchedBytes, 2048);
                     return ValueTask.CompletedTask;
                 }
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             assignmentCount: 1,
@@ -290,7 +290,7 @@ public class PrefetchPipelineRunnerTests
                         Interlocked.Exchange(ref prefetchedBytes, 2048);
                     return ValueTask.CompletedTask;
                 }
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             assignmentCount: 1,
@@ -380,7 +380,7 @@ public class PrefetchPipelineRunnerTests
                     return ValueTask.CompletedTask; // Synchronous fetch succeeds
                 if (id == 2)
                     return ValueTask.FromException(new InvalidOperationException("in-flight fetch error"));
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             ensureAssignment: ct =>
@@ -469,7 +469,7 @@ public class PrefetchPipelineRunnerTests
                     assignmentCount = 0;
                     return ValueTask.FromException(new InvalidOperationException("in-flight fetch error"));
                 }
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             getAssignmentCount: () => assignmentCount,
@@ -528,7 +528,7 @@ public class PrefetchPipelineRunnerTests
                     Interlocked.Exchange(ref prefetchedBytes, 2048);
                     return ValueTask.FromException(new InvalidOperationException("in-flight fetch error"));
                 }
-                ct.ThrowIfCancellationRequested();
+                Assert.Fail("prefetchRecords called more times than expected");
                 return ValueTask.CompletedTask;
             },
             assignmentCount: 1,

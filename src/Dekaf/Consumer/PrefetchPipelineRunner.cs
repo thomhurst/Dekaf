@@ -10,8 +10,10 @@ namespace Dekaf.Consumer;
 /// The runner manages the in-flight prefetch task and the interaction between
 /// assignment checks, memory limits, fetch execution, and error handling.
 ///
-/// <para>Invariant: only one fetch executes at a time. The eager in-flight task
-/// is always awaited before the next synchronous fetch call.</para>
+/// <para>Invariant: <see cref="PrefetchRecordsAsync"/> (via <c>_prefetchRecords</c>) is never called
+/// while the eager in-flight task is still executing. The in-flight task is always awaited and nulled
+/// before the next synchronous <c>_prefetchRecords</c> call, preserving single-caller semantics on
+/// the shared <c>_wakeupCts</c> field in <see cref="KafkaConsumer{TKey,TValue}"/>.</para>
 /// </summary>
 internal sealed class PrefetchPipelineRunner
 {
