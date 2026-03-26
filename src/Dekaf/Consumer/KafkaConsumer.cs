@@ -719,7 +719,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                         batch.BaseTimestamp + record.TimestampDelta);
 
-                    var headers = GetHeaders(record.Headers);
+                    var headers = GetHeaders(record.Headers, record.HeaderCount);
                     var timestampType = ((int)batch.Attributes & 0x08) != 0
                         ? TimestampType.LogAppendTime
                         : TimestampType.CreateTime;
@@ -2281,17 +2281,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Returns headers directly without conversion. Returns null if empty.
+    /// Returns headers as an IReadOnlyList. Returns null if empty.
+    /// Uses ArraySegment to handle oversized arrays from ArrayPool rentals.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
+    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders, int headerCount)
     {
         // Return null for empty to avoid exposing empty lists
-        if (recordHeaders is null || recordHeaders.Length == 0)
+        if (recordHeaders is null || headerCount == 0)
             return null;
 
-        // Return directly - Header[] implements IReadOnlyList<Header>, no boxing
-        return recordHeaders;
+        // ArraySegment<T> implements IReadOnlyList<T> and respects the count,
+        // so oversized pooled arrays only expose valid elements.
+        return new ArraySegment<Header>(recordHeaders, 0, headerCount);
     }
 
     /// <summary>
