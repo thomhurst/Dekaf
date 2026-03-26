@@ -2036,6 +2036,149 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Async version of <see cref="AppendFromSpans"/> that handles backpressure without blocking.
+    /// Hot path: non-blocking CAS reservation — no async state machine allocated.
+    /// Cold path: copies span data to <see cref="PooledMemory"/> before awaiting memory reservation.
+    /// </summary>
+    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
+    internal ValueTask<bool> AppendFromSpansAsync(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        Header[]? headers,
+        int headerCount,
+        Action<RecordMetadata, Exception?>? callback,
+        CancellationToken cancellationToken)
+    {
+        if (_disposed)
+            return default;
+
+        var keyLength = keyIsNull ? 0 : keyData.Length;
+        var valueLength = valueIsNull ? 0 : valueData.Length;
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
+
+        // Hot path: non-blocking CAS reservation — no async state machine allocated
+        if (TryReserveMemory(recordSize))
+            return new ValueTask<bool>(AppendFromSpansAfterReservation(topic, partition, timestamp,
+                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize));
+
+        // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
+        // (ReadOnlySpan<byte> cannot survive across async suspension points).
+        var keyPooled = keyIsNull ? PooledMemory.Null : CopySpanToPooledMemory(keyData);
+        var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
+
+        return AppendFromSpansAsyncSlowPath(topic, partition, timestamp, keyPooled, valuePooled,
+            headers, headerCount, callback, recordSize, cancellationToken);
+    }
+
+    /// <summary>
+    /// Synchronous append-under-lock logic for span-based append after memory has been reserved.
+    /// </summary>
+    private bool AppendFromSpansAfterReservation(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        Header[]? headers,
+        int headerCount,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize)
+    {
+        var pd = GetOrCreateDeque(topic, partition);
+        ReadyBatch? sealedBatch = null;
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            if (_disposed)
+            {
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                    headers, headerCount, callback, recordSize))
+                    return true;
+
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
+            }
+
+            var newBatch = RentBatch(new TopicPartition(topic, partition));
+            pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
+
+            if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                headers, headerCount, callback, recordSize))
+            {
+                pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
+                _batchPool.Return(newBatch);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (sealedBatch is not null)
+        {
+            SignalWakeup();
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Cold path for <see cref="AppendFromSpansAsync"/>: awaits memory reservation then appends
+    /// using the pre-copied <see cref="PooledMemory"/> data.
+    /// </summary>
+    private async ValueTask<bool> AppendFromSpansAsyncSlowPath(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory keyPooled,
+        PooledMemory valuePooled,
+        Header[]? headers,
+        int headerCount,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            keyPooled.Return();
+            valuePooled.Return();
+            throw;
+        }
+
+        return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
+            headers, headerCount, callback, recordSize);
+    }
+
+    /// <summary>
+    /// Copies a ReadOnlySpan to a PooledMemory backed by ArrayPool.
+    /// Used on the cold path to preserve span data across async boundaries.
+    /// </summary>
+    private static PooledMemory CopySpanToPooledMemory(ReadOnlySpan<byte> data)
+    {
+        var array = ArrayPool<byte>.Shared.Rent(data.Length);
+        data.CopyTo(array);
+        return new PooledMemory(array, data.Length);
+    }
+
+    /// <summary>
     /// Helper: tries to append a record from span data to the given batch using arena zero-copy.
     /// Called under the deque lock.
     /// </summary>
