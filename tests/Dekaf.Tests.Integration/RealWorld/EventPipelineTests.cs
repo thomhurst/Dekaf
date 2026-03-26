@@ -389,10 +389,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .BuildAsync();
 
         // Produce mixed-priority events
-        await producer.ProduceAsync(inputTopic, "evt-1", "HIGH:critical-alert");
-        await producer.ProduceAsync(inputTopic, "evt-2", "LOW:info-log");
-        await producer.ProduceAsync(inputTopic, "evt-3", "HIGH:error-alert");
-        await producer.ProduceAsync(inputTopic, "evt-4", "LOW:debug-log");
+        await producer.FireAsync(inputTopic, "evt-1", "HIGH:critical-alert");
+        await producer.FireAsync(inputTopic, "evt-2", "LOW:info-log");
+        await producer.FireAsync(inputTopic, "evt-3", "HIGH:error-alert");
+        await producer.FireAsync(inputTopic, "evt-4", "LOW:debug-log");
 
         // Router consumer
         await using var router = await Kafka.CreateConsumer<string, string>()
@@ -414,7 +414,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in router.ConsumeAsync(cts.Token))
         {
             var targetTopic = msg.Value.StartsWith("HIGH:", StringComparison.Ordinal) ? highPriorityTopic : lowPriorityTopic;
-            await routerProducer.ProduceAsync(targetTopic, msg.Key, msg.Value);
+            await routerProducer.FireAsync(targetTopic, msg.Key, msg.Value);
             routed++;
             if (routed >= 4) break;
         }

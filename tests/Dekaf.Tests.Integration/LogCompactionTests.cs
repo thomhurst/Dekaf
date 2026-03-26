@@ -58,7 +58,7 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await producer.FireAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Produce two messages with the same key

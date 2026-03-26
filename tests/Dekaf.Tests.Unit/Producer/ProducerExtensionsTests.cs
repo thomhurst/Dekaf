@@ -112,12 +112,12 @@ public sealed class ProducerExtensionsTests
     {
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var headers = Headers.Create("h1", "v1");
-        producer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>())
+        producer.FireAsync(Arg.Any<ProducerMessage<string, string>>())
             .Returns(default(ValueTask));
 
         await producer.ProduceAsync("my-topic", "key", "value", headers);
 
-        await producer.Received(1).ProduceAsync(
+        await producer.Received(1).FireAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
                 m.Topic == "my-topic" &&
                 m.Key == "key" &&

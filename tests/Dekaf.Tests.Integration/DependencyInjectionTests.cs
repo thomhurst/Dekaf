@@ -35,7 +35,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         var producer = host.Services.GetRequiredService<IKafkaProducer<string, string>>();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await producer.FireAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -64,7 +64,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await producer.FireAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -159,7 +159,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         var consumer = host.Services.GetRequiredService<IKafkaConsumer<string, string>>();
 
         // Warm up to ensure broker has initialized partition state
-        await producerFromDi.ProduceAsync(new ProducerMessage<string, string>
+        await producerFromDi.FireAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Produce

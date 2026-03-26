@@ -190,7 +190,7 @@ public static class Program
             for (var i = 0; i < batchSize; i++)
             {
                 var messageIndex = batch * batchSize + i;
-                await producer.ProduceAsync(topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(topic, GetKey(messageIndex), messageValue);
             }
 
             // Flush every batch to avoid overwhelming the buffer with backpressure

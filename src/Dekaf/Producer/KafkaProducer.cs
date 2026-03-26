@@ -570,7 +570,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public ValueTask ProduceAsync(ProducerMessage<TKey, TValue> message)
+    public ValueTask FireAsync(ProducerMessage<TKey, TValue> message)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -624,11 +624,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Metadata miss — full async path
-        return ProduceAsyncFireAndForgetSlow(message, activity);
+        return FireAsyncSlow(message, activity);
     }
 
     /// <inheritdoc />
-    public ValueTask ProduceAsync(string topic, TKey? key, TValue value)
+    public ValueTask FireAsync(string topic, TKey? key, TValue value)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -638,7 +638,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // When interceptors are configured, fall back to ProducerMessage overload
         // so interceptors can inspect/modify the message before serialization.
         if (_interceptors is not null)
-            return ProduceAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+            return FireAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
 
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
         var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo);
@@ -670,7 +670,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Metadata miss — allocate ProducerMessage only on cold path
-        return ProduceAsyncFireAndForgetSlow(
+        return FireAsyncSlow(
             new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value }, activity: null);
     }
 
@@ -907,7 +907,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public ValueTask ProduceAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
+    public ValueTask FireAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -2112,7 +2112,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Fetches metadata asynchronously, serializes, and appends to the accumulator.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private async ValueTask ProduceAsyncFireAndForgetSlow(
+    private async ValueTask FireAsyncSlow(
         ProducerMessage<TKey, TValue> message,
         Activity? activity)
     {

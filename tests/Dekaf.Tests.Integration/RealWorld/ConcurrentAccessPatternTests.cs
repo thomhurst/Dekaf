@@ -300,7 +300,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         // Send all messages with callbacks
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(
+            await producer.FireAsync(
                 new ProducerMessage<string, string>
                 {
                     Topic = topic,

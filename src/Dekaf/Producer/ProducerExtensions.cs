@@ -91,7 +91,7 @@ public static class ProducerExtensions
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(topic);
 
-        return producer.ProduceAsync(new ProducerMessage<TKey, TValue>
+        return producer.FireAsync(new ProducerMessage<TKey, TValue>
         {
             Topic = topic,
             Key = key,

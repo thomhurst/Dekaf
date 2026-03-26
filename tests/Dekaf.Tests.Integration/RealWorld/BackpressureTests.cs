@@ -168,7 +168,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         const int messageCount = 500;
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(topic, $"key-{i}", $"value-{i}");
+            await producer.FireAsync(topic, $"key-{i}", $"value-{i}");
         }
 
         await producer.FlushWithTimeoutAsync();

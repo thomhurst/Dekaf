@@ -74,7 +74,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Act - Send multiple messages then flush
         for (int i = 0; i < 10; i++)
         {
-            await producer.ProduceAsync(topic, $"key{i}", $"value{i}");
+            await producer.FireAsync(topic, $"key{i}", $"value{i}");
         }
 
         // Flush with explicit timeout to ensure it completes
@@ -175,7 +175,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         var messageValue = new string('x', 1000); // 1 KB messages
         for (int i = 0; i < 100; i++)
         {
-            await producer.ProduceAsync(topic, $"key{i}", messageValue);
+            await producer.FireAsync(topic, $"key{i}", messageValue);
         }
 
         // Flush with timeout to ensure backpressure doesn't cause hang
@@ -297,7 +297,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .BuildAsync();
 
         // Send some messages
-        await producer.ProduceAsync(topic, "key1", "value1");
+        await producer.FireAsync(topic, "key1", "value1");
 
         // Act & Assert - Pass pre-cancelled token to flush
         using var cts = new CancellationTokenSource();
@@ -418,7 +418,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Send initial messages
         for (int i = 0; i < 50; i++)
         {
-            await producer.ProduceAsync(topic, $"key{i}", $"value{i}");
+            await producer.FireAsync(topic, $"key{i}", $"value{i}");
         }
 
         // Act - Flush and produce concurrently

@@ -17,7 +17,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(async () =>
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await producer.FireAsync(new ProducerMessage<string, string>
             {
                 Topic = "test",
                 Key = "key",
@@ -35,7 +35,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(async () =>
         {
-            await producer.ProduceAsync("test", "key", "value");
+            await producer.FireAsync("test", "key", "value");
         }).Throws<InvalidOperationException>();
     }
 
@@ -48,7 +48,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.ProduceAsync(new ProducerMessage<string, string>
+            producer.FireAsync(new ProducerMessage<string, string>
             {
                 Topic = "test",
                 Key = "key",
@@ -66,7 +66,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.ProduceAsync("test", "key", "value");
+            producer.FireAsync("test", "key", "value");
         }).Throws<InvalidOperationException>();
     }
 
@@ -79,7 +79,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.ProduceAsync(
+            producer.FireAsync(
                 new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" },
                 (_, _) => { });
         }).Throws<InvalidOperationException>();

@@ -46,7 +46,7 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
         await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
         for (var i = 0; i < 999; i++)
         {
-            await producer.ProduceAsync(options.Topic, "warmup", "warmup");
+            await producer.FireAsync(options.Topic, "warmup", "warmup");
         }
         await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -75,7 +75,7 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
             try
             {
                 var start = Stopwatch.GetTimestamp();
-                await producer.ProduceAsync(options.Topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(options.Topic, GetKey(messageIndex), messageValue);
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;

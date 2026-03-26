@@ -42,7 +42,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </remarks>
     ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Produces a message to the specified topic.
@@ -55,7 +55,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         string topic,
         TKey? key,
         TValue value,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Produces a message without waiting for acknowledgment (fire-and-forget with async backpressure).
@@ -75,7 +75,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
     /// use the callback overload or <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/>.</para>
     /// </remarks>
-    ValueTask ProduceAsync(ProducerMessage<TKey, TValue> message);
+    ValueTask FireAsync(ProducerMessage<TKey, TValue> message);
 
     /// <summary>
     /// Produces a message to the specified topic without waiting for acknowledgment (fire-and-forget with async backpressure).
@@ -97,7 +97,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <param name="topic">The topic to produce to.</param>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    ValueTask ProduceAsync(string topic, TKey? key, TValue value);
+    ValueTask FireAsync(string topic, TKey? key, TValue value);
 
     /// <summary>
     /// Produces a message without waiting for acknowledgment, with a delivery callback (async backpressure).
@@ -120,7 +120,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </remarks>
     /// <param name="message">The message to produce.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    ValueTask ProduceAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
+    ValueTask FireAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Produces multiple messages and waits for all acknowledgments.

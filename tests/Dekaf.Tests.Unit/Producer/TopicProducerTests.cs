@@ -162,7 +162,7 @@ public class TopicProducerTests
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
-        mockProducer.ProduceAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<string>())
+        mockProducer.FireAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<string>())
             .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
 
@@ -170,7 +170,7 @@ public class TopicProducerTests
         await topicProducer.ProduceAsync("key", "value");
 
         // Assert — delegates to the zero-allocation (topic, key, value) overload
-        await mockProducer.Received(1).ProduceAsync("my-topic", "key", "value");
+        await mockProducer.Received(1).FireAsync("my-topic", "key", "value");
     }
 
     [Test]
@@ -178,7 +178,7 @@ public class TopicProducerTests
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
-        mockProducer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>())
+        mockProducer.FireAsync(Arg.Any<ProducerMessage<string, string>>())
             .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
         var headers = Headers.Create("key", "value");
@@ -187,7 +187,7 @@ public class TopicProducerTests
         await topicProducer.ProduceAsync("key", "value", headers);
 
         // Assert
-        await mockProducer.Received(1).ProduceAsync(
+        await mockProducer.Received(1).FireAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
                 m.Topic == "my-topic" &&
                 m.Headers != null));
@@ -198,7 +198,7 @@ public class TopicProducerTests
     {
         // Arrange
         var mockProducer = Substitute.For<IKafkaProducer<string, string>>();
-        mockProducer.ProduceAsync(Arg.Any<ProducerMessage<string, string>>(), Arg.Any<Action<RecordMetadata, Exception?>>())
+        mockProducer.FireAsync(Arg.Any<ProducerMessage<string, string>>(), Arg.Any<Action<RecordMetadata, Exception?>>())
             .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
         Action<RecordMetadata, Exception?> callback = (_, _) => { };
@@ -207,7 +207,7 @@ public class TopicProducerTests
         await topicProducer.ProduceAsync("key", "value", callback);
 
         // Assert
-        await mockProducer.Received(1).ProduceAsync(
+        await mockProducer.Received(1).FireAsync(
             Arg.Is<ProducerMessage<string, string>>(m => m.Topic == "my-topic"),
             Arg.Any<Action<RecordMetadata, Exception?>>());
     }

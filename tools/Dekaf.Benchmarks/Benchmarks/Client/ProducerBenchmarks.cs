@@ -65,7 +65,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < 10; i++)
         {
-            await _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
+            await _dekafProducer.FireAsync(new DekafProducer.ProducerMessage<string, string>
             {
                 Topic = Topic,
                 Key = "warmup",
@@ -188,7 +188,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            await _dekafProducer.ProduceAsync(Topic, $"key-{i}", _messageValue);
+            await _dekafProducer.FireAsync(Topic, $"key-{i}", _messageValue);
         }
     }
 }

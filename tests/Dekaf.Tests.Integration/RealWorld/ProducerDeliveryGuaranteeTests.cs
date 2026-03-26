@@ -189,7 +189,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await producer.FireAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

@@ -237,7 +237,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
 
         var headers = new Headers { { "source", "test" } };
         var message = ProducerMessage<string, string>.Create(topic, "key", "value", headers);
-        await producer.ProduceAsync(message);
+        await producer.FireAsync(message);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

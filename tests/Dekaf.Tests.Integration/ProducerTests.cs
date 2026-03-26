@@ -862,7 +862,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .BuildAsync();
 
         // Act - send with callback
-        await producer.ProduceAsync(
+        await producer.FireAsync(
             new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -957,7 +957,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             for (var i = 0; i < messagesPerThread; i++)
             {
-                await producer.ProduceAsync(
+                await producer.FireAsync(
                     new ProducerMessage<string, string>
                     {
                         Topic = topic,
