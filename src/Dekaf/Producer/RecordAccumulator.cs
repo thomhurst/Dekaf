@@ -1650,11 +1650,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
-                headers, headerCount, callback, recordSize));
+                headers, headerCount, null, callback, recordSize));
 
         // Cold path: buffer full, await async reservation (backpressure)
-        return AppendAsyncSlowPath(topic, partition, timestamp, key, value,
-            headers, headerCount, callback, recordSize, cancellationToken);
+        return AppendSlowPath(topic, partition, timestamp, key, value,
+            headers, headerCount, null, callback, recordSize, cancellationToken);
     }
 
     private bool AppendAfterReservation(
@@ -1665,9 +1665,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledMemory value,
         Header[]? headers,
         int headerCount,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize)
     {
+        if (completionSource is not null)
+            Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
         var pd = GetOrCreateDeque(topic, partition);
         ReadyBatch? sealedBatch = null;
 
@@ -1676,6 +1680,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (_disposed)
             {
+                if (completionSource is not null)
+                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
@@ -1686,7 +1692,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (pd.CurrentBatch is { } currentBatch)
             {
                 if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                    null, callback, recordSize))
+                    completionSource, callback, recordSize))
                     return true;
 
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
@@ -1697,11 +1703,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Increment(ref _unsealedBatchCount);
 
             if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                null, callback, recordSize))
+                completionSource, callback, recordSize))
             {
                 pd.CurrentBatch = null;
                 Interlocked.Decrement(ref _unsealedBatchCount);
                 _batchPool.Return(newBatch);
+                if (completionSource is not null)
+                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
                 key.Return();
                 value.Return();
@@ -1719,7 +1727,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return true;
     }
 
-    private async ValueTask<bool> AppendAsyncSlowPath(
+    private async ValueTask<bool> AppendSlowPath(
         string topic,
         int partition,
         long timestamp,
@@ -1727,13 +1735,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledMemory value,
         Header[]? headers,
         int headerCount,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         CancellationToken cancellationToken)
     {
-        await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            throw;
+        }
+
         return AppendAfterReservation(topic, partition, timestamp, key, value,
-            headers, headerCount, callback, recordSize);
+            headers, headerCount, completionSource, callback, recordSize);
     }
 
     /// <summary>
@@ -1759,96 +1779,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Hot path: non-blocking CAS reservation
         if (TryReserveMemory(recordSize))
-            return new ValueTask<bool>(AppendWithCompletionAfterReservation(
-                topic, partition, timestamp, key, value, headers, headerCount, completionSource, recordSize));
+            return new ValueTask<bool>(AppendAfterReservation(
+                topic, partition, timestamp, key, value, headers, headerCount, completionSource, null, recordSize));
 
         // Cold path: buffer full, await async reservation
-        return AppendWithCompletionAsyncSlowPath(
-            topic, partition, timestamp, key, value, headers, headerCount, completionSource, recordSize, cancellationToken);
-    }
-
-    private bool AppendWithCompletionAfterReservation(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        Header[]? headers,
-        int headerCount,
-        PooledValueTaskSource<RecordMetadata> completionSource,
-        int recordSize)
-    {
-        // Track pending awaited produce BEFORE append
-        Interlocked.Increment(ref _pendingAwaitedProduceCount);
-
-        var pd = GetOrCreateDeque(topic, partition);
-        ReadyBatch? sealedBatch = null;
-
-        {
-            using var guard = new SpinLockGuard(ref pd.Lock);
-
-            if (_disposed)
-            {
-                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                key.Return();
-                value.Return();
-                ReturnPooledHeaders(headers);
-                return false;
-            }
-
-            if (pd.CurrentBatch is { } currentBatch)
-            {
-                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                    completionSource, null, recordSize))
-                    return true;
-
-                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
-            }
-
-            var newBatch = RentBatch(new TopicPartition(topic, partition));
-            pd.CurrentBatch = newBatch;
-            Interlocked.Increment(ref _unsealedBatchCount);
-
-            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                completionSource, null, recordSize))
-            {
-                pd.CurrentBatch = null;
-                Interlocked.Decrement(ref _unsealedBatchCount);
-                _batchPool.Return(newBatch);
-                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                key.Return();
-                value.Return();
-                ReturnPooledHeaders(headers);
-                throw new KafkaException(ErrorCode.MessageTooLarge,
-                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
-            }
-        }
-
-        if (sealedBatch is not null)
-        {
-            SignalWakeup();
-        }
-
-        return true;
-    }
-
-    private async ValueTask<bool> AppendWithCompletionAsyncSlowPath(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        Header[]? headers,
-        int headerCount,
-        PooledValueTaskSource<RecordMetadata> completionSource,
-        int recordSize,
-        CancellationToken cancellationToken)
-    {
-        await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
-        return AppendWithCompletionAfterReservation(
-            topic, partition, timestamp, key, value, headers, headerCount, completionSource, recordSize);
+        return AppendSlowPath(
+            topic, partition, timestamp, key, value, headers, headerCount, completionSource, null, recordSize, cancellationToken);
     }
 
     /// <summary>
@@ -2097,7 +2033,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, callback, recordSize);
+            headers, headerCount, null, callback, recordSize);
     }
 
     /// <summary>
