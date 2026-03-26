@@ -273,6 +273,14 @@ public sealed class ConsumerOptions
     public IRetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
+    /// Maximum number of concurrent in-flight prefetch requests per broker.
+    /// Higher values improve throughput by overlapping fetch round-trips,
+    /// at the cost of additional memory for buffered responses.
+    /// Default is 2. Set to 1 for minimal memory overhead.
+    /// </summary>
+    public int PrefetchPipelineDepth { get; init; } = 2;
+
+    /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
     /// Interceptors are called on consume (OnConsume) and on commit (OnCommit).
     /// Interceptor exceptions are caught and logged, not propagated.

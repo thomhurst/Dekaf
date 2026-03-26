@@ -798,6 +798,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
+    private int _prefetchPipelineDepth = 2;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1216,6 +1217,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum number of concurrent in-flight prefetch requests.
+    /// Higher values improve throughput by overlapping fetch round-trips,
+    /// at the cost of additional memory for buffered responses.
+    /// </summary>
+    /// <param name="depth">The pipeline depth. Must be at least 1. Default is 2.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
+    {
+        if (depth < 1)
+            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be at least 1");
+        _prefetchPipelineDepth = depth;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -1271,6 +1287,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _maxPollRecords = 1000;
         _fetchMinBytes = 1024;
         _fetchMaxWaitMs = 500;
+        _prefetchPipelineDepth = 3;
         return this;
     }
 
@@ -1386,7 +1403,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            PrefetchPipelineDepth = _prefetchPipelineDepth
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
