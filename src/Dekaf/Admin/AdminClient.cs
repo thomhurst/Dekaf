@@ -1894,7 +1894,7 @@ public sealed class AdminClientBuilder
 
         var options = new AdminClientOptions
         {
-            BootstrapServers = _bootstrapServers,
+            BootstrapServers = [.._bootstrapServers],
             ClientId = _clientId,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,

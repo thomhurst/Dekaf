@@ -675,7 +675,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         var options = new ProducerOptions
         {
-            BootstrapServers = _bootstrapServers,
+            BootstrapServers = [.._bootstrapServers],
             ClientId = _clientId,
             Acks = _acks,
             LingerMs = _lingerMs,
@@ -1382,7 +1382,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
         var options = new ConsumerOptions
         {
-            BootstrapServers = _bootstrapServers,
+            BootstrapServers = [.._bootstrapServers],
             ClientId = _clientId,
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
