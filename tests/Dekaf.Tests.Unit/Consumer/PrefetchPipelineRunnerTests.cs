@@ -277,7 +277,7 @@ public class PrefetchPipelineRunnerTests
         await runner.RunAsync(cts.Token);
 
         // Memory limit pause was reached
-        await Assert.That(memoryLimitPauseCount).IsGreaterThanOrEqualTo(1);
+        await Assert.That(Volatile.Read(ref memoryLimitPauseCount)).IsGreaterThanOrEqualTo(1);
         // InFlightPrefetchCount is 0 after RunAsync completes (drained in finally block)
         await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
     }
