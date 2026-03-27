@@ -1177,13 +1177,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             response.ReturnToPool();
         }
 
-        // Write all pending items to the channel, with memory owner attached to the last one
+        // Write all pending items to the channel, with shared memory owner
         if (pendingItems.Count > 0)
         {
-            // Assign memory owner to the LAST item (will be disposed last due to FIFO)
             if (memoryOwner is not null)
             {
-                pendingItems[^1].SetMemoryOwner(memoryOwner);
+                AssignSharedMemoryOwner(pendingItems, memoryOwner);
                 memoryOwner = null; // Transferred
             }
 
@@ -2419,10 +2418,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             response.ReturnToPool();
         }
 
-        // Attach memory owner to the last item (will be disposed last due to FIFO processing)
         if (pendingItems is not null && pendingItems.Count > 0 && memoryOwner is not null)
         {
-            pendingItems[^1].SetMemoryOwner(memoryOwner);
+            AssignSharedMemoryOwner(pendingItems, memoryOwner);
             memoryOwner = null; // Transferred
         }
 
@@ -2430,6 +2428,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         memoryOwner?.Dispose();
 
         return pendingItems;
+    }
+
+    /// <summary>
+    /// Assigns a ref-counted memory owner to all pending items so the underlying pooled buffer
+    /// is only returned when every item has been disposed, regardless of disposal order.
+    /// </summary>
+    private static void AssignSharedMemoryOwner(List<PendingFetchData> pendingItems, IPooledMemory memoryOwner)
+    {
+        var shared = new RefCountedMemoryOwner(memoryOwner, pendingItems.Count);
+        for (var i = 0; i < pendingItems.Count; i++)
+        {
+            pendingItems[i].SetMemoryOwner(shared);
+        }
     }
 
     /// <summary>
