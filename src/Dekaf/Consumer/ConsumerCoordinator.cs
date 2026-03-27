@@ -237,7 +237,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(brokers[0].NodeId, 1, cancellationToken)
                 .ConfigureAwait(false);
 
             // Use negotiated API version
