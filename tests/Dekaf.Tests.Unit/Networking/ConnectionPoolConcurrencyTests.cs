@@ -80,7 +80,7 @@ public sealed class ConnectionPoolConcurrencyTests
         const int concurrentCallers = 10;
         const int deadIndex = 1;
         var replacementCount = 0;
-        var initialCreationDone = false;
+        var initialCreationDone = 0;
 
         var pool = new ConnectionPool(
             clientId: "test",
@@ -88,7 +88,7 @@ public sealed class ConnectionPoolConcurrencyTests
             connectionsPerBroker: connectionsPerBroker,
             connectionFactory: (brokerId, host, port, index, ct) =>
             {
-                if (initialCreationDone)
+                if (Volatile.Read(ref initialCreationDone) != 0)
                 {
                     // After initial group creation, count replacements
                     Interlocked.Increment(ref replacementCount);
@@ -108,7 +108,7 @@ public sealed class ConnectionPoolConcurrencyTests
 
             // Create the initial connection group
             await pool.GetConnectionAsync(1);
-            initialCreationDone = true;
+            Volatile.Write(ref initialCreationDone, 1);
 
             // Now mark connection at deadIndex as disconnected.
             // GetConnectionByIndexAsync will try to replace it.
@@ -151,7 +151,7 @@ public sealed class ConnectionPoolConcurrencyTests
         var replacementCreated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var proceedWithReplacement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         IKafkaConnection? orphanedConnection = null;
-        var initialCreationDone = false;
+        var initialCreationDone = 0;
 
         var pool = new ConnectionPool(
             clientId: "test",
@@ -167,7 +167,7 @@ public sealed class ConnectionPoolConcurrencyTests
 
                 // Only delay during the replacement phase (after initial group creation),
                 // and only for the last index which will be shrunk away
-                if (initialCreationDone && index == connectionsPerBroker - 1)
+                if (Volatile.Read(ref initialCreationDone) != 0 && index == connectionsPerBroker - 1)
                 {
                     return new ValueTask<IKafkaConnection>(CreateDelayedConnection(conn));
                 }
@@ -191,7 +191,7 @@ public sealed class ConnectionPoolConcurrencyTests
 
             // Create the initial connection group (2 connections)
             await pool.GetConnectionAsync(1);
-            initialCreationDone = true;
+            Volatile.Write(ref initialCreationDone, 1);
 
             // Mark the last connection (index 1) as dead to trigger replacement
             var lastConn = await pool.GetConnectionByIndexAsync(1, connectionsPerBroker - 1);

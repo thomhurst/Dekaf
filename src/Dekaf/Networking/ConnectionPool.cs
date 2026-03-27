@@ -617,12 +617,13 @@ public sealed partial class ConnectionPool : IConnectionPool
         {
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
-                if (_connectionReplacementLocks.TryRemove((brokerId, i), out var replacementLock))
-                    replacementLock.Dispose();
+                // Intentionally not disposed: a concurrent ReplaceConnectionInGroupAsync
+                // may be holding or waiting on it. Will be disposed during DisposeAsync.
+                _connectionReplacementLocks.TryRemove((brokerId, i), out _);
             }
 
-            if (_groupCreationLocks.TryRemove(brokerId, out var groupLock))
-                groupLock.Dispose();
+            // Same reasoning: a concurrent CreateConnectionGroupAsync may hold a reference.
+            _groupCreationLocks.TryRemove(brokerId, out _);
 
             foreach (var conn in group)
             {
