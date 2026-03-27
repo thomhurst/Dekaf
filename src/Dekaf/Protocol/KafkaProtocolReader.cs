@@ -381,7 +381,10 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int ReadUnsignedVarInt()
     {
-        return (int)ReadVarUInt();
+        var value = ReadVarUInt();
+        if (value > int.MaxValue)
+            ThrowInvalidProtocolData();
+        return (int)value;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -652,7 +655,7 @@ public ref struct KafkaProtocolReader
         var result = new byte[length];
         if (_isContiguous)
         {
-            if (_position + length > _span.Length)
+            if (length < 0 || _position > _span.Length - length)
                 ThrowInsufficientData();
             _span.Slice(_position, length).CopyTo(result);
             _position += length;
@@ -672,7 +675,7 @@ public ref struct KafkaProtocolReader
     {
         if (_isContiguous)
         {
-            if (_position + destination.Length > _span.Length)
+            if (_position > _span.Length - destination.Length)
                 ThrowInsufficientData();
             _span.Slice(_position, destination.Length).CopyTo(destination);
             _position += destination.Length;
@@ -709,7 +712,7 @@ public ref struct KafkaProtocolReader
         // Fast path: Return a slice of the backing memory (zero-allocation)
         if (_isContiguous && _hasMemory)
         {
-            if (_position + count > _span.Length)
+            if (count < 0 || _position > _span.Length - count)
                 ThrowInsufficientData();
             var result = _memory.Slice(_position, count);
             _position += count;
@@ -719,7 +722,7 @@ public ref struct KafkaProtocolReader
         // Fallback for span-only mode: must allocate since spans can't become Memory
         if (_isContiguous)
         {
-            if (_position + count > _span.Length)
+            if (count < 0 || _position > _span.Length - count)
                 ThrowInsufficientData();
             var result = _span.Slice(_position, count).ToArray();
             _position += count;
@@ -890,5 +893,11 @@ public ref struct KafkaProtocolReader
     private static void ThrowMalformedVarInt()
     {
         throw new InvalidOperationException("Malformed variable-length integer");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidProtocolData()
+    {
+        throw new InvalidOperationException("Invalid protocol data: unsigned varint exceeds Int32 range");
     }
 }
