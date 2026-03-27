@@ -913,26 +913,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             // Wakeup requested, exit silently
         }
-        catch (Errors.AuthenticationException ex)
+        catch (Exception ex) when (IsFatalPrefetchError(ex))
         {
-            // Non-recoverable. Caught separately because Auth* exceptions may lack
-            // ErrorCode, so the ErrorCode guard below wouldn't catch them.
-            LogFatalPrefetchError(ex, brokerId);
-            throw;
-        }
-        catch (Errors.AuthorizationException ex)
-        {
-            // Non-recoverable. Caught separately because Auth* exceptions may lack
-            // ErrorCode, so the ErrorCode guard below wouldn't catch them.
-            LogFatalPrefetchError(ex, brokerId);
-            throw;
-        }
-        catch (KafkaException ex) when (ex.ErrorCode is not null && !ex.IsRetriable)
-        {
-            // Non-retriable Kafka protocol errors (e.g., OffsetOutOfRange with
-            // AutoOffsetReset.None) — let PrefetchPipelineRunner count and surface them.
-            // The ErrorCode guard excludes networking-layer KafkaExceptions (connection
-            // timeouts, broker unavailable) which have no ErrorCode and are transient.
+            // Non-recoverable errors that should propagate to PrefetchPipelineRunner's
+            // consecutive error counter. See IsFatalPrefetchError for classification logic.
             LogFatalPrefetchError(ex, brokerId);
             throw;
         }
@@ -944,6 +928,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             LogPrefetchFromBrokerError(ex, brokerId);
         }
     }
+
+    /// <summary>
+    /// Determines whether a prefetch error is fatal (should propagate to the pipeline runner)
+    /// or transient (should be suppressed and retried).
+    /// </summary>
+    /// <remarks>
+    /// Auth* exceptions are matched explicitly because they may lack an ErrorCode.
+    /// Networking-layer KafkaExceptions (connection timeouts, broker unavailable) have no
+    /// ErrorCode and are always transient — the ErrorCode guard excludes them.
+    /// </remarks>
+    internal static bool IsFatalPrefetchError(Exception ex) => ex is
+        Errors.AuthenticationException or
+        Errors.AuthorizationException or
+        KafkaException { ErrorCode: not null, IsRetriable: false };
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
