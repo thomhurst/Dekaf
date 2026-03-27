@@ -223,7 +223,7 @@ public sealed class ClusterMetadata
     /// </param>
     public void Update(MetadataResponse response, bool mergeTopics = false)
     {
-        // Build new snapshot outside of any lock for maximum parallelism
+        // Build broker dictionary outside the lock (pure transformation, no shared state)
         var brokers = new Dictionary<int, BrokerNode>(response.Brokers.Count);
         foreach (var broker in response.Brokers)
         {

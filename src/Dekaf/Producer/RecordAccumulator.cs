@@ -790,8 +790,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // The broker requires monotonically increasing BaseSequence per partition.
     // Uses StrongBox<int> so GetOrAdd returns a mutable reference on the fast path
     // (lock-free hash lookup only), avoiding AddOrUpdate's per-call bucket locking.
-    // Each partition is accessed by exactly one BrokerSender thread, so direct
-    // mutation of StrongBox.Value is safe without additional synchronization.
+    // During leader migration, two BrokerSender threads may access the same partition
+    // concurrently, so StrongBox.Value is mutated via Interlocked.Add for atomicity.
     private readonly ConcurrentDictionary<TopicPartition, StrongBox<int>> _sequenceNumbers = new();
 
     /// <summary>

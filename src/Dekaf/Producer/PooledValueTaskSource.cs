@@ -60,7 +60,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     public void SetResult(T result)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
-            return; // Already completed by cancellation
+            return; // Already completed
         _core.SetResult(result);
     }
 
@@ -91,7 +91,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     public void SetException(Exception exception)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
-            return; // Already completed by cancellation
+            return; // Already completed
         _core.SetException(exception);
     }
 
