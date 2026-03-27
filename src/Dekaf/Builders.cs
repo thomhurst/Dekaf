@@ -1258,7 +1258,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, ConsumerOptions.MaxConnectionsPerBroker);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 10);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }

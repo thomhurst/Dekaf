@@ -405,7 +405,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, ConsumerOptions.MaxConnectionsPerBroker);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
