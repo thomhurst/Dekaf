@@ -1249,8 +1249,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// </summary>
     /// <param name="connectionsPerBroker">
     /// The number of connections per broker. Must be 1 or 2.
-    /// The consumer uses at most 2 connections: index 0 for fetch (data-plane) and
-    /// index 1 for coordination (control-plane). Values above 2 would create unused connections.
+    /// The consumer uses one connection for fetch requests and one for coordination traffic.
+    /// Values above 2 would create unused connections.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 2.
@@ -1258,7 +1258,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 2);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, ConsumerOptions.MaxConnectionsPerBroker);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }

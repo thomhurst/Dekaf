@@ -5,8 +5,8 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Integration tests for multi-connection consumer (ConnectionsPerBroker).
-/// Verifies that fetch traffic on index 0 and coordination traffic on index 1
-/// work correctly against a real Kafka broker, including the single-connection fallback.
+/// Verifies that fetch traffic and coordination traffic work correctly against
+/// a real Kafka broker, including the single-connection fallback.
 /// </summary>
 [Category("Consumer")]
 public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
@@ -18,7 +18,6 @@ public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : Kaf
         var groupId = $"test-group-{Guid.NewGuid():N}";
         const int messageCount = 50;
 
-        // Produce messages
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-conn-consumer-producer")
@@ -35,7 +34,6 @@ public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : Kaf
             }, CancellationToken.None);
         }
 
-        // Consume with 2 connections per broker (fetch on index 0, coordination on index 1)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-conn-consumer")
@@ -49,31 +47,9 @@ public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : Kaf
 
         consumer.Subscribe(topic);
 
-        var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-        {
-            messages.Add(msg);
-            if (messages.Count >= messageCount) break;
-        }
-
+        var messages = await ConsumeMessagesAsync(consumer, messageCount);
         await Assert.That(messages).Count().IsEqualTo(messageCount);
-
-        // Commit offsets — this exercises the coordination path (connection index 1)
-        var offsets = messages
-            .GroupBy(m => new TopicPartition(m.Topic, m.Partition))
-            .Select(g => new TopicPartitionOffset(g.Key.Topic, g.Key.Partition, g.Max(m => m.Offset) + 1))
-            .ToArray();
-
-        await consumer.CommitAsync(offsets);
-
-        // Verify committed offsets
-        foreach (var offset in offsets)
-        {
-            var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(offset.Topic, offset.Partition));
-            await Assert.That(committed).IsEqualTo(offset.Offset);
-        }
+        await CommitAndVerifyOffsetsAsync(consumer, messages);
     }
 
     [Test]
@@ -99,7 +75,6 @@ public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : Kaf
             }, CancellationToken.None);
         }
 
-        // ConnectionsPerBroker=1: both fetch and coordination share the same connection
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-single-conn-consumer")
@@ -113,18 +88,30 @@ public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : Kaf
 
         consumer.Subscribe(topic);
 
+        var messages = await ConsumeMessagesAsync(consumer, messageCount);
+        await Assert.That(messages).Count().IsEqualTo(messageCount);
+        await CommitAndVerifyOffsetsAsync(consumer, messages);
+    }
+
+    private static async Task<List<ConsumeResult<string, string>>> ConsumeMessagesAsync(
+        IKafkaConsumer<string, string> consumer, int count)
+    {
         var messages = new List<ConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= count) break;
         }
 
-        await Assert.That(messages).Count().IsEqualTo(messageCount);
+        return messages;
+    }
 
-        // Commit offsets derived from consumed messages (not hardcoded)
+    private static async Task CommitAndVerifyOffsetsAsync(
+        IKafkaConsumer<string, string> consumer,
+        List<ConsumeResult<string, string>> messages)
+    {
         var offsets = messages
             .GroupBy(m => new TopicPartition(m.Topic, m.Partition))
             .Select(g => new TopicPartitionOffset(g.Key.Topic, g.Key.Partition, g.Max(m => m.Offset) + 1))
