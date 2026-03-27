@@ -35,11 +35,11 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
             .BuildAsync(cancellationToken);
 
         // Pre-seed messages before starting consumer measurement
-        Console.WriteLine($"  Pre-seeding messages for consumer-raw test...");
+        Console.WriteLine("  Pre-seeding messages for consumer-raw test...");
         const int preseedCount = 500_000;
         for (var i = 0; i < preseedCount; i++)
         {
-            await producer.FireAsync(options.Topic, GetKey(i), messageValue);
+            await producer.FireAsync(options.Topic, GetKey(i), messageValue).ConfigureAwait(false);
         }
         await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
@@ -140,7 +140,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         {
             try
             {
-                await producer.FireAsync(topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(topic, GetKey(messageIndex), messageValue).ConfigureAwait(false);
                 messageIndex++;
 
                 // Yield periodically to avoid starving other tasks
