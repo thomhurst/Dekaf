@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Dekaf.Producer;
 using Dekaf.StressTests.Infrastructure;
 using Dekaf.StressTests.Reporting;
@@ -31,8 +30,6 @@ namespace Dekaf.StressTests;
 /// </summary>
 public static class Program
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public static async Task<int> Main(string[] args)
     {
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -190,7 +187,7 @@ public static class Program
             for (var i = 0; i < batchSize; i++)
             {
                 var messageIndex = batch * batchSize + i;
-                await producer.FireAsync(topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue);
             }
 
             // Flush every batch to avoid overwhelming the buffer with backpressure
@@ -354,19 +351,6 @@ public static class Program
               dotnet run -c Release -- report --input ./results
             """);
     }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 
     private sealed class CliOptions
     {

@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
@@ -8,8 +7,6 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ConsumerStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public string Name => "consumer";
     public string Client => "Dekaf";
 
@@ -33,7 +30,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         const int preseedCount = 500_000;
         for (var i = 0; i < preseedCount; i++)
         {
-            await producer.FireAsync(options.Topic, GetKey(i), messageValue);
+            await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(i), messageValue);
         }
         await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
@@ -133,7 +130,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         {
             try
             {
-                await producer.FireAsync(topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue);
                 messageIndex++;
 
                 // Yield periodically to avoid starving other tasks
@@ -169,16 +166,4 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         }
     }
 
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 }
