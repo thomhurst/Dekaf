@@ -91,4 +91,49 @@ public class ConsumerConnectionScalingTests
         var result = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionsPerBroker);
         await Assert.That(result).IsEqualTo(expectedIndex);
     }
+
+    [Test]
+    [Arguments(1, 1)]  // 1 connection: 1 fetch connection (shared)
+    [Arguments(2, 1)]  // 2 connections: 1 fetch connection
+    [Arguments(3, 2)]  // 3 connections: 2 fetch connections
+    [Arguments(4, 3)]  // 4 connections: 3 fetch connections
+    public async Task FetchConnectionCount_CorrectForConnectionsPerBroker(int connectionsPerBroker, int expectedFetchCount)
+    {
+        var result = KafkaConsumer<string, string>.GetFetchConnectionCount(connectionsPerBroker);
+        await Assert.That(result).IsEqualTo(expectedFetchCount);
+    }
+
+    [Test]
+    public async Task FetchRoundRobin_DistributesAcrossAllFetchConnections()
+    {
+        var fetchConnectionCount = KafkaConsumer<string, string>.GetFetchConnectionCount(4); // 3 fetch connections
+        var indices = new int[6];
+        var counter = 0;
+
+        for (var i = 0; i < 6; i++)
+        {
+            indices[i] = KafkaConsumer<string, string>.GetNextFetchConnectionIndex(ref counter, fetchConnectionCount);
+        }
+
+        // Should cycle through 0, 1, 2, 0, 1, 2
+        await Assert.That(indices[0]).IsEqualTo(0);
+        await Assert.That(indices[1]).IsEqualTo(1);
+        await Assert.That(indices[2]).IsEqualTo(2);
+        await Assert.That(indices[3]).IsEqualTo(0);
+        await Assert.That(indices[4]).IsEqualTo(1);
+        await Assert.That(indices[5]).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task FetchRoundRobin_SingleConnection_AlwaysReturns0()
+    {
+        var fetchConnectionCount = KafkaConsumer<string, string>.GetFetchConnectionCount(1);
+        var counter = 0;
+
+        for (var i = 0; i < 5; i++)
+        {
+            var index = KafkaConsumer<string, string>.GetNextFetchConnectionIndex(ref counter, fetchConnectionCount);
+            await Assert.That(index).IsEqualTo(0);
+        }
+    }
 }

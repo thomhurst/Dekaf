@@ -354,6 +354,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
+    private int _fetchRoundRobinCounter;
 
     // Dead letter queue raw byte tracking (zero overhead when not enabled)
     private bool _rawRecordTrackingEnabled;
@@ -1070,6 +1071,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return Math.Max(configuredMax, minRequired);
     }
 
+    /// <summary>
+    /// Returns the number of connections available for fetch requests.
+    /// When ConnectionsPerBroker is 1, all traffic shares the single connection.
+    /// When > 1, the last connection is reserved for coordination.
+    /// </summary>
+    internal static int GetFetchConnectionCount(int connectionsPerBroker)
+        => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
+
+    /// <summary>
+    /// Returns the next fetch connection index using round-robin.
+    /// </summary>
+    internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
+    {
+        if (fetchConnectionCount == 1) return 0;
+        var index = (uint)counter % (uint)fetchConnectionCount;
+        Interlocked.Increment(ref counter);
+        return (int)index;
+    }
+
     internal static bool IsFatalPrefetchError(Exception ex) => ex is
         Errors.AuthenticationException or
         Errors.AuthorizationException or
@@ -1077,7 +1097,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
+        var fetchConnectionCount = GetFetchConnectionCount(_options.ConnectionsPerBroker);
+        var connectionIndex = GetNextFetchConnectionIndex(ref _fetchRoundRobinCounter, fetchConnectionCount);
+        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
