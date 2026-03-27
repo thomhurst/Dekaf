@@ -33,8 +33,19 @@ public sealed class CompressionCodecRegistry
     private readonly ConcurrentDictionary<CompressionType, ICompressionCodec> _codecs = [];
 
     /// <summary>
+    /// Sentinel value indicating no compression level is set (<see cref="DefaultCompressionLevel"/> returns null).
+    /// </summary>
+    private const int NotSet = int.MinValue;
+
+    private int _defaultCompressionLevel = NotSet;
+
+    /// <summary>
     /// Default global registry with built-in codecs.
     /// Used by RecordBatch for compression/decompression when no specific registry is provided.
+    /// <para/>
+    /// <b>Warning:</b> This is a process-global singleton. Codec registrations and configuration
+    /// changes affect all clients in the same process. If multiple clients need different codec
+    /// configurations, create separate <see cref="CompressionCodecRegistry"/> instances instead.
     /// </summary>
     public static CompressionCodecRegistry Default { get; } = new();
 
@@ -43,8 +54,17 @@ public sealed class CompressionCodecRegistry
     /// When set, codec extension methods (AddLz4, AddZstd, etc.) can use this level
     /// as a fallback when no explicit level is provided.
     /// Null means use each codec's built-in default.
+    /// This property is thread-safe via <see cref="Volatile"/> reads/writes.
     /// </summary>
-    public int? DefaultCompressionLevel { get; set; }
+    public int? DefaultCompressionLevel
+    {
+        get
+        {
+            var value = Volatile.Read(ref _defaultCompressionLevel);
+            return value == NotSet ? null : value;
+        }
+        set => Volatile.Write(ref _defaultCompressionLevel, value ?? NotSet);
+    }
 
     /// <summary>
     /// Creates a registry with built-in codecs.
