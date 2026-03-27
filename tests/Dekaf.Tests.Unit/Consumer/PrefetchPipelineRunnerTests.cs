@@ -725,8 +725,8 @@ public class PrefetchPipelineRunnerTests
 
         await runner.RunAsync(cts.Token);
 
-        // With depth 4, we should see multiple fetches (sync + eager pairs across iterations)
-        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(4);
+        // At least 6 fetches (the cancellation threshold) proves the pipeline ran multiple iterations
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(6);
     }
 
     [Test]
@@ -866,6 +866,7 @@ public class PrefetchPipelineRunnerTests
         var positionsReadByFetch = new ConcurrentDictionary<int, long>();
         var fetchCount = 0;
         var targetFetchCount = pipelineDepth * 2; // Enough iterations to exercise the pipeline
+        CancellationTokenSource? testCts = null;
 
         var runner = CreateRunner(
             prefetchRecords: async ct =>
@@ -883,6 +884,7 @@ public class PrefetchPipelineRunnerTests
 
                 if (id >= targetFetchCount)
                 {
+                    testCts!.Cancel();
                     ct.ThrowIfCancellationRequested();
                 }
             },
@@ -891,8 +893,8 @@ public class PrefetchPipelineRunnerTests
             prefetchedBytes: 0,
             pipelineDepth: pipelineDepth);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await runner.RunAsync(cts.Token);
+        testCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(testCts.Token);
 
         // Every fetch must have read a unique position — no duplicates
         var positions = positionsReadByFetch.Values.ToList();
