@@ -587,7 +587,7 @@ public ref struct KafkaProtocolReader
 
         if (_isContiguous)
         {
-            if (_position + length > _span.Length)
+            if (length < 0 || _position > _span.Length - length)
                 ThrowInsufficientData();
             var result = Encoding.UTF8.GetString(_span.Slice(_position, length));
             _position += length;
