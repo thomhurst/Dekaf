@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Dekaf.Producer;
 using Dekaf.StressTests.Infrastructure;
 using Dekaf.StressTests.Reporting;
@@ -15,7 +14,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-raw, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -31,8 +30,6 @@ namespace Dekaf.StressTests;
 /// </summary>
 public static class Program
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public static async Task<int> Main(string[] args)
     {
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -91,7 +88,7 @@ public static class Program
         await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
         await kafka.CreateTopicAsync(consumerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
 
-        if (options.Scenario is "consumer" or "all")
+        if (options.Scenario is "consumer" or "consumer-raw" or "all")
         {
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
         }
@@ -190,7 +187,7 @@ public static class Program
             for (var i = 0; i < batchSize; i++)
             {
                 var messageIndex = batch * batchSize + i;
-                await producer.FireAsync(topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue).ConfigureAwait(false);
             }
 
             // Flush every batch to avoid overwhelming the buffer with backpressure
@@ -220,6 +217,7 @@ public static class Program
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
             new ConsumerStressTest(),
+            new ConsumerRawStressTest(),
             new ConfluentConsumerStressTest()
         };
 
@@ -334,7 +332,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-raw, all (default: all)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -353,19 +351,6 @@ public static class Program
               dotnet run -c Release -- report --input ./results
             """);
     }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 
     private sealed class CliOptions
     {

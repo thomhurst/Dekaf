@@ -1,13 +1,20 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 
 namespace Dekaf.StressTests.Scenarios;
 
-internal sealed class ConsumerStressTest : IStressTestScenario
+/// <summary>
+/// Consumer stress test that reads raw bytes instead of deserializing strings.
+/// Uses <see cref="ReadOnlyMemory{T}"/> values which avoid string allocation (zero-copy for
+/// single-segment data, array copy for rare multi-segment cases). This isolates the consumer
+/// infrastructure overhead from string deserialization allocations.
+/// </summary>
+internal sealed class ConsumerRawStressTest : IStressTestScenario
 {
-    public string Name => "consumer";
+    public string Name => "consumer-raw";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -16,10 +23,10 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         var startedAt = DateTime.UtcNow;
         var messageValue = new string('x', options.MessageSizeBytes);
 
-        // Create producer to feed messages to the consumer
+        // Create producer to feed messages to the consumer (uses string serialization for production)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-consumer-feeder-dekaf")
+            .WithClientId("stress-consumer-raw-feeder-dekaf")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
@@ -28,7 +35,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         // Pre-seed messages before starting consumer measurement.
         // Note: Program.cs also seeds via SeedConsumerTopicAsync when running --scenario all.
         // Both seeds are intentional — this ensures enough backlog regardless of invocation path.
-        Console.WriteLine("  Pre-seeding messages for consumer test...");
+        Console.WriteLine("  Pre-seeding messages for consumer-raw test...");
         const int preseedCount = 500_000;
         for (var i = 0; i < preseedCount; i++)
         {
@@ -37,10 +44,11 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
 
-        await using var consumer = await Kafka.CreateConsumer<string, string>()
+        // Consumer uses Ignore for key (don't care) and ReadOnlyMemory<byte> for zero-copy value access
+        await using var consumer = await Kafka.CreateConsumer<Ignore, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-consumer-dekaf")
-            .WithGroupId($"stress-group-dekaf-{Guid.NewGuid():N}")
+            .WithClientId("stress-consumer-raw-dekaf")
+            .WithGroupId($"stress-group-raw-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForHighThroughput()
             .BuildAsync(cancellationToken);
@@ -60,7 +68,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
-        Console.WriteLine($"  Running Dekaf consumer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Running Dekaf consumer-raw stress test for {options.DurationMinutes} minutes...");
         throughput.Start();
 
         var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
@@ -69,7 +77,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         {
             await foreach (var record in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
             {
-                throughput.RecordMessage(record.Value?.Length ?? 0);
+                throughput.RecordMessage(record.Value.Length);
             }
         }
         catch (OperationCanceledException)
