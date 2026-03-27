@@ -168,6 +168,8 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         if (_connectionsPerBroker <= 1)
         {
+            // Graceful degradation: when only one connection per broker is configured,
+            // fall back to the single-connection path, silently ignoring the requested index.
             return await GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
         }
 

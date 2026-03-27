@@ -865,7 +865,10 @@ public class PrefetchPipelineRunnerTests
         var fetchPosition = 0L;
         var positionsReadByFetch = new ConcurrentDictionary<int, long>();
         var fetchCount = 0;
-        var targetFetchCount = pipelineDepth * 2; // Enough iterations to exercise the pipeline
+        // Fixed target: throughput is 2 fetches/iteration regardless of pipelineDepth
+        // (PR #648's "one eager per iteration" rule caps in-flight queue at 1).
+        // Scaling with pipelineDepth caused timeouts on slow CI runners for high depths.
+        var targetFetchCount = 8;
         CancellationTokenSource? testCts = null;
 
         var runner = CreateRunner(

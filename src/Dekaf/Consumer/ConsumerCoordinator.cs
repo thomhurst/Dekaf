@@ -237,7 +237,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(brokers[0].NodeId, 1, cancellationToken)
                 .ConfigureAwait(false);
 
             // Use negotiated API version
@@ -309,7 +309,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask JoinGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, 1, cancellationToken)
             .ConfigureAwait(false);
 
         // Build subscription metadata
@@ -380,7 +380,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask<SyncGroupResult> SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, 1, cancellationToken)
             .ConfigureAwait(false);
 
         // Only leader sends assignments
@@ -545,7 +545,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask SendHeartbeatAsync(CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, 1, cancellationToken)
             .ConfigureAwait(false);
 
         var request = new HeartbeatRequest
@@ -590,7 +590,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, 1, cancellationToken)
                 .ConfigureAwait(false);
 
             // Group offsets by topic using pooled dictionary to avoid allocations
@@ -683,7 +683,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _fetchLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, 1, cancellationToken)
                 .ConfigureAwait(false);
 
             // Group partitions by topic using pooled dictionary to avoid allocations
@@ -1000,7 +1000,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         try
         {
-            var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, 1, cancellationToken)
                 .ConfigureAwait(false);
 
             // Get negotiated API version

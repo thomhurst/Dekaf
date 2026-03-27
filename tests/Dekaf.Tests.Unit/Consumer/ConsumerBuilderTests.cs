@@ -137,4 +137,48 @@ public sealed class ConsumerBuilderTests
         await Assert.That(consumer.Subscription).Contains("topic-a");
         await Assert.That(consumer.Subscription).Contains("topic-b");
     }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_ValidValues_ReturnsBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var result1 = builder.WithConnectionsPerBroker(1);
+        await Assert.That(result1).IsSameReferenceAs(builder);
+
+        var result2 = builder.WithConnectionsPerBroker(2);
+        await Assert.That(result2).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_Zero_Throws()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.WithConnectionsPerBroker(0);
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_Negative_Throws()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.WithConnectionsPerBroker(-1);
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_AboveMax_Throws()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.WithConnectionsPerBroker(3);
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
 }

@@ -167,15 +167,16 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// (partition % connectionCount) to preserve sequence ordering.
     /// </summary>
     /// <param name="connectionsPerBroker">
-    /// Number of connections per broker. Must be at least 1.
+    /// Number of connections per broker. Must be between 1 and 32.
     /// Cannot be greater than 1 when TransactionalId is set.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 32.
     /// </exception>
     public ProducerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
@@ -799,6 +800,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
     private int _prefetchPipelineDepth = 3;
+    private int _connectionsPerBroker = 2;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1236,6 +1238,32 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the number of TCP connections per broker.
+    /// Multiple connections reduce head-of-line blocking where heartbeats and offset commits
+    /// contend with fetch requests for the write lock on a single connection.
+    /// Default is 2. With the default, fetch requests use connection index 0 and coordination
+    /// traffic (heartbeats, offset commits, JoinGroup/SyncGroup) uses connection index 1,
+    /// providing guaranteed isolation between data-plane and control-plane operations.
+    /// Unlike the producer, the consumer does not use adaptive connection scaling;
+    /// this is a fixed connection count per broker.
+    /// </summary>
+    /// <param name="connectionsPerBroker">
+    /// The number of connections per broker. Must be 1 or 2.
+    /// The consumer uses one connection for fetch requests and one for coordination traffic.
+    /// Values above 2 would create unused connections.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 2.
+    /// </exception>
+    public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, ConsumerOptions.MaxConnectionsPerBroker);
+        _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -1417,7 +1445,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
-            PrefetchPipelineDepth = _prefetchPipelineDepth
+            PrefetchPipelineDepth = _prefetchPipelineDepth,
+            ConnectionsPerBroker = _connectionsPerBroker
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
