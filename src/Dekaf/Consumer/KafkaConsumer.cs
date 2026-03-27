@@ -710,11 +710,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 if (prefetchEnabled)
                 {
-                    // Try to read from prefetch channel
+                    // Try to read from prefetch channel, draining all available items
                     if (_prefetchChannel.Reader.TryRead(out var prefetched))
                     {
                         _pendingFetches.Enqueue(prefetched);
                         TrackPrefetchedBytes(prefetched, release: true);
+
+                        // Drain any additional ready items to batch processing
+                        // (e.g., 6 partitions produce 6 items per FetchResponse)
+                        while (_prefetchChannel.Reader.TryRead(out var additional))
+                        {
+                            _pendingFetches.Enqueue(additional);
+                            TrackPrefetchedBytes(additional, release: true);
+                        }
                     }
                     else
                     {
@@ -741,6 +749,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 {
                                     _pendingFetches.Enqueue(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
+
+                                    // Drain any additional ready items to batch processing
+                                    while (_prefetchChannel.Reader.TryRead(out var additional))
+                                    {
+                                        _pendingFetches.Enqueue(additional);
+                                        TrackPrefetchedBytes(additional, release: true);
+                                    }
                                 }
                                 else
                                 {
