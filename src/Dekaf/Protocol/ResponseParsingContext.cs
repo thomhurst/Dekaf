@@ -74,7 +74,9 @@ internal static class ResponseParsingContext
         if (state is null || !state.MemoryUsed || state.PooledMemory is null)
             return null;
 
-        return state.PooledMemory;
+        var memory = state.PooledMemory;
+        state.PooledMemory = null; // Prevent double-take
+        return memory;
     }
 
     /// <summary>

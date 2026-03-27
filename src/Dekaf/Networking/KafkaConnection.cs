@@ -139,7 +139,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
-    private int _connecting;
+    private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
     private SaslSessionState? _saslSessionState;
@@ -235,13 +235,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (IsConnected)
             return;
 
-        if (Interlocked.CompareExchange(ref _connecting, 1, 0) != 0)
-            throw new InvalidOperationException("ConnectAsync is already in progress.");
-
+        await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Re-check after acquiring the guard in case another thread completed between
-            // the first IsConnected check and the Interlocked gate.
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+
+            // Another caller completed connection while we waited
             if (IsConnected)
                 return;
 
@@ -249,7 +249,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            Volatile.Write(ref _connecting, 0);
+            _connectLock.Release();
         }
     }
 
@@ -1747,6 +1747,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
+        _connectLock.Dispose();
         _writeLock.Dispose();
         _timeoutCtsPool.Clear();
         _ownedTokenProvider?.Dispose();
