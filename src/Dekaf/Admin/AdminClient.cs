@@ -1765,7 +1765,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithBootstrapServers(params string[] servers)
     {
-        _bootstrapServers = servers;
+        _bootstrapServers = [..servers];
         return this;
     }
 

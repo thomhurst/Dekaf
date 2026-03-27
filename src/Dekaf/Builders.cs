@@ -64,7 +64,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
-        _bootstrapServers = servers;
+        _bootstrapServers = [..servers];
         return this;
     }
 
@@ -808,7 +808,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
-        _bootstrapServers = servers;
+        _bootstrapServers = [..servers];
         return this;
     }
 

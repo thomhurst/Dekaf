@@ -141,6 +141,23 @@ public sealed class ProducerBuilderEdgeCaseTests
         await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
     }
 
+    [Test]
+    public async Task WithBootstrapServers_ParamsOverload_ArrayMutationAfterBuild_DoesNotAffectClient()
+    {
+        var servers = new[] { "broker1:9092", "broker2:9092" };
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(servers);
+
+        await using var producer = builder.Build();
+
+        // Mutate the original array after Build()
+        servers[0] = "evil:1234";
+
+        var options = GetProducerOptions(producer);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+    }
+
     private static ProducerOptions GetProducerOptions<TKey, TValue>(IKafkaProducer<TKey, TValue> producer)
     {
         var field = producer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
@@ -271,6 +288,23 @@ public sealed class ConsumerBuilderEdgeCaseTests
         // The first consumer's options should be unchanged
         var options = GetConsumerOptions(first);
         await Assert.That(options.BootstrapServers.Count).IsEqualTo(2);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+    }
+
+    [Test]
+    public async Task WithBootstrapServers_ParamsOverload_ArrayMutationAfterBuild_DoesNotAffectClient()
+    {
+        var servers = new[] { "broker1:9092", "broker2:9092" };
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(servers);
+
+        await using var consumer = builder.Build();
+
+        // Mutate the original array after Build()
+        servers[0] = "evil:1234";
+
+        var options = GetConsumerOptions(consumer);
         await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
         await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
     }
