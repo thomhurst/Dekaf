@@ -234,7 +234,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             throw new KafkaException(
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw new KafkaException(
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
@@ -389,12 +389,14 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             // Acquire _scaleLock to protect the array write against concurrent
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.
+            bool stored = false;
             await _scaleLock.WaitAsync(token).ConfigureAwait(false);
             try
             {
                 if (_connectionGroupsById.TryGetValue(brokerId, out var connections) && index < connections.Length)
                 {
                     connections[index] = connection;
+                    stored = true;
                 }
             }
             finally
@@ -402,9 +404,14 @@ public sealed partial class ConnectionPool : IConnectionPool
                 _scaleLock.Release();
             }
 
+            // If the index is now out of bounds (shrink happened concurrently),
+            // dispose the orphaned connection to avoid leaking TCP handles.
+            if (!stored)
+                await connection.DisposeAsync().ConfigureAwait(false);
+
             return connection;
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw new KafkaException(
                 $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
@@ -495,7 +502,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             return connection;
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             // Remove failed connection attempt from cache to allow retry
             _connectionCreationTasks.TryRemove(endpoint, out _);
@@ -650,9 +657,11 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionCreationTasks.Clear();
             _connectionGroupsById.Clear();
 
-            // Don't dispose semaphores — concurrent waiters may still hold references.
-            // Let GC handle cleanup once all references are dropped.
+            // All connections are closed and _disposed is set, so no new waiters can arrive.
+            // Dispose semaphores before clearing to release OS handles promptly.
+            foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
             _connectionReplacementLocks.Clear();
+            foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
             _groupCreationLocks.Clear();
 
             LogAllConnectionsClosed();
