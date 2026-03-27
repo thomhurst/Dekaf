@@ -881,4 +881,53 @@ public class PrefetchPipelineRunnerTests
     }
 
     #endregion
+
+    #region Scenario: CalculatePrefetchMaxBytes auto-scaling
+
+    [Test]
+    public async Task CalculatePrefetchMaxBytes_SinglePartition_UsesConfiguredMax()
+    {
+        // 1 partition × 1MB × (2+1) = 3MB < 64MB configured → configured wins
+        var result = KafkaConsumer<string, string>.CalculatePrefetchMaxBytes(
+            queuedMaxMessagesKbytes: 65536, partitionCount: 1, maxPartitionFetchBytes: 1_048_576,
+            fetchMaxBytes: 52_428_800, pipelineDepth: 2);
+
+        await Assert.That(result).IsEqualTo(65536L * 1024);
+    }
+
+    [Test]
+    public async Task CalculatePrefetchMaxBytes_MultiPartition_AutoScalesAboveConfigured()
+    {
+        // 6 partitions × 4MB × (2+1) = 72MB > 64MB configured → auto-scaled wins
+        var result = KafkaConsumer<string, string>.CalculatePrefetchMaxBytes(
+            queuedMaxMessagesKbytes: 65536, partitionCount: 6, maxPartitionFetchBytes: 4_194_304,
+            fetchMaxBytes: 104_857_600, pipelineDepth: 2);
+
+        await Assert.That(result).IsEqualTo(72L * 1024 * 1024);
+    }
+
+    [Test]
+    public async Task CalculatePrefetchMaxBytes_ManyPartitions_CappedByFetchMaxBytes()
+    {
+        // 100 partitions × 1MB = 100MB, but FetchMaxBytes = 50MB caps it
+        // 50MB × (2+1) = 150MB > 64MB → auto-scaled wins, but capped
+        var result = KafkaConsumer<string, string>.CalculatePrefetchMaxBytes(
+            queuedMaxMessagesKbytes: 65536, partitionCount: 100, maxPartitionFetchBytes: 1_048_576,
+            fetchMaxBytes: 52_428_800, pipelineDepth: 2);
+
+        await Assert.That(result).IsEqualTo(52_428_800L * 3);
+    }
+
+    [Test]
+    public async Task CalculatePrefetchMaxBytes_ZeroPartitions_UsesConfiguredMax()
+    {
+        // 0 partitions → minRequired = 0 → configured wins
+        var result = KafkaConsumer<string, string>.CalculatePrefetchMaxBytes(
+            queuedMaxMessagesKbytes: 65536, partitionCount: 0, maxPartitionFetchBytes: 4_194_304,
+            fetchMaxBytes: 104_857_600, pipelineDepth: 2);
+
+        await Assert.That(result).IsEqualTo(65536L * 1024);
+    }
+
+    #endregion
 }
