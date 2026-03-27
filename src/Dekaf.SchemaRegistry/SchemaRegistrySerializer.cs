@@ -38,8 +38,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly bool _autoRegisterSchemas;
     private readonly bool _ownsClient;
 
-    private int _cachedSchemaId = -1;
-    private string? _cachedSubject;
+    private sealed record CachedSchema(string Subject, int SchemaId);
+    private volatile CachedSchema? _cachedSchema;
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -116,9 +116,10 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
     private int GetSchemaIdSync(string subject, Schema schema)
     {
-        // Use cached ID if subject matches
-        if (_cachedSchemaId >= 0 && _cachedSubject == subject)
-            return _cachedSchemaId;
+        // Use cached ID if subject matches (single volatile read ensures atomicity)
+        var cached = _cachedSchema;
+        if (cached is not null && cached.Subject == subject)
+            return cached.SchemaId;
 
         // Synchronously get/register schema (blocking with timeout to prevent indefinite hang)
         var task = _autoRegisterSchemas
@@ -128,8 +129,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         // Add timeout to prevent indefinite blocking in UI/sync context scenarios
         var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 
-        _cachedSchemaId = id;
-        _cachedSubject = subject;
+        _cachedSchema = new CachedSchema(subject, id);
 
         return id;
     }
