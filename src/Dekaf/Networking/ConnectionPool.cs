@@ -664,11 +664,13 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionCreationTasks.Clear();
             _connectionGroupsById.Clear();
 
-            // All connections are closed and _disposed is set, so no new waiters can arrive.
-            // Dispose semaphores before clearing to release OS handles promptly.
-            foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
+            // Clear dictionaries but do NOT dispose semaphores here.
+            // CloseAllAsync can be called independently (not via DisposeAsync),
+            // and a concurrent caller could race into ReplaceConnectionInGroupAsync
+            // or CreateConnectionGroupAsync, calling WaitAsync on a semaphore that
+            // was just disposed. Semaphore disposal is deferred to DisposeAsync,
+            // where _disposed is set first to prevent new waiters.
             _connectionReplacementLocks.Clear();
-            foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
             _groupCreationLocks.Clear();
 
             LogAllConnectionsClosed();
@@ -685,6 +687,12 @@ public sealed partial class ConnectionPool : IConnectionPool
             return;
 
         await CloseAllAsync().ConfigureAwait(false);
+
+        // _disposed is set above, so no new waiters can call WaitAsync on these semaphores.
+        // Safe to dispose them now to release OS handles promptly.
+        foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
+        foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
+
         _disposeLock.Dispose();
         _scaleLock.Dispose();
     }
