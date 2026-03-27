@@ -2660,7 +2660,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // Each broker task gets its own FetchRequestPartition objects so that
             // concurrent calls cannot mutate offsets visible to another task.
             // This allocates per fetch cycle (per-batch), not per-message.
-            return BuildResultFromCache(cachedDict);
+            return BuildFetchResult(cachedDict, _fetchPositions);
         }
 
         // Cache miss: build fresh structure with TopicPartition stored alongside
@@ -2678,20 +2678,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 new FetchRequestPartition
                 {
                     Partition = p.Partition,
-                    FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
+                    FetchOffset = 0, // Placeholder; BuildFetchResult reads fresh from _fetchPositions
                     PartitionMaxBytes = _options.MaxPartitionFetchBytes
                 },
                 p // Store TopicPartition for reuse in hot path
             ));
         }
 
-        // Shared-reference invariant: BuildResultFromDict extracts FetchRequestPartition
-        // objects that are the same instances we store in _cachedTopicPartitions below.
-        // This is safe because cache hits (the concurrent path) always create fresh copies
-        // via BuildResultFromCache, so no other broker task will ever read or mutate these
-        // instances. The cache-miss caller's result is already serialized onto the wire
-        // before any concurrent cache-hit caller reads the cached templates to copy from.
-        var result = BuildResultFromDict(topicPartitions);
+        // Build result with fresh copies so the caller owns its own FetchRequestPartition
+        // instances. The cached dict stores templates; each caller gets independent copies
+        // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
+        var result = BuildFetchResult(topicPartitions, _fetchPositions);
 
         // Update cache (first writer wins to avoid overwriting fresher data)
         lock (_fetchCacheLock)
@@ -2707,17 +2704,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Builds a fresh <see cref="FetchRequestTopic"/> list from the cached partition structure.
-    /// Each call creates new <see cref="FetchRequestPartition"/> objects with snapshot offsets,
-    /// so concurrent broker tasks cannot observe each other's offset mutations.
+    /// Builds a fresh <see cref="FetchRequestTopic"/> list from a partition template dictionary.
+    /// Works for both the shared cache and freshly-built dictionaries (cache-miss path) —
+    /// in both cases, each call creates new <see cref="FetchRequestPartition"/> objects with
+    /// snapshot offsets from <paramref name="fetchPositions"/>, so concurrent callers
+    /// cannot observe each other's offset values.
     /// Allocation is per fetch cycle (per-batch), not per-message.
     /// </summary>
-    private List<FetchRequestTopic> BuildResultFromCache(
-        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> cachedDict)
+    internal static List<FetchRequestTopic> BuildFetchResult(
+        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
+        ConcurrentDictionary<TopicPartition, long> fetchPositions)
     {
-        var result = new List<FetchRequestTopic>(cachedDict.Count);
+        var result = new List<FetchRequestTopic>(templateDict.Count);
 
-        foreach (var kvp in cachedDict)
+        foreach (var kvp in templateDict)
         {
             var cachedPartitions = kvp.Value;
             var partitionList = new List<FetchRequestPartition>(cachedPartitions.Count);
@@ -2727,7 +2727,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 partitionList.Add(new FetchRequestPartition
                 {
                     Partition = template.Partition,
-                    FetchOffset = _fetchPositions.GetValueOrDefault(tp, 0),
+                    FetchOffset = fetchPositions.GetValueOrDefault(tp, 0),
                     CurrentLeaderEpoch = template.CurrentLeaderEpoch,
                     LastFetchedEpoch = template.LastFetchedEpoch,
                     LogStartOffset = template.LogStartOffset,
@@ -2735,31 +2735,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 });
             }
 
-            result.Add(new FetchRequestTopic
-            {
-                Topic = kvp.Key,
-                Partitions = partitionList
-            });
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Builds a <see cref="FetchRequestTopic"/> list from a dictionary of partitions.
-    /// </summary>
-    private static List<FetchRequestTopic> BuildResultFromDict(
-        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> dict)
-    {
-        var result = new List<FetchRequestTopic>(dict.Count);
-
-        foreach (var kvp in dict)
-        {
-            var partitionList = new List<FetchRequestPartition>(kvp.Value.Count);
-            foreach (var item in kvp.Value)
-            {
-                partitionList.Add(item.Partition);
-            }
             result.Add(new FetchRequestTopic
             {
                 Topic = kvp.Key,
