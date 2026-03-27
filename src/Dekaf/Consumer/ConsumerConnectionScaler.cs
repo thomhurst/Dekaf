@@ -10,7 +10,6 @@ namespace Dekaf.Consumer;
 /// </summary>
 internal sealed class ConsumerConnectionScaler
 {
-    private const double ScaleDownUtilizationThreshold = 0.3;
     private static readonly TimeSpan ScaleUpSustained = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ScaleDownSustained = TimeSpan.FromSeconds(120);
     private static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(5);
@@ -53,24 +52,26 @@ internal sealed class ConsumerConnectionScaler
     {
         var now = GetTimestamp();
         var isSaturated = inFlightCount >= pipelineDepth;
-        var utilization = pipelineDepth > 0 ? (double)inFlightCount / pipelineDepth : 0;
 
         if (isSaturated)
         {
             if (_saturationStartTimestamp == 0)
                 _saturationStartTimestamp = now;
         }
-        else
+        else if (_saturationStartTimestamp != 0)
         {
             _saturationStartTimestamp = 0;
         }
 
-        if (utilization < ScaleDownUtilizationThreshold)
+        // Integer comparison equivalent to: (inFlightCount / pipelineDepth) < 0.3
+        var isLowUtilization = pipelineDepth > 0 && inFlightCount * 10 < pipelineDepth * 3;
+
+        if (isLowUtilization)
         {
             if (_lowUtilizationStartTimestamp == 0)
                 _lowUtilizationStartTimestamp = now;
         }
-        else
+        else if (_lowUtilizationStartTimestamp != 0)
         {
             _lowUtilizationStartTimestamp = 0;
         }
