@@ -865,7 +865,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         {
                             throw;
                         }
-                        catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException)
+                        catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException or InvalidOperationException)
                         {
                             // Protocol-layer data errors from corrupted/truncated wire data should not
                             // kill the consumer. User-facing exceptions (deserializer errors, etc.)

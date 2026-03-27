@@ -220,6 +220,48 @@ public sealed class ConsumeAsyncRecoveryTests
 
     #endregion
 
+    #region Test 1b: Consumer recovers from malformed varint (InvalidOperationException)
+
+    [Test]
+    public async Task ConsumeAsync_InvalidOperationException_ContinuesWithNextFetch()
+    {
+        // Arrange: first fetch throws InvalidOperationException (malformed varint),
+        // second fetch has valid records. The consumer should recover.
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 1700000000000L,
+            Attributes = 0,
+            Records = new InvalidOperationThrowingRecordList()
+        };
+        var faultingFetch = new PendingFetchData(Topic, Partition, [batch]);
+        var goodFetch = new PendingFetchData(Topic, Partition,
+            [CreateBatch(100, CreateRecord(0, "k1", "v1"), CreateRecord(1, "k2", "v2"))]);
+
+        await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
+
+        using var cts = new CancellationTokenSource();
+        var results = new List<ConsumeResult<string, string>>();
+
+        // Act
+        await foreach (var result in consumer.ConsumeAsync(cts.Token))
+        {
+            results.Add(result);
+            if (results.Count >= 2)
+            {
+                cts.Cancel();
+                break;
+            }
+        }
+
+        // Assert: the faulted fetch was skipped, both records from the good fetch were yielded
+        await Assert.That(results.Count).IsEqualTo(2);
+        await Assert.That(results[0].Key).IsEqualTo("k1");
+        await Assert.That(results[1].Key).IsEqualTo("k2");
+    }
+
+    #endregion
+
     #region Test 2: _positions retains last good offset
 
     [Test]
@@ -420,6 +462,26 @@ public sealed class ConsumeAsyncRecoveryTests
         {
             for (int i = 0; i < Count; i++)
                 yield return this[i];
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    /// <summary>
+    /// An IReadOnlyList&lt;Record&gt; that throws InvalidOperationException on first access.
+    /// Simulates a malformed varint in a record batch that causes
+    /// "Malformed variable-length integer" during parsing.
+    /// </summary>
+    private sealed class InvalidOperationThrowingRecordList : IReadOnlyList<Record>
+    {
+        public int Count => 1;
+
+        public Record this[int index] =>
+            throw new InvalidOperationException("Malformed variable-length integer");
+
+        public IEnumerator<Record> GetEnumerator()
+        {
+            yield return this[0];
         }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
