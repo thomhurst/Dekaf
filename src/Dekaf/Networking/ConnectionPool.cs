@@ -16,6 +16,13 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly int _connectionsPerBroker;
     private readonly ResponseBufferPool _responseBufferPool;
 
+    /// <summary>
+    /// Optional factory for creating connections, used by tests to inject fakes.
+    /// When null, the default KafkaConnection constructor is used.
+    /// Parameters: brokerId, host, port, index, cancellationToken.
+    /// </summary>
+    private readonly Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>>? _connectionFactory;
+
     // Default BufferMemory if not configured (256 MB)
     private const ulong DefaultBufferMemory = 268435456;
 
@@ -63,6 +70,25 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
+    }
+
+    /// <summary>
+    /// Test-only constructor that accepts a connection factory delegate,
+    /// allowing tests to inject fake connections without real TCP I/O.
+    /// </summary>
+    internal ConnectionPool(
+        string? clientId,
+        ConnectionOptions? connectionOptions,
+        int connectionsPerBroker,
+        Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>> connectionFactory)
+    {
+        _clientId = clientId;
+        _connectionOptions = connectionOptions ?? new ConnectionOptions();
+        _loggerFactory = null;
+        _logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
+        _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
+        _responseBufferPool = ResponseBufferPool.Default;
+        _connectionFactory = connectionFactory;
     }
 
     public void RegisterBroker(int brokerId, string host, int port)
@@ -431,6 +457,13 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
     {
+        if (_connectionFactory is not null)
+        {
+            var factoryConnection = await _connectionFactory(brokerId, host, port, index, cancellationToken).ConfigureAwait(false);
+            LogCreatedConnectionForGroup(index, brokerId, host, port);
+            return factoryConnection;
+        }
+
         var connection = new KafkaConnection(
             brokerId, host, port,
             _clientId, _connectionOptions,
