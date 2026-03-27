@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 
@@ -67,6 +68,50 @@ internal static class StressTestHelpers
             catch (OperationCanceledException)
             {
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs a consume-then-retry loop that records message sizes to the throughput tracker.
+    /// On transient errors, logs and retries after a brief backoff. The backoff respects
+    /// <paramref name="cancellationToken"/> so it does not delay test shutdown.
+    /// </summary>
+    internal static async Task RunConsumeLoopAsync<TKey, TValue>(
+        IKafkaConsumer<TKey, TValue> consumer,
+        Func<ConsumeResult<TKey, TValue>, int> getMessageSize,
+        ThroughputTracker throughput,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await foreach (var record in consumer.ConsumeAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throughput.RecordMessage(getMessageSize(record));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected — duration timer expired
+                break;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  Consumer error: {ex.GetType().Name}: {ex.Message}");
+                throughput.RecordError();
+
+                // Brief delay to prevent tight error loops on persistent failures.
+                // Uses the cancellation token so shutdown is not delayed by the backoff.
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
     }
