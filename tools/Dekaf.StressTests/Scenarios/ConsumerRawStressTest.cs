@@ -32,7 +32,9 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
             .WithBatchSize(options.BatchSize)
             .BuildAsync(cancellationToken);
 
-        // Pre-seed messages before starting consumer measurement
+        // Pre-seed messages before starting consumer measurement.
+        // Note: Program.cs also seeds via SeedConsumerTopicAsync when running --scenario all.
+        // Both seeds are intentional — this ensures enough backlog regardless of invocation path.
         Console.WriteLine("  Pre-seeding messages for consumer-raw test...");
         const int preseedCount = 500_000;
         for (var i = 0; i < preseedCount; i++)

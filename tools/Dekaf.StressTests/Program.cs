@@ -187,7 +187,7 @@ public static class Program
             for (var i = 0; i < batchSize; i++)
             {
                 var messageIndex = batch * batchSize + i;
-                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue);
+                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue).ConfigureAwait(false);
             }
 
             // Flush every batch to avoid overwhelming the buffer with backpressure

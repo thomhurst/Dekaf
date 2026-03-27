@@ -6,7 +6,7 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal static class StressTestHelpers
 {
-    internal static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
+    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
 
     private static string[] CreatePreAllocatedKeys(int count)
     {
