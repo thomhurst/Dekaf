@@ -29,7 +29,7 @@ internal static class StressTestHelpers
     {
         var messageIndex = 0L;
 
-        await Task.Yield(); // Ensure we're on a background thread
+        await Task.Yield();
 
         while (!cancellationToken.IsCancellationRequested)
         {
