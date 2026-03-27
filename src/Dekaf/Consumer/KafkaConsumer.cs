@@ -873,6 +873,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             break;
                         }
 
+                        // Update consumed position per-message so GetPosition()/CommitAsync()
+                        // reflect the latest message the app has seen, even mid-batch.
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
                         yield return nextResult;
                     }
 
@@ -880,20 +884,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    // Batch-level position updates (once per partition-fetch, not per message).
-                    // _positions tracks what the app has consumed (for GetPosition/CommitAsync).
+                    // Batch-level fetch position update (once per partition-fetch, not per message).
                     // _fetchPositions controls where the next fetch request starts from.
                     // In prefetch mode, the prefetch thread already advances _fetchPositions
                     // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
                     // since _fetchPositions was set at prefetch time before the fault occurred.
-                    if (pending.LastYieldedOffset >= 0)
+                    if (pending.LastYieldedOffset >= 0 && !_prefetchEnabled)
                     {
-                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-
-                        if (!_prefetchEnabled)
-                        {
-                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-                        }
+                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
                     }
 
                     // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
