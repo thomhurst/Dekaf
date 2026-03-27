@@ -80,4 +80,15 @@ public class ConsumerConnectionScalingTests
 
         await Assert.That(builder).IsNotNull();
     }
+
+    [Test]
+    [Arguments(1, 0)]  // 1 connection: coordination uses 0 (shared)
+    [Arguments(2, 1)]  // 2 connections: coordination uses 1
+    [Arguments(3, 2)]  // 3 connections: coordination uses 2
+    [Arguments(4, 3)]  // 4 connections: coordination uses 3
+    public async Task CoordinationConnectionIndex_IsLastIndex(int connectionsPerBroker, int expectedIndex)
+    {
+        var result = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionsPerBroker);
+        await Assert.That(result).IsEqualTo(expectedIndex);
+    }
 }
