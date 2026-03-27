@@ -291,6 +291,67 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(position).IsEqualTo(51L);
     }
 
+    [Test]
+    public async Task GetPosition_AfterPartialBatchConsumed_ReflectsLastYieldedOffset()
+    {
+        // Arrange: a single fetch with 5 records at offsets 20..24.
+        // We consume 3 of the 5 and then check GetPosition mid-batch.
+        var fetch = new PendingFetchData(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "1"),
+                CreateRecord(1, "b", "2"),
+                CreateRecord(2, "c", "3"),
+                CreateRecord(3, "d", "4"),
+                CreateRecord(4, "e", "5"))
+        ]);
+
+        await using var consumer = CreateConsumerWithPendingFetches(null, fetch);
+
+        using var cts = new CancellationTokenSource();
+        var results = new List<ConsumeResult<string, string>>();
+        var tp = new TopicPartition(Topic, Partition);
+
+        // Act: consume exactly 3 records, checking position after each yield
+        long? positionAfterFirst = null;
+        long? positionAfterSecond = null;
+        long? positionAfterThird = null;
+
+        await foreach (var result in consumer.ConsumeAsync(cts.Token))
+        {
+            results.Add(result);
+
+            switch (results.Count)
+            {
+                case 1:
+                    positionAfterFirst = consumer.GetPosition(tp);
+                    break;
+                case 2:
+                    positionAfterSecond = consumer.GetPosition(tp);
+                    break;
+                case 3:
+                    positionAfterThird = consumer.GetPosition(tp);
+                    cts.Cancel();
+                    break;
+            }
+
+            if (cts.IsCancellationRequested)
+                break;
+        }
+
+        // Assert: each position = last yielded offset + 1
+        // After offset 20 -> position 21, after 21 -> 22, after 22 -> 23
+        await Assert.That(positionAfterFirst).IsEqualTo(21L);
+        await Assert.That(positionAfterSecond).IsEqualTo(22L);
+        await Assert.That(positionAfterThird).IsEqualTo(23L);
+
+        // Verify the records themselves
+        await Assert.That(results.Count).IsEqualTo(3);
+        await Assert.That(results[0].Offset).IsEqualTo(20L);
+        await Assert.That(results[1].Offset).IsEqualTo(21L);
+        await Assert.That(results[2].Offset).IsEqualTo(22L);
+    }
+
     #endregion
 
     #region Test 3: OperationCanceledException is not swallowed
