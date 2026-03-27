@@ -1704,12 +1704,14 @@ public sealed partial class KafkaConnection : IKafkaConnection
             {
                 await _receiveTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // The receive loop did not exit within 5 seconds (e.g., blocked on ReadAsync).
                 // Complete the pipe reader to force ReadAsync to return with IsCompleted=true,
                 // then wait briefly for the loop to observe it and exit gracefully. This prevents
                 // a race where the pipe is disposed while the receive loop still holds a ReadResult.
+                LogReceiveLoopShutdownFailed(ex, BrokerId);
+
                 if (_reader is not null)
                 {
                     await _reader.CompleteAsync().ConfigureAwait(false);
@@ -1718,11 +1720,15 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     {
                         await _receiveTask.WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
                     }
-                    catch
+                    catch (Exception innerEx) when (innerEx is not OperationCanceledException)
                     {
                         // Best effort — proceed with disposal regardless.
+                        LogReceiveLoopShutdownRetryFailed(innerEx, BrokerId);
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
 
@@ -1867,6 +1873,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing connection to broker {BrokerId}: {PendingRequestCount} pending requests")]
     private partial void LogConnectionDisposing(int brokerId, int pendingRequestCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit within timeout during disposal")]
+    private partial void LogReceiveLoopShutdownFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit after pipe reader completion during disposal")]
+    private partial void LogReceiveLoopShutdownRetryFailed(Exception ex, int brokerId);
 
     #endregion
 }
