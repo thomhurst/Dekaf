@@ -903,7 +903,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var runner = new PrefetchPipelineRunner(
             ensureAssignment: EnsureAssignmentAsync,
             getAssignmentCount: () => _assignmentSnapshot.Count,
-            getMaxBytes: () => (long)_options.QueuedMaxMessagesKbytes * 1024,
+            getMaxBytes: () =>
+            {
+                var configuredMax = (long)_options.QueuedMaxMessagesKbytes * 1024;
+                // Ensure enough headroom for pipeline depth: at least (pipelineDepth + 1) full fetch responses
+                // Each fetch response can be up to partitionCount * maxPartitionFetchBytes
+                var partitionCount = _assignmentSnapshot.Count;
+                var fetchResponseSize = (long)partitionCount * _options.MaxPartitionFetchBytes;
+                var minRequired = fetchResponseSize * (_options.PrefetchPipelineDepth + 1);
+                return Math.Max(configuredMax, minRequired);
+            },
             getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
             prefetchRecords: PrefetchRecordsAsync,
             waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
