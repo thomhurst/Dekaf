@@ -513,15 +513,9 @@ public sealed partial class ConnectionPool : IConnectionPool
         int brokerId,
         string host,
         int port,
-        CancellationToken cancellationToken,
-        int retryCount = 0)
+        CancellationToken cancellationToken)
     {
         const int MaxRetries = 3;
-
-        if (retryCount >= MaxRetries)
-        {
-            throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
-        }
 
         var endpoint = new EndpointKey(host, port);
 
@@ -541,40 +535,43 @@ public sealed partial class ConnectionPool : IConnectionPool
         await creationLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            // Re-check after acquiring lock: another caller may have already created the connection.
-            if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
+            for (var attempt = 0; attempt < MaxRetries; attempt++)
             {
-                return existing;
-            }
+                // Re-check after acquiring lock: another caller may have already created the connection.
+                if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
+                {
+                    return existing;
+                }
 
-            // Dispose disconnected connection before creating a new one to avoid socket/pipe leaks.
-            if (existing is not null)
-            {
-                _connectionsByEndpoint.TryRemove(endpoint, out _);
-                if (brokerId >= 0)
-                    _connectionsById.TryRemove(brokerId, out _);
+                // Dispose disconnected connection before creating a new one to avoid socket/pipe leaks.
+                if (existing is not null)
+                {
+                    _connectionsByEndpoint.TryRemove(endpoint, out _);
+                    if (brokerId >= 0)
+                        _connectionsById.TryRemove(brokerId, out _);
 
-                try { await existing.DisposeAsync().ConfigureAwait(false); }
-                catch { /* best-effort cleanup */ }
-            }
+                    try { await existing.DisposeAsync().ConfigureAwait(false); }
+                    catch { /* best-effort cleanup */ }
+                }
 
-            var connection = await CreateConnectionAsync(brokerId, host, port, token).ConfigureAwait(false);
+                var connection = await CreateConnectionAsync(brokerId, host, port, token).ConfigureAwait(false);
 
-            // Verify connection is still valid
-            if (!connection.IsConnected)
-            {
+                // Verify connection is still valid
+                if (connection.IsConnected)
+                {
+                    return connection;
+                }
+
+                // Connection failed immediately after creation — clean up and retry
                 _connectionsByEndpoint.TryRemove(endpoint, out _);
                 if (brokerId >= 0)
                     _connectionsById.TryRemove(brokerId, out _);
 
                 try { await connection.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup */ }
-
-                // Recursive retry
-                return await GetOrCreateConnectionAsync(brokerId, host, port, cancellationToken, retryCount + 1).ConfigureAwait(false);
             }
 
-            return connection;
+            throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -595,20 +592,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     {
         var endpoint = new EndpointKey(host, port);
 
-        // Check if there's an existing valid connection (race condition with fast path)
-        if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
-        {
-            return existing;
-        }
-
-        // Remove stale connection if any
-        if (existing is not null)
-        {
-            _connectionsByEndpoint.TryRemove(endpoint, out _);
-            if (brokerId >= 0)
-                _connectionsById.TryRemove(brokerId, out _);
-            await existing.DisposeAsync().ConfigureAwait(false);
-        }
+        // Note: Stale connection cleanup is handled by the caller (GetOrCreateConnectionAsync)
+        // within the creation semaphore, so no duplicate cleanup is needed here.
 
         // Create new connection
         var connection = new KafkaConnection(
@@ -637,7 +622,8 @@ public sealed partial class ConnectionPool : IConnectionPool
         {
             var endpoint = new EndpointKey(connection.Host, connection.Port);
             _connectionsByEndpoint.TryRemove(endpoint, out _);
-            _connectionCreationLocks.TryRemove(endpoint, out _);
+            if (_connectionCreationLocks.TryRemove(endpoint, out var creationSem))
+                creationSem.Dispose();
             await connection.DisposeAsync().ConfigureAwait(false);
             LogRemovedConnection(brokerId);
         }
