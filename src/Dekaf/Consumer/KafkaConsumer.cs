@@ -1015,6 +1015,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// Networking-layer KafkaExceptions (connection timeouts, broker unavailable) have no
     /// ErrorCode and are always transient — the ErrorCode guard excludes them.
     /// </remarks>
+    internal static bool IsFatalPrefetchError(Exception ex) => ex is
+        Errors.AuthenticationException or
+        Errors.AuthorizationException or
+        KafkaException { ErrorCode: not null, IsRetriable: false };
+
     /// <summary>
     /// Calculates the effective prefetch memory budget, auto-scaling above the configured
     /// maximum when the partition count and pipeline depth require more headroom.
@@ -1038,11 +1043,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var minRequired = fetchResponseSize * (pipelineDepth + 1);
         return Math.Max(configuredMax, minRequired);
     }
-
-    internal static bool IsFatalPrefetchError(Exception ex) => ex is
-        Errors.AuthenticationException or
-        Errors.AuthorizationException or
-        KafkaException { ErrorCode: not null, IsRetriable: false };
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
