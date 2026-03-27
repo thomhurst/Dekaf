@@ -859,8 +859,7 @@ public class RecordBatchTests
         originalBatch.Write(buffer);
         var fullBatchBytes = buffer.WrittenSpan.ToArray();
 
-        // Truncate to header + 10 bytes of record data, fill remainder with 0xFF (invalid varint bytes)
-        var truncatedLength = 61 + 10;
+        var truncatedLength = RecordBatch.TotalBatchHeaderSize + 10;
         await Assert.That(fullBatchBytes.Length).IsGreaterThan(truncatedLength);
 
         var combinedBuffer = new byte[fullBatchBytes.Length];

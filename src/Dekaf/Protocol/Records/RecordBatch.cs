@@ -188,12 +188,12 @@ public sealed class RecordBatch : IDisposable
     /// crc(4) + attributes(2) + lastOffsetDelta(4) + baseTimestamp(8) + maxTimestamp(8) +
     /// producerId(8) + producerEpoch(2) + baseSequence(4) + recordCount(4) = 49 bytes.
     /// </summary>
-    private const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
+    internal const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
 
     /// <summary>
     /// Total header size including baseOffset(8) + batchLength(4) + BatchHeaderSize(49) = 61 bytes.
     /// </summary>
-    private const int TotalBatchHeaderSize = 8 + 4 + BatchHeaderSize;
+    internal const int TotalBatchHeaderSize = 8 + 4 + BatchHeaderSize;
 
     // Single thread-local cache consolidating all per-thread buffer state.
     // Reduces 3 separate [ThreadStatic] lookups to 1.
@@ -662,11 +662,7 @@ public sealed class RecordBatch : IDisposable
 
         var recordsLength = batchLength - BatchHeaderSize;
 
-        // When the batch is truncated by fetch response size limits, batchLength reflects the
-        // full (un-truncated) size but less data is actually available. Skip past the truncated
-        // data and signal truncation — FetchResponse catches InsufficientDataException and
-        // skips partial batches. This prevents reading past the partition boundary while
-        // preserving the existing truncation handling behavior.
+        // Batch truncated by fetch size limit — skip remaining data and signal to caller.
         var maxRecordsLength = Math.Max(0, availableBytes - TotalBatchHeaderSize);
         if (recordsLength > maxRecordsLength)
         {
