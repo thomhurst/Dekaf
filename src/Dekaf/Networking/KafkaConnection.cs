@@ -1874,10 +1874,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing connection to broker {BrokerId}: {PendingRequestCount} pending requests")]
     private partial void LogConnectionDisposing(int brokerId, int pendingRequestCount);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit within timeout during disposal")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit within 5s timeout during disposal")]
     private partial void LogReceiveLoopShutdownFailed(Exception ex, int brokerId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit after pipe reader completion during disposal")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit after pipe reader completion (500ms retry) during disposal")]
     private partial void LogReceiveLoopShutdownRetryFailed(Exception ex, int brokerId);
 
     #endregion
