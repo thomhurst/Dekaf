@@ -779,7 +779,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 {
                     var pending = _pendingFetches.Peek();
                     // Compiler requires definite assignment; always assigned inside try before yield.
-                    ConsumeResult<TKey, TValue> nextResult = default;
+                    ConsumeResult<TKey, TValue> nextResult = default!;
 
                     while (true)
                     {

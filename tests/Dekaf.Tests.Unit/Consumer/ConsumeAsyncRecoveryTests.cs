@@ -53,19 +53,22 @@ public sealed class ConsumeAsyncRecoveryTests
 
         // Set _initialized = true via reflection (normally set by InitializeAsync)
         var initializedField = typeof(KafkaConsumer<string, string>)
-            .GetField("_initialized", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            .GetField("_initialized", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_initialized field not found — was it renamed?");
         initializedField.SetValue(consumer, true);
 
         // Pre-populate _fetchPositions so EnsureAssignmentAsync skips network calls
-        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)typeof(KafkaConsumer<string, string>)
-            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(consumer)!;
+        var fetchPositionsField = typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fetchPositions field not found — was it renamed?");
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)fetchPositionsField.GetValue(consumer)!;
         fetchPositions[new TopicPartition(topic, partition)] = 0;
 
         // Inject PendingFetchData into _pendingFetches queue
-        var pendingFetches = (Queue<PendingFetchData>)typeof(KafkaConsumer<string, string>)
-            .GetField("_pendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(consumer)!;
+        var pendingFetchesField = typeof(KafkaConsumer<string, string>)
+            .GetField("_pendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pendingFetches field not found — was it renamed?");
+        var pendingFetches = (Queue<PendingFetchData>)pendingFetchesField.GetValue(consumer)!;
 
         foreach (var fetch in fetches)
             pendingFetches.Enqueue(fetch);
