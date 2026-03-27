@@ -39,7 +39,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly bool _autoRegisterSchemas;
     private readonly bool _ownsClient;
 
-    private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
+    private readonly ConcurrentDictionary<string, Lazy<int>> _schemaIdCache = new();
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -116,7 +116,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
     private int GetSchemaIdSync(string subject, Schema schema)
     {
-        return _schemaIdCache.GetOrAdd(subject, s =>
+        var lazy = _schemaIdCache.GetOrAdd(subject, s => new Lazy<int>(() =>
         {
             // Synchronously get/register schema (blocking with timeout to prevent indefinite hang)
             var task = _autoRegisterSchemas
@@ -126,7 +126,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
             // Add timeout to prevent indefinite blocking in UI/sync context scenarios
             return task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
-        });
+        }));
+        return lazy.Value;
     }
 
     private string GetSubjectName(string topic, bool isKey)
