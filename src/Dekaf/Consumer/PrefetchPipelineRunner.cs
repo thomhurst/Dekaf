@@ -97,9 +97,9 @@ internal sealed class PrefetchPipelineRunner
                     var currentPrefetchedBytes = _getPrefetchedBytes();
                     if (currentPrefetchedBytes >= maxBytes)
                     {
-                        // At memory limit — drain any in-flight fetches before pausing.
-                        // Use safe variant: in-flight fetch errors are cleanup, not fetch attempts.
-                        await DrainAllInFlightSafelyAsync().ConfigureAwait(false);
+                        // At memory limit — pause starting new fetches and wait for the consume
+                        // loop to free memory. In-flight fetches complete naturally; their results
+                        // will be consumed, releasing memory without a costly drain-all restart.
                         _logMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _waitForMemoryAvailable(cancellationToken).ConfigureAwait(false);
                         continue;
@@ -191,7 +191,7 @@ internal sealed class PrefetchPipelineRunner
 
     /// <summary>
     /// Drains all in-flight prefetch tasks, absorbing any exceptions.
-    /// Used in cleanup paths (no-assignment, memory-limit) where in-flight fetch errors
+    /// Used in cleanup paths (no-assignment) where in-flight fetch errors
     /// should not propagate or increment <see cref="ConsecutiveErrors"/>.
     /// </summary>
     private async Task DrainAllInFlightSafelyAsync()
