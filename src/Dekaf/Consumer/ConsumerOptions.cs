@@ -236,6 +236,8 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Maximum total size of prefetched messages in kilobytes.
     /// Limits memory usage when prefetching is enabled. Default is 65536 KB (64 MB).
+    /// This value may be automatically raised at runtime when the pipeline depth and
+    /// assigned partition count require a larger buffer to avoid stalling prefetch.
     /// </summary>
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;
 

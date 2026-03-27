@@ -906,10 +906,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             getMaxBytes: () =>
             {
                 var configuredMax = (long)_options.QueuedMaxMessagesKbytes * 1024;
-                // Ensure enough headroom for pipeline depth: at least (pipelineDepth + 1) full fetch responses
-                // Each fetch response can be up to partitionCount * maxPartitionFetchBytes
+                // Auto-scale: ensure the budget fits (pipelineDepth + 1) full fetch responses.
+                // The +1 provides headroom so the consume loop can drain a completed response
+                // while the pipeline keeps its full depth of in-flight fetches.
+                // A single fetch response is capped at FetchMaxBytes by the broker, even when
+                // partitionCount * MaxPartitionFetchBytes would exceed it.
                 var partitionCount = _assignmentSnapshot.Count;
-                var fetchResponseSize = (long)partitionCount * _options.MaxPartitionFetchBytes;
+                var fetchResponseSize = Math.Min(
+                    (long)partitionCount * _options.MaxPartitionFetchBytes,
+                    _options.FetchMaxBytes);
                 var minRequired = fetchResponseSize * (_options.PrefetchPipelineDepth + 1);
                 return Math.Max(configuredMax, minRequired);
             },
