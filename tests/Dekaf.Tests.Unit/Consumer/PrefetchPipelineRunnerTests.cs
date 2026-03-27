@@ -233,13 +233,16 @@ public class PrefetchPipelineRunnerTests
 
     #endregion
 
-    #region Scenario 4: inFlightPrefetch drained and nulled when memory limit hit
+    #region Scenario 4: inFlightPrefetch preserved when memory limit hit (no drain-all)
 
     [Test]
-    public async Task RunAsync_MemoryLimitHit_DrainsInFlightPrefetch()
+    public async Task RunAsync_MemoryLimitHit_PreservesInFlightPrefetch()
     {
+        // When memory limit is hit, in-flight fetches should NOT be drained.
+        // They complete naturally and are consumed by the consume loop, freeing memory.
         var fetchCount = 0;
         long prefetchedBytes = 0;
+        var memoryLimitPauseCount = 0;
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -264,7 +267,8 @@ public class PrefetchPipelineRunnerTests
             getPrefetchedBytes: () => Interlocked.Read(ref prefetchedBytes),
             waitForMemoryAvailable: ct =>
             {
-                // Cancel to exit the loop after we verify the drain happened
+                Interlocked.Increment(ref memoryLimitPauseCount);
+                // Cancel to exit the loop
                 ct.ThrowIfCancellationRequested();
                 return Task.CompletedTask;
             });
@@ -272,7 +276,9 @@ public class PrefetchPipelineRunnerTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
-        // InFlightPrefetchCount should be 0 after drain at memory limit
+        // Memory limit pause was reached
+        await Assert.That(Volatile.Read(ref memoryLimitPauseCount)).IsGreaterThanOrEqualTo(1);
+        // InFlightPrefetchCount is 0 after RunAsync completes (drained in finally block)
         await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
     }
 
@@ -512,15 +518,15 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
-    public async Task RunAsync_InFlightFetchThrowsDuringMemoryLimitDrain_ExceptionAbsorbed()
+    public async Task RunAsync_InFlightFetchThrowsDuringMemoryLimit_ExceptionObservedInFinally()
     {
-        // When memory limit is hit, the in-flight fetch is drained via the safe path.
-        // If the in-flight fetch throws, the exception should be logged but NOT propagate,
-        // and ConsecutiveErrors should NOT be incremented for the drain.
+        // When memory limit is hit, in-flight fetches are NOT drained (no drain-all).
+        // The failing in-flight fetch stays queued and its exception is observed in the
+        // finally block during shutdown — not during the memory limit pause.
         var fetchCount = 0;
         long prefetchedBytes = 0;
         var loggedErrors = new List<Exception>();
-        var drainHappened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var memoryLimitReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -542,7 +548,7 @@ public class PrefetchPipelineRunnerTests
             getPrefetchedBytes: () => Interlocked.Read(ref prefetchedBytes),
             waitForMemoryAvailable: ct =>
             {
-                drainHappened.TrySetResult();
+                memoryLimitReached.TrySetResult();
                 ct.ThrowIfCancellationRequested();
                 return Task.CompletedTask;
             },
@@ -552,20 +558,20 @@ public class PrefetchPipelineRunnerTests
 
         var runTask = runner.RunAsync(cts.Token);
 
-        // Wait for the drain and memory-limit wait to happen
-        await drainHappened.Task;
+        // Wait for the memory-limit pause
+        await memoryLimitReached.Task;
 
-        // Cancel to stop the loop
+        // Cancel to stop the loop — the finally block will drain the in-flight fetch
         await cts.CancelAsync();
 
         try { await runTask; }
         catch (OperationCanceledException) { /* expected */ }
 
-        // The in-flight exception was logged
+        // The in-flight exception was observed in the finally block
         await Assert.That(loggedErrors).Count().IsEqualTo(1);
         await Assert.That(loggedErrors[0].Message).IsEqualTo("in-flight fetch error");
 
-        // ConsecutiveErrors should be 0 — the drain is a cleanup path, not a fetch attempt
+        // ConsecutiveErrors should be 0 — the exception was observed in cleanup, not the error handler
         await Assert.That(runner.ConsecutiveErrors).IsEqualTo(0);
     }
 
