@@ -342,8 +342,11 @@ public sealed partial class ConnectionPool : IConnectionPool
             // Atomically swap the connection group
             _connectionGroupsById[brokerId] = shrunkGroup;
 
-            // Clean up creation task slot for the removed index
-            // Don't dispose — a concurrent ReplaceConnectionInGroupAsync may be waiting on it
+            // Clean up creation task slot for the removed index.
+            // The semaphore is intentionally NOT disposed here: a concurrent
+            // ReplaceConnectionInGroupAsync may still be holding or waiting on it.
+            // Disposing would cause ObjectDisposedException in that concurrent caller.
+            // The semaphore will be disposed later during CloseAllAsync/DisposeAsync cleanup.
             _connectionReplacementLocks.TryRemove((brokerId, currentGroup.Length - 1), out _);
 
             LogShrunkConnectionGroup(currentGroup.Length, shrunkGroup.Length, brokerId);
@@ -407,7 +410,11 @@ public sealed partial class ConnectionPool : IConnectionPool
             // If the index is now out of bounds (shrink happened concurrently),
             // dispose the orphaned connection to avoid leaking TCP handles.
             if (!stored)
+            {
                 await connection.DisposeAsync().ConfigureAwait(false);
+                throw new KafkaException(
+                    $"Connection slot {index} for broker {brokerId} was removed by a concurrent shrink");
+            }
 
             return connection;
         }
