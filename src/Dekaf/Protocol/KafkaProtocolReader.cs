@@ -883,7 +883,7 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInsufficientData()
     {
-        throw new InvalidOperationException("Insufficient data in buffer");
+        throw new InsufficientDataException();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

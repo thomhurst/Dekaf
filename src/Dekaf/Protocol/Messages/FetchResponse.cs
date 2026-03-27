@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 
@@ -379,9 +380,17 @@ public sealed class FetchResponsePartition
                 {
                     records.Add(RecordBatch.Read(ref reader));
                 }
-                catch
+                catch (InsufficientDataException)
                 {
-                    // Partial batch at end, skip remaining
+                    // Partial batch at end of records section — not enough data to read a complete batch.
+                    // This is a normal Kafka scenario when the fetch response is truncated.
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Unexpected error parsing a record batch — log for visibility and skip remaining batches.
+                    // This should not happen under normal conditions and may indicate data corruption or a parsing bug.
+                    Trace.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
                     break;
                 }
             }
