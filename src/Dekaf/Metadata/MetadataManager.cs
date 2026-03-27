@@ -27,7 +27,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
-    private volatile bool _disposed;
+    private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
@@ -349,7 +349,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     public async ValueTask RefreshMetadataAsync(IEnumerable<string>? topics, bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(MetadataManager));
 
         LogMetadataRefreshRequested();
@@ -757,10 +757,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
 
         _disposalCts.Cancel();
         _backgroundRefreshCts?.Cancel();

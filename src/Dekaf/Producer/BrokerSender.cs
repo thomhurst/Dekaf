@@ -468,7 +468,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </remarks>
     private readonly Action _responseCompletionCallback;
 
-    private volatile bool _disposed;
+    private int _disposed;
 
     public BrokerSender(
         int brokerId,
@@ -2521,10 +2521,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
 
         LogDisposing(_brokerId);
 

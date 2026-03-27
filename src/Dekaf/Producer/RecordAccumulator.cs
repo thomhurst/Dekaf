@@ -767,14 +767,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly ILogger _logger;
 
-    private volatile bool _disposed;
-    private volatile bool _closed;
+    private int _disposed;
+    private int _closed;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
     /// when to exit after draining remaining batches.
     /// </summary>
-    internal bool Closed => _closed;
+    internal bool Closed => Volatile.Read(ref _closed) != 0;
 
     // Transaction support: ProducerId, ProducerEpoch, and transactional flag
     // Set by KafkaProducer.InitTransactionsAsync after successful InitProducerId
@@ -1447,7 +1447,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // with ObjectDisposedException, which is the expected post-disposal behavior.
         if (Volatile.Read(ref _appendWorkersReady) == 0)
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 return; // Let TryWrite fail with ObjectDisposedException
             throw new InvalidOperationException("EnqueueAppend called before StartAppendWorkers");
         }
@@ -1607,7 +1607,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Fast path: check thread-local cache (skip if disposed to avoid serving stale data)
         var cache = t_cache ??= new AccumulatorThreadCache();
-        if (cache.CachedAccumulator == this && !_disposed && cache.CachedTopicPartition == tp && cache.CachedDeque is { } cached)
+        if (cache.CachedAccumulator == this && Volatile.Read(ref _disposed) == 0 && cache.CachedTopicPartition == tp && cache.CachedDeque is { } cached)
             return cached;
 
         return GetOrCreateDequeSlow(tp, cache);
@@ -1644,7 +1644,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
 
         var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
@@ -1680,7 +1680,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
 
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
             {
                 if (completionSource is not null)
                     Interlocked.Decrement(ref _pendingAwaitedProduceCount);
@@ -1774,7 +1774,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completionSource)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             return false;
 
         var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
@@ -1793,7 +1793,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
 
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
             {
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
@@ -1892,7 +1892,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
 
         var keyLength = keyIsNull ? 0 : keyData.Length;
@@ -1935,7 +1935,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
 
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
             {
                 ReleaseMemory(recordSize);
                 ReturnPooledHeaders(headers);
@@ -2198,7 +2198,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (!TryReserveMemory(recordSize))
         {
             // Check disposal first
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -2220,7 +2220,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     cancellationToken
                 ).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (_disposed)
+            catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
             {
                 // Caller's token was cancelled while _disposed is true — convert to
                 // ObjectDisposedException for a clearer signal. Without the linked CTS,
@@ -2306,7 +2306,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal bool TryGetBatch(string topic, int partition, out PartitionBatch? batch)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
         {
             batch = null;
             return false;
@@ -2544,7 +2544,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Wake the sender loop after the last in-flight batch exits, so it doesn't
             // re-enter WaitForWakeupAsync and sleep up to 100ms before discovering all
             // work is done.
-            if (_closed)
+            if (Volatile.Read(ref _closed) != 0)
                 SignalWakeup();
         }
 
@@ -2768,11 +2768,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     public async ValueTask CloseAsync(CancellationToken cancellationToken)
     {
-        if (_disposed || _closed)
+        if (Volatile.Read(ref _disposed) != 0 || Interlocked.Exchange(ref _closed, 1) != 0)
             return;
 
         LogCloseStarted(_partitionDeques.Count);
-        _closed = true;
 
         // Complete append worker channels so workers drain remaining items and exit.
         // Don't await workers here — they may be blocked in ReserveMemoryAsync which
@@ -2789,7 +2788,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
         var inFlightBatches = Volatile.Read(ref _inFlightBatchCount);
@@ -2797,13 +2796,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Note: BatchArena.Misses is process-scoped (shared across all producers),
         // while _batchPool and _readyBatchPool misses are per-producer-instance.
         LogPoolMisses(_batchPool.Misses, _readyBatchPool.Misses, BatchArena.Misses);
-        _disposed = true;
-
 
         // FIRST: Try graceful shutdown (send remaining batches) with timeout
         // This matches Confluent.Kafka behavior and prevents data loss
         // We do this BEFORE failing batches to give them a chance to be sent
-        if (!_closed)
+        if (Volatile.Read(ref _closed) == 0)
         {
             try
             {
