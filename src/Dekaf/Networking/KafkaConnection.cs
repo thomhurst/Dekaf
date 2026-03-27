@@ -235,7 +235,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (IsConnected)
             return;
 
-        await AcquireSemaphoreOrThrowDisposedAsync(_connectLock, cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_connectLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -249,7 +249,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            ReleaseSemaphoreSafely(_connectLock);
+            SemaphoreHelper.ReleaseSafely(_connectLock);
         }
     }
 
@@ -690,7 +690,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
         try
         {
-            await AcquireSemaphoreOrThrowDisposedAsync(_writeLock, cancellationToken).ConfigureAwait(false);
+            await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
             try
             {
                 await WritePreSerializedAndFlushAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
@@ -698,7 +698,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
             finally
             {
-                ReleaseSemaphoreSafely(_writeLock);
+                SemaphoreHelper.ReleaseSafely(_writeLock);
             }
         }
         finally
@@ -1454,7 +1454,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             _reauthenticating = false;
-            ReleaseSemaphoreSafely(_reauthLock);
+            SemaphoreHelper.ReleaseSafely(_reauthLock);
         }
     }
 
@@ -1784,29 +1784,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
     }
 
-    private static async ValueTask AcquireSemaphoreOrThrowDisposedAsync(
-        SemaphoreSlim semaphore,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-        }
-    }
-
-    /// <summary>
-    /// Releases a semaphore safely, suppressing ObjectDisposedException that can occur
-    /// when DisposeAsync races with a finally block after a successful WaitAsync.
-    /// </summary>
-    private static void ReleaseSemaphoreSafely(SemaphoreSlim semaphore)
-    {
-        try { semaphore.Release(); }
-        catch (ObjectDisposedException) { }
-    }
 
     #region Logging
 

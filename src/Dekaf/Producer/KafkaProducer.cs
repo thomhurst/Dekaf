@@ -1153,7 +1153,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
 
-        await AcquireSemaphoreOrThrowDisposedAsync(_transactionLock, cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
 
@@ -1167,7 +1167,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            ReleaseSemaphoreSafely(_transactionLock);
+            SemaphoreHelper.ReleaseSafely(_transactionLock);
         }
     }
 
@@ -2056,7 +2056,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (_initialized)
             return;
 
-        await AcquireSemaphoreOrThrowDisposedAsync(_initLock, cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_initLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
             // Double-check after acquiring lock
@@ -2089,7 +2089,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            ReleaseSemaphoreSafely(_initLock);
+            SemaphoreHelper.ReleaseSafely(_initLock);
         }
     }
 
@@ -2326,7 +2326,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private async ValueTask InitIdempotentProducerAsync(CancellationToken cancellationToken)
     {
         // Double-check under lock to prevent concurrent initialization
-        await AcquireSemaphoreOrThrowDisposedAsync(_transactionLock, cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
             if (_idempotentInitialized)
@@ -2398,7 +2398,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            ReleaseSemaphoreSafely(_transactionLock);
+            SemaphoreHelper.ReleaseSafely(_transactionLock);
         }
     }
 
@@ -2453,7 +2453,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal async ValueTask<(long ProducerId, short ProducerEpoch)> BumpEpochAsync(
         short expectedEpoch, CancellationToken cancellationToken)
     {
-        await AcquireSemaphoreOrThrowDisposedAsync(_transactionLock, cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
             // Another thread already bumped — return current state
@@ -2523,7 +2523,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            ReleaseSemaphoreSafely(_transactionLock);
+            SemaphoreHelper.ReleaseSafely(_transactionLock);
         }
     }
 
@@ -2882,29 +2882,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
     }
 
-    private static async ValueTask AcquireSemaphoreOrThrowDisposedAsync(
-        SemaphoreSlim semaphore,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-        }
-    }
-
-    /// <summary>
-    /// Releases a semaphore safely, suppressing ObjectDisposedException that can occur
-    /// when DisposeAsync races with a finally block after a successful WaitAsync.
-    /// </summary>
-    private static void ReleaseSemaphoreSafely(SemaphoreSlim semaphore)
-    {
-        try { semaphore.Release(); }
-        catch (ObjectDisposedException) { }
-    }
 
     #region Logging
 
