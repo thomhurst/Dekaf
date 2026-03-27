@@ -867,10 +867,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     {
                         throw;
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException or ObjectDisposedException)
                     {
-                        // A parsing or data error in this PendingFetchData should not kill the consumer.
-                        // Log the error, discard the corrupted fetch, and continue the outer fetch loop.
+                        // Protocol-layer data errors from corrupted/truncated wire data should not
+                        // kill the consumer. Catch only protocol exceptions; user-facing exceptions
+                        // (deserializer errors, etc.) propagate normally to the caller.
                         // Position updates from successfully consumed records are kept.
                         previousActivity?.Dispose();
                         previousActivity = null;

@@ -31,6 +31,8 @@ public sealed class ConsumeAsyncRecoveryTests
     /// </summary>
     private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
         ILoggerFactory? loggerFactory,
+        string topic,
+        int partition,
         params PendingFetchData[] fetches)
     {
         var options = new ConsumerOptions
@@ -47,7 +49,7 @@ public sealed class ConsumeAsyncRecoveryTests
             loggerFactory);
 
         // Use Assign to set the assignment (no coordinator needed)
-        consumer.Assign(new TopicPartition(Topic, Partition));
+        consumer.Assign(new TopicPartition(topic, partition));
 
         // Set _initialized = true via reflection (normally set by InitializeAsync)
         var initializedField = typeof(KafkaConsumer<string, string>)
@@ -58,7 +60,7 @@ public sealed class ConsumeAsyncRecoveryTests
         var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)typeof(KafkaConsumer<string, string>)
             .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(consumer)!;
-        fetchPositions[new TopicPartition(Topic, Partition)] = 0;
+        fetchPositions[new TopicPartition(topic, partition)] = 0;
 
         // Inject PendingFetchData into _pendingFetches queue
         var pendingFetches = (Queue<PendingFetchData>)typeof(KafkaConsumer<string, string>)
@@ -70,6 +72,11 @@ public sealed class ConsumeAsyncRecoveryTests
 
         return consumer;
     }
+
+    private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
+        ILoggerFactory? loggerFactory,
+        params PendingFetchData[] fetches)
+        => CreateConsumerWithPendingFetches(loggerFactory, Topic, Partition, fetches);
 
     /// <summary>
     /// Creates a valid RecordBatch with the specified records.
@@ -355,40 +362,11 @@ public sealed class ConsumeAsyncRecoveryTests
             Records = new ThrowingRecordList([], 0)
         };
         var faultingFetch = new PendingFetchData("orders", partitionIndex, [batch]);
+        var goodFetch = new PendingFetchData("orders", partitionIndex,
+            [CreateBatch(100, CreateRecord(0, "k", "v"))]);
 
-        // Also need a good fetch to let the loop continue (using same topic/partition for assignment)
-        var goodBatch = CreateBatch(100, CreateRecord(0, "k", "v"));
-        var goodFetch = new PendingFetchData("orders", partitionIndex, [goodBatch]);
-
-        // Create consumer assigned to orders-5
-        var options = new ConsumerOptions
-        {
-            BootstrapServers = ["localhost:9092"],
-            OffsetCommitMode = OffsetCommitMode.Manual,
-            QueuedMinMessages = 1
-        };
-
-        var consumer = new KafkaConsumer<string, string>(
-            options, Serializers.String, Serializers.String, loggerFactory);
-        await using var _ = consumer;
-
-        consumer.Assign(new TopicPartition("orders", partitionIndex));
-
-        // Set _initialized and _fetchPositions via reflection
-        typeof(KafkaConsumer<string, string>)
-            .GetField("_initialized", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(consumer, true);
-
-        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)typeof(KafkaConsumer<string, string>)
-            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(consumer)!;
-        fetchPositions[new TopicPartition("orders", partitionIndex)] = 0;
-
-        var pendingFetches = (Queue<PendingFetchData>)typeof(KafkaConsumer<string, string>)
-            .GetField("_pendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(consumer)!;
-        pendingFetches.Enqueue(faultingFetch);
-        pendingFetches.Enqueue(goodFetch);
+        await using var consumer = CreateConsumerWithPendingFetches(
+            loggerFactory, "orders", partitionIndex, faultingFetch, goodFetch);
 
         using var cts = new CancellationTokenSource();
 
@@ -433,7 +411,7 @@ public sealed class ConsumeAsyncRecoveryTests
             get
             {
                 if (index >= _faultAtIndex)
-                    throw new InvalidDataException($"Simulated record parsing error at index {index}");
+                    throw new ArgumentOutOfRangeException(nameof(index), $"Simulated truncated record at index {index}");
                 return _goodRecords[index];
             }
         }
