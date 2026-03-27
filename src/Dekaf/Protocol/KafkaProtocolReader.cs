@@ -892,12 +892,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowMalformedVarInt()
     {
-        throw new InvalidOperationException("Malformed variable-length integer");
+        throw new MalformedProtocolDataException("Malformed variable-length integer");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInvalidProtocolData()
     {
-        throw new InvalidOperationException("Invalid protocol data: unsigned varint exceeds Int32 range");
+        throw new MalformedProtocolDataException("Invalid protocol data: unsigned varint exceeds Int32 range");
     }
 }

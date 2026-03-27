@@ -134,6 +134,63 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_MalformedVarint_ReducesCountToParseableRecords()
+    {
+        // Arrange: serialize 2 good records, then append bytes that form a malformed varint.
+        // A varint with 6 continuation bytes (all 0x80) is invalid and triggers
+        // MalformedProtocolDataException("Malformed variable-length integer").
+        var buffer = new ArrayBufferWriter<byte>();
+        var records = new[]
+        {
+            new Record
+            {
+                OffsetDelta = 0,
+                TimestampDelta = 0,
+                Key = "key0"u8.ToArray(),
+                Value = "value0"u8.ToArray()
+            },
+            new Record
+            {
+                OffsetDelta = 1,
+                TimestampDelta = 1,
+                Key = "key1"u8.ToArray(),
+                Value = "value1"u8.ToArray()
+            }
+        };
+
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+        {
+            record.Write(ref writer);
+        }
+
+        var goodDataLength = buffer.WrittenCount;
+
+        // Append 6 bytes of 0x80 (continuation bits set, no termination) to form a malformed varint.
+        // Records start with a varint-encoded length, so parsing the 3rd "record" will hit this.
+        ReadOnlySpan<byte> malformedVarint = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80];
+        var combinedBuffer = new byte[goodDataLength + malformedVarint.Length];
+        buffer.WrittenSpan.CopyTo(combinedBuffer);
+        malformedVarint.CopyTo(combinedBuffer.AsSpan(goodDataLength));
+
+        // Act: create LazyRecordList claiming 3 records but with malformed data for the 3rd
+        using var lazyList = new LazyRecordList(combinedBuffer.AsMemory(), count: 3);
+
+        // Enumerate all available records
+        var enumeratedRecords = new List<Record>();
+        foreach (var record in lazyList)
+        {
+            enumeratedRecords.Add(record);
+        }
+
+        // Assert: Count should be reduced to 2, only the 2 good records returned
+        await Assert.That(lazyList.Count).IsEqualTo(2);
+        await Assert.That(enumeratedRecords).Count().IsEqualTo(2);
+        await Assert.That(enumeratedRecords[0].Key.ToArray()).IsEquivalentTo("key0"u8.ToArray());
+        await Assert.That(enumeratedRecords[1].Key.ToArray()).IsEquivalentTo("key1"u8.ToArray());
+    }
+
+    [Test]
     public async Task LazyRecordList_CompletelyTruncated_ReducesCountToZero()
     {
         // Arrange: provide just 1 byte of data but claim 5 records

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -216,6 +217,48 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(results[0].Key).IsEqualTo("key-0");
         await Assert.That(results[1].Key).IsEqualTo("key-1");
         await Assert.That(results[2].Key).IsEqualTo("k-after");
+    }
+
+    #endregion
+
+    #region Test 1b: Consumer recovers from malformed varint (MalformedProtocolDataException)
+
+    [Test]
+    public async Task ConsumeAsync_MalformedProtocolDataException_ContinuesWithNextFetch()
+    {
+        // Arrange: first fetch throws MalformedProtocolDataException (malformed varint),
+        // second fetch has valid records. The consumer should recover.
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 1700000000000L,
+            Attributes = 0,
+            Records = new MalformedProtocolDataThrowingRecordList()
+        };
+        var faultingFetch = new PendingFetchData(Topic, Partition, [batch]);
+        var goodFetch = new PendingFetchData(Topic, Partition,
+            [CreateBatch(100, CreateRecord(0, "k1", "v1"), CreateRecord(1, "k2", "v2"))]);
+
+        await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
+
+        using var cts = new CancellationTokenSource();
+        var results = new List<ConsumeResult<string, string>>();
+
+        // Act
+        await foreach (var result in consumer.ConsumeAsync(cts.Token))
+        {
+            results.Add(result);
+            if (results.Count >= 2)
+            {
+                cts.Cancel();
+                break;
+            }
+        }
+
+        // Assert: the faulted fetch was skipped, both records from the good fetch were yielded
+        await Assert.That(results.Count).IsEqualTo(2);
+        await Assert.That(results[0].Key).IsEqualTo("k1");
+        await Assert.That(results[1].Key).IsEqualTo("k2");
     }
 
     #endregion
@@ -481,6 +524,26 @@ public sealed class ConsumeAsyncRecoveryTests
         {
             for (int i = 0; i < Count; i++)
                 yield return this[i];
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    /// <summary>
+    /// An IReadOnlyList&lt;Record&gt; that throws MalformedProtocolDataException on first access.
+    /// Simulates a malformed varint in a record batch that causes
+    /// "Malformed variable-length integer" during parsing.
+    /// </summary>
+    private sealed class MalformedProtocolDataThrowingRecordList : IReadOnlyList<Record>
+    {
+        public int Count => 1;
+
+        public Record this[int index] =>
+            throw new MalformedProtocolDataException("Malformed variable-length integer");
+
+        public IEnumerator<Record> GetEnumerator()
+        {
+            yield return this[0];
         }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
