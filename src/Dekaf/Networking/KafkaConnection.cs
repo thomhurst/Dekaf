@@ -151,7 +151,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
 
-    // Thread-local reusable buffer for request serialization to avoid per-request allocations
+    // Thread-local reusable buffer used ONLY for the SASL handshake cold path
+    // (SendSaslMessageAsync). Normal request serialization uses RentedBufferWriter via
+    // PreSerializeRequest, which rents from ArrayPool per request.
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_requestBuffer;
 
@@ -606,6 +608,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
     }
 
+    /// <summary>
+    /// Returns the thread-local request buffer for SASL handshake serialization only.
+    /// Normal (post-handshake) requests use <see cref="RentedBufferWriter"/> via PreSerializeRequest.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ArrayBufferWriter<byte> GetRequestBuffer()
     {
@@ -644,7 +650,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     {
         // Serialize directly into a rented array at offset 4 (reserving space for the size
         // prefix). The only copy is rented array -> PipeWriter under the write lock.
-        var writer = new RentedBufferWriter(initialCapacity: 256, offset: 4);
+        using var writer = new RentedBufferWriter(initialCapacity: 4096, offset: 4);
 
         var bodyWriter = new KafkaProtocolWriter(writer);
         var header = new RequestHeader
@@ -659,7 +665,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         header.Write(ref bodyWriter);
         request.Write(ref bodyWriter, apiVersion);
 
-        // Backpatch the 4-byte size prefix at the start of the rented array
+        // Backpatch the 4-byte size prefix at the start of the rented array.
+        // DetachBuffer transfers ownership to the caller; Dispose becomes a no-op.
         var (rentedArray, totalLength) = writer.DetachBuffer();
         BinaryPrimitives.WriteInt32BigEndian(rentedArray, bodyWriter.BytesWritten);
 
@@ -672,15 +679,14 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// The caller detaches the underlying array via <see cref="DetachBuffer"/> and is responsible
     /// for returning it to <see cref="ArrayPool{T}.Shared"/>.
     /// </summary>
-    private sealed class RentedBufferWriter : IBufferWriter<byte>
+    private sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     {
         private byte[] _buffer;
         private int _written;
-        private readonly int _offset;
+        private bool _detached;
 
         public RentedBufferWriter(int initialCapacity, int offset)
         {
-            _offset = offset;
             _written = offset;
             _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity + offset);
         }
@@ -689,7 +695,23 @@ public sealed partial class KafkaConnection : IKafkaConnection
         /// Detaches the underlying rented array. The caller owns the array and must return it
         /// to <see cref="ArrayPool{T}.Shared"/>. After this call, the writer must not be used.
         /// </summary>
-        public (byte[] Array, int Length) DetachBuffer() => (_buffer, _written);
+        public (byte[] Array, int Length) DetachBuffer()
+        {
+            _detached = true;
+            return (_buffer, _written);
+        }
+
+        /// <summary>
+        /// Returns the rented buffer to the pool if ownership was not transferred via <see cref="DetachBuffer"/>.
+        /// </summary>
+        public void Dispose()
+        {
+            if (!_detached)
+            {
+                ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+                _detached = true; // prevent double-return
+            }
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Advance(int count)
