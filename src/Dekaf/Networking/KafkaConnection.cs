@@ -1725,6 +1725,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
                         // Best effort — proceed with disposal regardless.
                         LogReceiveLoopShutdownRetryFailed(innerEx, BrokerId);
                     }
+                    catch (OperationCanceledException)
+                    {
+                    }
                 }
             }
             catch (OperationCanceledException)
