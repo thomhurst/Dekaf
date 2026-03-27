@@ -628,9 +628,9 @@ public sealed class RecordBatch : IDisposable
     /// <param name="availableBytes">
     /// Maximum bytes available for this batch in the partition records section.
     /// When a fetch response is truncated by max_bytes limits, the last batch's
-    /// batchLength may exceed the actual data available. This parameter clamps
-    /// the records read to prevent reading past the partition boundary.
-    /// Defaults to <see cref="int.MaxValue"/> (no boundary enforcement).
+    /// batchLength may exceed the actual data available. If so, the reader is
+    /// advanced to the partition boundary and <see cref="InsufficientDataException"/>
+    /// is thrown. Defaults to <see cref="int.MaxValue"/> (no boundary enforcement).
     /// </param>
     /// <remarks>
     /// If a ResponseParsingContext with pooled memory is active, the records will reference
