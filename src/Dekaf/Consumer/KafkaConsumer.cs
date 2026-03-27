@@ -926,6 +926,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             LogFatalPrefetchError(ex, brokerId);
             throw;
         }
+        catch (KafkaException ex) when (ex.ErrorCode is not null && !ex.IsRetriable)
+        {
+            // Non-retriable Kafka protocol errors (e.g., OffsetOutOfRange with
+            // AutoOffsetReset.None) — let PrefetchPipelineRunner count and surface them.
+            // The ErrorCode guard excludes networking-layer KafkaExceptions (connection
+            // timeouts, broker unavailable) which have no ErrorCode and are transient.
+            LogFatalPrefetchError(ex, brokerId);
+            throw;
+        }
         catch (Exception ex)
         {
             // Transient errors (connection timeouts, broker unavailable, etc.) — log and
@@ -1021,6 +1030,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             AutoOffsetReset.Latest => (-1L, "latest"),
                             AutoOffsetReset.Earliest => (-2L, "earliest"),
                             AutoOffsetReset.None => throw new KafkaException(
+                                ErrorCode.OffsetOutOfRange,
                                 $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
                             _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
                         };
