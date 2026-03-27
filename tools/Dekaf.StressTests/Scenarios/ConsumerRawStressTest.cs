@@ -105,7 +105,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         }
         catch (TimeoutException)
         {
-            Console.WriteLine($"  Warning: Producer dispose timed out");
+            Console.WriteLine("  Warning: Producer dispose timed out");
         }
 
         var completedAt = DateTime.UtcNow;
