@@ -24,7 +24,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         var messageValue = new string('x', options.MessageSizeBytes);
 
         // Create producer to feed messages to the consumer (uses string serialization for production)
-        var producer = await Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-raw-feeder-dekaf")
             .WithAcks(Acks.Leader)
@@ -55,7 +55,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
 
         // Start background producer to continuously feed the consumer
         var producerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var producerTask = RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
+        var producerTask = StressTestHelpers.RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
 
         // GC baseline after producer warmup but before consumer measurement
         GC.Collect();
@@ -69,7 +69,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         Console.WriteLine($"  Running Dekaf consumer-raw stress test for {options.DurationMinutes} minutes...");
         throughput.Start();
 
-        var samplerTask = RunSamplerAsync(throughput, cts.Token);
+        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
 
         try
         {
@@ -96,16 +96,6 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
 
-        // Clean up producer
-        try
-        {
-            await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            Console.WriteLine("  Warning: Producer dispose timed out");
-        }
-
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
 
@@ -123,55 +113,4 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
             GcStats = gcStats.ToSnapshot()
         };
     }
-
-    private static async Task RunBackgroundProducerAsync(
-        IKafkaProducer<string, string> producer,
-        string topic,
-        string messageValue,
-        CancellationToken cancellationToken)
-    {
-        var messageIndex = 0L;
-
-        await Task.Yield(); // Ensure we're on a background thread
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue).ConfigureAwait(false);
-                messageIndex++;
-
-                // Yield periodically to avoid starving other tasks
-                if (messageIndex % 10_000 == 0)
-                {
-                    await Task.Yield();
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch
-            {
-                // Ignore producer errors in the feeder
-            }
-        }
-    }
-
-    private static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-                throughput.TakeSample();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
 }

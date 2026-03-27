@@ -17,7 +17,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         var messageValue = new string('x', options.MessageSizeBytes);
 
         // Create producer to feed messages to the consumer
-        var producer = await Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-feeder-dekaf")
             .WithAcks(Acks.Leader)
@@ -26,11 +26,11 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             .BuildAsync(cancellationToken);
 
         // Pre-seed messages before starting consumer measurement
-        Console.WriteLine($"  Pre-seeding messages for consumer test...");
+        Console.WriteLine("  Pre-seeding messages for consumer test...");
         const int preseedCount = 500_000;
         for (var i = 0; i < preseedCount; i++)
         {
-            await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(i), messageValue);
+            await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(i), messageValue).ConfigureAwait(false);
         }
         await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
@@ -47,7 +47,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
 
         // Start background producer to continuously feed the consumer
         var producerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var producerTask = RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
+        var producerTask = StressTestHelpers.RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
 
         // GC baseline after producer warmup but before consumer measurement
         GC.Collect();
@@ -61,7 +61,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         Console.WriteLine($"  Running Dekaf consumer stress test for {options.DurationMinutes} minutes...");
         throughput.Start();
 
-        var samplerTask = RunSamplerAsync(throughput, cts.Token);
+        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
 
         try
         {
@@ -88,16 +88,6 @@ internal sealed class ConsumerStressTest : IStressTestScenario
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
 
-        // Clean up producer
-        try
-        {
-            await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            Console.WriteLine($"  Warning: Producer dispose timed out");
-        }
-
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
 
@@ -115,55 +105,4 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             GcStats = gcStats.ToSnapshot()
         };
     }
-
-    private static async Task RunBackgroundProducerAsync(
-        IKafkaProducer<string, string> producer,
-        string topic,
-        string messageValue,
-        CancellationToken cancellationToken)
-    {
-        var messageIndex = 0L;
-
-        await Task.Yield(); // Ensure we're on a background thread
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await producer.FireAsync(topic, StressTestHelpers.GetKey(messageIndex), messageValue);
-                messageIndex++;
-
-                // Yield periodically to avoid starving other tasks
-                if (messageIndex % 10_000 == 0)
-                {
-                    await Task.Yield();
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch
-            {
-                // Ignore producer errors in the feeder
-            }
-        }
-    }
-
-    private static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-                throughput.TakeSample();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
 }
