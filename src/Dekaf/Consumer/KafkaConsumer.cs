@@ -2678,7 +2678,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 new FetchRequestPartition
                 {
                     Partition = p.Partition,
-                    FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
+                    FetchOffset = 0, // Placeholder; BuildResultFromCache reads fresh from _fetchPositions
                     PartitionMaxBytes = _options.MaxPartitionFetchBytes
                 },
                 p // Store TopicPartition for reuse in hot path
