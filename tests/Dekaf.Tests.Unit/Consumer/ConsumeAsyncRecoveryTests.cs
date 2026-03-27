@@ -119,14 +119,11 @@ public sealed class ConsumeAsyncRecoveryTests
         int goodRecordCount,
         int faultAtIndex)
     {
-        var records = new Record[goodRecordCount + 1];
+        var goodRecords = new Record[goodRecordCount];
         for (int i = 0; i < goodRecordCount; i++)
         {
-            records[i] = CreateRecord(i, $"key-{i}", $"value-{i}");
+            goodRecords[i] = CreateRecord(i, $"key-{i}", $"value-{i}");
         }
-
-        // The faulting record uses a ThrowingRecordList wrapper
-        var goodRecords = records.AsSpan(0, goodRecordCount).ToArray();
         var batch = new RecordBatch
         {
             BaseOffset = baseOffset,
@@ -388,9 +385,9 @@ public sealed class ConsumeAsyncRecoveryTests
     #region Test Helpers
 
     /// <summary>
-    /// An IReadOnlyList&lt;Record&gt; that throws an InvalidDataException when
-    /// the item at the specified faultIndex is accessed. Simulates a corrupted
-    /// record batch where parsing fails at a specific position.
+    /// An IReadOnlyList&lt;Record&gt; that throws ArgumentOutOfRangeException when
+    /// the item at the specified faultIndex is accessed. Simulates a truncated
+    /// record batch where LazyRecordList reduces count after parsing failure.
     /// </summary>
     private sealed class ThrowingRecordList : IReadOnlyList<Record>
     {
@@ -460,7 +457,7 @@ public sealed class ConsumeAsyncRecoveryTests
         public void AddProvider(ILoggerProvider provider) { }
         public void Dispose() { }
 
-        public CapturingLogger GetLogger() => _logger ?? new CapturingLogger();
+        public CapturingLogger GetLogger() => _logger ?? throw new InvalidOperationException("No logger was created — CreateLogger was never called");
     }
 
     private sealed class CapturingLogger : ILogger

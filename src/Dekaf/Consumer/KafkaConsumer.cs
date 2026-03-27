@@ -778,10 +778,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
-                    // default is unreachable: nextResult is always assigned inside the try body
-                    // before yield return is reached; the compiler requires definite assignment here.
+                    // Compiler requires definite assignment; always assigned inside try before yield.
                     ConsumeResult<TKey, TValue> nextResult = default;
-                    bool fetchFaulted = false;
 
                     while (true)
                     {
@@ -867,34 +865,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         {
                             throw;
                         }
-                        catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException or ObjectDisposedException)
+                        catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException)
                         {
                             // Protocol-layer data errors from corrupted/truncated wire data should not
-                            // kill the consumer. Catch only protocol exceptions; user-facing exceptions
-                            // (deserializer errors, etc.) propagate normally to the caller.
-                            // Position updates from successfully consumed records are kept.
+                            // kill the consumer. User-facing exceptions (deserializer errors, etc.)
+                            // propagate normally to the caller.
                             previousActivity?.Dispose();
                             previousActivity = null;
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
-                            _pendingFetches.Dequeue().Dispose();
-                            fetchFaulted = true;
                             break;
                         }
 
                         yield return nextResult;
-                    }
-
-                    if (fetchFaulted)
-                    {
-                        // Advance fetch position past successfully consumed records to avoid re-delivery.
-                        // _positions[tp] was already updated per-message (line above), but _fetchPositions
-                        // controls where the next fetch request starts from.
-                        if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
-                        {
-                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-                        }
-
-                        continue;
                     }
 
                     // Dispose last activity from this pending fetch
@@ -902,16 +884,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity = null;
 
                     // Batch-level _fetchPositions update (once per partition-fetch, not per message).
-                    // When prefetching is enabled, the prefetch thread already advances
-                    // _fetchPositions in UpdateFetchPositionsFromPrefetch() — skip redundant writes.
-                    // When disabled, we only need the final offset for the next fetch request.
+                    // _fetchPositions controls where the next fetch request starts from.
+                    // In prefetch mode, the prefetch thread already advances _fetchPositions.
                     if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
                     {
                         _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
                     }
 
-                    // This pending fetch is exhausted, remove and dispose it
-                    // Disposing releases the pooled network buffer memory
+                    // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
                     _pendingFetches.Dequeue().Dispose();
                 }
             }
