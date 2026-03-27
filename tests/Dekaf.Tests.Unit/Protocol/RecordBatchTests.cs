@@ -831,4 +831,166 @@ public class RecordBatchTests
     }
 
     #endregion
+
+    #region Truncated Batch Boundary Enforcement Tests
+
+    [Test]
+    public async Task RecordBatch_Read_TruncatedBatch_ThrowsInsufficientDataAndStaysWithinBoundary()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 10,
+            PartitionLeaderEpoch = 5,
+            BaseTimestamp = 2000,
+            MaxTimestamp = 2000,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Value = new byte[200]
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+        var fullBatchBytes = buffer.WrittenSpan.ToArray();
+
+        var truncatedLength = RecordBatch.TotalBatchHeaderSize + 10;
+        await Assert.That(fullBatchBytes.Length).IsGreaterThan(truncatedLength);
+
+        var combinedBuffer = new byte[fullBatchBytes.Length];
+        Array.Copy(fullBatchBytes, combinedBuffer, truncatedLength);
+        Array.Fill(combinedBuffer, (byte)0xFF, truncatedLength, combinedBuffer.Length - truncatedLength);
+
+        // Truncated batches throw InsufficientDataException so the caller (FetchResponse)
+        // can skip them, while the reader stays within the partition boundary.
+        var reader = new KafkaProtocolReader(combinedBuffer.AsMemory());
+
+        try
+        {
+            RecordBatch.Read(ref reader, availableBytes: truncatedLength);
+            throw new InvalidOperationException("Expected InsufficientDataException was not thrown");
+        }
+        catch (InsufficientDataException)
+        {
+            // Expected — truncated batch signals truncation
+        }
+
+        await Assert.That(reader.Consumed).IsEqualTo(truncatedLength);
+    }
+
+    [Test]
+    public async Task RecordBatch_Read_WithExactAvailableBytes_ParsesAllRecords()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray()
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        using var parsedBatch = RecordBatch.Read(ref reader, availableBytes: (int)buffer.WrittenCount);
+
+        await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(parsedBatch.Records[0].Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
+    }
+
+    [Test]
+    public async Task RecordBatch_Read_AvailableBytesLessThanHeader_ThrowsInsufficientData()
+    {
+        // availableBytes too small to even contain the batch header
+        var buffer = new ArrayBufferWriter<byte>();
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0, PartitionLeaderEpoch = -1, BaseTimestamp = 1000, MaxTimestamp = 1000,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "v"u8.ToArray() }]
+        };
+        batch.Write(buffer);
+
+        // availableBytes covers the header we've already read but leaves 0 for records
+        var availableBytes = RecordBatch.TotalBatchHeaderSize;
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        try
+        {
+            RecordBatch.Read(ref reader, availableBytes: availableBytes);
+            throw new InvalidOperationException("Expected InsufficientDataException was not thrown");
+        }
+        catch (InsufficientDataException)
+        {
+            // Expected — no room for records
+        }
+
+        await Assert.That(reader.Consumed).IsEqualTo(availableBytes);
+    }
+
+    [Test]
+    public async Task RecordBatch_Read_TruncatedByOneByte_ThrowsInsufficientData()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0, PartitionLeaderEpoch = -1, BaseTimestamp = 1000, MaxTimestamp = 1000,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "value"u8.ToArray() }]
+        };
+        batch.Write(buffer);
+
+        // One byte short of the full batch
+        var availableBytes = (int)buffer.WrittenCount - 1;
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        try
+        {
+            RecordBatch.Read(ref reader, availableBytes: availableBytes);
+            throw new InvalidOperationException("Expected InsufficientDataException was not thrown");
+        }
+        catch (InsufficientDataException)
+        {
+            // Expected — batch is 1 byte short
+        }
+
+        await Assert.That(reader.Consumed).IsEqualTo(availableBytes);
+    }
+
+    [Test]
+    public async Task RecordBatch_Read_AvailableBytesLargerThanBatch_ParsesNormally()
+    {
+        // Simulates a batch that's the first of many — availableBytes includes space for subsequent batches
+        var buffer = new ArrayBufferWriter<byte>();
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0, PartitionLeaderEpoch = -1, BaseTimestamp = 1000, MaxTimestamp = 1000,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "value"u8.ToArray() }]
+        };
+        batch.Write(buffer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        using var parsedBatch = RecordBatch.Read(ref reader, availableBytes: (int)buffer.WrittenCount + 500);
+
+        await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
+    }
+
+    #endregion
 }
