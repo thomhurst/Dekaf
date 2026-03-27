@@ -1697,33 +1697,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
 
+                // Fast path: skip all work if assignment hasn't changed (common case after stable join)
+                if (_assignment.SetEquals(_coordinator.Assignment))
+                    return;
+
                 // Check for new partitions that need initialization
-                var newPartitions = new List<TopicPartition>();
+                List<TopicPartition>? newPartitions = null;
                 foreach (var partition in _coordinator.Assignment)
                 {
                     if (!_assignment.Contains(partition))
                     {
+                        newPartitions ??= new List<TopicPartition>();
                         newPartitions.Add(partition);
                     }
                 }
 
                 // Check for partitions that were removed (for EOF state cleanup)
-                var removedPartitions = new List<TopicPartition>();
+                List<TopicPartition>? removedPartitions = null;
                 foreach (var partition in _assignment)
                 {
                     if (!_coordinator.Assignment.Contains(partition))
                     {
+                        removedPartitions ??= new List<TopicPartition>();
                         removedPartitions.Add(partition);
                     }
                 }
 
-                // Track rebalance if assignment changed
-                var assignmentChanged = _assignment.Count != _coordinator.Assignment.Count ||
-                                        newPartitions.Count > 0;
-
-                if (newPartitions.Count > 0)
+                if (newPartitions is { Count: > 0 })
                     LogPartitionsAdded(newPartitions.Count);
-                if (removedPartitions.Count > 0)
+                if (removedPartitions is { Count: > 0 })
                     LogPartitionsRemoved(removedPartitions.Count);
 
                 // Update assignment from coordinator
@@ -1736,24 +1738,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 InvalidateFetchRequestCache();
 
                 // Clean up state for removed partitions
-                foreach (var partition in removedPartitions)
-                {
-                    _highWatermarks.TryRemove(partition, out _);
-                    _positions.TryRemove(partition, out _);
-                    _fetchPositions.TryRemove(partition, out _);
-                }
-
-                // Clean up EOF state (still needs lock)
-                lock (_prefetchLock)
+                if (removedPartitions is not null)
                 {
                     foreach (var partition in removedPartitions)
                     {
-                        _eofEmitted.Remove(partition);
+                        _highWatermarks.TryRemove(partition, out _);
+                        _positions.TryRemove(partition, out _);
+                        _fetchPositions.TryRemove(partition, out _);
+                    }
+
+                    // Clean up EOF state (still needs lock)
+                    lock (_prefetchLock)
+                    {
+                        foreach (var partition in removedPartitions)
+                        {
+                            _eofEmitted.Remove(partition);
+                        }
                     }
                 }
 
                 // Initialize positions for new partitions
-                if (newPartitions.Count > 0)
+                if (newPartitions is { Count: > 0 })
                 {
                     await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
                 }
@@ -1782,6 +1787,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _assignmentLock.Release();
         }
     }
+
 
     private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
