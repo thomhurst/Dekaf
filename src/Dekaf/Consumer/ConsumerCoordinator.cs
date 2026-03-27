@@ -467,8 +467,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask StartHeartbeatAsync()
     {
-        LogHeartbeatStarted(_options.HeartbeatIntervalMs);
-
         // Serialize heartbeat starts to prevent concurrent callers from orphaning a heartbeat loop.
         // Without this guard, two threads exiting EnsureActiveGroupAsync simultaneously could both
         // snapshot the same old CTS/task, cancel it, and each assign new CTS/task fields — the first
@@ -480,6 +478,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             oldCts = _heartbeatCts;
             oldTask = _heartbeatTask;
+
+            // Log inside the lock so only the thread that actually installs a new heartbeat emits the message.
+            LogHeartbeatStarted(_options.HeartbeatIntervalMs);
 
             _heartbeatCts = new CancellationTokenSource();
             _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
@@ -1056,7 +1057,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogLeaveGroupRequestFailed(ex);
         }
 
-        // Reset state under lock to prevent races with heartbeat loop and EnsureActiveGroupAsync
+        // Stop heartbeat BEFORE resetting state to prevent the heartbeat loop from reading
+        // null _memberId / -1 _generationId, and to prevent EnsureActiveGroupAsync from starting
+        // a new join while the old heartbeat loop is still alive.
+        await StopHeartbeatAsync().ConfigureAwait(false);
+
+        // Reset state under lock to prevent races with EnsureActiveGroupAsync
         await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
