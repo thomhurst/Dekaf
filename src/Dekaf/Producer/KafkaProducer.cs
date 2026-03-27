@@ -62,7 +62,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private volatile int _produceApiVersion = -1;
-    internal volatile bool _disposed;
+    private int _disposed;
+
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     // Idempotent / transaction state
     // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
@@ -303,7 +305,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -572,7 +574,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <inheritdoc />
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -630,7 +632,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <inheritdoc />
     public ValueTask FireAsync(string topic, TKey? key, TValue value)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -684,7 +686,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         topicInfo = null;
 
         // Early exit if disposed - prevents using stale cache from disposed producer
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             return false;
 
         // Check if cache is for this metadata manager, topic, and still valid
@@ -909,7 +911,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <inheritdoc />
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -1693,7 +1695,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     public ITopicProducer<TKey, TValue> ForTopic(string topic)
     {
         ArgumentNullException.ThrowIfNull(topic);
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         return new TopicProducer<TKey, TValue>(this, topic, ownsProducer: false);
@@ -1955,7 +1957,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Without this guard, retries that discover leader changes create new senders
             // via GetOrCreateBrokerSender after the disposal loop has already snapshotted
             // _brokerSenders, leaving orphaned send loops that prevent process exit.
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
             {
                 LogRerouteBlockedByDisposal(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                 FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
@@ -2047,7 +2049,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         // Fast path: already initialized (volatile read provides acquire semantics)
@@ -2633,10 +2635,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _disposed = true;
         var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();
 
@@ -3010,7 +3011,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     private void ThrowIfProducerDisposed()
     {
-        if (_producer._disposed)
+        if (_producer.IsDisposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
     }
 
@@ -3101,7 +3102,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     public async ValueTask DisposeAsync()
     {
-        if (!_committed && !_aborted && !_producer._disposed
+        if (!_committed && !_aborted && !_producer.IsDisposed
             && _producer._transactionState == TransactionState.InTransaction)
         {
             // Abort on dispose if not completed and transaction is actually in progress

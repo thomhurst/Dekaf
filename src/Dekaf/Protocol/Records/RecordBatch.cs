@@ -260,7 +260,7 @@ public sealed class RecordBatch : IDisposable
     /// Tracks whether this batch has been disposed. Used to throw
     /// <see cref="ObjectDisposedException"/> on post-dispose access.
     /// </summary>
-    private volatile bool _disposed;
+    private int _disposed;
 
     public long BaseOffset { get; internal set; }
     public int BatchLength { get; internal set; }
@@ -284,7 +284,7 @@ public sealed class RecordBatch : IDisposable
     {
         get
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(RecordBatch));
             return _records;
         }
@@ -372,7 +372,8 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     public void Dispose()
     {
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
 
         ReturnPreCompressedBuffer();
 
@@ -402,7 +403,7 @@ public sealed class RecordBatch : IDisposable
         {
             Interlocked.Decrement(ref s_poolCount);
             batch._returnedToPoolFlag = 0;
-            batch._disposed = false;
+            Volatile.Write(ref batch._disposed, 0);
             return batch;
         }
         return new RecordBatch();
@@ -751,7 +752,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private readonly int _count;
     private List<Record>? _parsedRecords;
     private int _nextParseOffset;
-    private bool _disposed;
+    private int _disposed;
 
     public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
     {
@@ -773,7 +774,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     {
         get
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(LazyRecordList));
             if (index < 0 || index >= _count)
                 throw new ArgumentOutOfRangeException(nameof(index));
@@ -838,10 +839,8 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
 
         // Return pooled array if we own one, and null out to prevent double-return.
         // Double-return would allow ArrayPool to hand the same array to two different

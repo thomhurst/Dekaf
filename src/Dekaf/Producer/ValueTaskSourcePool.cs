@@ -86,7 +86,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     private readonly ConcurrentStack<PooledValueTaskSource<T>> _pool = new();
     private readonly int _maxPoolSize;
     private int _poolCount; // Approximate count for bounded pool management
-    private volatile bool _disposed;
+    private int _disposed;
 
     /// <summary>
     /// Creates a new pool with the default maximum size.
@@ -115,7 +115,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public PooledValueTaskSource<T> Rent()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
 
         if (_pool.TryPop(out var source))
@@ -143,7 +143,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(PooledValueTaskSource<T> source)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             return; // Silently discard after disposal
 
         // Check approximate count to avoid unbounded growth
@@ -178,7 +178,8 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     /// </summary>
     public ValueTask DisposeAsync()
     {
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return ValueTask.CompletedTask;
 
         // Clear the pool - instances will be garbage collected
         _pool.Clear();

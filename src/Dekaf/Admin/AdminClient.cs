@@ -20,7 +20,7 @@ public sealed class AdminClient : IAdminClient
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ILogger<AdminClient>? _logger;
-    private volatile bool _disposed;
+    private int _disposed;
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
@@ -1703,10 +1703,8 @@ public sealed class AdminClient : IAdminClient
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
