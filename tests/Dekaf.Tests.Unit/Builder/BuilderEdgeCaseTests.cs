@@ -1,3 +1,4 @@
+using Dekaf.Producer;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Builder;
@@ -119,6 +120,35 @@ public sealed class ProducerBuilderEdgeCaseTests
     }
 
     #endregion
+
+    #region Builder Reuse Does Not Mutate Previous Options
+
+    [Test]
+    public async Task Build_ThenWithBootstrapServers_DoesNotMutatePreviousOptions()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("broker1:9092,broker2:9092");
+
+        await using var first = builder.Build();
+
+        // Mutate the builder after building
+        builder.WithBootstrapServers("broker3:9092");
+
+        // The first producer's options should be unchanged
+        var options = GetProducerOptions(first);
+        await Assert.That(options.BootstrapServers.Count).IsEqualTo(2);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+    }
+
+    private static ProducerOptions GetProducerOptions<TKey, TValue>(IKafkaProducer<TKey, TValue> producer)
+    {
+        var field = producer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (ProducerOptions)field.GetValue(producer)!;
+    }
+
+    #endregion
 }
 
 public sealed class ConsumerBuilderEdgeCaseTests
@@ -221,6 +251,35 @@ public sealed class ConsumerBuilderEdgeCaseTests
         var act = () => builder.AddInterceptor(null!);
 
         await Assert.That(act).Throws<ArgumentNullException>();
+    }
+
+    #endregion
+
+    #region Builder Reuse Does Not Mutate Previous Options
+
+    [Test]
+    public async Task Build_ThenWithBootstrapServers_DoesNotMutatePreviousOptions()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("broker1:9092,broker2:9092");
+
+        await using var first = builder.Build();
+
+        // Mutate the builder after building
+        builder.WithBootstrapServers("broker3:9092");
+
+        // The first consumer's options should be unchanged
+        var options = GetConsumerOptions(first);
+        await Assert.That(options.BootstrapServers.Count).IsEqualTo(2);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+    }
+
+    private static Dekaf.Consumer.ConsumerOptions GetConsumerOptions<TKey, TValue>(Dekaf.Consumer.IKafkaConsumer<TKey, TValue> consumer)
+    {
+        var field = consumer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (Dekaf.Consumer.ConsumerOptions)field.GetValue(consumer)!;
     }
 
     #endregion
