@@ -27,7 +27,7 @@ internal sealed class ConsumerConnectionScaler
     private long _lastScaleTimestamp;
     private long _testTimeOffsetTicks;
 
-    public int CurrentConnectionCount => _currentConnectionCount;
+    public int CurrentConnectionCount => Interlocked.CompareExchange(ref _currentConnectionCount, 0, 0);
 
     public ConsumerConnectionScaler(
         int initialConnectionCount,
@@ -90,7 +90,7 @@ internal sealed class ConsumerConnectionScaler
             && _currentConnectionCount < _maxConnectionCount
             && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
         {
-            _currentConnectionCount++;
+            Interlocked.Increment(ref _currentConnectionCount);
             _saturationStartTimestamp = 0;
             _lastScaleTimestamp = now;
             FireAndObserve(_scaleUpAsync);
@@ -101,7 +101,7 @@ internal sealed class ConsumerConnectionScaler
             && _currentConnectionCount > _initialConnectionCount
             && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
         {
-            _currentConnectionCount--;
+            Interlocked.Decrement(ref _currentConnectionCount);
             _lowUtilizationStartTimestamp = 0;
             _lastScaleTimestamp = now;
             FireAndObserve(_scaleDownAsync);

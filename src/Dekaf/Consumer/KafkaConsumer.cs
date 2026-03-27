@@ -957,7 +957,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         // Delegate to the extracted PrefetchPipelineRunner for testability.
         // See PrefetchPipelineRunner.cs for the pipelining invariants and memory limit notes.
-        PrefetchPipelineRunner? runnerRef = null;
         var runner = new PrefetchPipelineRunner(
             ensureAssignment: EnsureAssignmentAsync,
             getAssignmentCount: () => _assignmentSnapshot.Count,
@@ -974,12 +973,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
             channelWriter: _prefetchChannel.Writer,
             pipelineDepth: _options.PrefetchPipelineDepth,
-            onIterationComplete: _connectionScaler is null ? null : () =>
+            onIterationComplete: _connectionScaler is null ? null : (inFlightCount, pipelineDepth) =>
             {
-                _connectionScaler.ReportPipelineUtilization(runnerRef!.InFlightPrefetchCount, _options.PrefetchPipelineDepth);
+                _connectionScaler.ReportPipelineUtilization(inFlightCount, pipelineDepth);
                 _connectionScaler.MaybeScale();
             });
-        runnerRef = runner;
 
         return runner.RunAsync(cancellationToken);
     }
