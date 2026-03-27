@@ -775,102 +775,127 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             System.Diagnostics.Activity? previousActivity = null;
             try
             {
-            while (_pendingFetches.Count > 0)
-            {
-                var pending = _pendingFetches.Peek();
-
-                while (pending.MoveNext())
+                while (_pendingFetches.Count > 0)
                 {
-                    // Dispose previous message's activity (captures user processing time)
+                    var pending = _pendingFetches.Peek();
+                    // Compiler requires definite assignment; always assigned inside try before yield.
+                    ConsumeResult<TKey, TValue> nextResult = default!;
+
+                    while (true)
+                    {
+                        // Wrap MoveNext + record parsing in try-catch so a corrupted fetch
+                        // does not kill the consumer permanently. The yield must be outside
+                        // the try block (CS1626), so we build the result first then yield below.
+                        try
+                        {
+                            if (!pending.MoveNext())
+                                break;
+
+                            // Dispose previous message's activity (captures user processing time)
+                            previousActivity?.Dispose();
+                            previousActivity = null;
+
+                            var record = pending.CurrentRecord;
+                            var batch = pending.CurrentBatch;
+
+                            var offset = batch.BaseOffset + record.OffsetDelta;
+                            var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
+                                batch.BaseTimestamp + record.TimestampDelta);
+
+                            var headers = GetHeaders(record.Headers);
+                            var timestampType = ((int)batch.Attributes & 0x08) != 0
+                                ? TimestampType.LogAppendTime
+                                : TimestampType.CreateTime;
+
+                            var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
+                                               (record.IsValueNull ? 0 : record.Value.Length);
+
+                            // Start consumer tracing activity — skip all tracing work when no listener
+                            // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
+                            System.Diagnostics.Activity? activity = null;
+                            if (Diagnostics.DekafDiagnostics.Source.HasListeners())
+                            {
+                                activity = StartConsumeActivity(pending, headers, offset, messageBytes);
+                                if (activity is not null)
+                                    previousActivity = activity;
+                            }
+
+                            // Create result - deserialization happens eagerly in the constructor
+                            nextResult = new ConsumeResult<TKey, TValue>(
+                                topic: pending.Topic,
+                                partition: pending.PartitionIndex,
+                                offset: offset,
+                                keyData: record.Key,
+                                isKeyNull: record.IsKeyNull,
+                                valueData: record.Value,
+                                isValueNull: record.IsValueNull,
+                                headers: headers,
+                                timestamp: timestamp,
+                                timestampType: timestampType,
+                                leaderEpoch: null,
+                                keyDeserializer: _keyDeserializer,
+                                valueDeserializer: _valueDeserializer);
+
+                            // Update consumed position per-message so GetPosition()/CommitAsync()
+                            // reflect the latest yielded offset even when the enumerator is paused.
+                            _positions[pending.TopicPartition] = offset + 1;
+                            pending.TrackConsumed(offset, messageBytes);
+
+                            // Record consumer metrics — skip TagList allocation when no meter listener.
+                            // Check both instruments independently since Enabled is per-instrument.
+                            if (Diagnostics.DekafMetrics.MessagesReceived.Enabled || Diagnostics.DekafMetrics.BytesReceived.Enabled)
+                            {
+                                var metricTags = new System.Diagnostics.TagList
+                                    { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                                Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
+                                Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
+                            }
+
+                            // Apply OnConsume interceptors before yielding to user
+                            nextResult = ApplyOnConsumeInterceptors(nextResult);
+
+                            // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
+                            if (_rawRecordTrackingEnabled)
+                            {
+                                _currentRawKey = record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key;
+                                _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException)
+                        {
+                            // Protocol-layer data errors from corrupted/truncated wire data should not
+                            // kill the consumer. User-facing exceptions (deserializer errors, etc.)
+                            // propagate normally to the caller.
+                            previousActivity?.Dispose();
+                            previousActivity = null;
+                            LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
+                            break;
+                        }
+
+                        yield return nextResult;
+                    }
+
+                    // Dispose last activity from this pending fetch
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    var record = pending.CurrentRecord;
-                    var batch = pending.CurrentBatch;
-
-                    var offset = batch.BaseOffset + record.OffsetDelta;
-                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                        batch.BaseTimestamp + record.TimestampDelta);
-
-                    var headers = GetHeaders(record.Headers);
-                    var timestampType = ((int)batch.Attributes & 0x08) != 0
-                        ? TimestampType.LogAppendTime
-                        : TimestampType.CreateTime;
-
-                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
-                                       (record.IsValueNull ? 0 : record.Value.Length);
-
-                    // Start consumer tracing activity — skip all tracing work when no listener
-                    // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
-                    System.Diagnostics.Activity? activity = null;
-                    if (Diagnostics.DekafDiagnostics.Source.HasListeners())
+                    // Batch-level _fetchPositions update (once per partition-fetch, not per message).
+                    // _fetchPositions controls where the next fetch request starts from.
+                    // In prefetch mode, the prefetch thread already advances _fetchPositions
+                    // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
+                    // since _fetchPositions was set at prefetch time before the fault occurred.
+                    if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
                     {
-                        activity = StartConsumeActivity(pending, headers, offset, messageBytes);
-                        if (activity is not null)
-                            previousActivity = activity;
+                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
                     }
 
-                    // Create result - deserialization happens eagerly in the constructor
-                    var result = new ConsumeResult<TKey, TValue>(
-                        topic: pending.Topic,
-                        partition: pending.PartitionIndex,
-                        offset: offset,
-                        keyData: record.Key,
-                        isKeyNull: record.IsKeyNull,
-                        valueData: record.Value,
-                        isValueNull: record.IsValueNull,
-                        headers: headers,
-                        timestamp: timestamp,
-                        timestampType: timestampType,
-                        leaderEpoch: null,
-                        keyDeserializer: _keyDeserializer,
-                        valueDeserializer: _valueDeserializer);
-
-                    // Update consumed position per-message so GetPosition()/CommitAsync()
-                    // reflect the latest yielded offset even when the enumerator is paused.
-                    _positions[pending.TopicPartition] = offset + 1;
-                    pending.TrackConsumed(offset, messageBytes);
-
-                    // Record consumer metrics — skip TagList allocation when no meter listener.
-                    // Check both instruments independently since Enabled is per-instrument.
-                    if (Diagnostics.DekafMetrics.MessagesReceived.Enabled || Diagnostics.DekafMetrics.BytesReceived.Enabled)
-                    {
-                        var metricTags = new System.Diagnostics.TagList
-                            { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
-                        Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
-                        Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
-                    }
-
-                    // Apply OnConsume interceptors before yielding to user
-                    result = ApplyOnConsumeInterceptors(result);
-
-                    // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
-                    if (_rawRecordTrackingEnabled)
-                    {
-                        _currentRawKey = record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key;
-                        _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
-                    }
-
-                    yield return result;
+                    // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
+                    _pendingFetches.Dequeue().Dispose();
                 }
-
-                // Dispose last activity from this pending fetch
-                previousActivity?.Dispose();
-                previousActivity = null;
-
-                // Batch-level _fetchPositions update (once per partition-fetch, not per message).
-                // When prefetching is enabled, the prefetch thread already advances
-                // _fetchPositions in UpdateFetchPositionsFromPrefetch() — skip redundant writes.
-                // When disabled, we only need the final offset for the next fetch request.
-                if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
-                {
-                    _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-                }
-
-                // This pending fetch is exhausted, remove and dispose it
-                // Disposing releases the pooled network buffer memory
-                _pendingFetches.Dequeue().Dispose();
-            }
             }
             finally
             {
@@ -3235,6 +3260,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Fetch error for {Topic}-{Partition}: {Error}")]
     private partial void LogFetchError(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Record parsing error for {Topic}-{Partition}, discarding fetch data and continuing")]
+    private partial void LogRecordParsingError(Exception exception, string topic, int partition);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer interceptor {Interceptor} OnConsume threw an exception")]
     private partial void LogInterceptorOnConsumeError(Exception exception, string interceptor);
