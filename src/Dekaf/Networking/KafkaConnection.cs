@@ -1708,7 +1708,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
                     try
                     {
-                        await _receiveTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                        await _receiveTask.WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
                     }
                     catch
                     {
