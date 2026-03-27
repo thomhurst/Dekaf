@@ -62,7 +62,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private volatile int _produceApiVersion = -1;
-    internal int _disposed;
+    private int _disposed;
+
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     // Idempotent / transaction state
     // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
@@ -3009,7 +3011,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     private void ThrowIfProducerDisposed()
     {
-        if (Volatile.Read(ref _producer._disposed) != 0)
+        if (_producer.IsDisposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
     }
 
@@ -3100,7 +3102,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     public async ValueTask DisposeAsync()
     {
-        if (!_committed && !_aborted && Volatile.Read(ref _producer._disposed) == 0
+        if (!_committed && !_aborted && !_producer.IsDisposed
             && _producer._transactionState == TransactionState.InTransaction)
         {
             // Abort on dispose if not completed and transaction is actually in progress

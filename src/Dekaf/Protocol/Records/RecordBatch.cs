@@ -403,7 +403,7 @@ public sealed class RecordBatch : IDisposable
         {
             Interlocked.Decrement(ref s_poolCount);
             batch._returnedToPoolFlag = 0;
-            batch._disposed = 0;
+            Volatile.Write(ref batch._disposed, 0);
             return batch;
         }
         return new RecordBatch();
