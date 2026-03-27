@@ -26,7 +26,10 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
-private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<IKafkaConnection>>> _connectionGroupCreationTasks = new();
+    private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionGroupCreationTasks = new();
+
+    // Per-broker semaphores to deduplicate concurrent group creation (H4 fix)
+    private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupCreationLocks = new();
 
     // Thread-local round-robin counter to eliminate atomic contention on hot path
     // Each thread maintains its own counter, avoiding Interlocked contention
@@ -165,12 +168,38 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     private async ValueTask<IKafkaConnection> CreateConnectionGroupAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
     {
+        // H4 fix: Use a per-broker semaphore to ensure only one caller creates the group.
+        // Without this, concurrent callers both create full connection groups, leaking TCP connections.
+        var groupLock = _groupCreationLocks.GetOrAdd(brokerId, static _ => new SemaphoreSlim(1, 1));
+
+        await groupLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Re-check after acquiring lock: another caller may have already created the group
+            if (_connectionGroupsById.TryGetValue(brokerId, out var existingGroup))
+            {
+                // Verify at least one connection is still valid
+                var firstValid = Array.Find(existingGroup, static c => c is not null && c.IsConnected);
+                if (firstValid is not null)
+                    return firstValid;
+            }
+
+            return await CreateConnectionGroupCoreAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            groupLock.Release();
+        }
+    }
+
+    private async ValueTask<IKafkaConnection> CreateConnectionGroupCoreAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
+    {
         // Create all connections for this broker in parallel
         var connections = new IKafkaConnection[_connectionsPerBroker];
         var tasks = new Task<IKafkaConnection>[_connectionsPerBroker];
 
-        var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
-        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             timeoutCts.Token);
 
@@ -181,13 +210,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
                 var index = i;
-                // Use GetOrAdd pattern for each connection to avoid duplicates
-                var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
-                    (brokerId, index),
-                    _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
-                        CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token)));
-
-                tasks[i] = lazyTask.Value.AsTask();
+                tasks[i] = CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token).AsTask();
             }
 
             // Add timeout to prevent indefinite hang if connection creation stalls
@@ -197,7 +220,6 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
                 connections[i] = await tasks[i].ConfigureAwait(false);
-                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
             }
 
             // Atomically set the connection group
@@ -210,28 +232,13 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         }
         catch (TimeoutException)
         {
-            // WaitAsync timeout - clean up failed connection attempts
-            for (var i = 0; i < _connectionsPerBroker; i++)
-            {
-                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
-            }
-
             throw new KafkaException(
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            for (var i = 0; i < _connectionsPerBroker; i++)
-                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
-            if (timeoutCts.IsCancellationRequested)
-                throw new KafkaException(
-                    $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
-            throw;
-        }
-        finally
-        {
-            linkedCts.Dispose();
-            timeoutCts.Dispose();
+            throw new KafkaException(
+                $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
     }
 
@@ -337,7 +344,8 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             _connectionGroupsById[brokerId] = shrunkGroup;
 
             // Clean up creation task slot for the removed index
-            _connectionGroupCreationTasks.TryRemove((brokerId, currentGroup.Length - 1), out _);
+            if (_connectionGroupCreationTasks.TryRemove((brokerId, currentGroup.Length - 1), out var removedSem))
+                removedSem.Dispose();
 
             LogShrunkConnectionGroup(currentGroup.Length, shrunkGroup.Length, brokerId);
 
@@ -352,46 +360,59 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
-        // Use GetOrAdd pattern to ensure only one replacement happens
-        var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
-        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+        // H5 fix: Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
+        // capturing a caller-scoped CancellationToken that gets disposed in the caller's finally block.
+        // Each caller creates its own timeout CTS, so no token outlives its CTS.
+        var replacementLock = _connectionGroupCreationTasks.GetOrAdd(
+            (brokerId, index),
+            static _ => new SemaphoreSlim(1, 1));
+
+        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             timeoutCts.Token);
 
         var token = linkedCts.Token;
 
+        await replacementLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
-                (brokerId, index),
-                _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
-                    CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token)));
-
-            var connection = await lazyTask.Value.ConfigureAwait(false);
-
-            // Update the connection group array
-            if (_connectionGroupsById.TryGetValue(brokerId, out var connections))
+            // Re-check: another caller may have already replaced this connection
+            if (_connectionGroupsById.TryGetValue(brokerId, out var currentConnections)
+                && index < currentConnections.Length
+                && currentConnections[index] is not null
+                && currentConnections[index].IsConnected)
             {
-                connections[index] = connection;
+                return currentConnections[index];
             }
 
-            // Remove from creation tasks
-            _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
+            var connection = await CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token).ConfigureAwait(false);
+
+            // M12 fix: Use _scaleLock to protect the array write against concurrent
+            // ShrinkConnectionGroupAsync, which may have swapped the array reference.
+            await _scaleLock.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                if (_connectionGroupsById.TryGetValue(brokerId, out var connections) && index < connections.Length)
+                {
+                    connections[index] = connection;
+                }
+            }
+            finally
+            {
+                _scaleLock.Release();
+            }
 
             return connection;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
-            if (timeoutCts.IsCancellationRequested)
-                throw new KafkaException(
-                    $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
-            throw;
+            throw new KafkaException(
+                $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
         }
         finally
         {
-            linkedCts.Dispose();
-            timeoutCts.Dispose();
+            replacementLock.Release();
         }
     }
 
@@ -549,7 +570,13 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         if (_connectionGroupsById.TryRemove(brokerId, out var group))
         {
             for (var i = 0; i < _connectionsPerBroker; i++)
-                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+            {
+                if (_connectionGroupCreationTasks.TryRemove((brokerId, i), out var sem))
+                    sem.Dispose();
+            }
+
+            if (_groupCreationLocks.TryRemove(brokerId, out var groupLock))
+                groupLock.Dispose();
 
             foreach (var conn in group)
             {
@@ -624,7 +651,14 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             _connectionsById.Clear();
             _connectionCreationTasks.Clear();
             _connectionGroupsById.Clear();
+
+            foreach (var sem in _connectionGroupCreationTasks.Values)
+                sem.Dispose();
             _connectionGroupCreationTasks.Clear();
+
+            foreach (var sem in _groupCreationLocks.Values)
+                sem.Dispose();
+            _groupCreationLocks.Clear();
 
             LogAllConnectionsClosed();
         }
