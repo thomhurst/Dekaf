@@ -26,6 +26,25 @@ public class AdminClientBuilderTests
         await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
     }
 
+    [Test]
+    public async Task WithBootstrapServers_ParamsOverload_ArrayMutationAfterBuild_DoesNotAffectClient()
+    {
+        var servers = new[] { "broker1:9092", "broker2:9092" };
+        var builder = new AdminClientBuilder()
+            .WithBootstrapServers(servers);
+
+        await using var client = builder.Build();
+
+        // Mutate the original array after Build()
+        servers[0] = "mutated:1234";
+
+        var optionsField = typeof(AdminClient).GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        var options = (AdminClientOptions)optionsField.GetValue(client)!;
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+    }
+
     #endregion
 
     #region Build Validation
