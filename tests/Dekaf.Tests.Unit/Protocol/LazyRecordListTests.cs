@@ -125,20 +125,10 @@ public class LazyRecordListTests
         var record0 = lazyList[0];
         await Assert.That(record0.Key.ToArray()).IsEquivalentTo("k"u8.ToArray());
 
-        // Accessing record 1 triggers truncation detection — Count gets reduced
-        // The indexer checks index >= _count after EnsureParsedUpTo updates _count,
-        // so accessing index 1 when count becomes 1 should throw ArgumentOutOfRangeException
-        // via the GetEnumerator path, but through direct indexer it depends on order of checks.
-        // After EnsureParsedUpTo runs, _count becomes 1, and the loop in GetEnumerator stops.
-        // Let's verify via Count after triggering parse:
-        try
-        {
-            _ = lazyList[1];
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            // Expected: after parsing fails, count is reduced to 1, making index 1 out of range
-        }
+        // Accessing record 1 triggers truncation detection — Count gets reduced.
+        // The indexer re-checks index >= _count after EnsureParsedUpTo reduces _count,
+        // so it should throw ArgumentOutOfRangeException.
+        await Assert.That(() => lazyList[1]).ThrowsExactly<ArgumentOutOfRangeException>();
 
         await Assert.That(lazyList.Count).IsEqualTo(1);
     }

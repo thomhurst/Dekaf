@@ -855,7 +855,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 // Note: The pre-allocated List capacity may now exceed _count — this
                 // over-allocation is intentional and harmless (one batch lifetime).
                 Trace.WriteLine($"Dekaf: Truncated fetch response — {_parsedRecords.Count} of {_count} records parsed successfully.");
-                Volatile.Write(ref _count, _parsedRecords.Count);
+                _count = _parsedRecords.Count;
                 break;
             }
         }
