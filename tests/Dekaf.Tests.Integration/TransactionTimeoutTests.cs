@@ -105,7 +105,6 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Retry(3)]
     public async Task ReadCommitted_DoesNotSee_TimedOutTransactionMessages()
     {
         // Arrange - use a very short transaction timeout so the coordinator aborts
