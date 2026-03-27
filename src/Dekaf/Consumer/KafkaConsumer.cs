@@ -710,19 +710,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 if (prefetchEnabled)
                 {
-                    // Try to read from prefetch channel, draining all available items
+                    // Try to read from prefetch channel, draining available items up to a bound
                     if (_prefetchChannel.Reader.TryRead(out var prefetched))
                     {
                         _pendingFetches.Enqueue(prefetched);
                         TrackPrefetchedBytes(prefetched, release: true);
-
-                        // Drain any additional ready items to batch processing
-                        // (e.g., 6 partitions produce 6 items per FetchResponse)
-                        while (_prefetchChannel.Reader.TryRead(out var additional))
-                        {
-                            _pendingFetches.Enqueue(additional);
-                            TrackPrefetchedBytes(additional, release: true);
-                        }
+                        DrainPrefetchChannel();
                     }
                     else
                     {
@@ -749,13 +742,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 {
                                     _pendingFetches.Enqueue(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
-
-                                    // Drain any additional ready items to batch processing
-                                    while (_prefetchChannel.Reader.TryRead(out var additional))
-                                    {
-                                        _pendingFetches.Enqueue(additional);
-                                        TrackPrefetchedBytes(additional, release: true);
-                                    }
+                                    DrainPrefetchChannel();
                                 }
                                 else
                                 {
@@ -1228,6 +1215,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             tp,
             lastOffset + 1,
             (_, currentPos) => Math.Max(currentPos, lastOffset + 1));
+    }
+
+    /// <summary>
+    /// Drains additional ready items from the prefetch channel into <see cref="_pendingFetches"/>,
+    /// bounded to avoid starving <see cref="EnsureAssignmentAsync"/> (and thus rebalance detection)
+    /// when many partitions produce data concurrently
+    /// (e.g., N partitions produce N items per FetchResponse).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void DrainPrefetchChannel()
+    {
+        // Bound: drain at most the current assignment count to keep the loop responsive.
+        // With N assigned partitions, one FetchResponse produces at most N items,
+        // so this drains one full response without unbounded spinning.
+        var maxDrain = _assignmentSnapshot.Count;
+
+        for (var i = 0; i < maxDrain && _prefetchChannel.Reader.TryRead(out var additional); i++)
+        {
+            _pendingFetches.Enqueue(additional);
+            TrackPrefetchedBytes(additional, release: true);
+        }
     }
 
     private void TrackPrefetchedBytes(PendingFetchData pending, bool release)
