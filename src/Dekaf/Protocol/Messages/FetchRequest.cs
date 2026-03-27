@@ -271,7 +271,7 @@ public sealed class FetchRequestPartition
     /// <summary>
     /// Fetch offset.
     /// </summary>
-    public required long FetchOffset { get; set; }
+    public required long FetchOffset { get; init; }
 
     /// <summary>
     /// Last fetched epoch (v12+).

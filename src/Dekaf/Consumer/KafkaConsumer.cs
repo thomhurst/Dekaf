@@ -2685,13 +2685,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             ));
         }
 
-        // Shared-reference invariant: BuildResultFromDict extracts FetchRequestPartition
-        // objects that are the same instances we store in _cachedTopicPartitions below.
-        // This is safe because cache hits (the concurrent path) always create fresh copies
-        // via BuildResultFromCache, so no other broker task will ever read or mutate these
-        // instances. The cache-miss caller's result is already serialized onto the wire
-        // before any concurrent cache-hit caller reads the cached templates to copy from.
-        var result = BuildResultFromDict(topicPartitions);
+        // Build result with fresh copies so the caller owns its own FetchRequestPartition
+        // instances. The cached dict stores templates; each caller gets independent copies
+        // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
+        var result = BuildResultFromCache(topicPartitions);
 
         // Update cache (first writer wins to avoid overwriting fresher data)
         lock (_fetchCacheLock)
@@ -2735,31 +2732,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 });
             }
 
-            result.Add(new FetchRequestTopic
-            {
-                Topic = kvp.Key,
-                Partitions = partitionList
-            });
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Builds a <see cref="FetchRequestTopic"/> list from a dictionary of partitions.
-    /// </summary>
-    private static List<FetchRequestTopic> BuildResultFromDict(
-        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> dict)
-    {
-        var result = new List<FetchRequestTopic>(dict.Count);
-
-        foreach (var kvp in dict)
-        {
-            var partitionList = new List<FetchRequestPartition>(kvp.Value.Count);
-            foreach (var item in kvp.Value)
-            {
-                partitionList.Add(item.Partition);
-            }
             result.Add(new FetchRequestTopic
             {
                 Topic = kvp.Key,
