@@ -183,6 +183,18 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 /// </remarks>
 public sealed class RecordBatch : IDisposable
 {
+    /// <summary>
+    /// Size of the batch header fields after batchLength: partitionLeaderEpoch(4) + magic(1) +
+    /// crc(4) + attributes(2) + lastOffsetDelta(4) + baseTimestamp(8) + maxTimestamp(8) +
+    /// producerId(8) + producerEpoch(2) + baseSequence(4) + recordCount(4) = 49 bytes.
+    /// </summary>
+    private const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
+
+    /// <summary>
+    /// Total header size including baseOffset(8) + batchLength(4) + BatchHeaderSize(49) = 61 bytes.
+    /// </summary>
+    private const int TotalBatchHeaderSize = 8 + 4 + BatchHeaderSize;
+
     // Single thread-local cache consolidating all per-thread buffer state.
     // Reduces 3 separate [ThreadStatic] lookups to 1.
     [ThreadStatic]
@@ -548,7 +560,7 @@ public sealed class RecordBatch : IDisposable
         // 4 (partition leader epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
         // 4 (last offset delta) + 8 (base timestamp) + 8 (max timestamp) +
         // 8 (producer id) + 2 (producer epoch) + 4 (base sequence) + 4 (records count) + records
-        var batchLength = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + compressedRecords.Length;
+        var batchLength = BatchHeaderSize + compressedRecords.Length;
 
         // Write base offset and batch length
         writer.WriteInt64(BaseOffset);
@@ -648,22 +660,13 @@ public sealed class RecordBatch : IDisposable
         var baseSequence = reader.ReadInt32();
         var recordCount = reader.ReadInt32();
 
-        // Calculate remaining bytes for records.
-        // The batch header after batchLength is 49 bytes (4+1+4+2+4+8+8+8+2+4+4).
-        const int batchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
-        var recordsLength = batchLength - batchHeaderSize;
+        var recordsLength = batchLength - BatchHeaderSize;
 
         // Clamp recordsLength when the batch is truncated by fetch response size limits.
-        // The total header consumed from availableBytes is 12 (baseOffset + batchLength fields)
-        // plus 49 (rest of header) = 61 bytes.
-        const int totalHeaderSize = 8 + 4 + batchHeaderSize; // baseOffset(8) + batchLength(4) + rest(49)
         if (availableBytes < int.MaxValue)
         {
-            var maxRecordsLength = availableBytes - totalHeaderSize;
-            if (recordsLength > maxRecordsLength)
-            {
-                recordsLength = Math.Max(0, maxRecordsLength);
-            }
+            var maxRecordsLength = availableBytes - TotalBatchHeaderSize;
+            recordsLength = Math.Min(recordsLength, Math.Max(0, maxRecordsLength));
         }
 
         // Check compression type from attributes
