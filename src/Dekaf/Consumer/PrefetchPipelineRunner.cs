@@ -12,7 +12,9 @@ namespace Dekaf.Consumer;
 /// <para>The pipeline depth controls how many concurrent in-flight fetch requests
 /// are allowed. With depth 1, no eager fetches are started (same as synchronous-only).
 /// With depth 2, one eager fetch overlaps with loop overhead and the next synchronous
-/// fetch. Higher depths (up to 8) allow more overlapping fetches for improved throughput.
+/// fetch. With depth 3 (the default), two eager fetches overlap with processing, keeping
+/// the network saturated even when individual fetches stall briefly.
+/// Higher depths (up to 8) allow more overlapping fetches for improved throughput.
 /// Each in-flight fetch registers its own <c>CancellationTokenSource</c> in
 /// <c>KafkaConsumer._activeWakeupSources</c>, so <c>Wakeup()</c> correctly cancels
 /// all concurrent fetches regardless of pipeline depth.</para>
@@ -56,7 +58,7 @@ internal sealed class PrefetchPipelineRunner
         Action<Exception> logError,
         Action<long, long> logMemoryLimitPaused,
         ChannelWriter<PendingFetchData>? channelWriter = null,
-        int pipelineDepth = 2)
+        int pipelineDepth = 3)
     {
         _ensureAssignment = ensureAssignment;
         _getAssignmentCount = getAssignmentCount;
@@ -125,14 +127,14 @@ internal sealed class PrefetchPipelineRunner
                     await _prefetchRecords(cancellationToken).ConfigureAwait(false);
                     ConsecutiveErrors = 0; // Reset on success
 
-                    // Pipeline: eagerly start more fetches if memory allows and pipeline has capacity.
+                    // Pipeline: eagerly start ONE more fetch if memory allows and pipeline has capacity.
+                    // Only one per iteration to avoid reading stale _fetchPositions (see PR #648).
                     currentPrefetchedBytes = _getPrefetchedBytes();
-                    while (_inFlightQueue.Count < _pipelineDepth - 1
+                    if (_inFlightQueue.Count < _pipelineDepth - 1
                         && currentPrefetchedBytes < maxBytes
                         && !cancellationToken.IsCancellationRequested)
                     {
                         _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
-                        currentPrefetchedBytes = _getPrefetchedBytes();
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

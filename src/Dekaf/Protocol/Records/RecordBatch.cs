@@ -183,6 +183,18 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 /// </remarks>
 public sealed class RecordBatch : IDisposable
 {
+    /// <summary>
+    /// Size of the batch header fields after batchLength: partitionLeaderEpoch(4) + magic(1) +
+    /// crc(4) + attributes(2) + lastOffsetDelta(4) + baseTimestamp(8) + maxTimestamp(8) +
+    /// producerId(8) + producerEpoch(2) + baseSequence(4) + recordCount(4) = 49 bytes.
+    /// </summary>
+    internal const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
+
+    /// <summary>
+    /// Total header size including baseOffset(8) + batchLength(4) + BatchHeaderSize(49) = 61 bytes.
+    /// </summary>
+    internal const int TotalBatchHeaderSize = 8 + 4 + BatchHeaderSize;
+
     // Single thread-local cache consolidating all per-thread buffer state.
     // Reduces 3 separate [ThreadStatic] lookups to 1.
     [ThreadStatic]
@@ -548,7 +560,7 @@ public sealed class RecordBatch : IDisposable
         // 4 (partition leader epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
         // 4 (last offset delta) + 8 (base timestamp) + 8 (max timestamp) +
         // 8 (producer id) + 2 (producer epoch) + 4 (base sequence) + 4 (records count) + records
-        var batchLength = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + compressedRecords.Length;
+        var batchLength = BatchHeaderSize + compressedRecords.Length;
 
         // Write base offset and batch length
         writer.WriteInt64(BaseOffset);
@@ -608,16 +620,25 @@ public sealed class RecordBatch : IDisposable
     }
 
     /// <summary>
-    /// Reads a record batch from the input buffer.
+    /// Reads a RecordBatch from the protocol reader.
     /// Records are parsed lazily to avoid allocations for unconsumed records.
     /// </summary>
+    /// <param name="reader">The protocol reader.</param>
+    /// <param name="codecs">Optional compression codec registry.</param>
+    /// <param name="availableBytes">
+    /// Maximum bytes available for this batch in the partition records section.
+    /// When a fetch response is truncated by max_bytes limits, the last batch's
+    /// batchLength may exceed the actual data available. If so, the reader is
+    /// advanced to the partition boundary and <see cref="InsufficientDataException"/>
+    /// is thrown. Defaults to <see cref="int.MaxValue"/> (no boundary enforcement).
+    /// </param>
     /// <remarks>
     /// If a ResponseParsingContext with pooled memory is active, the records will reference
     /// the pooled buffer directly (zero-copy). The first batch to be parsed will take ownership
     /// of the pooled memory, and subsequent batches will share it.
     /// Call Dispose() on the batch to release the pooled memory when done.
     /// </remarks>
-    public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null)
+    public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null, int availableBytes = int.MaxValue)
     {
         var baseOffset = reader.ReadInt64();
         var batchLength = reader.ReadInt32();
@@ -639,8 +660,15 @@ public sealed class RecordBatch : IDisposable
         var baseSequence = reader.ReadInt32();
         var recordCount = reader.ReadInt32();
 
-        // Calculate remaining bytes for records
-        var recordsLength = batchLength - (4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4);
+        var recordsLength = batchLength - BatchHeaderSize;
+
+        // Batch truncated by fetch size limit — skip remaining data and signal to caller.
+        var maxRecordsLength = Math.Max(0, availableBytes - TotalBatchHeaderSize);
+        if (recordsLength > maxRecordsLength)
+        {
+            reader.Skip(maxRecordsLength);
+            throw new InsufficientDataException();
+        }
 
         // Check compression type from attributes
         var compression = (CompressionType)((int)attributes & 0x07);
@@ -847,14 +875,16 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords.Add(record);
                 _nextParseOffset += (int)reader.Consumed;
             }
-            catch (InsufficientDataException)
+            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
             {
-                // Truncated fetch response - no more complete records can be parsed.
-                // Cap the count to what we've successfully parsed so far to prevent
-                // further attempts. This mirrors the partial batch handling in FetchResponse.
+                // Truncated fetch response or malformed varint — no more complete records
+                // can be parsed. Cap the count to what we've successfully parsed so far to
+                // prevent further attempts. This mirrors the partial batch handling in
+                // FetchResponse. MalformedProtocolDataException covers malformed variable-length
+                // integers that throw "Malformed variable-length integer".
                 // Note: The pre-allocated List capacity may now exceed _count — this
                 // over-allocation is intentional and harmless (one batch lifetime).
-                Trace.WriteLine($"Dekaf: Truncated fetch response — {_parsedRecords.Count} of {_count} records parsed successfully.");
+                Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecords.Count} of {_count} records parsed successfully.");
                 _count = _parsedRecords.Count;
                 break;
             }

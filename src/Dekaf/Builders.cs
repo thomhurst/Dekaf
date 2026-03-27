@@ -799,7 +799,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
-    private int _prefetchPipelineDepth = 2;
+    private int _prefetchPipelineDepth = 3;
     private int _connectionsPerBroker = 2;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -1313,7 +1313,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>MaxPartitionFetchBytes: 4MB (larger fetch responses reduce round-trip overhead per byte)</description></item>
     /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
     /// may retain up to 8 arrays of this size per consumer instance)</description></item>
+    /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
     /// </list>
+    /// <para><b>Memory note:</b> The combined in-flight memory ceiling is
+    /// <c>PrefetchPipelineDepth × FetchMaxBytes</c> — with these defaults that is
+    /// 5 × 100 MB ≈ 500 MB peak per consumer instance.</para>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
     /// <returns>The builder instance for method chaining.</returns>
@@ -1324,6 +1328,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _fetchMaxWaitMs = 200;
         _maxPartitionFetchBytes = 4 * 1024 * 1024;
         _fetchMaxBytes = 100 * 1024 * 1024;
+        _prefetchPipelineDepth = 5;
         return this;
     }
 

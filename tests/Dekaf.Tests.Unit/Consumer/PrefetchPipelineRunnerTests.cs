@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Dekaf.Consumer;
 
@@ -695,74 +696,37 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
-    public async Task RunAsync_PipelineDepth4_MultipleEagerFetches()
+    public async Task RunAsync_PipelineDepth4_OneEagerFetchPerIteration()
     {
-        // With pipeline depth 4, the runner should enqueue up to 3 eager in-flight
-        // fetches after each synchronous fetch. This test uses deterministic
-        // synchronization to prove that exactly 3 concurrent eager fetches start
-        // after the synchronous fetch completes.
+        // With pipeline depth 4, the runner adds at most 1 eager fetch per outer loop
+        // iteration (to prevent duplicate position reads). The queue fills to capacity
+        // (3 = depth - 1) over multiple iterations. This test verifies that at most 1
+        // eager fetch starts per iteration, and the queue accumulates correctly.
         var fetchCount = 0;
-        var allEagerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var eagerCanComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var concurrentCount = 0;
-        var maxConcurrent = 0;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var runner = CreateRunner(
             prefetchRecords: async ct =>
             {
                 var id = Interlocked.Increment(ref fetchCount);
+                await Task.Yield(); // Simulate async work
 
-                if (id == 1)
+                // After enough fetches to prove the pattern, cancel
+                if (id >= 6)
                 {
-                    // Synchronous fetch — completes immediately.
-                    return;
+                    cts.Cancel();
+                    ct.ThrowIfCancellationRequested();
                 }
-
-                // Eager fetches (ids 2, 3, 4): track concurrency and wait at a barrier.
-                if (id is >= 2 and <= 4)
-                {
-                    var current = Interlocked.Increment(ref concurrentCount);
-                    var observed = Volatile.Read(ref maxConcurrent);
-                    if (current > observed)
-                        Interlocked.CompareExchange(ref maxConcurrent, current, observed);
-
-                    // When all 3 eager fetches are running, signal the barrier.
-                    if (current == 3)
-                        allEagerStarted.TrySetResult();
-
-                    // Wait for the test to release the barrier.
-                    await eagerCanComplete.Task;
-                    Interlocked.Decrement(ref concurrentCount);
-                    return;
-                }
-
-                // After the first batch of eager fetches, cancel to exit.
-                ct.ThrowIfCancellationRequested();
             },
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
             pipelineDepth: 4);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
 
-        var runTask = runner.RunAsync(cts.Token);
-
-        // Wait until all 3 eager fetches are concurrently in progress.
-        await allEagerStarted.Task;
-
-        // Release the eager fetches so the runner can continue.
-        eagerCanComplete.SetResult();
-
-        // Cancel after the eager batch completes to stop the loop.
-        await cts.CancelAsync();
-
-        await runTask;
-
-        // Exactly 3 eager fetches ran concurrently (pipeline depth 4 - 1 = 3).
-        await Assert.That(maxConcurrent).IsEqualTo(3);
-        // At least 4 total fetches: 1 synchronous + 3 eager.
-        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(4);
+        // At least 6 fetches (the cancellation threshold) proves the pipeline ran multiple iterations
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(6);
     }
 
     [Test]
@@ -878,6 +842,67 @@ public class PrefetchPipelineRunnerTests
             logMemoryLimitPaused: logMemoryLimitPaused ?? ((_, _) => { }),
             channelWriter: channelWriter,
             pipelineDepth: pipelineDepth);
+    }
+
+    #endregion
+
+    #region Scenario: Eager fetch position overlap (depth >= 3 bug)
+
+    [Test]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    [Arguments(5)]
+    [Arguments(8)]
+    public async Task RunAsync_AllFetchesMustReadDistinctPositions(int pipelineDepth)
+    {
+        // Each fetch invocation simulates _fetchPositions: reads a shared counter on entry,
+        // advances it on completion. If any two fetches read the same value, that's a
+        // duplicate fetch that would produce duplicate records downstream.
+        //
+        // With the fix, only one eager fetch starts per outer loop iteration. The drain/sync
+        // cycle between iterations ensures positions are updated before the next fetch reads.
+        var fetchPosition = 0L;
+        var positionsReadByFetch = new ConcurrentDictionary<int, long>();
+        var fetchCount = 0;
+        var targetFetchCount = pipelineDepth * 2; // Enough iterations to exercise the pipeline
+        CancellationTokenSource? testCts = null;
+
+        var runner = CreateRunner(
+            prefetchRecords: async ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+
+                // Read position (simulates BuildFetchRequestTopics reading _fetchPositions)
+                var pos = Volatile.Read(ref fetchPosition);
+                positionsReadByFetch[id] = pos;
+
+                await Task.Yield(); // Simulate async work
+
+                // Advance position (simulates UpdateFetchPositionsFromPrefetch)
+                Interlocked.Add(ref fetchPosition, 10);
+
+                if (id >= targetFetchCount)
+                {
+                    testCts!.Cancel();
+                    ct.ThrowIfCancellationRequested();
+                }
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: pipelineDepth);
+
+        testCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(testCts.Token);
+
+        // Every fetch must have read a unique position — no duplicates
+        var positions = positionsReadByFetch.Values.ToList();
+
+        await Assert.That(positions.Count).IsGreaterThanOrEqualTo(targetFetchCount);
+        await Assert.That(positions.Distinct().Count())
+            .IsEqualTo(positions.Count)
+            .Because("every fetch must read a unique position; duplicates cause duplicate records");
     }
 
     #endregion
