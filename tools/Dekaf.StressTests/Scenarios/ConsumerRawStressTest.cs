@@ -73,21 +73,28 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
 
         var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
 
-        try
+        while (!cts.IsCancellationRequested)
         {
-            await foreach (var record in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
+            try
             {
-                throughput.RecordMessage(record.Value.Length);
+                await foreach (var record in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
+                {
+                    throughput.RecordMessage(record.Value.Length);
+                }
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected — duration timer expired
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"  Consumer error: {ex.GetType().Name}: {ex.Message}");
-            throughput.RecordError();
+            catch (OperationCanceledException)
+            {
+                // Expected — duration timer expired
+                break;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  Consumer error: {ex.GetType().Name}: {ex.Message}");
+                throughput.RecordError();
+
+                // Brief delay to prevent tight error loops on persistent failures
+                await Task.Delay(TimeSpan.FromMilliseconds(100), CancellationToken.None).ConfigureAwait(false);
+            }
         }
 
         throughput.Stop();
