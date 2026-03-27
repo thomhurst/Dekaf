@@ -2620,7 +2620,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             ));
         }
 
-        // Build result — caller owns these objects, no sharing
+        // Shared-reference invariant: BuildResultFromDict extracts FetchRequestPartition
+        // objects that are the same instances we store in _cachedTopicPartitions below.
+        // This is safe because cache hits (the concurrent path) always create fresh copies
+        // via BuildResultFromCache, so no other broker task will ever read or mutate these
+        // instances. The cache-miss caller's result is already serialized onto the wire
+        // before any concurrent cache-hit caller reads the cached templates to copy from.
         var result = BuildResultFromDict(topicPartitions);
 
         // Update cache (first writer wins to avoid overwriting fresher data)
