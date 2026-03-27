@@ -806,7 +806,7 @@ public ref struct KafkaProtocolReader
 
         if (_isContiguous)
         {
-            if (_position + count > _span.Length)
+            if (_position > _span.Length - count)
                 ThrowInsufficientData();
             _position += count;
             return;
