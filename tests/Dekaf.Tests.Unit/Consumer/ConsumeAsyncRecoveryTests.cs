@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -220,19 +221,19 @@ public sealed class ConsumeAsyncRecoveryTests
 
     #endregion
 
-    #region Test 1b: Consumer recovers from malformed varint (InvalidOperationException)
+    #region Test 1b: Consumer recovers from malformed varint (MalformedProtocolDataException)
 
     [Test]
-    public async Task ConsumeAsync_InvalidOperationException_ContinuesWithNextFetch()
+    public async Task ConsumeAsync_MalformedProtocolDataException_ContinuesWithNextFetch()
     {
-        // Arrange: first fetch throws InvalidOperationException (malformed varint),
+        // Arrange: first fetch throws MalformedProtocolDataException (malformed varint),
         // second fetch has valid records. The consumer should recover.
         var batch = new RecordBatch
         {
             BaseOffset = 0,
             BaseTimestamp = 1700000000000L,
             Attributes = 0,
-            Records = new InvalidOperationThrowingRecordList()
+            Records = new MalformedProtocolDataThrowingRecordList()
         };
         var faultingFetch = new PendingFetchData(Topic, Partition, [batch]);
         var goodFetch = new PendingFetchData(Topic, Partition,
@@ -468,16 +469,16 @@ public sealed class ConsumeAsyncRecoveryTests
     }
 
     /// <summary>
-    /// An IReadOnlyList&lt;Record&gt; that throws InvalidOperationException on first access.
+    /// An IReadOnlyList&lt;Record&gt; that throws MalformedProtocolDataException on first access.
     /// Simulates a malformed varint in a record batch that causes
     /// "Malformed variable-length integer" during parsing.
     /// </summary>
-    private sealed class InvalidOperationThrowingRecordList : IReadOnlyList<Record>
+    private sealed class MalformedProtocolDataThrowingRecordList : IReadOnlyList<Record>
     {
         public int Count => 1;
 
         public Record this[int index] =>
-            throw new InvalidOperationException("Malformed variable-length integer");
+            throw new MalformedProtocolDataException("Malformed variable-length integer");
 
         public IEnumerator<Record> GetEnumerator()
         {

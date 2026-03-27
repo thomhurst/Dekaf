@@ -138,7 +138,7 @@ public class LazyRecordListTests
     {
         // Arrange: serialize 2 good records, then append bytes that form a malformed varint.
         // A varint with 6 continuation bytes (all 0x80) is invalid and triggers
-        // InvalidOperationException("Malformed variable-length integer").
+        // MalformedProtocolDataException("Malformed variable-length integer").
         var buffer = new ArrayBufferWriter<byte>();
         var records = new[]
         {

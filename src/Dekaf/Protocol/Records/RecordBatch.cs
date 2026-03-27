@@ -847,12 +847,12 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords.Add(record);
                 _nextParseOffset += (int)reader.Consumed;
             }
-            catch (Exception ex) when (ex is InsufficientDataException or InvalidOperationException)
+            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
             {
                 // Truncated fetch response or malformed varint — no more complete records
                 // can be parsed. Cap the count to what we've successfully parsed so far to
                 // prevent further attempts. This mirrors the partial batch handling in
-                // FetchResponse. InvalidOperationException covers malformed variable-length
+                // FetchResponse. MalformedProtocolDataException covers malformed variable-length
                 // integers that throw "Malformed variable-length integer".
                 // Note: The pre-allocated List capacity may now exceed _count — this
                 // over-allocation is intentional and harmless (one batch lifetime).
