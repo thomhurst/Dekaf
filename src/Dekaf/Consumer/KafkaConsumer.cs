@@ -355,6 +355,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
     private int _fetchRoundRobinCounter;
+    private readonly ConsumerConnectionScaler? _connectionScaler;
 
     // Dead letter queue raw byte tracking (zero overhead when not enabled)
     private bool _rawRecordTrackingEnabled;
@@ -457,6 +458,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         _compressionCodecs = CompressionCodecRegistry.Default;
+
+        // Initialize adaptive connection scaler if configured
+        if (options.EnableAdaptiveConnections && options.MaxConnectionsPerBroker > options.ConnectionsPerBroker)
+        {
+            _connectionScaler = new ConsumerConnectionScaler(
+                initialConnectionCount: options.ConnectionsPerBroker,
+                maxConnectionCount: options.MaxConnectionsPerBroker,
+                scaleUpAsync: async ct =>
+                {
+                    var newCount = _connectionScaler!.CurrentConnectionCount;
+                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
+                        await _connectionPool.ScaleConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
+                },
+                scaleDownAsync: async ct =>
+                {
+                    var newCount = _connectionScaler!.CurrentConnectionCount;
+                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
+                        await _connectionPool.ShrinkConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
+                },
+                pipelineDepth: options.PrefetchPipelineDepth);
+        }
 
         // Initialize prefetch channel - bounded by QueuedMinMessages batches
         var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
@@ -932,6 +954,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         // Delegate to the extracted PrefetchPipelineRunner for testability.
         // See PrefetchPipelineRunner.cs for the pipelining invariants and memory limit notes.
+        PrefetchPipelineRunner? runnerRef = null;
         var runner = new PrefetchPipelineRunner(
             ensureAssignment: EnsureAssignmentAsync,
             getAssignmentCount: () => _assignmentSnapshot.Count,
@@ -947,7 +970,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             logError: LogPrefetchLoopError,
             logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
             channelWriter: _prefetchChannel.Writer,
-            pipelineDepth: _options.PrefetchPipelineDepth);
+            pipelineDepth: _options.PrefetchPipelineDepth,
+            onIterationComplete: _connectionScaler is null ? null : () =>
+            {
+                _connectionScaler.ReportPipelineUtilization(runnerRef!.InFlightPrefetchCount, _options.PrefetchPipelineDepth);
+                _connectionScaler.MaybeScale();
+            });
+        runnerRef = runner;
 
         return runner.RunAsync(cancellationToken);
     }
@@ -1097,7 +1126,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
-        var fetchConnectionCount = GetFetchConnectionCount(_options.ConnectionsPerBroker);
+        var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var fetchConnectionCount = GetFetchConnectionCount(currentConnections);
         var connectionIndex = GetNextFetchConnectionIndex(ref _fetchRoundRobinCounter, fetchConnectionCount);
         var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
 
