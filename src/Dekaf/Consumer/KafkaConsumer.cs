@@ -914,16 +914,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             // Wakeup requested, exit silently
         }
-        catch (KafkaException ex)
+        catch (Errors.AuthenticationException ex)
         {
-            // Fatal Kafka errors (e.g., AutoOffsetReset.None with OffsetOutOfRange)
-            // should propagate to the consumer by completing the channel with the exception
+            // Non-recoverable — let PrefetchPipelineRunner count via ConsecutiveErrors
             LogFatalPrefetchError(ex, brokerId);
-            _prefetchChannel.Writer.TryComplete(ex);
+            throw;
+        }
+        catch (Errors.AuthorizationException ex)
+        {
+            // Non-recoverable — let PrefetchPipelineRunner count via ConsecutiveErrors
+            LogFatalPrefetchError(ex, brokerId);
             throw;
         }
         catch (Exception ex)
         {
+            // Transient errors (connection timeouts, broker unavailable, etc.) — log and
+            // suppress. The pipeline retries on the next cycle, and in multi-broker setups
+            // other brokers may still succeed in this cycle.
             LogPrefetchFromBrokerError(ex, brokerId);
         }
     }
