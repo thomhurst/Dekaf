@@ -21,13 +21,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IRebalanceListener? _rebalanceListener;
     private readonly ILogger _logger;
 
-    private int _coordinatorId = -1;
-    private string? _memberId;
-    private int _generationId = -1;
+    private volatile int _coordinatorId = -1;
+    private volatile string? _memberId;
+    private volatile int _generationId = -1;
     private string? _leaderId;
     private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
     private HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
     private Task? _heartbeatTask;
 
@@ -127,9 +128,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         new System.Diagnostics.TagList
                             { { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId } });
 
-                    // Start heartbeat
-                    StartHeartbeat();
-
                     LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
@@ -159,9 +157,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
 
-        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock
+        // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
+        // callers while awaiting the old heartbeat task cleanup (up to 5 seconds).
+        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
+        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
+        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
+        // serialized old-heartbeat teardown.
+        if (_state == CoordinatorState.Stable)
+        {
+            await StartHeartbeatAsync().ConfigureAwait(false);
+        }
+
+        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
         // If the listener calls back into the consumer (e.g., commit, seek), it would
-        // otherwise deadlock trying to acquire _lock or other coordinator locks
+        // otherwise deadlock trying to acquire _lock or other coordinator locks.
+        // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
+        // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
         if (_rebalanceListener is not null)
         {
             if (syncResult.Revoked is { Count: > 0 })
@@ -364,8 +375,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Result of SyncGroup containing partition changes for rebalance listener notification.
     /// </summary>
     private readonly record struct SyncGroupResult(
-        List<TopicPartition>? Revoked,
-        List<TopicPartition>? Assigned);
+        IReadOnlyList<TopicPartition>? Revoked,
+        IReadOnlyList<TopicPartition>? Assigned);
 
     private async ValueTask<SyncGroupResult> SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
@@ -454,12 +465,47 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return new SyncGroupResult(revoked, assigned);
     }
 
-    private void StartHeartbeat()
+    private async ValueTask StartHeartbeatAsync()
     {
-        LogHeartbeatStarted(_options.HeartbeatIntervalMs);
-        _heartbeatCts?.Cancel();
-        _heartbeatCts = new CancellationTokenSource();
-        _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
+        // Serialize heartbeat starts to prevent concurrent callers from orphaning a heartbeat loop.
+        // Without this guard, two threads exiting EnsureActiveGroupAsync simultaneously could both
+        // snapshot the same old CTS/task, cancel it, and each assign new CTS/task fields — the first
+        // writer's heartbeat loop would be overwritten and its CTS never cancelled.
+        Task? oldTask;
+        CancellationTokenSource? oldCts;
+
+        lock (_heartbeatGuard)
+        {
+            oldCts = _heartbeatCts;
+            oldTask = _heartbeatTask;
+
+            // Log inside the lock so only the thread that actually installs a new heartbeat emits the message.
+            LogHeartbeatStarted(_options.HeartbeatIntervalMs);
+
+            _heartbeatCts = new CancellationTokenSource();
+            _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
+        }
+
+        // Clean up old heartbeat outside the lock (awaiting is safe here since the new
+        // heartbeat is already running and the fields have been atomically swapped).
+        if (oldCts is not null)
+        {
+            await oldCts.CancelAsync().ConfigureAwait(false);
+
+            if (oldTask is not null)
+            {
+                try
+                {
+                    await oldTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore cancellation/timeout exceptions from old heartbeat
+                }
+            }
+
+            oldCts.Dispose();
+        }
     }
 
     private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
@@ -1005,21 +1051,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 LogSuccessfullyLeftGroup(_options.GroupId!);
             }
+        }
+        catch (Exception ex)
+        {
+            LogLeaveGroupRequestFailed(ex);
+        }
 
-            // Reset state after leaving
+        // Stop heartbeat BEFORE resetting state to prevent the heartbeat loop from reading
+        // null _memberId / -1 _generationId, and to prevent EnsureActiveGroupAsync from starting
+        // a new join while the old heartbeat loop is still alive.
+        await StopHeartbeatAsync().ConfigureAwait(false);
+
+        // Reset state under lock to prevent races with EnsureActiveGroupAsync
+        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
             _memberId = null;
             _generationId = -1;
             _assignedPartitions = [];
             _state = CoordinatorState.Unjoined;
         }
-        catch (Exception ex)
+        finally
         {
-            LogLeaveGroupRequestFailed(ex);
-            // Still reset state even if the request failed
-            _memberId = null;
-            _generationId = -1;
-            _assignedPartitions = [];
-            _state = CoordinatorState.Unjoined;
+            _lock.Release();
         }
     }
 
@@ -1028,13 +1082,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     public async ValueTask StopHeartbeatAsync()
     {
-        _heartbeatCts?.Cancel();
+        CancellationTokenSource? cts;
+        Task? task;
 
-        if (_heartbeatTask is not null)
+        lock (_heartbeatGuard)
+        {
+            cts = _heartbeatCts;
+            task = _heartbeatTask;
+            _heartbeatCts = null;
+            _heartbeatTask = null;
+        }
+
+        if (cts is not null)
+        {
+            await cts.CancelAsync().ConfigureAwait(false);
+        }
+
+        if (task is not null)
         {
             try
             {
-                await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -1042,9 +1110,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        _heartbeatCts?.Dispose();
-        _heartbeatCts = null;
-        _heartbeatTask = null;
+        cts?.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -1053,21 +1119,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
         LogCoordinatorDisposing();
 
-        _heartbeatCts?.Cancel();
+        await StopHeartbeatAsync().ConfigureAwait(false);
 
-        if (_heartbeatTask is not null)
-        {
-            try
-            {
-                await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Ignore
-            }
-        }
-
-        _heartbeatCts?.Dispose();
         _lock.Dispose();
         _commitLock.Dispose();
         _fetchLock.Dispose();
