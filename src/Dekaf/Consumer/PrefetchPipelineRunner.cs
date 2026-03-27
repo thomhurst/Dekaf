@@ -31,6 +31,7 @@ internal sealed class PrefetchPipelineRunner
     private readonly Action<long, long> _logMemoryLimitPaused;
     private readonly ChannelWriter<PendingFetchData>? _channelWriter;
     private readonly int _pipelineDepth;
+    private readonly Action<int, int>? _onIterationComplete;
     private readonly Queue<Task> _inFlightQueue = new();
 
     /// <summary>
@@ -58,7 +59,8 @@ internal sealed class PrefetchPipelineRunner
         Action<Exception> logError,
         Action<long, long> logMemoryLimitPaused,
         ChannelWriter<PendingFetchData>? channelWriter = null,
-        int pipelineDepth = 3)
+        int pipelineDepth = 3,
+        Action<int, int>? onIterationComplete = null)
     {
         _ensureAssignment = ensureAssignment;
         _getAssignmentCount = getAssignmentCount;
@@ -70,6 +72,7 @@ internal sealed class PrefetchPipelineRunner
         _logMemoryLimitPaused = logMemoryLimitPaused;
         _channelWriter = channelWriter;
         _pipelineDepth = pipelineDepth;
+        _onIterationComplete = onIterationComplete;
     }
 
     /// <summary>
@@ -136,6 +139,8 @@ internal sealed class PrefetchPipelineRunner
                     {
                         _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
                     }
+
+                    _onIterationComplete?.Invoke(_inFlightQueue.Count, _pipelineDepth);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

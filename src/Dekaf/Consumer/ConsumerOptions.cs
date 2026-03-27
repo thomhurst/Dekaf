@@ -286,19 +286,42 @@ public sealed class ConsumerOptions
     public int PrefetchPipelineDepth { get; init; } = 3;
 
     /// <summary>
-    /// Maximum number of connections per broker for the consumer.
-    /// </summary>
-    internal const int MaxConnectionsPerBroker = 2;
-
-    /// <summary>
-    /// Number of TCP connections to maintain per broker. Must be 1 or 2.
+    /// Number of TCP connections to maintain per broker.
     /// Using 2 connections reduces head-of-line blocking where heartbeats and
     /// offset commits contend with fetch requests for the single write lock on a connection.
     /// Default is 2, which dedicates one connection to fetch requests and another to
     /// coordination traffic (heartbeats, offset commits, group operations).
     /// Setting to 1 uses a single shared connection for all traffic.
+    /// Use adaptive scaling (<see cref="EnableAdaptiveConnections"/>) for
+    /// automatic connection scaling based on fetch pressure.
     /// </summary>
     public int ConnectionsPerBroker { get; init; } = 2;
+
+    /// <summary>
+    /// Whether to enable adaptive connection scaling based on fetch pressure.
+    /// When enabled, the consumer will automatically scale the number of connections
+    /// per broker between <see cref="ConnectionsPerBroker"/> and <see cref="MaxConnectionsPerBroker"/>
+    /// based on demand.
+    /// Default: true.
+    /// </summary>
+    public bool EnableAdaptiveConnections { get; init; } = true;
+
+    /// <summary>
+    /// Maximum connections per broker when adaptive scaling is enabled.
+    /// The consumer will not scale beyond this limit regardless of fetch pressure.
+    /// Must be at least 1. Default: 4.
+    /// </summary>
+    public int MaxConnectionsPerBroker
+    {
+        get => _maxConnectionsPerBroker;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            _maxConnectionsPerBroker = value;
+        }
+    }
+
+    private readonly int _maxConnectionsPerBroker = 4;
 
     /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.

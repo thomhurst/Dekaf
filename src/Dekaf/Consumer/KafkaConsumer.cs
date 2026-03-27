@@ -354,6 +354,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
+    private int _fetchRoundRobinCounter;
+    private readonly ConsumerConnectionScaler? _connectionScaler;
 
     // Dead letter queue raw byte tracking (zero overhead when not enabled)
     private bool _rawRecordTrackingEnabled;
@@ -405,7 +407,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, ConsumerOptions.MaxConnectionsPerBroker);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
@@ -446,16 +448,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
+        _compressionCodecs = CompressionCodecRegistry.Default;
+
+        // Initialize adaptive connection scaler if configured (before coordinator, which needs the connection count)
+        if (options.EnableAdaptiveConnections && options.MaxConnectionsPerBroker > options.ConnectionsPerBroker)
+        {
+            _connectionScaler = new ConsumerConnectionScaler(
+                initialConnectionCount: options.ConnectionsPerBroker,
+                maxConnectionCount: options.MaxConnectionsPerBroker,
+                scaleUpAsync: async ct =>
+                {
+                    var newCount = _connectionScaler!.CurrentConnectionCount;
+                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
+                        await _connectionPool.ScaleConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
+                },
+                scaleDownAsync: async ct =>
+                {
+                    var newCount = _connectionScaler!.CurrentConnectionCount;
+                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
+                        await _connectionPool.ShrinkConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
+                },
+                logError: ex => _logger.LogWarning(ex, "Adaptive connection scaling operation failed"));
+        }
+
         if (!string.IsNullOrEmpty(options.GroupId))
         {
             _coordinator = new ConsumerCoordinator(
                 options,
                 _connectionPool,
                 _metadataManager,
-                loggerFactory?.CreateLogger<ConsumerCoordinator>());
+                loggerFactory?.CreateLogger<ConsumerCoordinator>(),
+                getConnectionCount: _connectionScaler is not null
+                    ? () => _connectionScaler.CurrentConnectionCount
+                    : null);
         }
-
-        _compressionCodecs = CompressionCodecRegistry.Default;
 
         // Initialize prefetch channel - bounded by QueuedMinMessages batches
         var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
@@ -946,7 +972,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             logError: LogPrefetchLoopError,
             logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
             channelWriter: _prefetchChannel.Writer,
-            pipelineDepth: _options.PrefetchPipelineDepth);
+            pipelineDepth: _options.PrefetchPipelineDepth,
+            onIterationComplete: _connectionScaler is null ? null : (inFlightCount, pipelineDepth) =>
+            {
+                _connectionScaler.ReportPipelineUtilization(inFlightCount, pipelineDepth);
+                _connectionScaler.MaybeScale();
+            });
 
         return runner.RunAsync(cancellationToken);
     }
@@ -1077,7 +1108,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
+        var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
+        var connectionIndex = ConsumerConnectionScaler.GetNextFetchConnectionIndex(ref _fetchRoundRobinCounter, fetchConnectionCount);
+        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;

@@ -801,6 +801,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IRetryPolicy? _retryPolicy;
     private int _prefetchPipelineDepth = 3;
     private int _connectionsPerBroker = 2;
+    private bool _enableAdaptiveConnections = true;
+    private int _maxConnectionsPerBroker = 4;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1244,22 +1246,44 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Default is 2. With the default, fetch requests use connection index 0 and coordination
     /// traffic (heartbeats, offset commits, JoinGroup/SyncGroup) uses connection index 1,
     /// providing guaranteed isolation between data-plane and control-plane operations.
-    /// Unlike the producer, the consumer does not use adaptive connection scaling;
-    /// this is a fixed connection count per broker.
     /// </summary>
     /// <param name="connectionsPerBroker">
-    /// The number of connections per broker. Must be 1 or 2.
+    /// The initial number of connections per broker.
     /// The consumer uses one connection for fetch requests and one for coordination traffic.
-    /// Values above 2 would create unused connections.
+    /// With adaptive connections enabled, additional connections may be added up to <see cref="WithAdaptiveConnections"/>.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 2.
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
     /// </exception>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, ConsumerOptions.MaxConnectionsPerBroker);
         _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables adaptive connection scaling based on prefetch pipeline saturation.
+    /// When the prefetch pipeline is consistently saturated, the consumer will add
+    /// connections per broker (up to <paramref name="maxConnections"/>) to increase fetch throughput.
+    /// Connections scale both up and down based on pipeline utilization.
+    /// </summary>
+    /// <param name="maxConnections">Maximum connections per broker. Default: 4.</param>
+    public ConsumerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 4)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
+        _enableAdaptiveConnections = true;
+        _maxConnectionsPerBroker = maxConnections;
+        return this;
+    }
+
+    /// <summary>
+    /// Disables adaptive connection scaling. The consumer will use a fixed number of connections
+    /// per broker as configured by <see cref="WithConnectionsPerBroker"/>.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithoutAdaptiveConnections()
+    {
+        _enableAdaptiveConnections = false;
         return this;
     }
 
@@ -1409,6 +1433,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
         ValidateGroupProtocolConfig();
 
+        if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
+            throw new InvalidOperationException(
+                $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
+                $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
+
         var options = new ConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
@@ -1446,7 +1475,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
             PrefetchPipelineDepth = _prefetchPipelineDepth,
-            ConnectionsPerBroker = _connectionsPerBroker
+            ConnectionsPerBroker = _connectionsPerBroker,
+            EnableAdaptiveConnections = _enableAdaptiveConnections,
+            MaxConnectionsPerBroker = _maxConnectionsPerBroker
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
