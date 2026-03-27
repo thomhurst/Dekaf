@@ -1,0 +1,92 @@
+using System.Buffers;
+using System.Runtime.CompilerServices;
+
+namespace Dekaf.Networking;
+
+/// <summary>
+/// A lightweight <see cref="IBufferWriter{T}"/> backed by a rented <see cref="ArrayPool{T}"/> buffer.
+/// Serialization writes directly into the rented array, avoiding an intermediate copy.
+/// The caller detaches the underlying array via <see cref="DetachBuffer"/> and is responsible
+/// for returning it to <see cref="ArrayPool{T}.Shared"/>.
+/// </summary>
+internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
+{
+    private byte[] _buffer;
+    private int _written;
+    private bool _detached;
+
+    public RentedBufferWriter(int initialCapacity, int offset)
+    {
+        _written = offset;
+        _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity + offset);
+    }
+
+    /// <summary>
+    /// Detaches the underlying rented array. The caller owns the array and must return it
+    /// to <see cref="ArrayPool{T}.Shared"/>. After this call, the writer must not be used.
+    /// </summary>
+    public (byte[] Array, int Length) DetachBuffer()
+    {
+        _detached = true;
+        return (_buffer, _written);
+    }
+
+    /// <summary>
+    /// Returns the rented buffer to the pool if ownership was not transferred via <see cref="DetachBuffer"/>.
+    /// </summary>
+    public void Dispose()
+    {
+        if (!_detached)
+        {
+            var buf = _buffer;
+            _buffer = null!;
+            _detached = true;
+            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        if ((uint)count > (uint)(_buffer.Length - _written))
+            throw new ArgumentOutOfRangeException(nameof(count));
+
+        _written += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Memory<byte> GetMemory(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsMemory(_written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsSpan(_written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureCapacity(int sizeHint)
+    {
+        if (sizeHint < 1)
+            sizeHint = 1;
+
+        if (_buffer.Length - _written < sizeHint)
+            Grow(sizeHint);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Grow(int sizeHint)
+    {
+        var required = checked(_written + sizeHint);
+        var newSize = Math.Max(_buffer.Length * 2, required);
+
+        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+        _buffer.AsSpan(0, _written).CopyTo(newBuffer);
+        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        _buffer = newBuffer;
+    }
+}
