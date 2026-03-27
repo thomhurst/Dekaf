@@ -29,7 +29,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
-    private readonly ConcurrentDictionary<EndpointKey, Lazy<ValueTask<IKafkaConnection>>> _connectionCreationTasks = new();
+    // Per-endpoint semaphores to deduplicate concurrent single-connection creation
+    private readonly ConcurrentDictionary<EndpointKey, SemaphoreSlim> _connectionCreationLocks = new();
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
@@ -230,6 +231,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         var token = linkedCts.Token;
 
+        var success = false;
         try
         {
             for (var i = 0; i < _connectionsPerBroker; i++)
@@ -252,7 +254,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             LogCreatedConnectionGroup(_connectionsPerBroker, brokerId);
 
-            // Return the first connection
+            success = true;
             return connections[0];
         }
         catch (TimeoutException)
@@ -264,6 +266,28 @@ public sealed partial class ConnectionPool : IConnectionPool
         {
             throw new KafkaException(
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
+        }
+        finally
+        {
+            // On any failure, dispose successfully-created connections to avoid leaking TCP handles.
+            if (!success)
+                await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Disposes connections from any successfully completed tasks in the array.
+    /// Used for cleanup during partial failure of parallel connection creation.
+    /// </summary>
+    private static async ValueTask DisposeCompletedTaskConnectionsAsync(Task<IKafkaConnection>[] tasks)
+    {
+        foreach (var task in tasks)
+        {
+            if (task is not null && task.IsCompletedSuccessfully)
+            {
+                try { await task.Result.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort cleanup */ }
+            }
         }
     }
 
@@ -309,16 +333,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             catch
             {
                 // Close any successfully created connections to avoid leaking TCP handles.
-                // Each DisposeAsync is wrapped individually so one failure doesn't prevent
-                // cleanup of remaining connections.
-                foreach (var task in tasks)
-                {
-                    if (task.IsCompletedSuccessfully)
-                    {
-                        try { await task.Result.DisposeAsync().ConfigureAwait(false); }
-                        catch { /* best-effort cleanup */ }
-                    }
-                }
+                await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
                 throw;
             }
 
@@ -498,63 +513,74 @@ public sealed partial class ConnectionPool : IConnectionPool
         int brokerId,
         string host,
         int port,
-        CancellationToken cancellationToken,
-        int retryCount = 0)
+        CancellationToken cancellationToken)
     {
         const int MaxRetries = 3;
 
-        if (retryCount >= MaxRetries)
-        {
-            throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
-        }
-
         var endpoint = new EndpointKey(host, port);
 
-        // Create timeout token
+        // Use a per-endpoint semaphore to deduplicate concurrent connection creation.
+        // Each caller creates its own timeout CTS, so no token outlives its CTS.
+        // This replaces the previous Lazy<ValueTask> pattern which violated the ValueTask
+        // contract (multiple awaiters) and captured a caller-scoped CTS that could be disposed.
+        var creationLock = _connectionCreationLocks.GetOrAdd(endpoint, static _ => new SemaphoreSlim(1, 1));
+
         using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             timeoutCts.Token);
 
-        // Lock-free pattern: Use GetOrAdd with Lazy to ensure only one connection creation per endpoint
-        var lazyConnection = _connectionCreationTasks.GetOrAdd(endpoint,
-            _ => new Lazy<ValueTask<IKafkaConnection>>(() => CreateConnectionAsync(brokerId, host, port, linkedCts.Token)));
+        var token = linkedCts.Token;
 
+        await creationLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            var connection = await lazyConnection.Value.ConfigureAwait(false);
-
-            // Verify connection is still valid
-            if (!connection.IsConnected)
+            for (var attempt = 0; attempt < MaxRetries; attempt++)
             {
-                // Connection became invalid, remove and retry
-                _connectionCreationTasks.TryRemove(endpoint, out _);
+                // Re-check after acquiring lock: another caller may have already created the connection.
+                if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
+                {
+                    return existing;
+                }
+
+                // Dispose disconnected connection before creating a new one to avoid socket/pipe leaks.
+                if (existing is not null)
+                {
+                    _connectionsByEndpoint.TryRemove(endpoint, out _);
+                    if (brokerId >= 0)
+                        _connectionsById.TryRemove(brokerId, out _);
+
+                    try { await existing.DisposeAsync().ConfigureAwait(false); }
+                    catch { /* best-effort cleanup */ }
+                }
+
+                var connection = await CreateConnectionAsync(brokerId, host, port, token).ConfigureAwait(false);
+
+                // Verify connection is still valid
+                if (connection.IsConnected)
+                {
+                    return connection;
+                }
+
+                // Connection failed immediately after creation — clean up and retry
                 _connectionsByEndpoint.TryRemove(endpoint, out _);
                 if (brokerId >= 0)
                     _connectionsById.TryRemove(brokerId, out _);
 
-                // Recursive retry (will create new Lazy)
-                return await GetOrCreateConnectionAsync(brokerId, host, port, cancellationToken, retryCount + 1).ConfigureAwait(false);
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort cleanup */ }
             }
 
-            // Success: Remove the task to prevent memory leak
-            _connectionCreationTasks.TryRemove(endpoint, out _);
-
-            return connection;
+            throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            // Remove failed connection attempt from cache to allow retry
-            _connectionCreationTasks.TryRemove(endpoint, out _);
-
             throw new KafkaException(
                 $"Connection timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
         }
-        catch
+        finally
         {
-            // On exception, remove the failed lazy so retry can create a new one
-            _connectionCreationTasks.TryRemove(endpoint, out _);
-            throw;
+            creationLock.Release();
         }
     }
 
@@ -566,20 +592,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     {
         var endpoint = new EndpointKey(host, port);
 
-        // Check if there's an existing valid connection (race condition with fast path)
-        if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
-        {
-            return existing;
-        }
-
-        // Remove stale connection if any
-        if (existing is not null)
-        {
-            _connectionsByEndpoint.TryRemove(endpoint, out _);
-            if (brokerId >= 0)
-                _connectionsById.TryRemove(brokerId, out _);
-            await existing.DisposeAsync().ConfigureAwait(false);
-        }
+        // Note: Stale connection cleanup is handled by the caller (GetOrCreateConnectionAsync)
+        // within the creation semaphore, so no duplicate cleanup is needed here.
 
         // Create new connection
         var connection = new KafkaConnection(
@@ -608,7 +622,8 @@ public sealed partial class ConnectionPool : IConnectionPool
         {
             var endpoint = new EndpointKey(connection.Host, connection.Port);
             _connectionsByEndpoint.TryRemove(endpoint, out _);
-            _connectionCreationTasks.TryRemove(endpoint, out _);
+            if (_connectionCreationLocks.TryRemove(endpoint, out var creationSem))
+                creationSem.Dispose();
             await connection.DisposeAsync().ConfigureAwait(false);
             LogRemovedConnection(brokerId);
         }
@@ -696,15 +711,16 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             _connectionsByEndpoint.Clear();
             _connectionsById.Clear();
-            _connectionCreationTasks.Clear();
             _connectionGroupsById.Clear();
 
             if (Volatile.Read(ref _disposed) != 0)
             {
                 // _disposed is set — no new callers can arrive, safe to dispose semaphores
+                foreach (var sem in _connectionCreationLocks.Values) sem.Dispose();
                 foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
                 foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
             }
+            _connectionCreationLocks.Clear();
             _connectionReplacementLocks.Clear();
             _groupCreationLocks.Clear();
 
