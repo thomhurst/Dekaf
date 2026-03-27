@@ -1363,13 +1363,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 return result;
             }
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            // Our timeout expired (not user cancellation) with no messages - return null
+            // Our timeout expired with no messages - return null.
+            // If the external token also fired nearly simultaneously (race from slow exception
+            // propagation under load), the internal timeout takes priority: the timeout elapsed
+            // before any external cancellation was the primary cause of cancellation.
         }
-        catch (ChannelClosedException ex) when (ex.InnerException is null && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (ChannelClosedException ex) when (ex.InnerException is null && timeoutCts.IsCancellationRequested)
         {
-            // Channel closed cleanly due to our timeout — not user cancellation
+            // Channel closed cleanly due to our timeout.
+            // Same race rationale as above.
         }
 
         return null;
