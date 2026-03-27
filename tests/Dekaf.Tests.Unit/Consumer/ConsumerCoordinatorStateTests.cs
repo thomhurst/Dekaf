@@ -30,6 +30,9 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         _connectionPool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(_connection));
 
+        _connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(_connection));
+
         _metadataManager = new MetadataManager(_connectionPool, ["localhost:9092"]);
 
         // Seed cluster metadata with a broker so FindCoordinator has a broker to connect to
