@@ -2,7 +2,7 @@ using Dekaf.Consumer;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-public class ConsumerConnectionScalingTests
+public sealed class ConsumerConnectionScalingTests
 {
     [Test]
     public async Task ConsumerOptions_ConnectionsPerBroker_AllowsUpTo4()
@@ -99,20 +99,20 @@ public class ConsumerConnectionScalingTests
     [Arguments(4, 3)]  // 4 connections: 3 fetch connections
     public async Task FetchConnectionCount_CorrectForConnectionsPerBroker(int connectionsPerBroker, int expectedFetchCount)
     {
-        var result = KafkaConsumer<string, string>.GetFetchConnectionCount(connectionsPerBroker);
+        var result = ConsumerConnectionScaler.GetFetchConnectionCount(connectionsPerBroker);
         await Assert.That(result).IsEqualTo(expectedFetchCount);
     }
 
     [Test]
     public async Task FetchRoundRobin_DistributesAcrossAllFetchConnections()
     {
-        var fetchConnectionCount = KafkaConsumer<string, string>.GetFetchConnectionCount(4); // 3 fetch connections
+        var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(4); // 3 fetch connections
         var indices = new int[6];
         var counter = 0;
 
         for (var i = 0; i < 6; i++)
         {
-            indices[i] = KafkaConsumer<string, string>.GetNextFetchConnectionIndex(ref counter, fetchConnectionCount);
+            indices[i] = ConsumerConnectionScaler.GetNextFetchConnectionIndex(ref counter, fetchConnectionCount);
         }
 
         // Should cycle through 0, 1, 2, 0, 1, 2
@@ -127,12 +127,12 @@ public class ConsumerConnectionScalingTests
     [Test]
     public async Task FetchRoundRobin_SingleConnection_AlwaysReturns0()
     {
-        var fetchConnectionCount = KafkaConsumer<string, string>.GetFetchConnectionCount(1);
+        var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(1);
         var counter = 0;
 
         for (var i = 0; i < 5; i++)
         {
-            var index = KafkaConsumer<string, string>.GetNextFetchConnectionIndex(ref counter, fetchConnectionCount);
+            var index = ConsumerConnectionScaler.GetNextFetchConnectionIndex(ref counter, fetchConnectionCount);
             await Assert.That(index).IsEqualTo(0);
         }
     }

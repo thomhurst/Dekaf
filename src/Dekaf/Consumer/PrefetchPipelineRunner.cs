@@ -140,7 +140,6 @@ internal sealed class PrefetchPipelineRunner
                         _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
                     }
 
-                    // Report pipeline utilization for adaptive connection scaling
                     _onIterationComplete?.Invoke();
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -11,9 +11,9 @@ namespace Dekaf.Consumer;
 internal sealed class ConsumerConnectionScaler
 {
     private const double ScaleDownUtilizationThreshold = 0.3;
-    private const long ScaleUpSustainedTicks = 5 * TimeSpan.TicksPerSecond;
-    private const long ScaleDownSustainedTicks = 120 * TimeSpan.TicksPerSecond;
-    private const long CooldownTicks = 5 * TimeSpan.TicksPerSecond;
+    private static readonly TimeSpan ScaleUpSustained = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ScaleDownSustained = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(5);
 
     private readonly int _initialConnectionCount;
     private readonly int _maxConnectionCount;
@@ -25,7 +25,7 @@ internal sealed class ConsumerConnectionScaler
     private long _saturationStartTimestamp;
     private long _lowUtilizationStartTimestamp;
     private long _lastScaleTimestamp;
-    private long _testTimeOffsetTicks; // For deterministic testing
+    private long _testTimeOffsetTicks;
 
     public int CurrentConnectionCount => _currentConnectionCount;
 
@@ -45,9 +45,6 @@ internal sealed class ConsumerConnectionScaler
     }
 
     private long GetTimestamp() => Stopwatch.GetTimestamp() + _testTimeOffsetTicks;
-
-    private static long ElapsedTicks(long startTimestamp, long endTimestamp)
-        => (long)((endTimestamp - startTimestamp) * ((double)TimeSpan.TicksPerSecond / Stopwatch.Frequency));
 
     /// <summary>
     /// Reports current pipeline utilization. Call this each time a fetch completes or is dispatched.
@@ -86,14 +83,12 @@ internal sealed class ConsumerConnectionScaler
     {
         var now = GetTimestamp();
 
-        // Check cooldown
-        if (_lastScaleTimestamp != 0 && ElapsedTicks(_lastScaleTimestamp, now) < CooldownTicks)
+        if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
             return;
 
-        // Scale-up check
         if (_saturationStartTimestamp != 0
             && _currentConnectionCount < _maxConnectionCount
-            && ElapsedTicks(_saturationStartTimestamp, now) >= ScaleUpSustainedTicks)
+            && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
         {
             _currentConnectionCount++;
             _saturationStartTimestamp = 0;
@@ -102,16 +97,32 @@ internal sealed class ConsumerConnectionScaler
             return;
         }
 
-        // Scale-down check
         if (_lowUtilizationStartTimestamp != 0
             && _currentConnectionCount > _initialConnectionCount
-            && ElapsedTicks(_lowUtilizationStartTimestamp, now) >= ScaleDownSustainedTicks)
+            && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
         {
             _currentConnectionCount--;
             _lowUtilizationStartTimestamp = 0;
             _lastScaleTimestamp = now;
             FireAndObserve(_scaleDownAsync);
         }
+    }
+
+    /// <summary>
+    /// Returns the number of connections available for fetch requests.
+    /// When connectionsPerBroker is 1, all traffic shares the single connection.
+    /// When > 1, the last connection is reserved for coordination.
+    /// </summary>
+    internal static int GetFetchConnectionCount(int connectionsPerBroker)
+        => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
+
+    /// <summary>
+    /// Returns the next fetch connection index using round-robin.
+    /// </summary>
+    internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
+    {
+        if (fetchConnectionCount == 1) return 0;
+        return counter++ % fetchConnectionCount;
     }
 
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
@@ -127,7 +138,6 @@ internal sealed class ConsumerConnectionScaler
         }, _logError, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     }
 
-    // Test helpers
     internal void TestAdvanceTime(TimeSpan duration)
         => _testTimeOffsetTicks += (long)(duration.TotalSeconds * Stopwatch.Frequency);
 

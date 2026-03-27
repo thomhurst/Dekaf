@@ -1103,24 +1103,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return Math.Max(configuredMax, minRequired);
     }
 
-    /// <summary>
-    /// Returns the number of connections available for fetch requests.
-    /// When ConnectionsPerBroker is 1, all traffic shares the single connection.
-    /// When > 1, the last connection is reserved for coordination.
-    /// </summary>
-    internal static int GetFetchConnectionCount(int connectionsPerBroker)
-        => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
-
-    /// <summary>
-    /// Returns the next fetch connection index using round-robin.
-    /// </summary>
-    internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
-    {
-        if (fetchConnectionCount == 1) return 0;
-        var value = (uint)Interlocked.Increment(ref counter);
-        return (int)((value - 1) % (uint)fetchConnectionCount);
-    }
-
     internal static bool IsFatalPrefetchError(Exception ex) => ex is
         Errors.AuthenticationException or
         Errors.AuthorizationException or
@@ -1129,8 +1111,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
         var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
-        var fetchConnectionCount = GetFetchConnectionCount(currentConnections);
-        var connectionIndex = GetNextFetchConnectionIndex(ref _fetchRoundRobinCounter, fetchConnectionCount);
+        var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
+        var connectionIndex = ConsumerConnectionScaler.GetNextFetchConnectionIndex(ref _fetchRoundRobinCounter, fetchConnectionCount);
         var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
 
         // Ensure API version is negotiated (thread-safe initialization)

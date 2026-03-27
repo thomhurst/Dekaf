@@ -2,7 +2,7 @@ using Dekaf.Consumer;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-public class ConsumerConnectionScalerTests
+public sealed class ConsumerConnectionScalerTests
 {
     [Test]
     public async Task MaybeScale_PipelineSaturated_ScalesUpAfterSustainedPeriod()
