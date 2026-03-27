@@ -677,10 +677,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             }
                             else
                             {
-                                // Channel completed without error — prefetch loop has stopped.
-                                // Currently unreachable: TryComplete() is only called with a KafkaException,
-                                // never with null. This guard prevents a silent infinite loop if a future
-                                // code path adds graceful channel completion (e.g., during rebalance).
+                                // Channel completed without error — prefetch pipeline has stopped.
+                                // Reached when PrefetchPipelineRunner exits its loop normally
+                                // (e.g., cancellation) and calls TryComplete() in its finally block.
                                 break;
                             }
                         }
@@ -914,19 +913,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             // Wakeup requested, exit silently
         }
-        catch (KafkaException ex)
+        catch (Exception ex) when (IsFatalPrefetchError(ex))
         {
-            // Fatal Kafka errors (e.g., AutoOffsetReset.None with OffsetOutOfRange)
-            // should propagate to the consumer by completing the channel with the exception
+            // Non-recoverable errors that should propagate to PrefetchPipelineRunner's
+            // consecutive error counter. See IsFatalPrefetchError for classification logic.
             LogFatalPrefetchError(ex, brokerId);
-            _prefetchChannel.Writer.TryComplete(ex);
             throw;
         }
         catch (Exception ex)
         {
+            // Transient errors (connection timeouts, broker unavailable, etc.) — log and
+            // suppress. The pipeline retries on the next cycle, and in multi-broker setups
+            // other brokers may still succeed in this cycle.
             LogPrefetchFromBrokerError(ex, brokerId);
         }
     }
+
+    /// <summary>
+    /// Determines whether a prefetch error is fatal (should propagate to the pipeline runner)
+    /// or transient (should be suppressed and retried).
+    /// </summary>
+    /// <remarks>
+    /// Auth* exceptions are matched explicitly because they may lack an ErrorCode.
+    /// Networking-layer KafkaExceptions (connection timeouts, broker unavailable) have no
+    /// ErrorCode and are always transient — the ErrorCode guard excludes them.
+    /// </remarks>
+    internal static bool IsFatalPrefetchError(Exception ex) => ex is
+        Errors.AuthenticationException or
+        Errors.AuthorizationException or
+        KafkaException { ErrorCode: not null, IsRetriable: false };
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
@@ -1014,6 +1029,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             AutoOffsetReset.Latest => (-1L, "latest"),
                             AutoOffsetReset.Earliest => (-2L, "earliest"),
                             AutoOffsetReset.None => throw new KafkaException(
+                                ErrorCode.OffsetOutOfRange,
                                 $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
                             _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
                         };

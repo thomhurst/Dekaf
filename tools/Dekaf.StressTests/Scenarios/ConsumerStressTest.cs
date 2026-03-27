@@ -74,10 +74,11 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         }
         catch (OperationCanceledException)
         {
-            // Expected
+            // Expected — duration timer expired
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine($"  Consumer error: {ex.GetType().Name}: {ex.Message}");
             throughput.RecordError();
         }
 
