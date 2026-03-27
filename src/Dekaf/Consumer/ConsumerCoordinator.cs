@@ -21,7 +21,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IRebalanceListener? _rebalanceListener;
     private readonly ILogger _logger;
 
-    private int _coordinatorId = -1;
+    private volatile int _coordinatorId = -1;
     private string? _memberId;
     private int _generationId = -1;
     private string? _leaderId;
@@ -128,7 +128,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             { { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId } });
 
                     // Start heartbeat
-                    StartHeartbeat();
+                    await StartHeartbeatAsync().ConfigureAwait(false);
 
                     LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
@@ -159,21 +159,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
 
-        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock
+        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
         // If the listener calls back into the consumer (e.g., commit, seek), it would
-        // otherwise deadlock trying to acquire _lock or other coordinator locks
+        // otherwise deadlock trying to acquire _lock or other coordinator locks.
+        // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
+        // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
         if (_rebalanceListener is not null)
         {
-            if (syncResult.Revoked is { Count: > 0 })
+            var revokedSnapshot = syncResult.Revoked;
+            var assignedSnapshot = syncResult.Assigned;
+
+            if (revokedSnapshot is { Count: > 0 })
             {
-                LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
-                await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
+                LogRebalanceListenerCall("OnPartitionsRevoked", revokedSnapshot.Count);
+                await _rebalanceListener.OnPartitionsRevokedAsync(revokedSnapshot, cancellationToken).ConfigureAwait(false);
             }
 
-            if (syncResult.Assigned is { Count: > 0 })
+            if (assignedSnapshot is { Count: > 0 })
             {
-                LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
-                await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
+                LogRebalanceListenerCall("OnPartitionsAssigned", assignedSnapshot.Count);
+                await _rebalanceListener.OnPartitionsAssignedAsync(assignedSnapshot, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -364,8 +369,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Result of SyncGroup containing partition changes for rebalance listener notification.
     /// </summary>
     private readonly record struct SyncGroupResult(
-        List<TopicPartition>? Revoked,
-        List<TopicPartition>? Assigned);
+        IReadOnlyList<TopicPartition>? Revoked,
+        IReadOnlyList<TopicPartition>? Assigned);
 
     private async ValueTask<SyncGroupResult> SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
@@ -454,10 +459,34 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return new SyncGroupResult(revoked, assigned);
     }
 
-    private void StartHeartbeat()
+    private async ValueTask StartHeartbeatAsync()
     {
         LogHeartbeatStarted(_options.HeartbeatIntervalMs);
-        _heartbeatCts?.Cancel();
+
+        // Stop and clean up the old heartbeat loop before starting a new one
+        // to prevent two concurrent heartbeat loops and CTS leaks.
+        var oldCts = _heartbeatCts;
+        var oldTask = _heartbeatTask;
+
+        if (oldCts is not null)
+        {
+            await oldCts.CancelAsync().ConfigureAwait(false);
+
+            if (oldTask is not null)
+            {
+                try
+                {
+                    await oldTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore cancellation/timeout exceptions from old heartbeat
+                }
+            }
+
+            oldCts.Dispose();
+        }
+
         _heartbeatCts = new CancellationTokenSource();
         _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
     }
@@ -1005,21 +1034,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 LogSuccessfullyLeftGroup(_options.GroupId!);
             }
+        }
+        catch (Exception ex)
+        {
+            LogLeaveGroupRequestFailed(ex);
+        }
 
-            // Reset state after leaving
+        // Reset state under lock to prevent races with heartbeat loop and EnsureActiveGroupAsync
+        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
             _memberId = null;
             _generationId = -1;
             _assignedPartitions = [];
             _state = CoordinatorState.Unjoined;
         }
-        catch (Exception ex)
+        finally
         {
-            LogLeaveGroupRequestFailed(ex);
-            // Still reset state even if the request failed
-            _memberId = null;
-            _generationId = -1;
-            _assignedPartitions = [];
-            _state = CoordinatorState.Unjoined;
+            _lock.Release();
         }
     }
 
