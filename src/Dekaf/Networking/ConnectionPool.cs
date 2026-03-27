@@ -26,7 +26,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
-    private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionGroupCreationTasks = new();
+    private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionReplacementLocks = new();
 
     // Per-broker semaphores to deduplicate concurrent group creation (H4 fix)
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupCreationLocks = new();
@@ -175,13 +175,12 @@ public sealed partial class ConnectionPool : IConnectionPool
         await groupLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Re-check after acquiring lock: another caller may have already created the group
+            // Re-check after acquiring lock: another caller may have already created the group.
+            // No need to validate individual connections — GetConnectionFromGroupAsync handles
+            // per-slot reconnection via ReplaceConnectionInGroupAsync.
             if (_connectionGroupsById.TryGetValue(brokerId, out var existingGroup))
             {
-                // Verify at least one connection is still valid
-                var firstValid = Array.Find(existingGroup, static c => c is not null && c.IsConnected);
-                if (firstValid is not null)
-                    return firstValid;
+                return existingGroup[0];
             }
 
             return await CreateConnectionGroupCoreAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
@@ -344,8 +343,8 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionGroupsById[brokerId] = shrunkGroup;
 
             // Clean up creation task slot for the removed index
-            if (_connectionGroupCreationTasks.TryRemove((brokerId, currentGroup.Length - 1), out var removedSem))
-                removedSem.Dispose();
+            // Don't dispose — a concurrent ReplaceConnectionInGroupAsync may be waiting on it
+            _connectionReplacementLocks.TryRemove((brokerId, currentGroup.Length - 1), out _);
 
             LogShrunkConnectionGroup(currentGroup.Length, shrunkGroup.Length, brokerId);
 
@@ -363,7 +362,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         // H5 fix: Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
         // capturing a caller-scoped CancellationToken that gets disposed in the caller's finally block.
         // Each caller creates its own timeout CTS, so no token outlives its CTS.
-        var replacementLock = _connectionGroupCreationTasks.GetOrAdd(
+        var replacementLock = _connectionReplacementLocks.GetOrAdd(
             (brokerId, index),
             static _ => new SemaphoreSlim(1, 1));
 
@@ -569,14 +568,13 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         if (_connectionGroupsById.TryRemove(brokerId, out var group))
         {
+            // Don't dispose — a concurrent ReplaceConnectionInGroupAsync may be waiting on it
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
-                if (_connectionGroupCreationTasks.TryRemove((brokerId, i), out var sem))
-                    sem.Dispose();
+                _connectionReplacementLocks.TryRemove((brokerId, i), out _);
             }
 
-            if (_groupCreationLocks.TryRemove(brokerId, out var groupLock))
-                groupLock.Dispose();
+            _groupCreationLocks.TryRemove(brokerId, out _);
 
             foreach (var conn in group)
             {
@@ -652,12 +650,9 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionCreationTasks.Clear();
             _connectionGroupsById.Clear();
 
-            foreach (var sem in _connectionGroupCreationTasks.Values)
-                sem.Dispose();
-            _connectionGroupCreationTasks.Clear();
-
-            foreach (var sem in _groupCreationLocks.Values)
-                sem.Dispose();
+            // Don't dispose semaphores — concurrent waiters may still hold references.
+            // Let GC handle cleanup once all references are dropped.
+            _connectionReplacementLocks.Clear();
             _groupCreationLocks.Clear();
 
             LogAllConnectionsClosed();
