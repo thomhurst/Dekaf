@@ -380,7 +380,7 @@ public sealed class FetchResponsePartition
                 {
                     records.Add(RecordBatch.Read(ref reader));
                 }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("Insufficient data", StringComparison.Ordinal))
+                catch (InsufficientDataException)
                 {
                     // Partial batch at end of records section — not enough data to read a complete batch.
                     // This is a normal Kafka scenario when the fetch response is truncated.
@@ -390,7 +390,7 @@ public sealed class FetchResponsePartition
                 {
                     // Unexpected error parsing a record batch — log for visibility and skip remaining batches.
                     // This should not happen under normal conditions and may indicate data corruption or a parsing bug.
-                    Debug.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
+                    Trace.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
                     break;
                 }
             }
