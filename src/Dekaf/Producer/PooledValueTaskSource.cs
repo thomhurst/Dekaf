@@ -56,7 +56,6 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     /// Completes the operation with a successful result.
     /// </summary>
     /// <param name="result">The result value.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetResult(T result)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
@@ -87,7 +86,6 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     /// Completes the operation with an exception.
     /// </summary>
     /// <param name="exception">The exception.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetException(Exception exception)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
