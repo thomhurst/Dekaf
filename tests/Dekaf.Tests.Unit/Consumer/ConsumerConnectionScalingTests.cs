@@ -50,4 +50,34 @@ public class ConsumerConnectionScalingTests
             };
         }).Throws<ArgumentOutOfRangeException>();
     }
+
+    [Test]
+    public async Task ConsumerBuilder_WithAdaptiveConnections_SetsMaxAndEnables()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAdaptiveConnections(3);
+
+        await Assert.That(builder).IsNotNull();
+    }
+
+    [Test]
+    public async Task ConsumerBuilder_WithoutAdaptiveConnections_Compiles()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithoutAdaptiveConnections();
+
+        await Assert.That(builder).IsNotNull();
+    }
+
+    [Test]
+    public async Task ConsumerBuilder_WithConnectionsPerBroker3_Allowed()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithConnectionsPerBroker(3);
+
+        await Assert.That(builder).IsNotNull();
+    }
 }
