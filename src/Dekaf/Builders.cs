@@ -167,11 +167,11 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// (partition % connectionCount) to preserve sequence ordering.
     /// </summary>
     /// <param name="connectionsPerBroker">
-    /// Number of connections per broker. Must be at least 1.
+    /// Number of connections per broker. Must be between 1 and 32.
     /// Cannot be greater than 1 when TransactionalId is set.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 32.
     /// </exception>
     public ProducerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
@@ -1244,6 +1244,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Default is 2. With the default, fetch requests use connection index 0 and coordination
     /// traffic (heartbeats, offset commits, JoinGroup/SyncGroup) uses connection index 1,
     /// providing guaranteed isolation between data-plane and control-plane operations.
+    /// Unlike the producer, the consumer does not use adaptive connection scaling;
+    /// this is a fixed connection count per broker.
     /// </summary>
     /// <param name="connectionsPerBroker">The number of connections per broker. Must be between 1 and 32.</param>
     /// <exception cref="ArgumentOutOfRangeException">
