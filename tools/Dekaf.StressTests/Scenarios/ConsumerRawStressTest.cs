@@ -8,9 +8,10 @@ using Dekaf.StressTests.Reporting;
 namespace Dekaf.StressTests.Scenarios;
 
 /// <summary>
-/// Zero-copy consumer stress test that reads raw bytes instead of deserializing strings.
-/// This isolates the consumer infrastructure overhead from string deserialization allocations,
-/// enabling accurate measurement of the consumer's true throughput and memory characteristics.
+/// Consumer stress test that reads raw bytes instead of deserializing strings.
+/// Uses <see cref="ReadOnlyMemory{T}"/> values which avoid string allocation (zero-copy for
+/// single-segment data, array copy for rare multi-segment cases). This isolates the consumer
+/// infrastructure overhead from string deserialization allocations.
 /// </summary>
 internal sealed class ConsumerRawStressTest : IStressTestScenario
 {
