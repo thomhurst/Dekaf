@@ -100,6 +100,10 @@ internal sealed class PrefetchPipelineRunner
                         // At memory limit — pause starting new fetches and wait for the consume
                         // loop to free memory. In-flight fetches complete naturally; their results
                         // will be consumed, releasing memory without a costly drain-all restart.
+                        // Note: in-flight fetches may push prefetchedBytes above maxBytes by up to
+                        // (pipelineDepth-1) batch sizes before the consume loop drains them. This
+                        // is intentional — discarding that work (drain-all) causes a costly cold
+                        // restart with FetchMaxWaitMs broker-side delay.
                         _logMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _waitForMemoryAvailable(cancellationToken).ConfigureAwait(false);
                         continue;
