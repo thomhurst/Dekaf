@@ -284,13 +284,13 @@ public sealed class ConsumerOptions
     public int PrefetchPipelineDepth { get; init; } = 2;
 
     /// <summary>
-    /// Number of TCP connections to maintain per broker.
-    /// Using multiple connections reduces head-of-line blocking where heartbeats and
+    /// Number of TCP connections to maintain per broker. Must be 1 or 2.
+    /// Using 2 connections reduces head-of-line blocking where heartbeats and
     /// offset commits contend with fetch requests for the single write lock on a connection.
     /// Default is 2, which dedicates connection index 0 to fetch (data-plane) requests and
     /// connection index 1 to coordination (control-plane) traffic such as heartbeats,
     /// offset commits, and JoinGroup/SyncGroup operations.
-    /// Must be between 1 and 32.
+    /// Setting to 1 uses a single shared connection for all traffic.
     /// </summary>
     public int ConnectionsPerBroker { get; init; } = 2;
 

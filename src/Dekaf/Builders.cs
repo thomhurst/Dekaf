@@ -1247,14 +1247,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Unlike the producer, the consumer does not use adaptive connection scaling;
     /// this is a fixed connection count per broker.
     /// </summary>
-    /// <param name="connectionsPerBroker">The number of connections per broker. Must be between 1 and 32.</param>
+    /// <param name="connectionsPerBroker">
+    /// The number of connections per broker. Must be 1 or 2.
+    /// The consumer uses at most 2 connections: index 0 for fetch (data-plane) and
+    /// index 1 for coordination (control-plane). Values above 2 would create unused connections.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 32.
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 2.
     /// </exception>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 2);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }

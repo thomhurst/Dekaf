@@ -124,9 +124,18 @@ public sealed class MultiConnectionConsumerTests(KafkaTestContainer kafka) : Kaf
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
 
-        // Commit on the single connection
-        await consumer.CommitAsync([new TopicPartitionOffset(topic, 0, messageCount)]);
-        var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0));
-        await Assert.That(committed).IsEqualTo(messageCount);
+        // Commit offsets derived from consumed messages (not hardcoded)
+        var offsets = messages
+            .GroupBy(m => new TopicPartition(m.Topic, m.Partition))
+            .Select(g => new TopicPartitionOffset(g.Key.Topic, g.Key.Partition, g.Max(m => m.Offset) + 1))
+            .ToArray();
+
+        await consumer.CommitAsync(offsets);
+
+        foreach (var offset in offsets)
+        {
+            var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(offset.Topic, offset.Partition));
+            await Assert.That(committed).IsEqualTo(offset.Offset);
+        }
     }
 }
