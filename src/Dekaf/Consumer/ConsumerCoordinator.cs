@@ -22,8 +22,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly ILogger _logger;
 
     private volatile int _coordinatorId = -1;
-    private string? _memberId;
-    private int _generationId = -1;
+    private volatile string? _memberId;
+    private volatile int _generationId = -1;
     private string? _leaderId;
     private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
     private HashSet<TopicPartition> _assignedPartitions = [];
