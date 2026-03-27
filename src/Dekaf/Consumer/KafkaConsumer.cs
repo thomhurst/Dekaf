@@ -903,21 +903,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var runner = new PrefetchPipelineRunner(
             ensureAssignment: EnsureAssignmentAsync,
             getAssignmentCount: () => _assignmentSnapshot.Count,
-            getMaxBytes: () =>
-            {
-                var configuredMax = (long)_options.QueuedMaxMessagesKbytes * 1024;
-                // Auto-scale: ensure the budget fits (pipelineDepth + 1) full fetch responses.
-                // The +1 provides headroom so the consume loop can drain a completed response
-                // while the pipeline keeps its full depth of in-flight fetches.
-                // A single fetch response is capped at FetchMaxBytes by the broker, even when
-                // partitionCount * MaxPartitionFetchBytes would exceed it.
-                var partitionCount = _assignmentSnapshot.Count;
-                var fetchResponseSize = Math.Min(
-                    (long)partitionCount * _options.MaxPartitionFetchBytes,
-                    _options.FetchMaxBytes);
-                var minRequired = fetchResponseSize * (_options.PrefetchPipelineDepth + 1);
-                return Math.Max(configuredMax, minRequired);
-            },
+            getMaxBytes: () => CalculatePrefetchMaxBytes(
+                _options.QueuedMaxMessagesKbytes,
+                _assignmentSnapshot.Count,
+                _options.MaxPartitionFetchBytes,
+                _options.FetchMaxBytes,
+                _options.PrefetchPipelineDepth),
             getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
             prefetchRecords: PrefetchRecordsAsync,
             waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
@@ -1024,6 +1015,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// Networking-layer KafkaExceptions (connection timeouts, broker unavailable) have no
     /// ErrorCode and are always transient — the ErrorCode guard excludes them.
     /// </remarks>
+    /// <summary>
+    /// Calculates the effective prefetch memory budget, auto-scaling above the configured
+    /// maximum when the partition count and pipeline depth require more headroom.
+    /// </summary>
+    internal static long CalculatePrefetchMaxBytes(
+        int queuedMaxMessagesKbytes,
+        int partitionCount,
+        int maxPartitionFetchBytes,
+        int fetchMaxBytes,
+        int pipelineDepth)
+    {
+        var configuredMax = (long)queuedMaxMessagesKbytes * 1024;
+        // Auto-scale: ensure the budget fits (pipelineDepth + 1) full fetch responses.
+        // The +1 provides headroom so the consume loop can drain a completed response
+        // while the pipeline keeps its full depth of in-flight fetches.
+        // A single fetch response is capped at FetchMaxBytes by the broker, even when
+        // partitionCount * MaxPartitionFetchBytes would exceed it.
+        var fetchResponseSize = Math.Min(
+            (long)partitionCount * maxPartitionFetchBytes,
+            fetchMaxBytes);
+        var minRequired = fetchResponseSize * (pipelineDepth + 1);
+        return Math.Max(configuredMax, minRequired);
+    }
+
     internal static bool IsFatalPrefetchError(Exception ex) => ex is
         Errors.AuthenticationException or
         Errors.AuthorizationException or
