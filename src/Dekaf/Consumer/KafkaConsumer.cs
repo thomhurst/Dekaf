@@ -293,6 +293,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly HashSet<TopicPartition> _assignment = [];
     private volatile IReadOnlySet<TopicPartition> _assignmentSnapshot = new HashSet<TopicPartition>();
     private readonly ConcurrentDictionary<TopicPartition, byte> _paused = new();
+    private volatile IReadOnlySet<string> _subscriptionSnapshot = new HashSet<string>();
+    private volatile IReadOnlySet<TopicPartition> _pausedSnapshot = new HashSet<TopicPartition>();
 
     // Pattern subscription support
     private Func<string, bool>? _topicFilter;
@@ -465,10 +467,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
     }
 
-    public IReadOnlySet<string> Subscription => _subscription.Keys.ToHashSet();
+    public IReadOnlySet<string> Subscription => _subscriptionSnapshot;
     public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
-    public IReadOnlySet<TopicPartition> Paused => _paused.Keys.ToHashSet();
+    public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
@@ -508,6 +510,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             _subscription.TryAdd(topic, 0);
         }
+        PublishSubscriptionSnapshot();
         _assignment.Clear();
         PublishAssignmentSnapshot();
         InvalidateFetchRequestCache();
@@ -520,6 +523,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _topicFilter = topicFilter;
         _subscription.Clear();
+        PublishSubscriptionSnapshot();
         _assignment.Clear();
         PublishAssignmentSnapshot();
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
@@ -532,6 +536,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         _topicFilter = null;
         _subscription.Clear();
+        PublishSubscriptionSnapshot();
         _assignment.Clear();
         PublishAssignmentSnapshot();
         InvalidatePartitionCache();
@@ -542,6 +547,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public IKafkaConsumer<TKey, TValue> Assign(params TopicPartition[] partitions)
     {
         _subscription.Clear();
+        PublishSubscriptionSnapshot();
         _assignment.Clear();
         foreach (var partition in partitions)
         {
@@ -566,6 +572,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         // Clear subscription since we're doing manual assignment
         _subscription.Clear();
+        PublishSubscriptionSnapshot();
 
         foreach (var tpo in partitions)
         {
@@ -602,6 +609,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         ClearFetchBufferForPartitions(partitions);
 
         PublishAssignmentSnapshot();
+        PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -1413,6 +1421,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             _paused.TryAdd(partition, 0);
         }
+        PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -1424,6 +1433,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             _paused.TryRemove(partition, out _);
         }
+        PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -1674,6 +1684,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 _subscription.TryAdd(topic, 0);
             }
+            PublishSubscriptionSnapshot();
             changed = true;
 
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -2084,6 +2095,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private void PublishAssignmentSnapshot()
     {
         _assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+    }
+
+    /// <summary>
+    /// Publishes an immutable snapshot of <see cref="_subscription"/> for lock-free reads.
+    /// Must be called after every mutation to <see cref="_subscription"/>.
+    /// </summary>
+    private void PublishSubscriptionSnapshot()
+    {
+        _subscriptionSnapshot = _subscription.Keys.ToHashSet();
+    }
+
+    /// <summary>
+    /// Publishes an immutable snapshot of <see cref="_paused"/> for lock-free reads.
+    /// Must be called after every mutation to <see cref="_paused"/>.
+    /// </summary>
+    private void PublishPausedSnapshot()
+    {
+        _pausedSnapshot = _paused.Keys.ToHashSet();
     }
 
     /// <summary>
