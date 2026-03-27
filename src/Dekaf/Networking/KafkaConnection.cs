@@ -151,7 +151,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
 
-    // Thread-local reusable buffer for request serialization to avoid per-request allocations
+    // Thread-local reusable buffer used ONLY for the SASL handshake cold path
+    // (SendSaslMessageAsync). Normal request serialization uses RentedBufferWriter via
+    // PreSerializeRequest, which rents from ArrayPool per request.
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_requestBuffer;
 
@@ -606,6 +608,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
     }
 
+    /// <summary>
+    /// Returns the thread-local request buffer for SASL handshake serialization only.
+    /// Normal (post-handshake) requests use <see cref="RentedBufferWriter"/> via PreSerializeRequest.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ArrayBufferWriter<byte> GetRequestBuffer()
     {
@@ -623,16 +629,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
     }
 
     /// <summary>
-    /// Serializes a request (size prefix + header + body) into a pooled buffer, outside the write lock.
-    /// Returns the rented array and the number of valid bytes. The caller must return the array
-    /// to <see cref="ArrayPool{T}.Shared"/> after use.
+    /// Serializes a request (size prefix + header + body) directly into a pooled buffer,
+    /// outside the write lock. Returns the rented array and the number of valid bytes.
+    /// The caller must return the array to <see cref="ArrayPool{T}.Shared"/> after use.
     /// </summary>
     /// <remarks>
-    /// Serialization runs outside the write lock to reduce lock hold time. With multiple broker
-    /// connections, CPU-bound serialization under the lock was the dominant bottleneck — the lock
-    /// only needs to cover the fast memcpy into the PipeWriter and the async flush.
-    /// The ArrayPool rent/return is per-batch (amortized over ~1000 messages), so the overhead
-    /// is negligible compared to the lock contention savings.
+    /// Serialization runs outside the write lock to reduce lock hold time. The request is
+    /// serialized directly into the rented array (starting at offset 4 to reserve space for
+    /// the size prefix), eliminating the intermediate copy through a thread-local buffer.
+    /// The ArrayPool rent/return is per-request to the broker (per-batch for produce, per-fetch
+    /// for consume), so the overhead is negligible.
     /// </remarks>
     private (byte[] Buffer, int Length) PreSerializeRequest<TRequest, TResponse>(
         TRequest request,
@@ -642,11 +648,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        // Serialize into the thread-local buffer (no allocation). This is safe because
-        // no async yield happens between serialize and the copy to the rented array below.
-        var buffer = GetRequestBuffer();
+        // Serialize directly into a rented array at offset 4 (reserving space for the size
+        // prefix). The only copy is rented array -> PipeWriter under the write lock.
+        using var writer = new RentedBufferWriter(initialCapacity: 4096, offset: 4);
 
-        var bodyWriter = new KafkaProtocolWriter(buffer);
+        var bodyWriter = new KafkaProtocolWriter(writer);
         var header = new RequestHeader
         {
             ApiKey = TRequest.ApiKey,
@@ -659,18 +665,14 @@ public sealed partial class KafkaConnection : IKafkaConnection
         header.Write(ref bodyWriter);
         request.Write(ref bodyWriter, apiVersion);
 
-        Debug.Assert(bodyWriter.BytesWritten == buffer.WrittenCount, "BytesWritten must equal buffer.WrittenCount");
-
-        // Copy to a pooled array that is safe to hold across the async write lock acquisition.
-        // The thread-local buffer cannot be used across await boundaries because another task
-        // resuming on the same thread could overwrite it via a concurrent PreSerializeRequest call.
-        var totalLength = 4 + bodyWriter.BytesWritten;
-        var rentedArray = ArrayPool<byte>.Shared.Rent(totalLength);
+        // Backpatch the 4-byte size prefix at the start of the rented array.
+        // DetachBuffer transfers ownership to the caller; Dispose becomes a no-op.
+        var (rentedArray, totalLength) = writer.DetachBuffer();
         BinaryPrimitives.WriteInt32BigEndian(rentedArray, bodyWriter.BytesWritten);
-        buffer.WrittenSpan.CopyTo(rentedArray.AsSpan(4));
 
         return (rentedArray, totalLength);
     }
+
 
     /// <summary>
     /// Pre-serializes a request outside the write lock, then acquires the lock to write
