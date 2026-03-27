@@ -116,6 +116,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
     private int GetSchemaIdSync(string subject, Schema schema)
     {
+        // PublicationOnly: if the factory throws (e.g. registry unreachable), the exception
+        // is NOT cached — the next caller retries. This is correct for network-dependent caches.
         var lazy = _schemaIdCache.GetOrAdd(subject, s => new Lazy<int>(() =>
         {
             // Synchronously get/register schema (blocking with timeout to prevent indefinite hang)
@@ -126,7 +128,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
             // Add timeout to prevent indefinite blocking in UI/sync context scenarios
             return task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
-        }));
+        }, LazyThreadSafetyMode.PublicationOnly));
         return lazy.Value;
     }
 
