@@ -139,6 +139,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
+    private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
     private SaslSessionState? _saslSessionState;
@@ -234,6 +235,26 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (IsConnected)
             return;
 
+        await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+
+            // Another caller completed connection while we waited
+            if (IsConnected)
+                return;
+
+            await ConnectCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectLock.Release();
+        }
+    }
+
+    private async ValueTask ConnectCoreAsync(CancellationToken cancellationToken)
+    {
         LogConnecting(_host, _port);
 
         _socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
@@ -539,35 +560,29 @@ public sealed partial class KafkaConnection : IKafkaConnection
             if (isFetchResponse)
             {
                 var memoryOwner = pooledBuffer.TransferOwnership();
-                ResponseParsingContext.SetPooledMemory(memoryOwner);
-                try
-                {
-                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                    var response = (TResponse)TResponse.Read(ref reader, apiVersion);
+                using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner);
 
-                    if (ResponseParsingContext.WasMemoryUsed)
+                var reader = new KafkaProtocolReader(pooledBuffer.Data);
+                var response = (TResponse)TResponse.Read(ref reader, apiVersion);
+
+                if (ResponseParsingContext.WasMemoryUsed)
+                {
+                    var takenMemory = ResponseParsingContext.TakePooledMemory();
+                    if (response is FetchResponse fetchResponse && takenMemory is not null)
                     {
-                        var takenMemory = ResponseParsingContext.TakePooledMemory();
-                        if (response is FetchResponse fetchResponse && takenMemory is not null)
-                        {
-                            fetchResponse.PooledMemoryOwner = takenMemory;
-                        }
-                        else
-                        {
-                            takenMemory?.Dispose();
-                        }
+                        fetchResponse.PooledMemoryOwner = takenMemory;
                     }
                     else
                     {
-                        memoryOwner.Dispose();
+                        takenMemory?.Dispose();
                     }
-
-                    return response;
                 }
-                finally
+                else
                 {
-                    ResponseParsingContext.Reset();
+                    memoryOwner.Dispose();
                 }
+
+                return response;
             }
             else
             {
@@ -1683,7 +1698,23 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
             catch
             {
-                // Ignore errors during shutdown
+                // The receive loop did not exit within 5 seconds (e.g., blocked on ReadAsync).
+                // Complete the pipe reader to force ReadAsync to return with IsCompleted=true,
+                // then wait briefly for the loop to observe it and exit gracefully. This prevents
+                // a race where the pipe is disposed while the receive loop still holds a ReadResult.
+                if (_reader is not null)
+                {
+                    await _reader.CompleteAsync().ConfigureAwait(false);
+
+                    try
+                    {
+                        await _receiveTask.WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort — proceed with disposal regardless.
+                    }
+                }
             }
         }
 
@@ -1716,6 +1747,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
+        _connectLock.Dispose();
         _writeLock.Dispose();
         _timeoutCtsPool.Clear();
         _ownedTokenProvider?.Dispose();

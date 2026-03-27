@@ -10,7 +10,7 @@ namespace Dekaf.Protocol;
 /// 1. Caller sets the pooled memory via SetPooledMemory() before parsing
 /// 2. RecordBatch.Read() checks HasPooledMemory and uses zero-copy if available
 /// 3. After parsing, caller checks WasMemoryUsed to determine if it should transfer ownership
-/// 4. Always call Reset() after parsing completes
+/// 4. Reset is called automatically when the returned <see cref="ParsingScope"/> is disposed
 ///
 /// Memory ownership is NOT transferred to individual batches. Instead, the caller
 /// (KafkaConnection) transfers ownership to PendingFetchData which disposes it
@@ -28,14 +28,21 @@ internal static class ResponseParsingContext
     }
 
     /// <summary>
-    /// Sets the pooled memory for the current parsing operation.
-    /// Must be called before parsing a FetchResponse.
+    /// Sets the pooled memory for the current parsing operation and returns a scope
+    /// that automatically calls <see cref="Reset"/> on disposal.
+    /// Must be called before parsing a FetchResponse. Use with <c>using</c>:
+    /// <code>using var scope = ResponseParsingContext.SetPooledMemory(memory);</code>
     /// </summary>
-    public static void SetPooledMemory(IPooledMemory memory)
+    public static ParsingScope SetPooledMemory(IPooledMemory memory)
     {
         var state = t_state ??= new ParsingContextState();
+
+        // Unconditionally overwrite: handles both fresh state and stale state
+        // left behind by a previous call that did not reset (e.g., an exception
+        // path that bypassed the scope disposal).
         state.PooledMemory = memory;
         state.MemoryUsed = false;
+        return new ParsingScope();
     }
 
     /// <summary>
@@ -67,7 +74,9 @@ internal static class ResponseParsingContext
         if (state is null || !state.MemoryUsed || state.PooledMemory is null)
             return null;
 
-        return state.PooledMemory;
+        var memory = state.PooledMemory;
+        state.PooledMemory = null; // Prevent double-take
+        return memory;
     }
 
     /// <summary>
@@ -78,7 +87,8 @@ internal static class ResponseParsingContext
 
     /// <summary>
     /// Resets the context after parsing completes.
-    /// Always call this in a finally block.
+    /// Prefer using the <see cref="ParsingScope"/> returned by <see cref="SetPooledMemory"/>
+    /// instead of calling this directly.
     /// </summary>
     public static void Reset()
     {
@@ -88,5 +98,15 @@ internal static class ResponseParsingContext
             state.PooledMemory = null;
             state.MemoryUsed = false;
         }
+    }
+
+    /// <summary>
+    /// RAII scope that ensures <see cref="Reset"/> is called when disposed.
+    /// Returned by <see cref="SetPooledMemory"/> to guarantee cleanup even if
+    /// an exception occurs during parsing.
+    /// </summary>
+    public readonly struct ParsingScope : IDisposable
+    {
+        public void Dispose() => Reset();
     }
 }
