@@ -1223,7 +1223,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// when many partitions produce data concurrently
     /// (e.g., N partitions produce N items per FetchResponse).
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void DrainPrefetchChannel()
     {
         // Bound: drain at most the current assignment count to keep the loop responsive.
