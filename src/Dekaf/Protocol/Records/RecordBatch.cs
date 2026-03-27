@@ -662,8 +662,17 @@ public sealed class RecordBatch : IDisposable
 
         var recordsLength = batchLength - BatchHeaderSize;
 
-        // Clamp recordsLength when the batch is truncated by fetch response size limits.
-        recordsLength = Math.Max(0, Math.Min(recordsLength, availableBytes - TotalBatchHeaderSize));
+        // When the batch is truncated by fetch response size limits, batchLength reflects the
+        // full (un-truncated) size but less data is actually available. Skip past the truncated
+        // data and signal truncation — FetchResponse catches InsufficientDataException and
+        // skips partial batches. This prevents reading past the partition boundary while
+        // preserving the existing truncation handling behavior.
+        var maxRecordsLength = Math.Max(0, availableBytes - TotalBatchHeaderSize);
+        if (recordsLength > maxRecordsLength)
+        {
+            reader.Skip(maxRecordsLength);
+            throw new InsufficientDataException();
+        }
 
         // Check compression type from attributes
         var compression = (CompressionType)((int)attributes & 0x07);

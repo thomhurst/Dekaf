@@ -835,7 +835,7 @@ public class RecordBatchTests
     #region Truncated Batch Boundary Enforcement Tests
 
     [Test]
-    public async Task RecordBatch_Read_TruncatedBatch_DoesNotReadPastBoundary()
+    public async Task RecordBatch_Read_TruncatedBatch_ThrowsInsufficientDataAndStaysWithinBoundary()
     {
         var buffer = new ArrayBufferWriter<byte>();
 
@@ -867,11 +867,21 @@ public class RecordBatchTests
         Array.Copy(fullBatchBytes, combinedBuffer, truncatedLength);
         Array.Fill(combinedBuffer, (byte)0xFF, truncatedLength, combinedBuffer.Length - truncatedLength);
 
+        // Truncated batches throw InsufficientDataException so the caller (FetchResponse)
+        // can skip them, while the reader stays within the partition boundary.
         var reader = new KafkaProtocolReader(combinedBuffer.AsMemory());
-        using var parsedBatch = RecordBatch.Read(ref reader, availableBytes: truncatedLength);
 
-        await Assert.That(reader.Consumed).IsLessThanOrEqualTo(truncatedLength);
-        await Assert.That(parsedBatch.BaseOffset).IsEqualTo(10L);
+        try
+        {
+            RecordBatch.Read(ref reader, availableBytes: truncatedLength);
+            throw new InvalidOperationException("Expected InsufficientDataException was not thrown");
+        }
+        catch (InsufficientDataException)
+        {
+            // Expected — truncated batch signals truncation
+        }
+
+        await Assert.That(reader.Consumed).IsEqualTo(truncatedLength);
     }
 
     [Test]
