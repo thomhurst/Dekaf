@@ -1119,35 +1119,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
         LogCoordinatorDisposing();
 
-        CancellationTokenSource? cts;
-        Task? task;
+        await StopHeartbeatAsync().ConfigureAwait(false);
 
-        lock (_heartbeatGuard)
-        {
-            cts = _heartbeatCts;
-            task = _heartbeatTask;
-            _heartbeatCts = null;
-            _heartbeatTask = null;
-        }
-
-        if (cts is not null)
-        {
-            await cts.CancelAsync().ConfigureAwait(false);
-        }
-
-        if (task is not null)
-        {
-            try
-            {
-                await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Ignore
-            }
-        }
-
-        cts?.Dispose();
         _lock.Dispose();
         _commitLock.Dispose();
         _fetchLock.Dispose();
