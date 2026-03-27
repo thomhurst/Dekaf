@@ -123,7 +123,8 @@ internal sealed class ConsumerConnectionScaler
     internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
     {
         if (fetchConnectionCount == 1) return 0;
-        return counter++ % fetchConnectionCount;
+        var next = Interlocked.Increment(ref counter) - 1;
+        return next % fetchConnectionCount;
     }
 
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
