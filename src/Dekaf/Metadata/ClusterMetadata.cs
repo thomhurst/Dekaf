@@ -236,75 +236,77 @@ public sealed class ClusterMetadata
             };
         }
 
-        Dictionary<string, TopicInfo> topics;
-        Dictionary<Guid, TopicInfo> topicsById;
-
-        if (mergeTopics)
-        {
-            // Merge mode: start with existing topics and overlay response topics.
-            // This preserves metadata for topics not included in the response,
-            // which is critical when refreshing metadata for a single topic.
-            var existing = _snapshot;
-            topics = new Dictionary<string, TopicInfo>(existing.Topics.Count + response.Topics.Count);
-            topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById.Count + response.Topics.Count);
-
-            foreach (var (name, info) in existing.Topics)
-                topics[name] = info;
-            foreach (var (id, info) in existing.TopicsById)
-                topicsById[id] = info;
-        }
-        else
-        {
-            topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
-            topicsById = new Dictionary<Guid, TopicInfo>();
-        }
-
-        foreach (var topic in response.Topics)
-        {
-            // Use explicit loop instead of LINQ Select to avoid enumerator allocation
-            var partitions = new List<PartitionInfo>(topic.Partitions.Count);
-            foreach (var p in topic.Partitions)
-            {
-                partitions.Add(new PartitionInfo
-                {
-                    PartitionIndex = p.PartitionIndex,
-                    LeaderId = p.LeaderId,
-                    LeaderEpoch = p.LeaderEpoch,
-                    ReplicaNodes = p.ReplicaNodes,
-                    IsrNodes = p.IsrNodes,
-                    OfflineReplicas = p.OfflineReplicas,
-                    ErrorCode = p.ErrorCode
-                });
-            }
-
-            var topicInfo = new TopicInfo
-            {
-                Name = topic.Name,
-                TopicId = topic.TopicId,
-                ErrorCode = topic.ErrorCode,
-                IsInternal = topic.IsInternal,
-                Partitions = partitions
-            };
-
-            topics[topic.Name] = topicInfo;
-            if (topic.TopicId != Guid.Empty)
-            {
-                topicsById[topic.TopicId] = topicInfo;
-            }
-        }
-
-        var newSnapshot = new ClusterMetadataSnapshot(
-            response.ClusterId,
-            response.ControllerId,
-            DateTimeOffset.UtcNow,
-            brokers,
-            topics,
-            topicsById);
-
-        // Lock only needed if multiple threads could call Update() concurrently
-        // In practice, only the background refresh task calls this, so the lock is rarely contended
+        // Build topic dictionaries. For merge mode, the snapshot read must happen inside the
+        // lock to prevent TOCTOU: two concurrent merge calls reading _snapshot outside the lock
+        // could each build a merged dictionary from the same base, and the second swap would
+        // lose the first call's topics.
         lock (_writeLock)
         {
+            Dictionary<string, TopicInfo> topics;
+            Dictionary<Guid, TopicInfo> topicsById;
+
+            if (mergeTopics)
+            {
+                // Merge mode: start with existing topics and overlay response topics.
+                // This preserves metadata for topics not included in the response,
+                // which is critical when refreshing metadata for a single topic.
+                var existing = _snapshot;
+                topics = new Dictionary<string, TopicInfo>(existing.Topics.Count + response.Topics.Count);
+                topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById.Count + response.Topics.Count);
+
+                foreach (var (name, info) in existing.Topics)
+                    topics[name] = info;
+                foreach (var (id, info) in existing.TopicsById)
+                    topicsById[id] = info;
+            }
+            else
+            {
+                topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
+                topicsById = new Dictionary<Guid, TopicInfo>();
+            }
+
+            foreach (var topic in response.Topics)
+            {
+                // Use explicit loop instead of LINQ Select to avoid enumerator allocation
+                var partitions = new List<PartitionInfo>(topic.Partitions.Count);
+                foreach (var p in topic.Partitions)
+                {
+                    partitions.Add(new PartitionInfo
+                    {
+                        PartitionIndex = p.PartitionIndex,
+                        LeaderId = p.LeaderId,
+                        LeaderEpoch = p.LeaderEpoch,
+                        ReplicaNodes = p.ReplicaNodes,
+                        IsrNodes = p.IsrNodes,
+                        OfflineReplicas = p.OfflineReplicas,
+                        ErrorCode = p.ErrorCode
+                    });
+                }
+
+                var topicInfo = new TopicInfo
+                {
+                    Name = topic.Name,
+                    TopicId = topic.TopicId,
+                    ErrorCode = topic.ErrorCode,
+                    IsInternal = topic.IsInternal,
+                    Partitions = partitions
+                };
+
+                topics[topic.Name] = topicInfo;
+                if (topic.TopicId != Guid.Empty)
+                {
+                    topicsById[topic.TopicId] = topicInfo;
+                }
+            }
+
+            var newSnapshot = new ClusterMetadataSnapshot(
+                response.ClusterId,
+                response.ControllerId,
+                DateTimeOffset.UtcNow,
+                brokers,
+                topics,
+                topicsById);
+
             // Atomic reference swap - readers see either old or new snapshot, never partial state
             _snapshot = newSnapshot;
         }
