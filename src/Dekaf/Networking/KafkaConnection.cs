@@ -235,14 +235,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (IsConnected)
             return;
 
-        try
-        {
-            await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-        }
+        await AcquireSemaphoreOrThrowDisposedAsync(_connectLock, cancellationToken).ConfigureAwait(false);
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -697,14 +690,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
         try
         {
-            try
-            {
-                await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (ObjectDisposedException)
-            {
-                throw new ObjectDisposedException(nameof(KafkaConnection));
-            }
+            await AcquireSemaphoreOrThrowDisposedAsync(_writeLock, cancellationToken).ConfigureAwait(false);
             try
             {
                 await WritePreSerializedAndFlushAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
@@ -1795,6 +1781,20 @@ public sealed partial class KafkaConnection : IKafkaConnection
             {
                 _pendingRequestPool.Return(orphaned);
             }
+        }
+    }
+
+    private static async ValueTask AcquireSemaphoreOrThrowDisposedAsync(
+        SemaphoreSlim semaphore,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw new ObjectDisposedException(nameof(KafkaConnection));
         }
     }
 

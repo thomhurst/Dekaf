@@ -1153,14 +1153,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
 
-        try
-        {
-            await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-        }
+        await AcquireSemaphoreOrThrowDisposedAsync(_transactionLock, cancellationToken).ConfigureAwait(false);
         try
         {
 
@@ -2063,14 +2056,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (_initialized)
             return;
 
-        try
-        {
-            await _initLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-        }
+        await AcquireSemaphoreOrThrowDisposedAsync(_initLock, cancellationToken).ConfigureAwait(false);
         try
         {
             // Double-check after acquiring lock
@@ -2340,14 +2326,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private async ValueTask InitIdempotentProducerAsync(CancellationToken cancellationToken)
     {
         // Double-check under lock to prevent concurrent initialization
-        try
-        {
-            await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-        }
+        await AcquireSemaphoreOrThrowDisposedAsync(_transactionLock, cancellationToken).ConfigureAwait(false);
         try
         {
             if (_idempotentInitialized)
@@ -2474,14 +2453,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal async ValueTask<(long ProducerId, short ProducerEpoch)> BumpEpochAsync(
         short expectedEpoch, CancellationToken cancellationToken)
     {
-        try
-        {
-            await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-        }
+        await AcquireSemaphoreOrThrowDisposedAsync(_transactionLock, cancellationToken).ConfigureAwait(false);
         try
         {
             // Another thread already bumped — return current state
@@ -2907,6 +2879,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception ex) when (ex is not OperationCanceledException and not TimeoutException)
         {
             LogDisposalStepFailed(ex, step);
+        }
+    }
+
+    private static async ValueTask AcquireSemaphoreOrThrowDisposedAsync(
+        SemaphoreSlim semaphore,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
         }
     }
 
