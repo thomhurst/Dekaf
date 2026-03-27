@@ -32,7 +32,7 @@ public class AdaptiveScalingTests
 
         await accumulator.AppendAsync(
             "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            pooledKey, pooledValue, null, 0, null, CancellationToken.None);
+            pooledKey, pooledValue, null, 0, null, null, CancellationToken.None);
     }
 
     /// <summary>

@@ -1485,7 +1485,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
-                if (!await AppendWithCompletionAsync(
+                if (!await AppendAsync(
                     workItem.Topic,
                     workItem.Partition,
                     workItem.Timestamp,
@@ -1494,6 +1494,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Headers,
                     workItem.HeaderCount,
                     workItem.Completion,
+                    null,
                     workItem.CancellationToken).ConfigureAwait(false))
                 {
                     CleanupWorkItemResources(in workItem);
@@ -1626,7 +1627,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Async append method for the fire-and-forget path.
+    /// Async append method for all produce paths (fire-and-forget and awaitable).
     /// Hot path: if <see cref="TryReserveMemory"/> succeeds, completes synchronously with no async state machine.
     /// Cold path: awaits <see cref="ReserveMemoryAsync"/> when buffer memory is exhausted (backpressure).
     /// </summary>
@@ -1639,6 +1640,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledMemory value,
         Header[]? headers,
         int headerCount,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken)
     {
@@ -1650,11 +1652,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
-                headers, headerCount, null, callback, recordSize));
+                headers, headerCount, completionSource, callback, recordSize));
 
         // Cold path: buffer full, await async reservation (backpressure)
         return AppendSlowPath(topic, partition, timestamp, key, value,
-            headers, headerCount, null, callback, recordSize, cancellationToken);
+            headers, headerCount, completionSource, callback, recordSize, cancellationToken);
     }
 
     private bool AppendAfterReservation(
@@ -1756,36 +1758,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             headers, headerCount, completionSource, callback, recordSize);
     }
 
-    /// <summary>
-    /// Async append with completion source tracking for the ProduceAsync path.
-    /// Used by append workers to process work items with async backpressure.
-    /// </summary>
-    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
-    private ValueTask<bool> AppendWithCompletionAsync(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        Header[]? headers,
-        int headerCount,
-        PooledValueTaskSource<RecordMetadata> completionSource,
-        CancellationToken cancellationToken)
-    {
-        if (_disposed)
-            return new ValueTask<bool>(false);
-
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
-
-        // Hot path: non-blocking CAS reservation
-        if (TryReserveMemory(recordSize))
-            return new ValueTask<bool>(AppendAfterReservation(
-                topic, partition, timestamp, key, value, headers, headerCount, completionSource, null, recordSize));
-
-        // Cold path: buffer full, await async reservation
-        return AppendSlowPath(
-            topic, partition, timestamp, key, value, headers, headerCount, completionSource, null, recordSize, cancellationToken);
-    }
 
     /// <summary>
     /// Non-blocking variant of Append for the ProduceAsync fast path.
