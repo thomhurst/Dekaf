@@ -749,7 +749,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
     private readonly ReadOnlyMemory<byte> _rawData;
     private byte[]? _pooledArray; // Track pooled array for cleanup (mutable for idempotent dispose)
-    private readonly int _count;
+    private int _count;
     private List<Record>? _parsedRecords;
     private int _nextParseOffset;
     private int _disposed;
@@ -825,9 +825,21 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         {
             var slice = _rawData.Slice(_nextParseOffset);
             var reader = new KafkaProtocolReader(slice);
-            var record = Record.Read(ref reader);
-            _parsedRecords.Add(record);
-            _nextParseOffset += (int)reader.Consumed;
+
+            try
+            {
+                var record = Record.Read(ref reader);
+                _parsedRecords.Add(record);
+                _nextParseOffset += (int)reader.Consumed;
+            }
+            catch (InsufficientDataException)
+            {
+                // Truncated fetch response - no more complete records can be parsed.
+                // Cap the count to what we've successfully parsed so far to prevent
+                // further attempts. This mirrors the partial batch handling in FetchResponse.
+                _count = _parsedRecords.Count;
+                break;
+            }
         }
     }
 
