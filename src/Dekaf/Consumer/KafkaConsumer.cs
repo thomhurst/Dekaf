@@ -1706,11 +1706,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Acquires a semaphore asynchronously, converting ObjectDisposedException into a
-    /// consumer-specific ObjectDisposedException for clearer diagnostics.
-    /// </summary>
-
-    /// <summary>
     /// Refreshes the subscription topics based on the current topic filter.
     /// Rate-limited to avoid excessive metadata requests (30 second interval).
     /// </summary>
