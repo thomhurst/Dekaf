@@ -677,10 +677,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             }
                             else
                             {
-                                // Channel completed without error — prefetch loop has stopped.
-                                // Currently unreachable: TryComplete() is only called with a KafkaException,
-                                // never with null. This guard prevents a silent infinite loop if a future
-                                // code path adds graceful channel completion (e.g., during rebalance).
+                                // Channel completed without error — prefetch pipeline has stopped.
+                                // Reached when PrefetchPipelineRunner exits its loop normally
+                                // (e.g., cancellation) and calls TryComplete() in its finally block.
                                 break;
                             }
                         }
@@ -916,13 +915,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         catch (Errors.AuthenticationException ex)
         {
-            // Non-recoverable — let PrefetchPipelineRunner count via ConsecutiveErrors
+            // Non-recoverable. Caught separately because Auth* exceptions may lack
+            // ErrorCode, so the ErrorCode guard below wouldn't catch them.
             LogFatalPrefetchError(ex, brokerId);
             throw;
         }
         catch (Errors.AuthorizationException ex)
         {
-            // Non-recoverable — let PrefetchPipelineRunner count via ConsecutiveErrors
+            // Non-recoverable. Caught separately because Auth* exceptions may lack
+            // ErrorCode, so the ErrorCode guard below wouldn't catch them.
             LogFatalPrefetchError(ex, brokerId);
             throw;
         }
