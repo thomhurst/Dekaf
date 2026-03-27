@@ -885,7 +885,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Batch-level _fetchPositions update (once per partition-fetch, not per message).
                     // _fetchPositions controls where the next fetch request starts from.
-                    // In prefetch mode, the prefetch thread already advances _fetchPositions.
+                    // In prefetch mode, the prefetch thread already advances _fetchPositions
+                    // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
+                    // since _fetchPositions was set at prefetch time before the fault occurred.
                     if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
                     {
                         _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
