@@ -775,8 +775,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             System.Diagnostics.Activity? previousActivity = null;
             try
             {
-            while (_pendingFetches.Count > 0)
-            {
+                while (_pendingFetches.Count > 0)
+                {
                 var pending = _pendingFetches.Peek();
                 // default is unreachable: nextResult is always assigned inside the try body
                 // before yield return is reached; the compiler requires definite assignment here.
@@ -888,7 +888,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Advance fetch position past successfully consumed records to avoid re-delivery.
                     // _positions[tp] was already updated per-message (line above), but _fetchPositions
                     // controls where the next fetch request starts from.
-                    if (pending.LastYieldedOffset >= 0)
+                    if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
                     {
                         _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
                     }
