@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -10,10 +11,10 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This serializer uses lazy caching for schema IDs. The first time a schema is needed for a
-/// particular subject, a synchronous blocking call to the Schema Registry is made.
-/// After the first fetch, subsequent serialization calls for the same subject use the cached
-/// schema ID without any blocking.
+/// This serializer uses lazy caching for schema IDs via a <see cref="ConcurrentDictionary{TKey,TValue}"/>.
+/// The first time a schema is needed for a particular subject, a synchronous blocking call to the
+/// Schema Registry is made. After the first fetch, subsequent serialization calls for the same subject
+/// use the cached schema ID without any blocking. Multiple subjects are cached concurrently.
 /// </para>
 /// <para>
 /// The blocking call includes a timeout to prevent indefinite hangs. If the timeout is exceeded,
@@ -38,8 +39,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly bool _autoRegisterSchemas;
     private readonly bool _ownsClient;
 
-    private sealed record CachedSchema(string Subject, int SchemaId);
-    private volatile CachedSchema? _cachedSchema;
+    private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -116,22 +116,17 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
     private int GetSchemaIdSync(string subject, Schema schema)
     {
-        // Use cached ID if subject matches (single volatile read ensures atomicity)
-        var cached = _cachedSchema;
-        if (cached is not null && cached.Subject == subject)
-            return cached.SchemaId;
+        return _schemaIdCache.GetOrAdd(subject, s =>
+        {
+            // Synchronously get/register schema (blocking with timeout to prevent indefinite hang)
+            var task = _autoRegisterSchemas
+                ? _schemaRegistry.GetOrRegisterSchemaAsync(s, schema)
+                : _schemaRegistry.GetSchemaBySubjectAsync(s).ContinueWith(
+                    static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
 
-        // Synchronously get/register schema (blocking with timeout to prevent indefinite hang)
-        var task = _autoRegisterSchemas
-            ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id, TaskScheduler.Default);
-
-        // Add timeout to prevent indefinite blocking in UI/sync context scenarios
-        var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
-
-        _cachedSchema = new CachedSchema(subject, id);
-
-        return id;
+            // Add timeout to prevent indefinite blocking in UI/sync context scenarios
+            return task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+        });
     }
 
     private string GetSubjectName(string topic, bool isKey)
