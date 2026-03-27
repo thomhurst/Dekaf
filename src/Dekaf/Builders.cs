@@ -1285,7 +1285,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>MaxPollRecords: 1000 (larger batches)</description></item>
     /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
-    /// <item><description>FetchMaxWaitMs: 500ms (intentionally higher than the 200ms default to allow the broker to accumulate more data)</description></item>
+    /// <item><description>FetchMaxWaitMs: 200ms (matches default; higher values like 500ms cause stalls when the prefetch pipeline restarts after hitting memory limits)</description></item>
+    /// <item><description>MaxPartitionFetchBytes: 4MB (larger fetch responses reduce round-trip overhead per byte)</description></item>
+    /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses)</description></item>
     /// </list>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
@@ -1294,7 +1296,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         _maxPollRecords = 1000;
         _fetchMinBytes = 1024;
-        _fetchMaxWaitMs = 500;
+        _fetchMaxWaitMs = 200;
+        _maxPartitionFetchBytes = 4 * 1024 * 1024;
+        _fetchMaxBytes = 100 * 1024 * 1024;
         return this;
     }
 
