@@ -28,6 +28,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
     private HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
     private Task? _heartbeatTask;
 
@@ -158,6 +159,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
         // callers while awaiting the old heartbeat task cleanup (up to 5 seconds).
+        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
+        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
+        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
+        // serialized old-heartbeat teardown.
         if (_state == CoordinatorState.Stable)
         {
             await StartHeartbeatAsync().ConfigureAwait(false);
@@ -464,11 +469,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         LogHeartbeatStarted(_options.HeartbeatIntervalMs);
 
-        // Stop and clean up the old heartbeat loop before starting a new one
-        // to prevent two concurrent heartbeat loops and CTS leaks.
-        var oldCts = _heartbeatCts;
-        var oldTask = _heartbeatTask;
+        // Serialize heartbeat starts to prevent concurrent callers from orphaning a heartbeat loop.
+        // Without this guard, two threads exiting EnsureActiveGroupAsync simultaneously could both
+        // snapshot the same old CTS/task, cancel it, and each assign new CTS/task fields — the first
+        // writer's heartbeat loop would be overwritten and its CTS never cancelled.
+        Task? oldTask;
+        CancellationTokenSource? oldCts;
 
+        lock (_heartbeatGuard)
+        {
+            oldCts = _heartbeatCts;
+            oldTask = _heartbeatTask;
+
+            _heartbeatCts = new CancellationTokenSource();
+            _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
+        }
+
+        // Clean up old heartbeat outside the lock (awaiting is safe here since the new
+        // heartbeat is already running and the fields have been atomically swapped).
         if (oldCts is not null)
         {
             await oldCts.CancelAsync().ConfigureAwait(false);
@@ -487,9 +505,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             oldCts.Dispose();
         }
-
-        _heartbeatCts = new CancellationTokenSource();
-        _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
     }
 
     private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
