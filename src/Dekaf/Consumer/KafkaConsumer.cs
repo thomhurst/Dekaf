@@ -519,7 +519,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
         InvalidateFetchRequestCache();
         return this;
@@ -540,7 +540,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
         InvalidatePartitionCache();
@@ -561,7 +561,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -584,7 +584,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -601,7 +601,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -635,7 +635,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -660,7 +660,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
 
         // Clear any pending fetch data for the removed partitions
@@ -1684,7 +1684,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _initLock.Release();
+            ReleaseSemaphoreSafely(_initLock);
         }
     }
 
@@ -1703,6 +1703,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         throw new InvalidOperationException(
             "Call InitializeAsync() or use BuildAsync() before consuming messages.");
+    }
+
+    /// <summary>
+    /// Releases a semaphore safely, suppressing ObjectDisposedException that can occur
+    /// when DisposeAsync races with a finally block after a successful WaitAsync.
+    /// </summary>
+    private static void ReleaseSemaphoreSafely(SemaphoreSlim semaphore)
+    {
+        try { semaphore.Release(); }
+        catch (ObjectDisposedException) { }
     }
 
     /// <summary>
@@ -1877,7 +1887,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            ReleaseSemaphoreSafely(_assignmentLock);
         }
     }
 

@@ -249,7 +249,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            _connectLock.Release();
+            ReleaseSemaphoreSafely(_connectLock);
         }
     }
 
@@ -698,7 +698,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
             finally
             {
-                _writeLock.Release();
+                ReleaseSemaphoreSafely(_writeLock);
             }
         }
         finally
@@ -1454,7 +1454,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             _reauthenticating = false;
-            _reauthLock.Release();
+            ReleaseSemaphoreSafely(_reauthLock);
         }
     }
 
@@ -1796,6 +1796,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             throw new ObjectDisposedException(nameof(KafkaConnection));
         }
+    }
+
+    /// <summary>
+    /// Releases a semaphore safely, suppressing ObjectDisposedException that can occur
+    /// when DisposeAsync races with a finally block after a successful WaitAsync.
+    /// </summary>
+    private static void ReleaseSemaphoreSafely(SemaphoreSlim semaphore)
+    {
+        try { semaphore.Release(); }
+        catch (ObjectDisposedException) { }
     }
 
     #region Logging

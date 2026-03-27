@@ -1167,7 +1167,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            _transactionLock.Release();
+            ReleaseSemaphoreSafely(_transactionLock);
         }
     }
 
@@ -2089,7 +2089,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            _initLock.Release();
+            ReleaseSemaphoreSafely(_initLock);
         }
     }
 
@@ -2398,7 +2398,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            _transactionLock.Release();
+            ReleaseSemaphoreSafely(_transactionLock);
         }
     }
 
@@ -2523,7 +2523,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
-            _transactionLock.Release();
+            ReleaseSemaphoreSafely(_transactionLock);
         }
     }
 
@@ -2894,6 +2894,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
         }
+    }
+
+    /// <summary>
+    /// Releases a semaphore safely, suppressing ObjectDisposedException that can occur
+    /// when DisposeAsync races with a finally block after a successful WaitAsync.
+    /// </summary>
+    private static void ReleaseSemaphoreSafely(SemaphoreSlim semaphore)
+    {
+        try { semaphore.Release(); }
+        catch (ObjectDisposedException) { }
     }
 
     #region Logging
