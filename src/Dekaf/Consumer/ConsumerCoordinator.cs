@@ -1076,16 +1076,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     public async ValueTask StopHeartbeatAsync()
     {
-        if (_heartbeatCts is not null)
+        CancellationTokenSource? cts;
+        Task? task;
+
+        lock (_heartbeatGuard)
         {
-            await _heartbeatCts.CancelAsync().ConfigureAwait(false);
+            cts = _heartbeatCts;
+            task = _heartbeatTask;
+            _heartbeatCts = null;
+            _heartbeatTask = null;
         }
 
-        if (_heartbeatTask is not null)
+        if (cts is not null)
+        {
+            await cts.CancelAsync().ConfigureAwait(false);
+        }
+
+        if (task is not null)
         {
             try
             {
-                await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -1093,9 +1104,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        _heartbeatCts?.Dispose();
-        _heartbeatCts = null;
-        _heartbeatTask = null;
+        cts?.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -1104,16 +1113,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
         LogCoordinatorDisposing();
 
-        if (_heartbeatCts is not null)
+        CancellationTokenSource? cts;
+        Task? task;
+
+        lock (_heartbeatGuard)
         {
-            await _heartbeatCts.CancelAsync().ConfigureAwait(false);
+            cts = _heartbeatCts;
+            task = _heartbeatTask;
+            _heartbeatCts = null;
+            _heartbeatTask = null;
         }
 
-        if (_heartbeatTask is not null)
+        if (cts is not null)
+        {
+            await cts.CancelAsync().ConfigureAwait(false);
+        }
+
+        if (task is not null)
         {
             try
             {
-                await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -1121,7 +1141,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        _heartbeatCts?.Dispose();
+        cts?.Dispose();
         _lock.Dispose();
         _commitLock.Dispose();
         _fetchLock.Dispose();
