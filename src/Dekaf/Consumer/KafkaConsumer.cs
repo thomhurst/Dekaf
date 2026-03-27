@@ -434,7 +434,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
             loggerFactory,
-            connectionsPerBroker: 1,
+            connectionsPerBroker: options.ConnectionsPerBroker,
             ResponseBufferPool.Create(options.FetchMaxBytes));
 
         _metadataManager = new MetadataManager(

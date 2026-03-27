@@ -284,6 +284,15 @@ public sealed class ConsumerOptions
     public int PrefetchPipelineDepth { get; init; } = 2;
 
     /// <summary>
+    /// Number of TCP connections to maintain per broker.
+    /// Using multiple connections reduces head-of-line blocking where heartbeats and
+    /// offset commits contend with fetch requests for the single write lock on a connection.
+    /// Default is 2, which allows fetch requests and coordination requests to naturally
+    /// spread across connections via round-robin selection.
+    /// </summary>
+    public int ConnectionsPerBroker { get; init; } = 2;
+
+    /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
     /// Interceptors are called on consume (OnConsume) and on commit (OnCommit).
     /// Interceptor exceptions are caught and logged, not propagated.

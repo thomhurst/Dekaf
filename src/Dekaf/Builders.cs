@@ -799,6 +799,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
     private int _prefetchPipelineDepth = 2;
+    private int _connectionsPerBroker = 2;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1236,6 +1237,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the number of TCP connections per broker.
+    /// Multiple connections reduce head-of-line blocking where heartbeats and offset commits
+    /// contend with fetch requests for the write lock on a single connection.
+    /// Default is 2.
+    /// </summary>
+    /// <param name="connectionsPerBroker">The number of connections per broker. Must be at least 1.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
+    /// </exception>
+    public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -1412,7 +1430,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
-            PrefetchPipelineDepth = _prefetchPipelineDepth
+            PrefetchPipelineDepth = _prefetchPipelineDepth,
+            ConnectionsPerBroker = _connectionsPerBroker
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
