@@ -1287,6 +1287,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// may retain up to 8 arrays of this size per consumer instance)</description></item>
     /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
     /// </list>
+    /// <para><b>Memory note:</b> The combined in-flight memory ceiling is
+    /// <c>PrefetchPipelineDepth × FetchMaxBytes</c> — with these defaults that is
+    /// 5 × 100 MB ≈ 500 MB peak per consumer instance.</para>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
     /// <returns>The builder instance for method chaining.</returns>
