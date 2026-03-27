@@ -778,6 +778,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             while (_pendingFetches.Count > 0)
             {
                 var pending = _pendingFetches.Peek();
+                // default is unreachable: nextResult is always assigned inside the try body
+                // before yield return is reached; the compiler requires definite assignment here.
                 ConsumeResult<TKey, TValue> nextResult = default;
                 bool fetchFaulted = false;
 
@@ -870,6 +872,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         // A parsing or data error in this PendingFetchData should not kill the consumer.
                         // Log the error, discard the corrupted fetch, and continue the outer fetch loop.
                         // Position updates from successfully consumed records are kept.
+                        previousActivity?.Dispose();
+                        previousActivity = null;
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         _pendingFetches.Dequeue().Dispose();
                         fetchFaulted = true;
@@ -880,7 +884,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 }
 
                 if (fetchFaulted)
+                {
+                    // Advance fetch position past successfully consumed records to avoid re-delivery.
+                    // _positions[tp] was already updated per-message (line above), but _fetchPositions
+                    // controls where the next fetch request starts from.
+                    if (pending.LastYieldedOffset >= 0)
+                    {
+                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                    }
+
                     continue;
+                }
 
                 // Dispose last activity from this pending fetch
                 previousActivity?.Dispose();
