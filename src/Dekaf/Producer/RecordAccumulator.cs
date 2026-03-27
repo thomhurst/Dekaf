@@ -784,7 +784,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private short _producerEpoch = -1;
     internal long ProducerId { get => Volatile.Read(ref _producerId); set => Volatile.Write(ref _producerId, value); }
     internal short ProducerEpoch { get => Volatile.Read(ref _producerEpoch); set => Volatile.Write(ref _producerEpoch, value); }
-    internal bool IsTransactional { get; set; }
+    private bool _isTransactional;
+    internal bool IsTransactional { get => Volatile.Read(ref _isTransactional); set => Volatile.Write(ref _isTransactional, value); }
 
     // Per-partition sequence numbers for idempotent/transactional producing.
     // The broker requires monotonically increasing BaseSequence per partition.
