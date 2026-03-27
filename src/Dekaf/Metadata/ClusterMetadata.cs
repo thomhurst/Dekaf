@@ -223,7 +223,7 @@ public sealed class ClusterMetadata
     /// </param>
     public void Update(MetadataResponse response, bool mergeTopics = false)
     {
-        // Build new snapshot outside of any lock for maximum parallelism
+        // Build broker dictionary outside the lock (pure transformation, no shared state)
         var brokers = new Dictionary<int, BrokerNode>(response.Brokers.Count);
         foreach (var broker in response.Brokers)
         {
@@ -236,29 +236,66 @@ public sealed class ClusterMetadata
             };
         }
 
-        Dictionary<string, TopicInfo> topics;
-        Dictionary<Guid, TopicInfo> topicsById;
-
         if (mergeTopics)
         {
-            // Merge mode: start with existing topics and overlay response topics.
-            // This preserves metadata for topics not included in the response,
-            // which is critical when refreshing metadata for a single topic.
-            var existing = _snapshot;
-            topics = new Dictionary<string, TopicInfo>(existing.Topics.Count + response.Topics.Count);
-            topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById.Count + response.Topics.Count);
+            // Merge mode: the snapshot read must happen inside the lock to prevent TOCTOU —
+            // two concurrent merge calls reading _snapshot outside the lock could each build
+            // a merged dictionary from the same base, and the second swap would lose the
+            // first call's topics.
+            lock (_writeLock)
+            {
+                var existing = _snapshot;
+                var topics = new Dictionary<string, TopicInfo>(existing.Topics.Count + response.Topics.Count);
+                var topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById.Count + response.Topics.Count);
 
-            foreach (var (name, info) in existing.Topics)
-                topics[name] = info;
-            foreach (var (id, info) in existing.TopicsById)
-                topicsById[id] = info;
+                foreach (var (name, info) in existing.Topics)
+                    topics[name] = info;
+                foreach (var (id, info) in existing.TopicsById)
+                    topicsById[id] = info;
+
+                AddResponseTopics(response, topics, topicsById);
+
+                _snapshot = new ClusterMetadataSnapshot(
+                    response.ClusterId,
+                    response.ControllerId,
+                    DateTimeOffset.UtcNow,
+                    brokers,
+                    topics,
+                    topicsById);
+            }
         }
         else
         {
-            topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
-            topicsById = new Dictionary<Guid, TopicInfo>();
-        }
+            // Non-merge: no shared state read, build topics outside the lock
+            var topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
+            var topicsById = new Dictionary<Guid, TopicInfo>();
 
+            AddResponseTopics(response, topics, topicsById);
+
+            var newSnapshot = new ClusterMetadataSnapshot(
+                response.ClusterId,
+                response.ControllerId,
+                DateTimeOffset.UtcNow,
+                brokers,
+                topics,
+                topicsById);
+
+            // Only the snapshot swap needs the lock to serialize concurrent writes
+            lock (_writeLock)
+            {
+                _snapshot = newSnapshot;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adds topics from a MetadataResponse into the given dictionaries.
+    /// </summary>
+    private static void AddResponseTopics(
+        MetadataResponse response,
+        Dictionary<string, TopicInfo> topics,
+        Dictionary<Guid, TopicInfo> topicsById)
+    {
         foreach (var topic in response.Topics)
         {
             // Use explicit loop instead of LINQ Select to avoid enumerator allocation
@@ -292,24 +329,7 @@ public sealed class ClusterMetadata
                 topicsById[topic.TopicId] = topicInfo;
             }
         }
-
-        var newSnapshot = new ClusterMetadataSnapshot(
-            response.ClusterId,
-            response.ControllerId,
-            DateTimeOffset.UtcNow,
-            brokers,
-            topics,
-            topicsById);
-
-        // Lock only needed if multiple threads could call Update() concurrently
-        // In practice, only the background refresh task calls this, so the lock is rarely contended
-        lock (_writeLock)
-        {
-            // Atomic reference swap - readers see either old or new snapshot, never partial state
-            _snapshot = newSnapshot;
-        }
     }
-
 }
 
 /// <summary>

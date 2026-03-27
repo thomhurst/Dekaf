@@ -777,30 +777,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool Closed => Volatile.Read(ref _closed) != 0;
 
     // Transaction support: ProducerId, ProducerEpoch, and transactional flag
-    // Set by KafkaProducer.InitTransactionsAsync after successful InitProducerId
-    internal long ProducerId { get; set; } = -1;
-    internal short ProducerEpoch { get; set; } = -1;
-    internal bool IsTransactional { get; set; }
+    // Set by KafkaProducer.InitTransactionsAsync after successful InitProducerId.
+    // Uses Volatile.Read/Write to ensure visibility across threads (written under lock,
+    // read from append worker threads without synchronization — stale reads on ARM64 otherwise).
+    private long _producerId = -1;
+    private short _producerEpoch = -1;
+    internal long ProducerId { get => Volatile.Read(ref _producerId); set => Volatile.Write(ref _producerId, value); }
+    internal short ProducerEpoch { get => Volatile.Read(ref _producerEpoch); set => Volatile.Write(ref _producerEpoch, value); }
+    private bool _isTransactional;
+    internal bool IsTransactional { get => Volatile.Read(ref _isTransactional); set => Volatile.Write(ref _isTransactional, value); }
 
     // Per-partition sequence numbers for idempotent/transactional producing.
     // The broker requires monotonically increasing BaseSequence per partition.
     // Uses StrongBox<int> so GetOrAdd returns a mutable reference on the fast path
     // (lock-free hash lookup only), avoiding AddOrUpdate's per-call bucket locking.
-    // Each partition is accessed by exactly one BrokerSender thread, so direct
-    // mutation of StrongBox.Value is safe without additional synchronization.
+    // During leader migration, two BrokerSender threads may access the same partition
+    // concurrently, so StrongBox.Value is mutated via Interlocked.Add for atomicity.
     private readonly ConcurrentDictionary<TopicPartition, StrongBox<int>> _sequenceNumbers = new();
 
     /// <summary>
     /// Gets the next base sequence number for a partition and increments by the record count.
-    /// Fast path: lock-free ConcurrentDictionary.GetOrAdd (existing key) + direct mutation.
-    /// Each partition is assigned to exactly one BrokerSender, so no contention on the value.
+    /// Fast path: lock-free ConcurrentDictionary.GetOrAdd (existing key) + atomic increment.
+    /// Uses Interlocked.Add to be safe during leader migration when two BrokerSender threads
+    /// could call this concurrently for the same partition.
     /// </summary>
     internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
     {
         var box = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new StrongBox<int>(0));
-        var baseSequence = box.Value;
-        box.Value = baseSequence + recordCount;
-        return baseSequence;
+        return Interlocked.Add(ref box.Value, recordCount) - recordCount;
     }
 
     /// <summary>

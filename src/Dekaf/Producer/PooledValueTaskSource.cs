@@ -11,8 +11,9 @@ namespace Dekaf.Producer;
 /// Unlike <see cref="TaskCompletionSource{T}"/>, this type can be reset and reused,
 /// eliminating per-message allocations in the producer hot path.
 ///
-/// Thread-safety: The completion methods (SetResult, SetException) are NOT thread-safe
-/// and should only be called once per await cycle. The internal pool return is atomic.
+/// Thread-safety: All completion methods (SetResult, SetException, TrySetResult, TrySetException,
+/// TrySetCanceled) use CAS on _hasCompleted and are safe to race against each other.
+/// Only the first to complete wins; subsequent calls are no-ops.
 /// </remarks>
 /// <typeparam name="T">The result type.</typeparam>
 public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
@@ -58,7 +59,8 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetResult(T result)
     {
-        Volatile.Write(ref _hasCompleted, 1);
+        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+            return; // Already completed
         _core.SetResult(result);
     }
 
@@ -88,7 +90,8 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetException(Exception exception)
     {
-        Volatile.Write(ref _hasCompleted, 1);
+        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+            return; // Already completed
         _core.SetException(exception);
     }
 
