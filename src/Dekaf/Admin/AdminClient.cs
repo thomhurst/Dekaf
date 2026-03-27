@@ -1745,7 +1745,7 @@ public sealed class AdminClientOptions
 /// </summary>
 public sealed class AdminClientBuilder
 {
-    private readonly List<string> _bootstrapServers = [];
+    private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
@@ -1759,8 +1759,13 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithBootstrapServers(string servers)
     {
-        _bootstrapServers.Clear();
-        _bootstrapServers.AddRange(servers.Split(',').Select(s => s.Trim()));
+        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        return this;
+    }
+
+    public AdminClientBuilder WithBootstrapServers(params string[] servers)
+    {
+        _bootstrapServers = [..servers];
         return this;
     }
 

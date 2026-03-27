@@ -18,7 +18,7 @@ namespace Dekaf;
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class ProducerBuilder<TKey, TValue>
 {
-    private readonly List<string> _bootstrapServers = [];
+    private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private Acks _acks = Acks.All;
     private int _lingerMs;
@@ -58,15 +58,13 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
-        _bootstrapServers.Clear();
-        _bootstrapServers.AddRange(servers.Split(',').Select(s => s.Trim()));
+        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
         return this;
     }
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
-        _bootstrapServers.Clear();
-        _bootstrapServers.AddRange(servers);
+        _bootstrapServers = [..servers];
         return this;
     }
 
@@ -761,7 +759,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class ConsumerBuilder<TKey, TValue>
 {
-    private readonly List<string> _bootstrapServers = [];
+    private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private string? _groupId;
     private string? _groupInstanceId;
@@ -804,15 +802,13 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
-        _bootstrapServers.Clear();
-        _bootstrapServers.AddRange(servers.Split(',').Select(s => s.Trim()));
+        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
         return this;
     }
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
-        _bootstrapServers.Clear();
-        _bootstrapServers.AddRange(servers);
+        _bootstrapServers = [..servers];
         return this;
     }
 
