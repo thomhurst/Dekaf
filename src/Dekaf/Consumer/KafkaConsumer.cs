@@ -1698,7 +1698,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
 
                 // Fast path: skip all work if assignment hasn't changed (common case after stable join)
-                if (AssignmentMatchesCurrent(_coordinator.Assignment))
+                if (_assignment.SetEquals(_coordinator.Assignment))
                     return;
 
                 // Check for new partitions that need initialization
@@ -1788,23 +1788,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    /// <summary>
-    /// Checks whether the coordinator's assignment exactly matches the current local assignment.
-    /// Used as a fast path to skip cache invalidation when nothing changed.
-    /// </summary>
-    private bool AssignmentMatchesCurrent(IReadOnlySet<TopicPartition> coordinatorAssignment)
-    {
-        if (_assignment.Count != coordinatorAssignment.Count)
-            return false;
-
-        foreach (var partition in coordinatorAssignment)
-        {
-            if (!_assignment.Contains(partition))
-                return false;
-        }
-
-        return true;
-    }
 
     private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
