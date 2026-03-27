@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
@@ -102,6 +103,7 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public void SetMemoryOwner(IPooledMemory memoryOwner)
     {
+        Debug.Assert(_memoryOwner is null, "SetMemoryOwner called when a memory owner is already set. This indicates a bug — the previous owner would be silently overwritten and leaked.");
         _memoryOwner = memoryOwner;
     }
 

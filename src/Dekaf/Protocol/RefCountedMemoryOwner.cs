@@ -26,9 +26,16 @@ internal sealed class RefCountedMemoryOwner : IPooledMemory
 
     public void Dispose()
     {
-        if (Interlocked.Decrement(ref _refCount) == 0)
+        var newCount = Interlocked.Decrement(ref _refCount);
+
+        if (newCount == 0)
         {
             _inner.Dispose();
+        }
+        else if (newCount < 0)
+        {
+            // Already fully disposed — increment back to prevent further underflow.
+            Interlocked.Increment(ref _refCount);
         }
     }
 }
