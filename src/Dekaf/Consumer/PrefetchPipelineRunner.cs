@@ -125,14 +125,14 @@ internal sealed class PrefetchPipelineRunner
                     await _prefetchRecords(cancellationToken).ConfigureAwait(false);
                     ConsecutiveErrors = 0; // Reset on success
 
-                    // Pipeline: eagerly start more fetches if memory allows and pipeline has capacity.
+                    // Pipeline: eagerly start ONE more fetch if memory allows and pipeline has capacity.
+                    // Only one per iteration to avoid reading stale _fetchPositions (see PR #648).
                     currentPrefetchedBytes = _getPrefetchedBytes();
-                    while (_inFlightQueue.Count < _pipelineDepth - 1
+                    if (_inFlightQueue.Count < _pipelineDepth - 1
                         && currentPrefetchedBytes < maxBytes
                         && !cancellationToken.IsCancellationRequested)
                     {
                         _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
-                        currentPrefetchedBytes = _getPrefetchedBytes();
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
