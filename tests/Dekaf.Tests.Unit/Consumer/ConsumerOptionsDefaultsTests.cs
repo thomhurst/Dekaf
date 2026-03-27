@@ -221,4 +221,11 @@ public class ConsumerOptionsDefaultsTests
         await Assert.That(options.EnablePartitionEof).IsFalse();
     }
 
+    [Test]
+    public async Task ConnectionsPerBroker_DefaultsTo_2()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(2);
+    }
+
 }

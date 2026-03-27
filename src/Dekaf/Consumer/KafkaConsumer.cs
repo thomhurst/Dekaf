@@ -1073,7 +1073,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -2143,7 +2143,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (leader is null)
             return null;
 
-        return await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken).ConfigureAwait(false);
+        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, 0, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
@@ -2372,7 +2372,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask<List<PendingFetchData>?> FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -3042,7 +3042,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         List<TopicPartitionTimestamp> partitions,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,

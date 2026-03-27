@@ -176,6 +176,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
@@ -1240,15 +1241,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Sets the number of TCP connections per broker.
     /// Multiple connections reduce head-of-line blocking where heartbeats and offset commits
     /// contend with fetch requests for the write lock on a single connection.
-    /// Default is 2.
+    /// Default is 2. With the default, fetch requests use connection index 0 and coordination
+    /// traffic (heartbeats, offset commits, JoinGroup/SyncGroup) uses connection index 1,
+    /// providing guaranteed isolation between data-plane and control-plane operations.
     /// </summary>
-    /// <param name="connectionsPerBroker">The number of connections per broker. Must be at least 1.</param>
+    /// <param name="connectionsPerBroker">The number of connections per broker. Must be between 1 and 32.</param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1 or greater than 32.
     /// </exception>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
