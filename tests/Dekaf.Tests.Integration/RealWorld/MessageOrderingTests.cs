@@ -10,7 +10,6 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// and that key-based partitioning consistently routes to the same partition.
 /// </summary>
 [Category("MessagingOrdering")]
-[ParallelLimiter<MessagingTestLimit>]
 public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

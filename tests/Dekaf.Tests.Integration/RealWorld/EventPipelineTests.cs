@@ -11,7 +11,6 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// These simulate real workflows: consume from input, transform, produce to output.
 /// </summary>
 [Category("MessagingPatterns")]
-[ParallelLimiter<MessagingTestLimit>]
 public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -11,7 +11,6 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Common in event-driven architectures where different services need the same data.
 /// </summary>
 [Category("MessagingPatterns")]
-[ParallelLimiter<MessagingTestLimit>]
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
