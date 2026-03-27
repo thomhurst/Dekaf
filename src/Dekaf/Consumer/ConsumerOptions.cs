@@ -278,6 +278,8 @@ public sealed class ConsumerOptions
     /// Maximum number of overlapping prefetch operations.
     /// With depth 1, fetches are purely sequential (no eager pipelining).
     /// With depth 2, one eager fetch overlaps with the synchronous fetch.
+    /// With depth 3 (the default), two eager fetches overlap with processing, keeping the
+    /// network saturated even when individual fetches stall briefly.
     /// Higher values (up to 8) allow more overlapping fetches, which can improve
     /// throughput for single-broker setups by hiding network latency. Default is 3.
     /// </summary>
