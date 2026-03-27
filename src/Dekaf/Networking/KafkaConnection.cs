@@ -235,7 +235,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (IsConnected)
             return;
 
-        await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_connectLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -249,7 +249,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            _connectLock.Release();
+            SemaphoreHelper.ReleaseSafely(_connectLock);
         }
     }
 
@@ -690,7 +690,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
         try
         {
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
             try
             {
                 await WritePreSerializedAndFlushAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
@@ -698,7 +698,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
             finally
             {
-                _writeLock.Release();
+                SemaphoreHelper.ReleaseSafely(_writeLock);
             }
         }
         finally
@@ -1415,8 +1415,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
             return;
 
         // Only one re-authentication at a time
-        if (!await _reauthLock.WaitAsync(0).ConfigureAwait(false))
+        try
+        {
+            if (!await _reauthLock.WaitAsync(0).ConfigureAwait(false))
+                return;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Connection is being disposed — abandon re-authentication silently.
             return;
+        }
 
         try
         {
@@ -1446,7 +1454,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             _reauthenticating = false;
-            _reauthLock.Release();
+            SemaphoreHelper.ReleaseSafely(_reauthLock);
         }
     }
 
@@ -1775,6 +1783,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
         }
     }
+
 
     #region Logging
 

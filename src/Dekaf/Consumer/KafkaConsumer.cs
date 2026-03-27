@@ -512,7 +512,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _subscription.TryAdd(topic, 0);
         }
         PublishSubscriptionSnapshot();
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             _assignment.Clear();
@@ -520,7 +520,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
         InvalidateFetchRequestCache();
         return this;
@@ -533,7 +533,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _topicFilter = topicFilter;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             _assignment.Clear();
@@ -541,7 +541,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
         InvalidatePartitionCache();
@@ -554,7 +554,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _topicFilter = null;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             _assignment.Clear();
@@ -562,7 +562,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -573,7 +573,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         _subscription.Clear();
         PublishSubscriptionSnapshot();
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             _assignment.Clear();
@@ -585,7 +585,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -594,7 +594,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> Unassign()
     {
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             _assignment.Clear();
@@ -602,7 +602,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -615,7 +615,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _subscription.Clear();
         PublishSubscriptionSnapshot();
 
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             foreach (var tpo in partitions)
@@ -636,7 +636,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -645,7 +645,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             foreach (var partition in partitions)
@@ -661,7 +661,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
 
         // Clear any pending fetch data for the removed partitions
@@ -1672,7 +1672,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (_initialized)
             return;
 
-        await _initLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_initLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
             // Double-check after acquiring lock
@@ -1684,7 +1684,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _initLock.Release();
+            SemaphoreHelper.ReleaseSafely(_initLock);
         }
     }
 
@@ -1776,7 +1776,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
-        await _assignmentLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
             // If a pattern filter is active, refresh the subscription from metadata
@@ -1877,7 +1877,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _assignmentLock.Release();
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
     }
 
