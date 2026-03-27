@@ -618,7 +618,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
-            await StartAutoCommitAsync().ConfigureAwait(false);
+            await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Start background prefetch if enabled (QueuedMinMessages > 1)
@@ -1666,7 +1666,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Check if subscription changed
-        var currentKeys = _subscription.Keys;
+        var currentKeys = _subscription.Keys.ToHashSet();
         if (newTopics.Count != currentKeys.Count || !newTopics.SetEquals(currentKeys))
         {
             _subscription.Clear();
@@ -1688,9 +1688,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
-        // Serialize access: both ConsumeAsync and PrefetchLoopAsync call this method
+        // Serialize the write path: both ConsumeAsync and PrefetchLoopAsync call this method
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
+        // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
         await _assignmentLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -2629,14 +2630,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    private async Task StartAutoCommitAsync()
+    private async Task StartAutoCommitAsync(CancellationToken cancellationToken)
     {
         if (_autoCommitTask is not null)
         {
             _autoCommitCts?.Cancel();
             try
             {
-                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -2687,6 +2688,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (Interlocked.Exchange(ref _closed, 1) != 0 || Volatile.Read(ref _consumerDisposed) != 0)
             return;
 
+        await CloseAsyncCore(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Core teardown logic shared by <see cref="CloseAsync"/> and <see cref="DisposeAsync"/>.
+    /// Callers must ensure this is invoked at most once via an atomic CAS on <c>_closed</c>.
+    /// </summary>
+    private async ValueTask CloseAsyncCore(CancellationToken cancellationToken)
+    {
         LogClosingConsumer();
 
         // Step 1: Stop heartbeat background task
@@ -2922,12 +2932,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
-        if (Volatile.Read(ref _closed) == 0)
+        // Interlocked.Exchange prevents the TOCTOU gap where both CloseAsync and DisposeAsync
+        // could race to run teardown concurrently when using Volatile.Read + separate CloseAsync CAS.
+        if (Interlocked.Exchange(ref _closed, 1) == 0)
         {
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                await CloseAsync(cts.Token).ConfigureAwait(false);
+                await CloseAsyncCore(cts.Token).ConfigureAwait(false);
             }
             catch
             {
