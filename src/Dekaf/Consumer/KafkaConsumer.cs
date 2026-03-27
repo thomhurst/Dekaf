@@ -32,7 +32,7 @@ internal sealed class PendingFetchData : IDisposable
     private IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
-    private bool _disposed;
+    private int _disposed;
 
     public string Topic { get; }
     public int PartitionIndex { get; }
@@ -131,7 +131,7 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public bool MoveNext()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(PendingFetchData));
 
         // First call - start at first batch, first record
@@ -223,10 +223,8 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
 
         // Dispose all batches to mark them as disposed
         foreach (var batch in _batches)
@@ -291,9 +289,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
 
-    private readonly HashSet<string> _subscription = [];
+    private readonly ConcurrentDictionary<string, byte> _subscription = new();
     private readonly HashSet<TopicPartition> _assignment = [];
-    private readonly HashSet<TopicPartition> _paused = [];
+    private volatile IReadOnlySet<TopicPartition> _assignmentSnapshot = new HashSet<TopicPartition>();
+    private readonly ConcurrentDictionary<TopicPartition, byte> _paused = new();
 
     // Pattern subscription support
     private Func<string, bool>? _topicFilter;
@@ -309,7 +308,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     //   Adding locks would defeat the purpose of lock-free consumption.
     private readonly ConcurrentDictionary<TopicPartition, long> _positions = new();      // Consumed position (what app has seen)
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
-    private readonly Dictionary<TopicPartition, long> _committed = [];
+    private readonly ConcurrentDictionary<TopicPartition, long> _committed = new();
     private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
 
 
@@ -357,8 +356,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private ReadOnlyMemory<byte> _currentRawKey;
     private ReadOnlyMemory<byte> _currentRawValue;
 
-    private volatile bool _disposed;
-    private volatile bool _closed;
+    private int _consumerDisposed;
+    private int _closed;
     private volatile bool _initialized;
     private bool _prefetchEnabled;
 
@@ -466,10 +465,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
     }
 
-    public IReadOnlySet<string> Subscription => _subscription;
-    public IReadOnlySet<TopicPartition> Assignment => _assignment;
+    public IReadOnlySet<string> Subscription => _subscription.Keys.ToHashSet();
+    public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
-    public IReadOnlySet<TopicPartition> Paused => _paused;
+    public IReadOnlySet<TopicPartition> Paused => _paused.Keys.ToHashSet();
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
@@ -507,9 +506,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _subscription.Clear();
         foreach (var topic in topics)
         {
-            _subscription.Add(topic);
+            _subscription.TryAdd(topic, 0);
         }
         _assignment.Clear();
+        PublishAssignmentSnapshot();
         InvalidateFetchRequestCache();
         return this;
     }
@@ -521,6 +521,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _topicFilter = topicFilter;
         _subscription.Clear();
         _assignment.Clear();
+        PublishAssignmentSnapshot();
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -532,6 +533,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _topicFilter = null;
         _subscription.Clear();
         _assignment.Clear();
+        PublishAssignmentSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -545,6 +547,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             _assignment.Add(partition);
         }
+        PublishAssignmentSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -553,6 +556,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public IKafkaConsumer<TKey, TValue> Unassign()
     {
         _assignment.Clear();
+        PublishAssignmentSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -577,6 +581,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // Otherwise, positions will be initialized lazily based on auto.offset.reset
         }
 
+        PublishAssignmentSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -587,15 +592,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         foreach (var partition in partitions)
         {
             _assignment.Remove(partition);
-            _paused.Remove(partition);
+            _paused.TryRemove(partition, out _);
             _positions.TryRemove(partition, out _);
             _fetchPositions.TryRemove(partition, out _);
-            _committed.Remove(partition);
+            _committed.TryRemove(partition, out _);
         }
 
         // Clear any pending fetch data for the removed partitions
         ClearFetchBufferForPartitions(partitions);
 
+        PublishAssignmentSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -604,7 +610,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -612,7 +618,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
-            StartAutoCommit();
+            await StartAutoCommitAsync().ConfigureAwait(false);
         }
 
         // Start background prefetch if enabled (QueuedMinMessages > 1)
@@ -627,7 +633,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
 
-            if (_assignment.Count == 0)
+            if (_assignmentSnapshot.Count == 0)
             {
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                 continue;
@@ -831,7 +837,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // See PrefetchPipelineRunner.cs for the pipelining invariants and memory limit notes.
         var runner = new PrefetchPipelineRunner(
             ensureAssignment: EnsureAssignmentAsync,
-            getAssignmentCount: () => _assignment.Count,
+            getAssignmentCount: () => _assignmentSnapshot.Count,
             getMaxBytes: () => (long)_options.QueuedMaxMessagesKbytes * 1024,
             getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
             prefetchRecords: PrefetchRecordsAsync,
@@ -1405,7 +1411,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         foreach (var partition in partitions)
         {
-            _paused.Add(partition);
+            _paused.TryAdd(partition, 0);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -1416,7 +1422,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         foreach (var partition in partitions)
         {
-            _paused.Remove(partition);
+            _paused.TryRemove(partition, out _);
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -1445,7 +1451,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -1576,7 +1582,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         // Fast path: already initialized (volatile read provides acquire semantics)
@@ -1660,18 +1666,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Check if subscription changed
-        if (newTopics.Count != _subscription.Count || !newTopics.SetEquals(_subscription))
+        var currentKeys = _subscription.Keys;
+        if (newTopics.Count != currentKeys.Count || !newTopics.SetEquals(currentKeys))
         {
             _subscription.Clear();
             foreach (var topic in newTopics)
             {
-                _subscription.Add(topic);
+                _subscription.TryAdd(topic, 0);
             }
             changed = true;
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                var topics = string.Join(", ", _subscription);
+                var topics = string.Join(", ", _subscription.Keys);
                 LogPatternSubscriptionMatched(_subscription.Count, topics);
             }
         }
@@ -1693,9 +1700,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            if (_subscription.Count > 0 && _coordinator is not null)
+            if (!_subscription.IsEmpty && _coordinator is not null)
             {
-                await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
+                var subscriptionSnapshot = _subscription.Keys.ToHashSet();
+                await _coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
 
                 // Fast path: skip all work if assignment hasn't changed (common case after stable join)
                 if (_assignment.SetEquals(_coordinator.Assignment))
@@ -1734,6 +1742,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 {
                     _assignment.Add(partition);
                 }
+                PublishAssignmentSnapshot();
                 InvalidatePartitionCache();
                 InvalidateFetchRequestCache();
 
@@ -2068,6 +2077,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
+    /// Publishes an immutable snapshot of <see cref="_assignment"/> for lock-free reads.
+    /// Must be called after every mutation to <see cref="_assignment"/>.
+    /// </summary>
+    private void PublishAssignmentSnapshot()
+    {
+        _assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+    }
+
+    /// <summary>
     /// Invalidates the cached partition grouping. Called whenever _assignment or _paused changes.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2095,15 +2113,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
 
             // Capture version and copy assignment/paused data under lock
-            // Uses pooled arrays instead of HashSet allocations
+            // Uses the immutable snapshot for thread-safe enumeration without _assignmentLock
             capturedVersion = Volatile.Read(ref _assignmentVersion);
-            var maxPartitions = _assignment.Count;
+            var snapshot = _assignmentSnapshot;
+            var maxPartitions = snapshot.Count;
             assignmentArray = ArrayPool<TopicPartition>.Shared.Rent(maxPartitions);
             assignmentCount = 0;
 
-            foreach (var partition in _assignment)
+            foreach (var partition in snapshot)
             {
-                if (!_paused.Contains(partition))
+                if (!_paused.ContainsKey(partition))
                 {
                     assignmentArray[assignmentCount++] = partition;
                 }
@@ -2610,9 +2629,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    private void StartAutoCommit()
+    private async Task StartAutoCommitAsync()
     {
-        _autoCommitCts?.Cancel();
+        if (_autoCommitTask is not null)
+        {
+            _autoCommitCts?.Cancel();
+            try
+            {
+                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Swallow — old task may not exit promptly after cancellation
+            }
+            _autoCommitCts?.Dispose();
+        }
+
         _autoCommitCts = new CancellationTokenSource();
         _autoCommitTask = AutoCommitLoopAsync(_autoCommitCts.Token);
     }
@@ -2652,10 +2684,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
         // Idempotent - return early if already closed/disposed
-        if (_closed || _disposed)
+        if (Interlocked.Exchange(ref _closed, 1) != 0 || Volatile.Read(ref _consumerDisposed) != 0)
             return;
-
-        _closed = true;
 
         LogClosingConsumer();
 
@@ -2760,7 +2790,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         ArgumentNullException.ThrowIfNull(timestampsToSearch);
 
-        if (_disposed)
+        if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
@@ -2882,10 +2912,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _consumerDisposed, 1) != 0)
             return;
-
-        _disposed = true;
         var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
 
@@ -2894,7 +2922,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
-        if (!_closed)
+        if (Volatile.Read(ref _closed) == 0)
         {
             try
             {
@@ -2983,7 +3011,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         foreach (var (tp, highWatermark) in _highWatermarks)
         {
             // Use consumed position (ConcurrentDictionary — safe for cross-thread reads).
-            // _committed is a plain Dictionary and not safe to read from the OTel callback thread.
             var consumedPosition = _positions.GetValueOrDefault(tp, 0);
 
             var lag = Math.Max(0, highWatermark - consumedPosition);

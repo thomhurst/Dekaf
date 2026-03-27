@@ -41,7 +41,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-    private volatile bool _disposed;
+    private int _disposed;
 
     public ConsumerCoordinator(
         ConsumerOptions options,
@@ -69,7 +69,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IReadOnlySet<string> topics,
         CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConsumerCoordinator));
 
         if (string.IsNullOrEmpty(_options.GroupId))
@@ -941,7 +941,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     public async ValueTask LeaveGroupAsync(string? reason = null, CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             return;
 
         // Only leave if we're part of a group
@@ -1049,10 +1049,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
         LogCoordinatorDisposing();
 
         _heartbeatCts?.Cancel();
