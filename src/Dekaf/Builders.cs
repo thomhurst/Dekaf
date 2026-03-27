@@ -1287,7 +1287,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
     /// <item><description>FetchMaxWaitMs: 200ms (matches default; higher values like 500ms cause stalls when the prefetch pipeline restarts after hitting memory limits)</description></item>
     /// <item><description>MaxPartitionFetchBytes: 4MB (larger fetch responses reduce round-trip overhead per byte)</description></item>
-    /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses)</description></item>
+    /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
+    /// may retain up to 8 arrays of this size per consumer instance)</description></item>
     /// </list>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
