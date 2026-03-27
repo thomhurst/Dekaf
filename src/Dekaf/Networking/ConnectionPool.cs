@@ -28,7 +28,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
     private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionReplacementLocks = new();
 
-    // Per-broker semaphores to deduplicate concurrent group creation (H4 fix)
+    // Per-broker semaphores to deduplicate concurrent group creation
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupCreationLocks = new();
 
     // Thread-local round-robin counter to eliminate atomic contention on hot path
@@ -168,7 +168,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     private async ValueTask<IKafkaConnection> CreateConnectionGroupAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
     {
-        // H4 fix: Use a per-broker semaphore to ensure only one caller creates the group.
+        // Use a per-broker semaphore to ensure only one caller creates the group.
         // Without this, concurrent callers both create full connection groups, leaking TCP connections.
         var groupLock = _groupCreationLocks.GetOrAdd(brokerId, static _ => new SemaphoreSlim(1, 1));
 
@@ -359,7 +359,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
-        // H5 fix: Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
+        // Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
         // capturing a caller-scoped CancellationToken that gets disposed in the caller's finally block.
         // Each caller creates its own timeout CTS, so no token outlives its CTS.
         var replacementLock = _connectionReplacementLocks.GetOrAdd(
@@ -387,7 +387,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             var connection = await CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token).ConfigureAwait(false);
 
-            // M12 fix: Use _scaleLock to protect the array write against concurrent
+            // Acquire _scaleLock to protect the array write against concurrent
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.
             await _scaleLock.WaitAsync(token).ConfigureAwait(false);
             try
