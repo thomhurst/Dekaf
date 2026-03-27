@@ -608,16 +608,25 @@ public sealed class RecordBatch : IDisposable
     }
 
     /// <summary>
-    /// Reads a record batch from the input buffer.
+    /// Reads a RecordBatch from the protocol reader.
     /// Records are parsed lazily to avoid allocations for unconsumed records.
     /// </summary>
+    /// <param name="reader">The protocol reader.</param>
+    /// <param name="codecs">Optional compression codec registry.</param>
+    /// <param name="availableBytes">
+    /// Maximum bytes available for this batch in the partition records section.
+    /// When a fetch response is truncated by max_bytes limits, the last batch's
+    /// batchLength may exceed the actual data available. This parameter clamps
+    /// the records read to prevent reading past the partition boundary.
+    /// Defaults to <see cref="int.MaxValue"/> (no boundary enforcement).
+    /// </param>
     /// <remarks>
     /// If a ResponseParsingContext with pooled memory is active, the records will reference
     /// the pooled buffer directly (zero-copy). The first batch to be parsed will take ownership
     /// of the pooled memory, and subsequent batches will share it.
     /// Call Dispose() on the batch to release the pooled memory when done.
     /// </remarks>
-    public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null)
+    public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null, int availableBytes = int.MaxValue)
     {
         var baseOffset = reader.ReadInt64();
         var batchLength = reader.ReadInt32();
@@ -639,8 +648,23 @@ public sealed class RecordBatch : IDisposable
         var baseSequence = reader.ReadInt32();
         var recordCount = reader.ReadInt32();
 
-        // Calculate remaining bytes for records
-        var recordsLength = batchLength - (4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4);
+        // Calculate remaining bytes for records.
+        // The batch header after batchLength is 49 bytes (4+1+4+2+4+8+8+8+2+4+4).
+        const int batchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
+        var recordsLength = batchLength - batchHeaderSize;
+
+        // Clamp recordsLength when the batch is truncated by fetch response size limits.
+        // The total header consumed from availableBytes is 12 (baseOffset + batchLength fields)
+        // plus 49 (rest of header) = 61 bytes.
+        const int totalHeaderSize = 8 + 4 + batchHeaderSize; // baseOffset(8) + batchLength(4) + rest(49)
+        if (availableBytes < int.MaxValue)
+        {
+            var maxRecordsLength = availableBytes - totalHeaderSize;
+            if (recordsLength > maxRecordsLength)
+            {
+                recordsLength = Math.Max(0, maxRecordsLength);
+            }
+        }
 
         // Check compression type from attributes
         var compression = (CompressionType)((int)attributes & 0x07);

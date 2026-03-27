@@ -378,7 +378,8 @@ public sealed class FetchResponsePartition
             {
                 try
                 {
-                    records.Add(RecordBatch.Read(ref reader));
+                    var availableBytes = (int)(recordsEndPosition - reader.Consumed);
+                    records.Add(RecordBatch.Read(ref reader, availableBytes: availableBytes));
                 }
                 catch (InsufficientDataException)
                 {

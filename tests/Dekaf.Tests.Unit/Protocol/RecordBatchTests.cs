@@ -831,4 +831,179 @@ public class RecordBatchTests
     }
 
     #endregion
+
+    #region Truncated Batch Boundary Enforcement Tests
+
+    [Test]
+    public async Task RecordBatch_Read_WithAvailableBytes_ClampsRecordsLength()
+    {
+        // Arrange: Write a valid batch with multiple records
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1002,
+            LastOffsetDelta = 2,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key0"u8.ToArray(),
+                    Value = "value0"u8.ToArray()
+                },
+                new Record
+                {
+                    OffsetDelta = 1,
+                    TimestampDelta = 1,
+                    Key = "key1"u8.ToArray(),
+                    Value = "value1"u8.ToArray()
+                },
+                new Record
+                {
+                    OffsetDelta = 2,
+                    TimestampDelta = 2,
+                    Key = "key2"u8.ToArray(),
+                    Value = "value2"u8.ToArray()
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+        var fullBatchBytes = buffer.WrittenSpan.ToArray();
+        var fullBatchLength = fullBatchBytes.Length;
+
+        // Simulate truncation: provide fewer bytes than the batch header claims.
+        // Cut off the last ~30% of the batch data, but keep the header intact
+        // (batchLength still reflects the full size).
+        var truncatedLength = (int)(fullBatchLength * 0.7);
+
+        // Build a buffer with the truncated batch followed by "next partition" garbage bytes.
+        // Without the fix, RecordBatch.Read would read past the truncation point
+        // into these garbage bytes, causing malformed varint errors.
+        var garbageBytes = new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xDE, 0xAD, 0xBE, 0xEF };
+        var combinedBuffer = new byte[truncatedLength + garbageBytes.Length];
+        Array.Copy(fullBatchBytes, combinedBuffer, truncatedLength);
+        Array.Copy(garbageBytes, 0, combinedBuffer, truncatedLength, garbageBytes.Length);
+
+        // Act: Read with availableBytes set to the truncated length.
+        // This simulates what FetchResponse does when recordsEndPosition limits the batch.
+        var reader = new KafkaProtocolReader(combinedBuffer.AsMemory());
+        var parsedBatch = RecordBatch.Read(ref reader, availableBytes: truncatedLength);
+
+        // Assert: The reader should NOT have consumed past the truncated boundary.
+        await Assert.That(reader.Consumed).IsLessThanOrEqualTo(truncatedLength);
+
+        // The batch should have parsed successfully (header is intact),
+        // but some records may be truncated — LazyRecordList handles that gracefully.
+        await Assert.That(parsedBatch.BaseOffset).IsEqualTo(0L);
+        await Assert.That(parsedBatch.Magic).IsEqualTo((byte)2);
+
+        parsedBatch.Dispose();
+    }
+
+    [Test]
+    public async Task RecordBatch_Read_WithAvailableBytes_FullBatch_ParsesAllRecords()
+    {
+        // Arrange: Write a valid batch and read with availableBytes equal to full size
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray()
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+
+        // Act: Read with availableBytes matching the full batch size — no clamping should occur
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsedBatch = RecordBatch.Read(ref reader, availableBytes: (int)buffer.WrittenCount);
+
+        // Assert: All records parsed normally
+        await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(parsedBatch.Records[0].Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
+
+        parsedBatch.Dispose();
+    }
+
+    [Test]
+    public async Task RecordBatch_Read_TruncatedBatch_DoesNotReadPastBoundary()
+    {
+        // Arrange: Build a scenario that exactly reproduces the bug.
+        // Write a full batch, then simulate a fetch response where the partition
+        // records section ends mid-batch, with the next partition's header bytes
+        // immediately following.
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 10,
+            PartitionLeaderEpoch = 5,
+            BaseTimestamp = 2000,
+            MaxTimestamp = 2000,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Value = new byte[200] // Large enough record to make truncation meaningful
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+        var fullBatchBytes = buffer.WrittenSpan.ToArray();
+
+        // The batch header is 61 bytes (8 baseOffset + 4 batchLength + 49 rest).
+        // Truncate to header + a few bytes of records data.
+        const int headerSize = 61;
+        var truncatedLength = headerSize + 10; // Only 10 bytes of record data
+
+        // Ensure our test is valid: the full batch must be larger than the truncated length
+        await Assert.That(fullBatchBytes.Length).IsGreaterThan(truncatedLength);
+
+        // Place bytes that would cause "Malformed variable-length integer" after the truncation point.
+        // These simulate the next partition's header being misinterpreted as record data.
+        var combinedBuffer = new byte[fullBatchBytes.Length];
+        Array.Copy(fullBatchBytes, combinedBuffer, truncatedLength);
+
+        // Fill everything after truncation point with 0xFF bytes (invalid varint continuation bytes)
+        for (var i = truncatedLength; i < combinedBuffer.Length; i++)
+            combinedBuffer[i] = 0xFF;
+
+        var reader = new KafkaProtocolReader(combinedBuffer.AsMemory());
+        var parsedBatch = RecordBatch.Read(ref reader, availableBytes: truncatedLength);
+
+        // The reader must stop at or before the truncation boundary
+        await Assert.That(reader.Consumed).IsLessThanOrEqualTo(truncatedLength);
+
+        // The batch header should be intact
+        await Assert.That(parsedBatch.BaseOffset).IsEqualTo(10L);
+
+        // Records will be truncated but LazyRecordList handles that gracefully
+        // (it catches InsufficientDataException during lazy parsing)
+
+        parsedBatch.Dispose();
+    }
+
+    #endregion
 }
