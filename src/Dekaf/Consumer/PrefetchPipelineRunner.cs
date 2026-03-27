@@ -161,21 +161,7 @@ internal sealed class PrefetchPipelineRunner
         finally
         {
             // Drain any in-flight fetches to observe exceptions and prevent fire-and-forget leaks
-            while (_inFlightQueue.TryDequeue(out var pending))
-            {
-                try
-                {
-                    await pending.ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Expected during shutdown
-                }
-                catch (Exception ex)
-                {
-                    _logError(ex);
-                }
-            }
+            await DrainAllInFlightSafelyAsync().ConfigureAwait(false);
 
             _channelWriter?.TryComplete();
         }
