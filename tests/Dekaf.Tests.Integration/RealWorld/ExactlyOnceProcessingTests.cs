@@ -32,7 +32,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
                 Topic = inputTopic,
                 Key = $"order-{i}",
                 Value = $"{{\"orderId\":{i},\"amount\":{(i + 1) * 10.50}}}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume-transform-produce pipeline with transactional offset commit
@@ -70,7 +70,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
                 Topic = outputTopic,
                 Key = msg.Key,
                 Value = transformed
-            });
+            }, CancellationToken.None);
 
             // Commit consumer offsets as part of the transaction
             var offsets = new[]
@@ -135,7 +135,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "aborted-key",
                 Value = "aborted-value"
-            });
+            }, CancellationToken.None);
             await txn1.AbortAsync();
         }
 
@@ -147,7 +147,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "committed-key",
                 Value = "committed-value"
-            });
+            }, CancellationToken.None);
             await txn2.CommitAsync();
         }
 
@@ -193,7 +193,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
                     Topic = topic,
                     Key = "p1-key",
                     Value = "p1-value"
-                });
+                }, CancellationToken.None);
                 await txn.CommitAsync();
             }
         }
@@ -219,7 +219,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "p2-key",
                 Value = "p2-value"
-            });
+            }, CancellationToken.None);
             await txn.CommitAsync();
         }
 

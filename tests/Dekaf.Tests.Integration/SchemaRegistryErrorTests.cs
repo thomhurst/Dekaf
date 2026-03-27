@@ -60,7 +60,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
                 Topic = topic,
                 Key = "test-key",
                 Value = record
-            });
+            }, CancellationToken.None);
         }).Throws<Exception>();
     }
 
@@ -172,7 +172,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             Topic = topic,
             Key = "evolution-key",
             Value = v2Record
-        });
+        }, CancellationToken.None);
 
         await producer.FlushWithTimeoutAsync();
 

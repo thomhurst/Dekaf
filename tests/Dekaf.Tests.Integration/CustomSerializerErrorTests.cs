@@ -77,7 +77,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = "key",
                 Value = ThrowingValueSerializer.TriggerValue
-            });
+            }, CancellationToken.None);
         }).Throws<InvalidOperationException>()
           .WithMessage("Serializer intentionally threw for test");
     }
@@ -103,7 +103,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = "key-bad",
                 Value = ThrowingValueSerializer.TriggerValue
-            });
+            }, CancellationToken.None);
         }
         catch (InvalidOperationException)
         {
@@ -116,7 +116,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key-good",
             Value = "normal-value"
-        });
+        }, CancellationToken.None);
 
         // Assert - producer internal state was not corrupted
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -157,7 +157,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key",
             Value = ThrowingValueDeserializer.TriggerValue
-        });
+        }, CancellationToken.None);
 
         // Act - consume with a throwing deserializer
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -201,7 +201,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key-bad",
             Value = ThrowingValueDeserializer.TriggerValue
-        });
+        }, CancellationToken.None);
 
         // Message 2: normal message
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -209,7 +209,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key-good",
             Value = "normal-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume with a throwing deserializer, first attempt will fail
         await using var consumer = await Kafka.CreateConsumer<string, string>()

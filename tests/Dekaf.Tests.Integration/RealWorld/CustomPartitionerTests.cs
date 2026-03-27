@@ -104,7 +104,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
 
@@ -138,7 +138,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = $"hash-key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             producedResults.Add(metadata);
         }
 
@@ -174,7 +174,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = "test-key",
             Value = "test-value"
-        });
+        }, CancellationToken.None);
 
         // Assert - the partitioner should have been invoked with the correct topic and partition count
         List<(string Topic, bool KeyIsNull, int PartitionCount)> invocations;
@@ -210,7 +210,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
             Topic = topic,
             Key = null,
             Value = "null-key-value"
-        });
+        }, CancellationToken.None);
 
         // Assert - the partitioner should have been called with keyIsNull=true
         List<(string Topic, bool KeyIsNull, int PartitionCount)> invocations;
@@ -268,7 +268,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = $"stateful-key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
 
@@ -305,7 +305,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = null,
                 Value = $"rr-value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
 

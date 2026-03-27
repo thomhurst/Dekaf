@@ -386,7 +386,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
 
             // Consume and commit
             await using (var consumer = await Kafka.CreateConsumer<string, string>()
@@ -519,7 +519,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act
@@ -565,7 +565,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - query by timestamp before messages

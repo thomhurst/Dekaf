@@ -89,7 +89,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            });
+            }, CancellationToken.None);
         });
 
         // The error should indicate authorization failure
@@ -143,7 +143,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Assert: produce should succeed
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -172,7 +172,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            });
+            }, CancellationToken.None);
         }
 
         // Grant READ on the group (so the group authorization doesn't fail first)
@@ -334,7 +334,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 Topic = topic,
                 Key = "test-key",
                 Value = "test-value"
-            });
+            }, CancellationToken.None);
         }
 
         // Grant READ on both topic and group
@@ -484,7 +484,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                     Topic = topic,
                     Key = "key",
                     Value = "value"
-                });
+                }, CancellationToken.None);
             }
             catch (KafkaException ex) when (
                 ex is AuthorizationException ||
@@ -529,7 +529,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            });
+            }, CancellationToken.None);
 
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
         }
@@ -564,7 +564,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                     Topic = topic,
                     Key = "key",
                     Value = "value"
-                });
+                }, CancellationToken.None);
             }
             catch (KafkaException ex) when (
                 ex is AuthorizationException ||

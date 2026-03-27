@@ -29,7 +29,7 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer with short auto-commit interval
@@ -95,7 +95,7 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer with long auto-commit interval - commits should happen on close
@@ -161,7 +161,7 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer: consume all but don't commit
@@ -229,7 +229,7 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume only 8 messages with auto-commit
@@ -302,7 +302,7 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
                     Key = $"p{p}-key-{i}",
                     Value = $"p{p}-value-{i}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 

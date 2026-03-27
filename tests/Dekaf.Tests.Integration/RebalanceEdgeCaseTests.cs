@@ -32,7 +32,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consumer with a throwing listener should still be able to consume
@@ -84,7 +84,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer 1 - will be the "slow" consumer that leaves the group
@@ -163,7 +163,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = $"key-new-{i}",
                 Value = $"value-new-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer 2 should now get all partitions
@@ -201,7 +201,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer 1 with a committing rebalance listener
@@ -322,7 +322,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Rapidly create and dispose consumers to stress the group coordinator
@@ -413,7 +413,7 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer 1 joins and starts consuming

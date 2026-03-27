@@ -33,7 +33,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"order-{i}",
                 Value = $"order-created-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Three independent consumer groups
@@ -78,7 +78,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Fast consumer reads all 10
@@ -156,7 +156,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"historical-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Original consumer processes everything
@@ -172,7 +172,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"recent-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Late-joining consumer with Earliest offset reset gets ALL messages (0-9)
@@ -203,7 +203,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"concurrent-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Launch 3 consumer groups consuming concurrently

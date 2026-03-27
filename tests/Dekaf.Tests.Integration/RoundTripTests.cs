@@ -39,7 +39,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = "round-trip-key",
             Value = "round-trip-value"
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -91,7 +91,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -136,7 +136,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = null,
             Value = "value-with-null-key"
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -177,7 +177,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = "key",
             Value = string.Empty
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -219,7 +219,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = "large-key",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -263,7 +263,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
                 Topic = topic,
                 Key = $"key-{i:D3}",
                 Value = $"value-{i:D3}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume all messages
@@ -316,7 +316,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = unicodeKey,
             Value = unicodeValue
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -358,7 +358,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Key = "key",
             Value = "value-partition-2",
             Partition = 2
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -402,7 +402,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Key = "key",
             Value = "value",
             Timestamp = timestamp
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
@@ -454,7 +454,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
                         Topic = topic,
                         Key = $"producer-{producerId}-msg-{m}",
                         Value = $"value-{producerId}-{m}"
-                    });
+                    }, CancellationToken.None);
                 }
             }));
         }
@@ -512,7 +512,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
             Topic = topic,
             Key = keyBytes,
             Value = valueBytes
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);

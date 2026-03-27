@@ -33,7 +33,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }).Throws<ObjectDisposedException>();
     }
 
@@ -52,15 +52,14 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.DisposeAsync().ConfigureAwait(false);
 
         // Act & Assert
-        await Assert.That(() =>
+        await Assert.That(async () =>
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            });
-            return Task.CompletedTask;
+            }, CancellationToken.None);
         }).Throws<ObjectDisposedException>();
     }
 
@@ -149,7 +148,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
                     Topic = "test-topic",
                     Key = "key",
                     Value = "value"
-                }).ConfigureAwait(false);
+                }, CancellationToken.None).ConfigureAwait(false);
             }).Throws<Exception>(); // Could be KafkaException, SocketException, TimeoutException
         }
         finally
@@ -209,12 +208,12 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         // Send fire-and-forget messages
         for (var i = 0; i < 10; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - dispose should flush pending messages
@@ -267,7 +266,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - dispose and produce concurrently
         var produceExceptions = new List<Exception>();
@@ -282,7 +281,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
                         Topic = topic,
                         Key = $"key-{i}",
                         Value = $"value-{i}"
-                    }).ConfigureAwait(false);
+                    }, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (ObjectDisposedException)
                 {

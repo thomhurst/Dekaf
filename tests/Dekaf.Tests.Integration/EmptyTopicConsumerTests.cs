@@ -68,7 +68,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "first-key",
             Value = "first-value"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -140,14 +140,14 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "new-key-1",
             Value = "new-value-1"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "new-key-2",
             Value = "new-value-2"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -220,7 +220,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await consumeTask;
@@ -373,7 +373,7 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Wait for both consumers to finish receiving

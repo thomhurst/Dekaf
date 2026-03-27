@@ -29,7 +29,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -64,7 +64,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Query watermarks - should show lag growing
@@ -112,7 +112,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -140,7 +140,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Check lag reflects new messages
@@ -172,7 +172,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -255,21 +255,21 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = $"p0-{i}", Value = $"value", Partition = 0
-            });
+            }, CancellationToken.None);
         }
         for (var i = 0; i < 5; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = $"p1-{i}", Value = $"value", Partition = 1
-            });
+            }, CancellationToken.None);
         }
         for (var i = 0; i < 10; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = $"p2-{i}", Value = $"value", Partition = 2
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

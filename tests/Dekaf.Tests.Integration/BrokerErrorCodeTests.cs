@@ -42,7 +42,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = nonExistentTopic,
                 Key = "key",
                 Value = "value"
-            });
+            }, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -107,7 +107,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topicName,
                 Key = "key",
                 Value = oversizedValue
-            });
+            }, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -146,7 +146,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -200,7 +200,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();

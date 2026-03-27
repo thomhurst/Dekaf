@@ -24,7 +24,7 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

@@ -44,7 +44,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = "txn-key",
                 Value = "txn-value"
-            });
+            }, CancellationToken.None);
 
             await txn.CommitAsync();
         }
@@ -88,7 +88,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = "abort-key",
                 Value = "abort-value"
-            });
+            }, CancellationToken.None);
 
             await txn.AbortAsync();
         }
@@ -101,7 +101,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = "committed-key",
                 Value = "committed-value"
-            });
+            }, CancellationToken.None);
 
             await txn2.CommitAsync();
         }
@@ -147,7 +147,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             await txn.CommitAsync();
@@ -199,7 +199,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = "txn1-key",
                 Value = "txn1-value"
-            });
+            }, CancellationToken.None);
             await txn1.CommitAsync();
         }
 
@@ -211,7 +211,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 Topic = topic,
                 Key = "txn2-key",
                 Value = "txn2-value"
-            });
+            }, CancellationToken.None);
             await txn2.CommitAsync();
         }
 

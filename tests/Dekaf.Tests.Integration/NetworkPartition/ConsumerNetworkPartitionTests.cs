@@ -32,7 +32,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                 Topic = topic,
                 Key = $"pre-key-{i}",
                 Value = $"pre-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -77,7 +77,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                     Topic = topic,
                     Key = $"post-key-{i}",
                     Value = $"post-value-{i}"
-                });
+                }, CancellationToken.None);
             }
 
             // Assert: consumer should rejoin and consume new messages
@@ -124,7 +124,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                 Key = $"key-{i}",
                 Value = $"initial-{i}",
                 Partition = i % 2
-            });
+            }, CancellationToken.None);
         }
 
         // Track partition assignments via rebalance listener
@@ -175,7 +175,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                     Key = $"post-key-{i}",
                     Value = $"post-{i}",
                     Partition = i % 2
-                });
+                }, CancellationToken.None);
             }
 
             // Assert: consumer should rejoin, get partition assignments, and consume new messages

@@ -123,9 +123,9 @@ public class MemoryReleasedAtomicityTests
 
             for (var i = 0; i < batchCount; i++)
             {
-                accumulator.Append(
+                await accumulator.AppendAsync(
                     "test-topic", i % 10, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
+                    pooledKey, pooledValue, null, 0, null, null, CancellationToken.None);
             }
 
             var bufferedBefore = accumulator.BufferedBytes;

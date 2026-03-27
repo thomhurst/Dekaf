@@ -24,7 +24,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "shortcut-key",
             Value = "shortcut-value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -62,7 +62,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -80,7 +80,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildForTopicAsync(topic);
 
-        var metadata = await topicProducer.ProduceAsync("topic-bound-key", "topic-bound-value");
+        var metadata = await topicProducer.ProduceAsync("topic-bound-key", "topic-bound-value", CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -101,8 +101,8 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         var topic1Producer = baseProducer.ForTopic(topic1);
         var topic2Producer = baseProducer.ForTopic(topic2);
 
-        var meta1 = await topic1Producer.ProduceAsync("key1", "value1");
-        var meta2 = await topic2Producer.ProduceAsync("key2", "value2");
+        var meta1 = await topic1Producer.ProduceAsync("key1", "value1", CancellationToken.None);
+        var meta2 = await topic2Producer.ProduceAsync("key2", "value2", CancellationToken.None);
 
         await Assert.That(meta1.Topic).IsEqualTo(topic1);
         await Assert.That(meta2.Topic).IsEqualTo(topic2);
@@ -142,7 +142,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .BuildForTopicAsync(topic);
 
         // Fire-and-forget through topic producer
-        topicProducer.Produce("fire-key", "fire-value");
+        await topicProducer.ProduceAsync("fire-key", "fire-value");
         await topicProducer.FlushWithTimeoutAsync();
 
         // Verify by consuming
@@ -174,7 +174,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .BuildAsync();
 
         var message = ProducerMessage<string, string>.Create(topic, "keyless-value");
-        var metadata = await producer.ProduceAsync(message);
+        var metadata = await producer.ProduceAsync(message, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
 
@@ -205,7 +205,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .BuildAsync();
 
         var message = ProducerMessage<string, string>.Create(topic, "my-key", "my-value");
-        var metadata = await producer.ProduceAsync(message);
+        var metadata = await producer.ProduceAsync(message, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
 
@@ -237,7 +237,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
 
         var headers = new Headers { { "source", "test" } };
         var message = ProducerMessage<string, string>.Create(topic, "key", "value", headers);
-        await producer.ProduceAsync(message);
+        await producer.FireAsync(message);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -275,7 +275,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
                 Topic = topic,
                 Key = $"ht-key-{i}",
                 Value = $"ht-value-{i}"
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -322,7 +322,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "low-latency",
             Value = "fast-message"
-        });
+        }, CancellationToken.None);
         sw.Stop();
 
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -347,7 +347,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "reliable",
             Value = "guaranteed-delivery"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -364,7 +364,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        var metadata = await producer.ProduceAsync(topic, "simple-key", "simple-value");
+        var metadata = await producer.ProduceAsync(topic, "simple-key", "simple-value", CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -396,7 +396,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Topic = topic,
             Key = "pre-subscribe",
             Value = "subscribed-at-build"
-        });
+        }, CancellationToken.None);
 
         // SubscribeTo at build time
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -465,7 +465,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Key = "fluent-headers",
             Value = "payload",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

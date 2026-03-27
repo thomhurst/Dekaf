@@ -30,7 +30,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "test-key",
             Value = "test-value"
-        });
+        }, CancellationToken.None);
 
         // Act - consume
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -74,7 +74,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - new consumer with earliest should see all messages
@@ -121,7 +121,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Key = "key1",
             Value = "partition-1-message",
             Partition = 1
-        });
+        }, CancellationToken.None);
 
         // Act - manually assign only partition 1
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -163,7 +163,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - seek to offset 3
@@ -207,7 +207,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -247,7 +247,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Act - consume and commit
         await using var consumer1 = await Kafka.CreateConsumer<string, string>()
@@ -277,7 +277,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key2",
             Value = "value2"
-        });
+        }, CancellationToken.None);
 
         // Act - new consumer should start after committed offset
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -320,7 +320,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consume some and commit specific offset
@@ -379,7 +379,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Key = "key1",
             Value = "value1",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -423,7 +423,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -488,14 +488,14 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic1,
             Key = "key1",
             Value = "from-topic1"
-        });
+        }, CancellationToken.None);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic2,
             Key = "key2",
             Value = "from-topic2"
-        });
+        }, CancellationToken.None);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -541,7 +541,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -582,7 +582,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"old-key-{i}",
                 Value = $"old-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - create consumer, assign, and use AutoOffsetReset.Latest
@@ -622,7 +622,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "new-key",
             Value = "new-value"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -656,7 +656,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -722,7 +722,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -789,7 +789,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"old-key-{i}",
                 Value = $"old-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - create consumer with Latest offset reset
@@ -841,7 +841,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "new-key",
             Value = "new-value"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -872,7 +872,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer: consume all and commit
@@ -943,7 +943,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -995,7 +995,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                     Key = $"key-p{partition}-{i}",
                     Value = $"value-p{partition}-{i}",
                     Partition = partition
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -1051,7 +1051,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         const int totalMessages = 1000;
         for (var i = 0; i < totalMessages; i++)
         {
-            producer.Produce(topic, $"key-{i}", $"value-{i}");
+            await producer.FireAsync(topic, $"key-{i}", $"value-{i}");
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -1107,7 +1107,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -1154,7 +1154,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"old-key-{i}",
                 Value = $"old-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -1195,7 +1195,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "new-key",
             Value = "new-value"
-        });
+        }, CancellationToken.None);
 
         await consumeTask;
 
@@ -1224,7 +1224,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -1274,7 +1274,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                     Key = $"key-{partition}-{i}",
                     Value = $"partition-{partition}-msg-{i}",
                     Partition = partition
-                });
+                }, CancellationToken.None);
             }
         }
 

@@ -31,7 +31,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First instance: process 5 messages, commit, shut down
@@ -100,7 +100,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         var processedMessages = new List<string>();
@@ -175,7 +175,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer: read 3 messages but DON'T commit (simulating incomplete processing)
@@ -247,7 +247,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer with auto-commit: consume all 5, then dispose
@@ -315,7 +315,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Process exactly 7 messages with per-message commits
@@ -385,7 +385,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

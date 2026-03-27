@@ -50,7 +50,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consume messages
@@ -97,7 +97,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - query watermarks directly from cluster
@@ -155,7 +155,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -180,7 +180,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - query updated watermarks
@@ -208,7 +208,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -250,7 +250,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
             Key = "key-p0",
             Value = "value-p0",
             Partition = 0
-        });
+        }, CancellationToken.None);
 
         for (var i = 0; i < 3; i++)
         {
@@ -260,7 +260,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 Key = $"key-p1-{i}",
                 Value = $"value-p1-{i}",
                 Partition = 1
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

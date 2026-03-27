@@ -28,7 +28,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "tombstone-key",
             Value = null
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -63,7 +63,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = null,
             Value = "value-with-null-key"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string?, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -99,31 +99,31 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "key-1",
             Value = "normal-value"
-        });
+        }, CancellationToken.None);
         await producer.ProduceAsync(new ProducerMessage<string, string?>
         {
             Topic = topic,
             Key = "key-2",
             Value = null // tombstone
-        });
+        }, CancellationToken.None);
         await producer.ProduceAsync(new ProducerMessage<string, string?>
         {
             Topic = topic,
             Key = "key-3",
             Value = "another-value"
-        });
+        }, CancellationToken.None);
         await producer.ProduceAsync(new ProducerMessage<string, string?>
         {
             Topic = topic,
             Key = "key-4",
             Value = null // tombstone
-        });
+        }, CancellationToken.None);
         await producer.ProduceAsync(new ProducerMessage<string, string?>
         {
             Topic = topic,
             Key = "key-5",
             Value = ""  // empty string (NOT a tombstone)
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -176,7 +176,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Key = "deleted-record",
             Value = null,
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -218,7 +218,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "user-123",
             Value = "{\"name\":\"Alice\",\"email\":\"alice@example.com\"}"
-        });
+        }, CancellationToken.None);
 
         // Delete the value (tombstone)
         await producer.ProduceAsync(new ProducerMessage<string, string?>
@@ -226,7 +226,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "user-123",
             Value = null
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -269,7 +269,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "bytes-key",
             Value = [1, 2, 3, 4, 5]
-        });
+        }, CancellationToken.None);
 
         // Produce a null value (tombstone) using nullable string producer
         await using var nullProducer = await Kafka.CreateProducer<string, string?>()
@@ -283,7 +283,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "bytes-key",
             Value = null
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

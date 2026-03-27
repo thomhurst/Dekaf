@@ -28,7 +28,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         // Use ProduceAsync to ensure all messages are acknowledged
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(topic, $"key-{i % 100}", $"msg-{i}");
+            await producer.FireAsync(topic, $"key-{i % 100}", $"msg-{i}");
         }
 
         // Consume using Assign for reliability (no group coordination delay)
@@ -78,7 +78,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-            });
+            }, CancellationToken.None);
 
         // Produce sequenced messages to each partition
         for (var p = 0; p < partitionCount; p++)
@@ -91,7 +91,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
                     Key = $"p{p}-key",
                     Value = $"p{p}-seq-{i:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -140,7 +140,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(topic, $"key-{i % 50}", $"flush-msg-{i}");
+            await producer.FireAsync(topic, $"key-{i % 50}", $"flush-msg-{i}");
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -182,7 +182,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(topic, $"key-{i}", $"single-part-{i}");
+            await producer.FireAsync(topic, $"key-{i}", $"single-part-{i}");
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -268,7 +268,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         for (var i = 0; i < 1_000; i++)
         {
-            producer.Produce(topic, $"key-{i}", $"dispose-msg-{i}");
+            await producer.FireAsync(topic, $"key-{i}", $"dispose-msg-{i}");
         }
 
         await producer.DisposeAsync();
@@ -292,7 +292,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(topic, $"key-{i % 50}", $"rr-msg-{i}");
+            await producer.FireAsync(topic, $"key-{i % 50}", $"rr-msg-{i}");
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

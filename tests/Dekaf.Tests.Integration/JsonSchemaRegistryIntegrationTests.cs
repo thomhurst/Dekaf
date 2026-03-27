@@ -59,7 +59,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "order-1001",
             Value = order
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
@@ -114,7 +114,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
                     CustomerName = $"Customer {i}",
                     Amount = (i + 1) * 25.50m
                 }
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -168,7 +168,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "test",
             Value = new TestOrder { OrderId = 1, CustomerName = "Test", Amount = 10.0m }
-        });
+        }, CancellationToken.None);
 
         var subjects = await registryClient.GetAllSubjectsAsync();
         await Assert.That(subjects).Contains($"{topic}-value");
@@ -207,7 +207,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "order-2002",
             Value = order
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)

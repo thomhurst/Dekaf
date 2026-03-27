@@ -34,7 +34,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
             Topic = topic,
             Key = "retry-key",
             Value = "retry-value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Partition).IsGreaterThanOrEqualTo(0);
@@ -75,7 +75,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
             Topic = topic,
             Key = "no-retry-key",
             Value = "no-retry-value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -103,7 +103,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
 
             await Assert.That(metadata.Topic).IsEqualTo(topic);
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -161,7 +161,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
                 Topic = topicName,
                 Key = "key",
                 Value = oversizedValue
-            });
+            }, CancellationToken.None);
         }
         catch (KafkaException ex)
         {
@@ -203,7 +203,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).AsTask();
+            }, CancellationToken.None).AsTask();
         }
 
         var results = await Task.WhenAll(tasks);

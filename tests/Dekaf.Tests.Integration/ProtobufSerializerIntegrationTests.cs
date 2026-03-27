@@ -41,7 +41,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "proto-key",
             Value = person
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
@@ -96,7 +96,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
                     Name = $"Person {i}",
                     Email = $"person{i}@example.com"
                 }
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -151,7 +151,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "test",
             Value = new TestPerson { Id = 1, Name = "Schema Test", Email = "schema@test.com" }
-        });
+        }, CancellationToken.None);
 
         var subjects = await registryClient.GetAllSubjectsAsync();
         await Assert.That(subjects).Contains($"{topic}-value");
@@ -186,7 +186,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "default-fields",
             Value = person
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)

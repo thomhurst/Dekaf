@@ -58,60 +58,69 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Produces a message without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message without waiting for acknowledgment (fire-and-forget with async backpressure).
     /// </summary>
     /// <remarks>
     /// <para>This method queues the message for delivery without waiting for broker acknowledgment.
-    /// It provides lower latency than <see cref="ProduceAsync"/> but offers no delivery guarantees.</para>
+    /// It provides lower latency than <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/>
+    /// but offers no delivery guarantees.</para>
     ///
-    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
-    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
-    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// <para>When the internal buffer is full, this method applies async backpressure by awaiting
+    /// until buffer space becomes available (up to <see cref="ProducerOptions.MaxBlockMs"/>).
+    /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
+    /// with zero allocation.</para>
     ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
-    /// use the callback overload or <see cref="ProduceAsync"/>.</para>
+    /// use the callback overload or <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/>.</para>
     /// </remarks>
-    void Produce(ProducerMessage<TKey, TValue> message);
+    ValueTask FireAsync(ProducerMessage<TKey, TValue> message);
 
     /// <summary>
-    /// Produces a message to the specified topic without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message to the specified topic without waiting for acknowledgment (fire-and-forget with async backpressure).
     /// </summary>
     /// <remarks>
     /// <para>This is an optimized overload that avoids allocating a <see cref="ProducerMessage{TKey, TValue}"/>
     /// object, making it ideal for high-throughput fire-and-forget scenarios.</para>
     ///
-    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
-    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
-    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// <para>When the internal buffer is full, this method applies async backpressure by awaiting
+    /// until buffer space becomes available (up to <see cref="ProducerOptions.MaxBlockMs"/>).
+    /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
+    /// with zero allocation.</para>
     ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
-    /// use the callback overload or <see cref="ProduceAsync"/>.</para>
+    /// use the callback overload or <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/>.</para>
     /// </remarks>
     /// <param name="topic">The topic to produce to.</param>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    void Produce(string topic, TKey? key, TValue value);
+    ValueTask FireAsync(string topic, TKey? key, TValue value);
 
     /// <summary>
-    /// Produces a message without waiting for acknowledgment, with a delivery callback.
+    /// Produces a message without waiting for acknowledgment, with a delivery callback (async backpressure).
     /// </summary>
     /// <remarks>
     /// <para>This method queues the message for delivery and invokes the callback when delivery completes
     /// (either successfully or with an error).</para>
     ///
-    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
-    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
-    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// <para>When the internal buffer is full, this method applies async backpressure by awaiting
+    /// until buffer space becomes available (up to <see cref="ProducerOptions.MaxBlockMs"/>).
+    /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
+    /// with zero allocation.</para>
     ///
     /// <para>The callback is invoked on a background thread. Do not perform blocking operations in the callback.</para>
+    ///
+    /// <para><b>Exception handling:</b> All exceptions (including <see cref="Errors.KafkaTimeoutException"/>
+    /// from buffer backpressure) are delivered to the callback rather than thrown, because the callback
+    /// is the designated error delivery mechanism. This differs from the no-callback overload, which
+    /// must throw <see cref="Errors.KafkaTimeoutException"/> since it has no other way to report errors.</para>
     /// </remarks>
     /// <param name="message">The message to produce.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
+    ValueTask FireAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Produces multiple messages and waits for all acknowledgments.

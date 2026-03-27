@@ -229,7 +229,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -254,7 +254,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Act - consumer should negotiate versions automatically
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -300,7 +300,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             Key = "key",
             Value = "value",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         // Consume
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -344,7 +344,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume all

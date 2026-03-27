@@ -62,9 +62,9 @@ public class ProducerCancellationTests
             // Add a message to create a batch
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
-            accumulator.Append(
+            await accumulator.AppendAsync(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, null, null);
+                pooledKey, pooledValue, null, 0, null, null, CancellationToken.None);
 
             // Start a background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(30000);
@@ -86,14 +86,12 @@ public class ProducerCancellationTests
                 }
             }, cts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
-            // Act - FlushAsync completes when the drain task processes the batch
-            var startTime = Environment.TickCount64;
+            // Act - FlushAsync completes when the drain task processes the batch.
+            // No timing assertion: on CI with 3000+ parallel tests on 4 cores,
+            // thread pool starvation can delay the continuation of this await by minutes
+            // even though FlushAsync internally completes in milliseconds.
+            // The CTS timeout (30s) guards against genuine hangs via OperationCanceledException.
             await accumulator.FlushAsync(cts.Token);
-            var elapsed = Environment.TickCount64 - startTime;
-
-            // Assert - Should complete once batch is drained.
-            // Use 30s to account for extreme CI variability (slow runners with thread pool starvation).
-            await Assert.That(elapsed).IsLessThan(30000);
 
             // Cancel to stop the drain task and await it before CTS is disposed
             await cts.CancelAsync();
@@ -209,9 +207,9 @@ public class ProducerCancellationTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
             for (int i = 0; i < 10; i++)
             {
-                accumulator.Append(
+                await accumulator.AppendAsync(
                     "test-topic", i % 3, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
+                    pooledKey, pooledValue, null, 0, null, null, CancellationToken.None);
             }
 
             // Act - Start multiple flushes with pre-cancelled tokens

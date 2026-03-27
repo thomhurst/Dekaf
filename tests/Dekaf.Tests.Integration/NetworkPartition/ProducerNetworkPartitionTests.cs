@@ -32,7 +32,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
         await Assert.That(warmup.Offset).IsGreaterThanOrEqualTo(0);
 
         // Act: pause container to simulate network partition
@@ -46,7 +46,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                 Topic = topic,
                 Key = "partition-key",
                 Value = "partition-value"
-            }).AsTask();
+            }, CancellationToken.None).AsTask();
 
             // Wait 6s to exceed the 5s request timeout, triggering retry logic
             await Task.Delay(TimeSpan.FromSeconds(6));
@@ -85,7 +85,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
         await Assert.That(warmup.Offset).IsGreaterThanOrEqualTo(0);
 
         // Act: pause container and do NOT unpause - delivery timeout should fire
@@ -101,7 +101,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                     Topic = topic,
                     Key = "timeout-key",
                     Value = "timeout-value"
-                });
+                }, CancellationToken.None);
             });
 
             // Assert: should be a timeout or produce exception

@@ -31,7 +31,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "tombstone-key",
             Value = null!
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -75,7 +75,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = string.Empty,
             Value = string.Empty
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -118,7 +118,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Topic = topic,
             Key = "large-key",
             Value = largeValue
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -163,7 +163,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }).Throws<ObjectDisposedException>();
     }
 
@@ -183,7 +183,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .BuildAsync();
 
         // Act - send with delivery callback
-        producer.Produce(
+        await producer.FireAsync(
             new ProducerMessage<string, string>
             {
                 Topic = topic,

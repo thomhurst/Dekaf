@@ -80,7 +80,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // First consumer: subscribe, consume, commit, then dispose with short session
@@ -122,7 +122,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             Key = "key-new-2",
             Value = "value-new-2",
             Partition = 2
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Create a new consumer in the same group - it should discover the expanded partitions
         var listener2 = new PartitionTrackingRebalanceListener();
@@ -170,7 +170,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // First consumer establishes the group and commits
@@ -211,7 +211,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-new-{p}",
                 Value = $"value-new-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // New consumer joining the same group should get all 4 partitions
@@ -279,7 +279,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-original-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // First consumer consumes and commits original messages
@@ -325,7 +325,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-expanded-{p}",
                 Value = value,
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // New consumer should consume messages from new partitions
@@ -389,7 +389,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Manually assign only partition 0 and 1 (no group ID, no subscription)
@@ -424,7 +424,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             Key = "key-new",
             Value = "value-new",
             Partition = 2
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Wait briefly for any potential auto-detection
         await WaitForConditionAsync(
@@ -486,7 +486,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         var groupId = $"test-group-{Guid.NewGuid():N}";
@@ -531,7 +531,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-expanded-{p}",
                 Value = $"value-expanded-{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // New consumer with pattern subscription should discover new partitions

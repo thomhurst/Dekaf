@@ -37,7 +37,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 Topic = topic,
                 Key = "ordering-key",
                 Value = $"seq-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume and verify strict ordering
@@ -94,12 +94,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire all produces rapidly to stress pipelining
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "throughput-key",
                 Value = $"msg-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -154,12 +154,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire-and-forget all messages then flush
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "single-part-key",
                 Value = $"ordered-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -215,13 +215,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-msg-{i}",
                     Value = $"p{p}-seq-{i:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -300,7 +300,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                     Topic = topic,
                     Key = $"producer-{producerId}-key",
                     Value = $"producer-{producerId}-seq-{i:D4}"
-                });
+                }, CancellationToken.None);
                 allMetadata.Add((producerId, i, metadata));
             }
 
@@ -380,13 +380,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-msg-{i}",
                     Value = $"p{p}-seq-{i:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -459,12 +459,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire-and-forget all messages — forces many batches into the same drain
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "chain-key",
                 Value = $"chain-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -523,13 +523,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             for (var i = 0; i < messagesPerWave; i++)
             {
                 var seq = wave * messagesPerWave + i;
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{i % 4}-key",
                     Value = $"p{i % 4}-seq-{seq:D4}",
                     Partition = i % 4
-                });
+                }, CancellationToken.None);
             }
 
             await producer.FlushWithTimeoutAsync();
@@ -603,13 +603,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Fire-and-forget to both partitions rapidly
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"p{i % 2}-key",
                 Value = $"p{i % 2}-seq-{i / 2:D4}",
                 Partition = i % 2
-            });
+            }, CancellationToken.None);
         }
 
         // Flush must wait for all deferred chains to complete
@@ -678,21 +678,21 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         for (var i = 0; i < messagesPerPartition; i++)
         {
             // Partition 0
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "p0-key",
                 Value = $"p0-seq-{i:D4}",
                 Partition = 0
-            });
+            }, CancellationToken.None);
             // Partition 1
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "p1-key",
                 Value = $"p1-seq-{i:D4}",
                 Partition = 1
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -758,13 +758,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-msg-{i}",
                     Value = $"p{p}-seq-{i:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -830,12 +830,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "mixed-key",
                 Value = $"mixed-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -898,13 +898,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             {
                 var p = i % 4;
                 var seq = partitionSeq[p]++;
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-key",
                     Value = $"p{p}-seq-{seq:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
 
             // Don't flush between waves — let deferred chains overlap with new drains
@@ -992,13 +992,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             {
                 var p = i % 8;
                 var seq = partitionSeq[p]++;
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-key",
                     Value = $"p{p}-seq-{seq:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
 
             // Small delay between waves to give the linger timer a chance to fire
@@ -1078,13 +1078,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 for (var p = 0; p < 4; p++)
                 {
                     var seq = burst * (messagesPerPartition / 10) + i;
-                    producer.Produce(new ProducerMessage<string, string>
+                    await producer.ProduceAsync(new ProducerMessage<string, string>
                     {
                         Topic = topic,
                         Key = $"p{p}-key",
                         Value = $"p{p}-seq-{seq:D4}",
                         Partition = p
-                    });
+                    }, CancellationToken.None);
                 }
             }
 
@@ -1155,13 +1155,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             for (var p = 0; p < 16; p++)
             {
-                producer.Produce(new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"p{p}-key",
                     Value = $"p{p}-seq-{i:D4}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
 
             // Periodic small delay to trigger linger timer between batches

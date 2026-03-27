@@ -29,7 +29,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "key",
             Value = "hello-bytes"
-        });
+        }, CancellationToken.None);
 
         // Act - consume as raw bytes (universal escape hatch)
         await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
@@ -67,7 +67,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "tombstone-key",
             Value = null!
-        });
+        }, CancellationToken.None);
 
         // Act - consume with null-safe deserializer
         var nullSerde = Serializers.Null<string>();
@@ -110,7 +110,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = null,
             Value = "value-with-null-key"
-        });
+        }, CancellationToken.None);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string?, string>()
@@ -149,7 +149,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "key",
             Value = originalValue
-        });
+        }, CancellationToken.None);
 
         // Act - consume as bytes
         await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
@@ -187,7 +187,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "key",
             Value = originalValue
-        });
+        }, CancellationToken.None);
 
         // Act - consume as raw bytes
         await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
@@ -226,7 +226,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "key",
             Value = []
-        });
+        }, CancellationToken.None);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, byte[]>()

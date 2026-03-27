@@ -29,7 +29,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             Topic = topic,
             Key = "key",
             Value = "small"
-        });
+        }, CancellationToken.None);
 
         // Act - consumer with high fetch min bytes and short max wait
         // The consumer should wait (up to FetchMaxWait) because the small message
@@ -110,7 +110,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consumer with a small max partition fetch bytes
@@ -164,7 +164,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consumer with moderate fetch buffer settings
@@ -219,7 +219,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consumer with small per-partition fetch bytes

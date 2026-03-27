@@ -59,7 +59,7 @@ public sealed class ProducerOptions
     /// </para>
     /// <para>
     /// <b>Tuning guidance:</b> Increase this value if profiling shows significant time in
-    /// <c>ReserveMemorySync</c> / <c>ManualResetEventSlim.Wait</c>. Decrease it to limit
+    /// <c>ReserveMemoryAsync</c> / <c>SemaphoreSlim.WaitAsync</c>. Decrease it to limit
     /// memory usage in low-throughput or memory-constrained environments.
     /// </para>
     /// </summary>

@@ -27,7 +27,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Assert - Connection succeeded within timeout
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -52,7 +52,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Assert - Request succeeded within timeout
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -74,7 +74,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Act - Send multiple messages then flush
         for (int i = 0; i < 10; i++)
         {
-            producer.Produce(topic, $"key{i}", $"value{i}");
+            await producer.FireAsync(topic, $"key{i}", $"value{i}");
         }
 
         // Flush with explicit timeout to ensure it completes
@@ -104,7 +104,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            });
+            }, CancellationToken.None);
 
             // Dispose with timeout to ensure it doesn't hang
             var disposeTask = producer.DisposeAsync().AsTask();
@@ -142,7 +142,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key{i1}",
                 Value = $"value{i1}"
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();
@@ -175,7 +175,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         var messageValue = new string('x', 1000); // 1 KB messages
         for (int i = 0; i < 100; i++)
         {
-            producer.Produce(topic, $"key{i}", messageValue);
+            await producer.FireAsync(topic, $"key{i}", messageValue);
         }
 
         // Flush with timeout to ensure backpressure doesn't cause hang
@@ -206,7 +206,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            });
+            }, CancellationToken.None);
 
             // Assert each receives a response (no timeout)
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -261,7 +261,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic, Key = "warmup", Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - Produce with a cancellation token, wait for delivery to complete,
         // then cancel the token and verify the already-completed task is not affected.
@@ -297,7 +297,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .BuildAsync();
 
         // Send some messages
-        producer.Produce(topic, "key1", "value1");
+        await producer.FireAsync(topic, "key1", "value1");
 
         // Act & Assert - Pass pre-cancelled token to flush
         using var cts = new CancellationTokenSource();
@@ -381,7 +381,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                     Topic = "test-topic",
                     Key = "key1",
                     Value = "value1"
-                });
+                }, CancellationToken.None);
             }
             catch
             {
@@ -418,7 +418,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Send initial messages
         for (int i = 0; i < 50; i++)
         {
-            producer.Produce(topic, $"key{i}", $"value{i}");
+            await producer.FireAsync(topic, $"key{i}", $"value{i}");
         }
 
         // Act - Flush and produce concurrently
@@ -429,7 +429,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "concurrent-key",
             Value = "concurrent-value"
-        }).AsTask();
+        }, CancellationToken.None).AsTask();
 
         await Task.WhenAll(flushTask, produceTask).ConfigureAwait(false);
 
@@ -458,7 +458,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            });
+            }, CancellationToken.None);
 
             // Act - Dispose from multiple threads simultaneously
             var disposeTasks = new List<Task>();
@@ -540,7 +540,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         // Act - Now fast path is active, produce and wait for delivery to complete,
         // then cancel the token. Since cancellation happens after delivery, it must not
@@ -679,7 +679,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        });
+        }, CancellationToken.None);
 
         using var cts = new CancellationTokenSource();
         var tasks = new List<Task<RecordMetadata>>();
@@ -737,12 +737,12 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Fire-and-forget to fill batch without triggering immediate flush
         for (int i = 0; i < 10; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Now add awaited produce (will trigger flush)
@@ -813,7 +813,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Use a pre-cancelled token so FlushAsync always throws immediately,
         // regardless of CI runner speed. This is deterministic — no timing race.
@@ -864,7 +864,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
                     Topic = topic,
                     Key = "key1",
                     Value = "value1"
-                });
+                }, CancellationToken.None);
             });
         }
         finally
@@ -918,9 +918,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
     #region Fire-and-Forget Immunity
 
     [Test]
-    public async Task Producer_Send_NeverAffectedByCancellation()
+    public async Task Producer_FireAndForgetProduceAsync_NeverAffectedByCancellation()
     {
-        // Arrange - Send() doesn't use cancellation tokens
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -929,19 +928,18 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Act - Send messages (no cancellation token parameter)
+        // Fire-and-forget ProduceAsync has no cancellation token parameter
         for (int i = 0; i < 50; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            });
+            }, CancellationToken.None);
         }
 
-        // Assert - Flush completes successfully (all messages were sent)
-        // Send() doesn't expose cancellation, so messages always get queued
+        // Flush completes successfully — all messages were queued
         { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
     }
 

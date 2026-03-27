@@ -50,7 +50,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topicName,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Step 4: Consume to verify data
@@ -238,7 +238,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
 
             // Create consumer group with active member
             await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -420,7 +420,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -479,7 +479,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                }).ConfigureAwait(false);
+                }, CancellationToken.None).ConfigureAwait(false);
             }
 
             // Consume all messages and commit
@@ -667,7 +667,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = "key",
                 Value = "value"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
 
             // Create active consumer
             await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -741,7 +741,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                }).ConfigureAwait(false);
+                }, CancellationToken.None).ConfigureAwait(false);
             }
 
             // Consumer 1
@@ -847,7 +847,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Partition = 0,
                 Key = $"p0-key-{i}",
                 Value = $"p0-value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Produce to partition 1
@@ -859,7 +859,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Partition = 1,
                 Key = $"p1-key-{i}",
                 Value = $"p1-value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -911,7 +911,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                }).ConfigureAwait(false);
+                }, CancellationToken.None).ConfigureAwait(false);
             }
 
             // First consumer: consume all 5 and commit
@@ -1023,7 +1023,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                }).ConfigureAwait(false);
+                }, CancellationToken.None).ConfigureAwait(false);
             }
 
             // Step 2: Create consumer group by consuming and committing
@@ -1202,7 +1202,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         await producer.FlushWithTimeoutAsync();

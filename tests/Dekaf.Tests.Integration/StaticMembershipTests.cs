@@ -33,7 +33,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer with static membership - record the partition assignment
@@ -75,7 +75,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key2-{p}",
                 Value = $"value2-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Second consumer with same group.instance.id should get the same partitions
@@ -132,7 +132,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer with static membership and long session timeout
@@ -168,7 +168,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key2-{p}",
                 Value = $"value2-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Rejoin quickly with the same instance ID (within the 30s session timeout)
@@ -222,7 +222,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Static member consumer with short session timeout
@@ -268,7 +268,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key2-{p}",
                 Value = $"value2-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -305,7 +305,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // First consumer with static membership
@@ -351,7 +351,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key2-{p}",
                 Value = $"value2-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // The second consumer should be able to consume (it fences the first)
@@ -388,7 +388,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Static member consumer
@@ -482,7 +482,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Static member with cooperative sticky (default strategy)
@@ -527,7 +527,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key2-{p}",
                 Value = $"value2-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Rejoin with same static ID - cooperative sticky should preserve assignments

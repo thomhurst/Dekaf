@@ -27,7 +27,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "gzip-key",
             Value = "gzip-compressed-value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -67,7 +67,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"batch-key-{i}",
                 Value = $"batch-compressed-value-{i}-{new string('x', 100)}" // Compressible data
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -118,7 +118,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "large-compressed",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -160,7 +160,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             Key = "with-headers",
             Value = "{\"data\":\"compressed-with-headers\"}",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -203,7 +203,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"ht-key-{i}",
                 Value = $"high-throughput-compressed-message-{i}-payload"
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -261,7 +261,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = key,
                 Value = value
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in tasks)
@@ -311,7 +311,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = null,
             Value = "null-key-compressed"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

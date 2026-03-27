@@ -29,7 +29,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -57,7 +57,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -88,7 +88,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Assert - topic and partition are known, but offset is -1 for fire-and-forget
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -132,7 +132,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = null,
             Value = "value-without-key"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -164,7 +164,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Key = "key1",
             Value = "value1",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -190,7 +190,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Key = "key1",
             Value = "value1",
             Partition = 1
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -219,7 +219,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();
@@ -257,7 +257,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Key = "key1",
             Value = "value1",
             Timestamp = timestamp
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -283,7 +283,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "large-key",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -308,7 +308,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = string.Empty
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -334,7 +334,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }, CancellationToken.None);
 
         // Flush should complete the pending produce
         await producer.FlushWithTimeoutAsync();
@@ -367,7 +367,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = null,
                 Value = $"value-{i}"
-            }));
+            }, CancellationToken.None));
         }
 
         var results = new List<RecordMetadata>();
@@ -405,7 +405,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = null,
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
 
@@ -449,7 +449,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                         Topic = topic,
                         Key = $"thread-{threadId}-key-{i}",
                         Value = $"thread-{threadId}-value-{i}"
-                    });
+                    }, CancellationToken.None);
                     allResults.Add(result);
                 }
                 catch (Exception ex)
@@ -513,7 +513,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                         Topic = expectedTopic,
                         Key = $"producer-{producerId}-key-{i}",
                         Value = $"producer-{producerId}-value-{i}"
-                    });
+                    }, CancellationToken.None);
 
                     // Critical check: response topic must match what we sent
                     if (result.Topic != expectedTopic)
@@ -576,7 +576,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i:D6}"
-            }));
+            }, CancellationToken.None));
         }
 
         // Await all results
@@ -634,7 +634,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                     Topic = topic,
                     Key = $"burst-{burst}-key-{i}",
                     Value = $"burst-{burst}-value-{i}"
-                }));
+                }, CancellationToken.None));
             }
 
             // Wait for all burst messages
@@ -687,14 +687,14 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                     Topic = topicA,
                     Key = $"a-key-{i}",
                     Value = $"a-value-{i}"
-                }));
+                }, CancellationToken.None));
 
                 tasksB.Add(producerB.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topicB,
                     Key = $"b-key-{i}",
                     Value = $"b-value-{i}"
-                }));
+                }, CancellationToken.None));
             }
 
             // Verify producer A results all have topicA
@@ -742,14 +742,14 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topicA,
             Key = "a-key",
             Value = "a-value"
-        });
+        }, CancellationToken.None);
 
         var taskB = producerB.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topicB,
             Key = "b-key",
             Value = "b-value"
-        });
+        }, CancellationToken.None);
 
         var resultA = await taskA;
         var resultB = await taskB;
@@ -780,7 +780,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topicA,
             Key = "a-key",
             Value = "a-value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(resultA.Topic).IsEqualTo(topicA);
 
@@ -797,7 +797,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Topic = topicB,
             Key = "b-key",
             Value = "b-value"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(resultB.Topic).IsEqualTo(topicB);
     }
@@ -817,12 +817,12 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .BuildAsync();
 
         // Act - fire-and-forget send
-        producer.Produce(new ProducerMessage<string, string>
+        await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "sync-key",
             Value = "sync-value"
-        });
+        }, CancellationToken.None);
 
         // Flush to ensure delivery
         await producer.FlushWithTimeoutAsync();
@@ -862,7 +862,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .BuildAsync();
 
         // Act - send with callback
-        producer.Produce(
+        await producer.FireAsync(
             new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -902,12 +902,12 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Act - fire-and-forget multiple messages
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Flush to ensure all delivered
@@ -953,11 +953,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .BuildAsync();
 
         // Act - concurrent fire-and-forget sends with callbacks
-        var tasks = Enumerable.Range(0, threadCount).Select(threadId => Task.Run(() =>
+        var tasks = Enumerable.Range(0, threadCount).Select(threadId => Task.Run(async () =>
         {
             for (var i = 0; i < messagesPerThread; i++)
             {
-                producer.Produce(
+                await producer.FireAsync(
                     new ProducerMessage<string, string>
                     {
                         Topic = topic,

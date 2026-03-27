@@ -30,7 +30,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "key-before",
             Value = "value-before-refresh"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata1.Topic).IsEqualTo(topic);
         await Assert.That(metadata1.Offset).IsGreaterThanOrEqualTo(0);
@@ -44,7 +44,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "key-after",
             Value = "value-after-refresh"
-        });
+        }, CancellationToken.None);
 
         // Assert - production should still work after metadata refresh
         await Assert.That(metadata2.Topic).IsEqualTo(topic);
@@ -74,7 +74,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "discovery-key",
             Value = "discovery-value"
-        });
+        }, CancellationToken.None);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -104,7 +104,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
                 Key = $"key-original-{p}",
                 Value = $"value-original-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
         }
 
         // Expand partitions from 2 to 4 using admin client
@@ -131,7 +131,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
                 Key = $"key-expanded-{p}",
                 Value = $"value-expanded-{p}",
                 Partition = p
-            });
+            }, CancellationToken.None);
             results.Add(metadata);
         }
 
@@ -175,7 +175,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                });
+                }, CancellationToken.None);
                 results.Add(metadata);
             }
             catch (Exception ex)
@@ -225,7 +225,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "recovery-key-1",
             Value = "recovery-value-1"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata1.Topic).IsEqualTo(topic);
         await Assert.That(metadata1.Offset).IsGreaterThanOrEqualTo(0);
@@ -240,7 +240,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic,
             Key = "recovery-key-2",
             Value = "recovery-value-2"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata2.Topic).IsEqualTo(topic);
         await Assert.That(metadata2.Offset).IsGreaterThanOrEqualTo(0);
@@ -254,7 +254,7 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
             Topic = topic2,
             Key = "recovery-key-3",
             Value = "recovery-value-3"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata3.Topic).IsEqualTo(topic2);
         await Assert.That(metadata3.Offset).IsGreaterThanOrEqualTo(0);

@@ -39,7 +39,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                     Key = $"key-p{p}",
                     Value = $"value-p{p}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
 
             await txn.CommitAsync();
@@ -98,7 +98,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                     Key = $"key-aborted-p{p}",
                     Value = $"value-aborted-p{p}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
 
             await txn.AbortAsync();
@@ -113,7 +113,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Key = "committed",
                 Value = "committed-value",
                 Partition = 0
-            });
+            }, CancellationToken.None);
             await txn2.CommitAsync();
         }
 
@@ -158,7 +158,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = "aborted-key",
                 Value = "aborted-value"
-            });
+            }, CancellationToken.None);
             await txn.AbortAsync();
         }
 
@@ -170,7 +170,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = "committed-key",
                 Value = "committed-value"
-            });
+            }, CancellationToken.None);
             await txn2.CommitAsync();
         }
 
@@ -223,7 +223,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"seq-key-{i}",
                 Value = $"seq-value-{i}"
-            });
+            }, CancellationToken.None);
             await txn.CommitAsync();
             offsets.Add(metadata.Offset);
         }
@@ -284,7 +284,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = inputTopic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consume-transform-produce, but abort after producing to output
@@ -318,7 +318,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = outputTopic,
                 Key = msg.Key,
                 Value = $"transformed-{msg.Value}"
-            });
+            }, CancellationToken.None);
 
             // Simulate failure — abort instead of commit
             await txn.AbortAsync();
@@ -364,7 +364,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = inputTopic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act - consume-transform-produce with SendOffsetsToTransaction
@@ -402,7 +402,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                     Topic = outputTopic,
                     Key = msg.Key,
                     Value = $"processed-{msg.Value}"
-                });
+                }, CancellationToken.None);
 
                 // Atomically commit offsets as part of the transaction
                 var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };
@@ -487,7 +487,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
 
             if (i % 2 == 0)
             {

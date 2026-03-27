@@ -32,7 +32,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume all messages and commit offset 7
@@ -104,7 +104,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Commit offset 5 without consuming any messages
@@ -165,7 +165,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             Topic = topic,
             Key = "key",
             Value = "value"
-        });
+        }, CancellationToken.None);
 
         // Act - manual assignment with AutoOffsetReset.None and invalid offset
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -239,7 +239,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -291,7 +291,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -337,7 +337,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -400,7 +400,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"key-old-{i}",
                 Value = $"value-old-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer with AutoOffsetReset.Latest — skips existing messages
@@ -435,7 +435,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             Topic = topic,
             Key = "key-new",
             Value = "value-new"
-        });
+        }, CancellationToken.None);
 
         // Wait for the consumer to receive the message
         await consumeTask.ConfigureAwait(false);

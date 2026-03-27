@@ -31,7 +31,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "key-1",
             Value = "value-1"
-        });
+        }, CancellationToken.None);
 
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
@@ -69,7 +69,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "key-1",
             Value = "value-1"
-        });
+        }, CancellationToken.None);
 
         // Consume with a throwing interceptor
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -110,7 +110,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "key-1",
             Value = "value-1"
-        });
+        }, CancellationToken.None);
 
         // The first interceptor (before the thrower) should have been called
         await Assert.That(trackingBefore.SendCount).IsEqualTo(1);
@@ -154,7 +154,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
             Topic = topic,
             Key = "key-1",
             Value = "value-1"
-        });
+        }, CancellationToken.None);
 
         // Consume with tracking + throwing + tracking interceptors
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -202,7 +202,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
 
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
         }
@@ -257,7 +257,7 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consume with throwing + tracking interceptors

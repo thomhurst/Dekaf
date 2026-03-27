@@ -36,14 +36,14 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "open-txn-key-1",
             Value = "open-txn-value-1"
-        });
+        }, CancellationToken.None);
 
         await txn.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "open-txn-key-2",
             Value = "open-txn-value-2"
-        });
+        }, CancellationToken.None);
 
         // Act - ReadUncommitted consumer should see these uncommitted messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -98,7 +98,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "open-txn-key",
             Value = "open-txn-value"
-        });
+        }, CancellationToken.None);
 
         // Act - ReadCommitted consumer should NOT see the uncommitted messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -158,14 +158,14 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = $"committed-key-{i}",
                 Value = $"committed-value-{i}"
-            });
+            }, CancellationToken.None);
 
             await abortTxn.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"aborted-key-{i}",
                 Value = $"aborted-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Commit one, abort the other
@@ -230,7 +230,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = $"aborted-key-{i}",
                 Value = $"aborted-value-{i}"
-            });
+            }, CancellationToken.None);
             await abortTxn.AbortAsync();
         }
 
@@ -242,7 +242,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = "final-committed-key",
                 Value = "final-committed-value"
-            });
+            }, CancellationToken.None);
             await commitTxn.CommitAsync();
         }
 
@@ -313,7 +313,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = "early-committed-key",
                 Value = "early-committed-value"
-            });
+            }, CancellationToken.None);
             await earlyTxn.CommitAsync();
         }
 
@@ -324,7 +324,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
             Topic = topic,
             Key = "long-running-key",
             Value = "long-running-value"
-        });
+        }, CancellationToken.None);
 
         // Step 3: Produce and commit another message AFTER the open transaction's messages
         await using (var laterTxn = otherProducer.BeginTransaction())
@@ -334,7 +334,7 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
                 Topic = topic,
                 Key = "later-committed-key",
                 Value = "later-committed-value"
-            });
+            }, CancellationToken.None);
             await laterTxn.CommitAsync();
         }
 

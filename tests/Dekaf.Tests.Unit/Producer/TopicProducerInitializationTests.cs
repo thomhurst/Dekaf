@@ -19,7 +19,7 @@ public sealed class TopicProducerInitializationTests
     }
 
     [Test]
-    public async Task Send_WithoutInitialize_ThrowsInvalidOperationException()
+    public async Task ProduceAsync_FireAndForget_WithoutInitialize_ThrowsInvalidOperationException()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -27,7 +27,7 @@ public sealed class TopicProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.Produce("key", "value");
+            producer.ProduceAsync("key", "value");
         }).Throws<InvalidOperationException>();
     }
 

@@ -31,7 +31,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic,
             Key = "key",
             Value = "value-to-new-topic"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
@@ -60,7 +60,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-p{p}",
                 Value = $"value-original-p{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Expand partitions from 2 to 4 using admin client
@@ -86,7 +86,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
                 Key = $"key-p{p}",
                 Value = $"value-expanded-p{p}",
                 Partition = p
-            }).ConfigureAwait(false);
+            }, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - consumer should discover all 4 partitions
@@ -133,7 +133,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic1,
             Key = "key1",
             Value = "value1"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         await Assert.That(metadata1.Topic).IsEqualTo(topic1);
 
@@ -149,7 +149,7 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
             Topic = topic2,
             Key = "key2",
             Value = "value2"
-        }).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
 
         // Assert - should successfully produce to both topics
         await Assert.That(metadata2.Topic).IsEqualTo(topic2);

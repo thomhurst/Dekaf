@@ -28,7 +28,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             Topic = topic,
             Key = "zstd-key",
             Value = "zstd-compressed-value"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -67,7 +67,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = $"batch-key-{i}",
                 Value = $"batch-compressed-value-{i}-{new string('x', 100)}"
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in pendingTasks)
@@ -120,7 +120,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             Topic = topic,
             Key = "large-compressed",
             Value = largeValue
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -162,7 +162,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             Key = "with-headers",
             Value = "{\"data\":\"compressed-with-headers\"}",
             Headers = headers
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -212,7 +212,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
                 Topic = topic,
                 Key = key,
                 Value = value
-            }));
+            }, CancellationToken.None));
         }
 
         foreach (var task in tasks)
@@ -262,7 +262,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             Topic = topic,
             Key = null,
             Value = "null-key-compressed"
-        });
+        }, CancellationToken.None);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

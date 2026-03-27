@@ -25,12 +25,12 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         const int messageCount = 500;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -80,7 +80,7 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"ll-value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Use low-latency consumer with assign (no group coordination delay)
@@ -129,7 +129,7 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Consumer with max poll records of 10
@@ -175,7 +175,7 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -244,7 +244,7 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
                     Key = $"p{p}-key-{i}",
                     Value = $"p{p}-value-{i}",
                     Partition = p
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -293,7 +293,7 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

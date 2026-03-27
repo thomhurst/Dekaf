@@ -46,12 +46,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
             .WithAcks(Acks.All)
             .BuildAsync(cancellationToken);
 
-        producer.Produce(new ProducerMessage<string, string>
+        await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "k",
             Value = "v"
-        });
+        }, CancellationToken.None);
 
         await producer.FlushAsync(cancellationToken);
     }
@@ -93,12 +93,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 10; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);
@@ -116,12 +116,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 100; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);
@@ -143,12 +143,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 50; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);
@@ -170,13 +170,13 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
         {
             for (var i = 0; i < 25; i++)
             {
-                producer.Produce(new ProducerMessage<int, string>
+                await producer.ProduceAsync(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,
                     Key = p,
                     Value = $"p{p}-v{i}"
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -200,12 +200,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
         var sw = Stopwatch.StartNew();
         for (var i = 0; i < 500; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i:D4}"
-            });
+            }, CancellationToken.None);
         }
 
         var sendElapsed = sw.Elapsed;
@@ -258,12 +258,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 100; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
                 Value = $"v-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await producer.FlushAsync(cancellationToken);

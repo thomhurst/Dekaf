@@ -33,7 +33,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         await Task.Delay(100); // Ensure timestamp gap
@@ -50,7 +50,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -98,7 +98,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -143,7 +143,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -212,7 +212,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                     Key = $"key-p{partition}-{i}",
                     Value = $"value-p{partition}-{i}",
                     Partition = partition
-                });
+                }, CancellationToken.None);
             }
         }
 
@@ -310,7 +310,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
             await Task.Delay(50);
         }
 
@@ -325,7 +325,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
@@ -379,7 +379,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"value-{i}"
-            });
+            }, CancellationToken.None);
         }
 
         // Act
