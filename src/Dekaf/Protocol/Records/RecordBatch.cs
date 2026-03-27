@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
@@ -780,6 +781,11 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 throw new ArgumentOutOfRangeException(nameof(index));
 
             EnsureParsedUpTo(index);
+
+            // Re-check after parsing — EnsureParsedUpTo may have reduced _count
+            // due to truncated data, making this index out of range.
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _count);
+
             return _parsedRecords![index];
         }
     }
@@ -788,7 +794,16 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     {
         for (var i = 0; i < _count; i++)
         {
-            yield return this[i];
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(LazyRecordList));
+
+            EnsureParsedUpTo(i);
+
+            // Re-check _count — EnsureParsedUpTo may have reduced it due to truncation.
+            if (i >= _count)
+                yield break;
+
+            yield return _parsedRecords![i];
         }
     }
 
@@ -837,7 +852,10 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 // Truncated fetch response - no more complete records can be parsed.
                 // Cap the count to what we've successfully parsed so far to prevent
                 // further attempts. This mirrors the partial batch handling in FetchResponse.
-                _count = _parsedRecords.Count;
+                // Note: The pre-allocated List capacity may now exceed _count — this
+                // over-allocation is intentional and harmless (one batch lifetime).
+                Trace.WriteLine($"Dekaf: Truncated fetch response — {_parsedRecords.Count} of {_count} records parsed successfully.");
+                Volatile.Write(ref _count, _parsedRecords.Count);
                 break;
             }
         }
