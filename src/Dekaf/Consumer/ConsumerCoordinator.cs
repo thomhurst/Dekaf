@@ -43,7 +43,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
     private int _disposed;
-    private readonly int _coordinationConnectionIndex;
+    private readonly Func<int> _getCoordinationConnectionIndex;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
@@ -52,14 +52,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ConsumerOptions options,
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
-        ILogger<ConsumerCoordinator>? logger = null)
+        ILogger<ConsumerCoordinator>? logger = null,
+        Func<int>? getConnectionCount = null)
     {
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
         _rebalanceListener = options.RebalanceListener;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
-        _coordinationConnectionIndex = GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
+        _getCoordinationConnectionIndex = getConnectionCount is not null
+            ? () => GetCoordinationConnectionIndex(getConnectionCount())
+            : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
     }
 
     public string? MemberId => _memberId;
@@ -242,7 +245,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(brokers[0].NodeId, _coordinationConnectionIndex, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(brokers[0].NodeId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
 
             // Use negotiated API version
@@ -314,7 +317,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask JoinGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _coordinationConnectionIndex, cancellationToken)
+        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
 
         // Build subscription metadata
@@ -385,7 +388,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask<SyncGroupResult> SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _coordinationConnectionIndex, cancellationToken)
+        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
 
         // Only leader sends assignments
@@ -550,7 +553,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask SendHeartbeatAsync(CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _coordinationConnectionIndex, cancellationToken)
+        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
 
         var request = new HeartbeatRequest
@@ -595,7 +598,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _coordinationConnectionIndex, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
 
             // Group offsets by topic using pooled dictionary to avoid allocations
@@ -688,7 +691,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _fetchLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _coordinationConnectionIndex, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
 
             // Group partitions by topic using pooled dictionary to avoid allocations
@@ -1005,7 +1008,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _coordinationConnectionIndex, cancellationToken)
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
 
             // Get negotiated API version

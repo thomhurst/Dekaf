@@ -448,18 +448,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        if (!string.IsNullOrEmpty(options.GroupId))
-        {
-            _coordinator = new ConsumerCoordinator(
-                options,
-                _connectionPool,
-                _metadataManager,
-                loggerFactory?.CreateLogger<ConsumerCoordinator>());
-        }
-
         _compressionCodecs = CompressionCodecRegistry.Default;
 
-        // Initialize adaptive connection scaler if configured
+        // Initialize adaptive connection scaler if configured (before coordinator, which needs the connection count)
         if (options.EnableAdaptiveConnections && options.MaxConnectionsPerBroker > options.ConnectionsPerBroker)
         {
             _connectionScaler = new ConsumerConnectionScaler(
@@ -477,7 +468,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     foreach (var broker in _metadataManager.Metadata.GetBrokers())
                         await _connectionPool.ShrinkConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
                 },
-                pipelineDepth: options.PrefetchPipelineDepth);
+                logError: ex => _logger.LogWarning(ex, "Adaptive connection scaling operation failed"));
+        }
+
+        if (!string.IsNullOrEmpty(options.GroupId))
+        {
+            _coordinator = new ConsumerCoordinator(
+                options,
+                _connectionPool,
+                _metadataManager,
+                loggerFactory?.CreateLogger<ConsumerCoordinator>(),
+                getConnectionCount: _connectionScaler is not null
+                    ? () => _connectionScaler.CurrentConnectionCount
+                    : null);
         }
 
         // Initialize prefetch channel - bounded by QueuedMinMessages batches
@@ -1114,9 +1117,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
     {
         if (fetchConnectionCount == 1) return 0;
-        var index = (uint)counter % (uint)fetchConnectionCount;
-        Interlocked.Increment(ref counter);
-        return (int)index;
+        var value = (uint)Interlocked.Increment(ref counter);
+        return (int)((value - 1) % (uint)fetchConnectionCount);
     }
 
     internal static bool IsFatalPrefetchError(Exception ex) => ex is

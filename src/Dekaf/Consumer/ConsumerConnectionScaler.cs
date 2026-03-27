@@ -19,7 +19,7 @@ internal sealed class ConsumerConnectionScaler
     private readonly int _maxConnectionCount;
     private readonly Func<CancellationToken, ValueTask> _scaleUpAsync;
     private readonly Func<CancellationToken, ValueTask> _scaleDownAsync;
-    private readonly int _pipelineDepth;
+    private readonly Action<Exception>? _logError;
 
     private int _currentConnectionCount;
     private long _saturationStartTimestamp;
@@ -34,13 +34,13 @@ internal sealed class ConsumerConnectionScaler
         int maxConnectionCount,
         Func<CancellationToken, ValueTask> scaleUpAsync,
         Func<CancellationToken, ValueTask> scaleDownAsync,
-        int pipelineDepth)
+        Action<Exception>? logError = null)
     {
         _initialConnectionCount = initialConnectionCount;
         _maxConnectionCount = maxConnectionCount;
         _scaleUpAsync = scaleUpAsync;
         _scaleDownAsync = scaleDownAsync;
-        _pipelineDepth = pipelineDepth;
+        _logError = logError;
         _currentConnectionCount = initialConnectionCount;
     }
 
@@ -98,7 +98,7 @@ internal sealed class ConsumerConnectionScaler
             _currentConnectionCount++;
             _saturationStartTimestamp = 0;
             _lastScaleTimestamp = now;
-            _ = _scaleUpAsync(CancellationToken.None);
+            FireAndObserve(_scaleUpAsync);
             return;
         }
 
@@ -110,8 +110,21 @@ internal sealed class ConsumerConnectionScaler
             _currentConnectionCount--;
             _lowUtilizationStartTimestamp = 0;
             _lastScaleTimestamp = now;
-            _ = _scaleDownAsync(CancellationToken.None);
+            FireAndObserve(_scaleDownAsync);
         }
+    }
+
+    private void FireAndObserve(Func<CancellationToken, ValueTask> action)
+    {
+        var task = action(CancellationToken.None);
+        if (task.IsCompletedSuccessfully)
+            return;
+
+        task.AsTask().ContinueWith(static (t, state) =>
+        {
+            if (t.Exception is not null)
+                ((Action<Exception>?)state)?.Invoke(t.Exception.InnerException ?? t.Exception);
+        }, _logError, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     }
 
     // Test helpers
