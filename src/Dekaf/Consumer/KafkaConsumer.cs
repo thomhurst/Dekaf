@@ -511,8 +511,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _subscription.TryAdd(topic, 0);
         }
         PublishSubscriptionSnapshot();
-        _assignment.Clear();
-        PublishAssignmentSnapshot();
+        _assignmentLock.Wait();
+        try
+        {
+            _assignment.Clear();
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            _assignmentLock.Release();
+        }
         InvalidateFetchRequestCache();
         return this;
     }
@@ -524,8 +532,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _topicFilter = topicFilter;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
-        _assignment.Clear();
-        PublishAssignmentSnapshot();
+        _assignmentLock.Wait();
+        try
+        {
+            _assignment.Clear();
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            _assignmentLock.Release();
+        }
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -537,8 +553,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _topicFilter = null;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
-        _assignment.Clear();
-        PublishAssignmentSnapshot();
+        _assignmentLock.Wait();
+        try
+        {
+            _assignment.Clear();
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            _assignmentLock.Release();
+        }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -548,12 +572,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         _subscription.Clear();
         PublishSubscriptionSnapshot();
-        _assignment.Clear();
-        foreach (var partition in partitions)
+        _assignmentLock.Wait();
+        try
         {
-            _assignment.Add(partition);
+            _assignment.Clear();
+            foreach (var partition in partitions)
+            {
+                _assignment.Add(partition);
+            }
+            PublishAssignmentSnapshot();
         }
-        PublishAssignmentSnapshot();
+        finally
+        {
+            _assignmentLock.Release();
+        }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -561,8 +593,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> Unassign()
     {
-        _assignment.Clear();
-        PublishAssignmentSnapshot();
+        _assignmentLock.Wait();
+        try
+        {
+            _assignment.Clear();
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            _assignmentLock.Release();
+        }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -574,21 +614,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _subscription.Clear();
         PublishSubscriptionSnapshot();
 
-        foreach (var tpo in partitions)
+        _assignmentLock.Wait();
+        try
         {
-            var tp = new TopicPartition(tpo.Topic, tpo.Partition);
-            _assignment.Add(tp);
-
-            // If an offset is specified (>= 0), set the position
-            if (tpo.Offset >= 0)
+            foreach (var tpo in partitions)
             {
-                _positions[tp] = tpo.Offset;
-                _fetchPositions[tp] = tpo.Offset;
-            }
-            // Otherwise, positions will be initialized lazily based on auto.offset.reset
-        }
+                var tp = new TopicPartition(tpo.Topic, tpo.Partition);
+                _assignment.Add(tp);
 
-        PublishAssignmentSnapshot();
+                // If an offset is specified (>= 0), set the position
+                if (tpo.Offset >= 0)
+                {
+                    _positions[tp] = tpo.Offset;
+                    _fetchPositions[tp] = tpo.Offset;
+                }
+                // Otherwise, positions will be initialized lazily based on auto.offset.reset
+            }
+
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            _assignmentLock.Release();
+        }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -596,19 +644,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
-        foreach (var partition in partitions)
+        _assignmentLock.Wait();
+        try
         {
-            _assignment.Remove(partition);
-            _paused.TryRemove(partition, out _);
-            _positions.TryRemove(partition, out _);
-            _fetchPositions.TryRemove(partition, out _);
-            _committed.TryRemove(partition, out _);
+            foreach (var partition in partitions)
+            {
+                _assignment.Remove(partition);
+                _paused.TryRemove(partition, out _);
+                _positions.TryRemove(partition, out _);
+                _fetchPositions.TryRemove(partition, out _);
+                _committed.TryRemove(partition, out _);
+            }
+
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            _assignmentLock.Release();
         }
 
         // Clear any pending fetch data for the removed partitions
         ClearFetchBufferForPartitions(partitions);
 
-        PublishAssignmentSnapshot();
         PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -1675,8 +1732,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Check if subscription changed
-        var currentKeys = _subscription.Keys.ToHashSet();
+        // Check if subscription changed (use volatile snapshot — already published, avoids allocation)
+        var currentKeys = _subscriptionSnapshot;
         if (newTopics.Count != currentKeys.Count || !newTopics.SetEquals(currentKeys))
         {
             _subscription.Clear();
@@ -1714,8 +1771,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             if (!_subscription.IsEmpty && _coordinator is not null)
             {
-                var subscriptionSnapshot = _subscription.Keys.ToHashSet();
-                await _coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
+                await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
 
                 // Fast path: skip all work if assignment hasn't changed (common case after stable join)
                 if (_assignment.SetEquals(_coordinator.Assignment))
