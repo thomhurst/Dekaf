@@ -623,16 +623,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
     }
 
     /// <summary>
-    /// Serializes a request (size prefix + header + body) into a pooled buffer, outside the write lock.
-    /// Returns the rented array and the number of valid bytes. The caller must return the array
-    /// to <see cref="ArrayPool{T}.Shared"/> after use.
+    /// Serializes a request (size prefix + header + body) directly into a pooled buffer,
+    /// outside the write lock. Returns the rented array and the number of valid bytes.
+    /// The caller must return the array to <see cref="ArrayPool{T}.Shared"/> after use.
     /// </summary>
     /// <remarks>
-    /// Serialization runs outside the write lock to reduce lock hold time. With multiple broker
-    /// connections, CPU-bound serialization under the lock was the dominant bottleneck — the lock
-    /// only needs to cover the fast memcpy into the PipeWriter and the async flush.
-    /// The ArrayPool rent/return is per-batch (amortized over ~1000 messages), so the overhead
-    /// is negligible compared to the lock contention savings.
+    /// Serialization runs outside the write lock to reduce lock hold time. The request is
+    /// serialized directly into the rented array (starting at offset 4 to reserve space for
+    /// the size prefix), eliminating the intermediate copy through a thread-local buffer.
+    /// The ArrayPool rent/return is per-request to the broker (per-batch for produce, per-fetch
+    /// for consume), so the overhead is negligible.
     /// </remarks>
     private (byte[] Buffer, int Length) PreSerializeRequest<TRequest, TResponse>(
         TRequest request,
@@ -642,11 +642,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        // Serialize into the thread-local buffer (no allocation). This is safe because
-        // no async yield happens between serialize and the copy to the rented array below.
-        var buffer = GetRequestBuffer();
+        // Serialize directly into a rented array at offset 4 (reserving space for the size
+        // prefix). The only copy is rented array -> PipeWriter under the write lock.
+        var writer = new RentedBufferWriter(initialCapacity: 256, offset: 4);
 
-        var bodyWriter = new KafkaProtocolWriter(buffer);
+        var bodyWriter = new KafkaProtocolWriter(writer);
         var header = new RequestHeader
         {
             ApiKey = TRequest.ApiKey,
@@ -659,17 +659,79 @@ public sealed partial class KafkaConnection : IKafkaConnection
         header.Write(ref bodyWriter);
         request.Write(ref bodyWriter, apiVersion);
 
-        Debug.Assert(bodyWriter.BytesWritten == buffer.WrittenCount, "BytesWritten must equal buffer.WrittenCount");
-
-        // Copy to a pooled array that is safe to hold across the async write lock acquisition.
-        // The thread-local buffer cannot be used across await boundaries because another task
-        // resuming on the same thread could overwrite it via a concurrent PreSerializeRequest call.
-        var totalLength = 4 + bodyWriter.BytesWritten;
-        var rentedArray = ArrayPool<byte>.Shared.Rent(totalLength);
+        // Backpatch the 4-byte size prefix at the start of the rented array
+        var (rentedArray, totalLength) = writer.DetachBuffer();
         BinaryPrimitives.WriteInt32BigEndian(rentedArray, bodyWriter.BytesWritten);
-        buffer.WrittenSpan.CopyTo(rentedArray.AsSpan(4));
 
         return (rentedArray, totalLength);
+    }
+
+    /// <summary>
+    /// A lightweight <see cref="IBufferWriter{T}"/> backed by a rented <see cref="ArrayPool{T}"/> buffer.
+    /// Serialization writes directly into the rented array, avoiding an intermediate copy.
+    /// The caller detaches the underlying array via <see cref="DetachBuffer"/> and is responsible
+    /// for returning it to <see cref="ArrayPool{T}.Shared"/>.
+    /// </summary>
+    private sealed class RentedBufferWriter : IBufferWriter<byte>
+    {
+        private byte[] _buffer;
+        private int _written;
+        private readonly int _offset;
+
+        public RentedBufferWriter(int initialCapacity, int offset)
+        {
+            _offset = offset;
+            _written = offset;
+            _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity + offset);
+        }
+
+        /// <summary>
+        /// Detaches the underlying rented array. The caller owns the array and must return it
+        /// to <see cref="ArrayPool{T}.Shared"/>. After this call, the writer must not be used.
+        /// </summary>
+        public (byte[] Array, int Length) DetachBuffer() => (_buffer, _written);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Advance(int count)
+        {
+            _written += count;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer.AsMemory(_written);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer.AsSpan(_written);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureCapacity(int sizeHint)
+        {
+            if (sizeHint < 1)
+                sizeHint = 1;
+
+            if (_buffer.Length - _written < sizeHint)
+                Grow(sizeHint);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void Grow(int sizeHint)
+        {
+            var required = checked(_written + sizeHint);
+            var newSize = Math.Max(_buffer.Length * 2, required);
+
+            var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+            _buffer.AsSpan(0, _written).CopyTo(newBuffer);
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+            _buffer = newBuffer;
+        }
     }
 
     /// <summary>
