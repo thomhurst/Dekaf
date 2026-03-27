@@ -663,11 +663,7 @@ public sealed class RecordBatch : IDisposable
         var recordsLength = batchLength - BatchHeaderSize;
 
         // Clamp recordsLength when the batch is truncated by fetch response size limits.
-        if (availableBytes < int.MaxValue)
-        {
-            var maxRecordsLength = availableBytes - TotalBatchHeaderSize;
-            recordsLength = Math.Min(recordsLength, Math.Max(0, maxRecordsLength));
-        }
+        recordsLength = Math.Max(0, Math.Min(recordsLength, availableBytes - TotalBatchHeaderSize));
 
         // Check compression type from attributes
         var compression = (CompressionType)((int)attributes & 0x07);
