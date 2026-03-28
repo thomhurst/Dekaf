@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
@@ -98,5 +99,79 @@ internal static class StressTestHelpers
                 break;
             }
         }
+    }
+
+    internal static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
+    {
+        var process = Process.GetCurrentProcess();
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
+                LogResourceUsage("Monitor", process);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    internal static void LogResourceUsage(string label, Process? process = null)
+    {
+        process ??= Process.GetCurrentProcess();
+        process.Refresh();
+
+        var workingSet = process.WorkingSet64 / (1024.0 * 1024.0);
+        var privateMemory = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+        var gcHeap = GC.GetTotalMemory(forceFullCollection: false) / (1024.0 * 1024.0);
+        var threadCount = process.Threads.Count;
+        var gen0 = GC.CollectionCount(0);
+        var gen1 = GC.CollectionCount(1);
+        var gen2 = GC.CollectionCount(2);
+
+        Console.WriteLine($"  [{DateTime.UtcNow:HH:mm:ss}] {label} Resources: " +
+            $"WorkingSet={workingSet:F1}MB, Private={privateMemory:F1}MB, GCHeap={gcHeap:F1}MB, " +
+            $"Threads={threadCount}, GC=[{gen0}/{gen1}/{gen2}]");
+    }
+}
+
+/// <summary>
+/// Tracks message progress and emits periodic status lines with instant/average throughput.
+/// Call <see cref="RecordMessage"/> for each consumed or produced message; it checks internally
+/// whether enough time has elapsed to warrant a log line (every ~10 seconds).
+/// </summary>
+internal sealed class PeriodicProgressReporter(ThroughputTracker throughput)
+{
+    private const long CheckInterval = 100_000;
+    private const double ReportIntervalSeconds = 10;
+
+    private long _messageIndex;
+    private DateTime _lastStatusTime = DateTime.UtcNow;
+    private long _lastStatusMessageCount;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RecordMessage()
+    {
+        _messageIndex++;
+        if (_messageIndex % CheckInterval == 0)
+        {
+            TryLogProgress();
+        }
+    }
+
+    private void TryLogProgress()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastStatusTime).TotalSeconds < ReportIntervalSeconds)
+            return;
+
+        var elapsedSinceLastStatus = (now - _lastStatusTime).TotalSeconds;
+        var messagesSinceLastStatus = _messageIndex - _lastStatusMessageCount;
+        var instantaneousMsgSec = messagesSinceLastStatus / elapsedSinceLastStatus;
+        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {_messageIndex:N0} messages | instant: {instantaneousMsgSec:N0} msg/sec | avg: {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+        _lastStatusTime = now;
+        _lastStatusMessageCount = _messageIndex;
     }
 }
