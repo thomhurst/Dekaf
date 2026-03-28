@@ -90,10 +90,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Cap at 2 rounds to prevent unbounded looping if the assignor has a bug.
         const int maxCooperativeRounds = 2;
         var cooperativeRound = 0;
+        var needsCooperativeRound = false;
         SyncGroupResult syncResult;
 
         do
         {
+            needsCooperativeRound = false;
             syncResult = await RunJoinSyncCycleAsync(topics, cancellationToken).ConfigureAwait(false);
 
             // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
@@ -136,10 +138,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 && ++cooperativeRound < maxCooperativeRounds)
             {
                 LogCooperativeRejoin(syncResult.Revoked.Count);
+                needsCooperativeRound = true;
                 _state = CoordinatorState.Unjoined;
             }
         }
-        while (_state == CoordinatorState.Unjoined && cooperativeRound > 0);
+        while (needsCooperativeRound);
     }
 
     /// <summary>
@@ -413,7 +416,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
         _isCooperativeProtocol = response.ProtocolName switch
         {
-            "cooperative-sticky" => true,
+            _ when response.ProtocolName == PartitionAssignors.CooperativeSticky.Name => true,
             _ when _options.CustomPartitionAssignmentStrategy is { IsCooperative: true }
                 && response.ProtocolName == _options.CustomPartitionAssignmentStrategy.Name => true,
             _ => false
@@ -873,6 +876,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             partitions.Add(tp.Partition);
         }
 
+        foreach (var list in ownedByTopic.Values)
+            list.Sort();
+
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
 
@@ -921,20 +927,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    private string GetAssignorName()
-    {
-        if (_options.CustomPartitionAssignmentStrategy is not null)
-            return _options.CustomPartitionAssignmentStrategy.Name;
-
-        return _options.PartitionAssignmentStrategy switch
-        {
-            PartitionAssignmentStrategy.Range => "range",
-            PartitionAssignmentStrategy.RoundRobin => "roundrobin",
-            PartitionAssignmentStrategy.Sticky => "sticky",
-            PartitionAssignmentStrategy.CooperativeSticky => "cooperative-sticky",
-            _ => "range"
-        };
-    }
+    private string GetAssignorName() => ResolveAssignmentStrategy().Name;
 
     private IPartitionAssignmentStrategy ResolveAssignmentStrategy()
     {

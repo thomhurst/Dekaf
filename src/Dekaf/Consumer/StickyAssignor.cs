@@ -26,13 +26,10 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
         IReadOnlyList<ConsumerGroupMember> members,
         IReadOnlyDictionary<string, int> topicPartitionCounts)
     {
-        // Sort members by ID for deterministic results
         var sortedMembers = new List<ConsumerGroupMember>(members);
         sortedMembers.Sort((a, b) => string.Compare(a.MemberId, b.MemberId, StringComparison.Ordinal));
 
         var memberPartitions = new Dictionary<string, List<TopicPartition>>(sortedMembers.Count);
-
-        // Initialize assignments for all members
         foreach (var member in sortedMembers)
         {
             memberPartitions[member.MemberId] = [];
@@ -41,13 +38,12 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
         var sortedTopics = new List<string>(topicPartitionCounts.Keys);
         sortedTopics.Sort(StringComparer.Ordinal);
 
-        // Track claimed partitions to prevent duplicates
         var claimed = new HashSet<TopicPartition>();
 
-        // Running per-member-per-topic counts to avoid O(M*P) linear scans
+        // Per-member-per-topic counts to avoid O(M*P) linear scans during quota enforcement
         var topicCounts = new Dictionary<(string MemberId, string Topic), int>();
 
-        // Step 1: Preserve valid existing assignments (first member by sorted order wins conflicts)
+        // Preserve valid existing assignments (first member by sorted order wins conflicts)
         foreach (var member in sortedMembers)
         {
             foreach (var tp in member.OwnedPartitions)
@@ -67,8 +63,7 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             }
         }
 
-        // Step 2: Compute per-topic quotas and revoke excess
-        // Build per-topic interested member lists
+        // Compute per-topic quotas and revoke excess
         var topicMembers = new Dictionary<string, List<string>>();
         foreach (var topic in sortedTopics)
         {
@@ -139,7 +134,7 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             }
         }
 
-        // Step 3: Collect unassigned partitions
+        // Collect unassigned partitions
         var unassigned = new List<TopicPartition>();
         foreach (var topic in sortedTopics)
         {
@@ -154,7 +149,7 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             }
         }
 
-        // Step 4: Distribute unassigned partitions to members with fewest assignments per topic
+        // Distribute unassigned partitions to members with fewest assignments per topic
         foreach (var tp in unassigned)
         {
             var interested = topicMembers[tp.Topic];
@@ -186,7 +181,6 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             }
         }
 
-        // Convert to IReadOnlyList
         var assignments = new Dictionary<string, IReadOnlyList<TopicPartition>>(memberPartitions.Count);
         foreach (var (memberId, partitions) in memberPartitions)
         {
