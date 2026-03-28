@@ -2627,22 +2627,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     /// <summary>
     /// Returns headers as IReadOnlyList with correct count. Returns null if empty.
-    /// Header arrays may be rented from ArrayPool and oversized, so we use
-    /// the Record's HeaderCount to wrap with the correct element count.
+    /// Header arrays may be rented from ArrayPool and returned on batch dispose,
+    /// so we must copy into an owned array to prevent use-after-return corruption.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static IReadOnlyList<Header>? GetHeaders(Record record)
     {
         if (record.Headers is null || record.HeaderCount == 0)
             return null;
 
-        // When HeaderCount matches array length, return the array directly (zero-alloc).
-        // When the array is oversized (from ArrayPool), wrap with ArraySegment to expose
-        // correct Count without allocating a new array.
-        if (record.HeaderCount == record.Headers.Length)
-            return record.Headers;
-
-        return new ArraySegment<Header>(record.Headers, 0, record.HeaderCount);
+        // Copy into a correctly-sized owned array that safely outlives the record batch.
+        // The pooled Header[] in record.Headers is returned to ArrayPool on batch dispose.
+        var result = new Header[record.HeaderCount];
+        record.Headers.AsSpan(0, record.HeaderCount).CopyTo(result);
+        return result;
     }
 
     /// <summary>
