@@ -127,7 +127,6 @@ public readonly record struct Record
 
         if (headerCount > 0)
         {
-            // Use array directly instead of List to avoid List's internal array allocation
             headers = new Header[headerCount];
             for (var i = 0; i < headerCount; i++)
             {
@@ -146,7 +145,7 @@ public readonly record struct Record
             Value = value,
             IsValueNull = isValueNull,
             Headers = headers,
-            HeaderCount = headers?.Length ?? 0
+            HeaderCount = headerCount
         };
     }
 

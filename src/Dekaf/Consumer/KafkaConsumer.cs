@@ -871,8 +871,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // Check both instruments independently since Enabled is per-instrument.
                             if (Diagnostics.DekafMetrics.MessagesReceived.Enabled || Diagnostics.DekafMetrics.BytesReceived.Enabled)
                             {
-                                var metricTags = new System.Diagnostics.TagList
-                                    { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                                if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
+                                {
+                                    metricTags = new System.Diagnostics.TagList
+                                        { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                                    _metricTagsCache[pending.Topic] = metricTags;
+                                }
                                 Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
                                 Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
                             }
@@ -2566,11 +2570,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
     {
-        // Return null for empty to avoid exposing empty lists
         if (recordHeaders is null || recordHeaders.Length == 0)
             return null;
 
-        // Return directly - Header[] implements IReadOnlyList<Header>, no boxing
         return recordHeaders;
     }
 
