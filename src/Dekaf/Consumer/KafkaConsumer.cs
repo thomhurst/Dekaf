@@ -1352,13 +1352,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    private static long EstimatePendingFetchBytes(PendingFetchData pending)
+    /// <summary>
+    /// Per-partition response overhead in a FetchResponse: partition header (4 bytes partition index,
+    /// 2 bytes error code, 8 bytes high watermark, 8 bytes last stable offset, 8 bytes log start offset,
+    /// 4 bytes aborted transactions count, 4 bytes record set size) = ~38 bytes.
+    /// Plus per-batch header overhead (baseOffset + batchLength prefix = 12 bytes) not included in BatchLength.
+    /// </summary>
+    private const int PerPartitionResponseOverhead = 38;
+    private const int PerBatchHeaderOverhead = 12; // baseOffset(8) + batchLength(4)
+
+    internal static long EstimatePendingFetchBytes(PendingFetchData pending)
     {
         var batches = pending.GetBatches();
-        long bytes = 0;
+        long bytes = PerPartitionResponseOverhead;
         foreach (var batch in batches)
         {
-            bytes += batch.BatchLength;
+            // BatchLength covers the batch body only; add the 12-byte prefix
+            // (baseOffset + batchLength field) that the broker sends but BatchLength excludes.
+            bytes += batch.BatchLength + PerBatchHeaderOverhead;
         }
         return bytes;
     }

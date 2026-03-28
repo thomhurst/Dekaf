@@ -590,11 +590,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
     {
+        // PeriodicTimer instead of Task.Delay: resilient to thread pool starvation on
+        // CPU-constrained machines where Task.Delay continuations can be delayed indefinitely.
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(_options.HeartbeatIntervalMs));
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(_options.HeartbeatIntervalMs, cancellationToken).ConfigureAwait(false);
+                if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                    break;
+
                 await SendHeartbeatAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
