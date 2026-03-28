@@ -28,25 +28,31 @@ namespace Dekaf.Consumer;
 /// </remarks>
 internal sealed class PendingFetchData : IDisposable
 {
-    private readonly IReadOnlyList<RecordBatch> _batches;
-    private readonly Dictionary<long, Queue<long>>? _abortedProducers;
+    // Pool for reusing PendingFetchData instances to eliminate per-partition-per-fetch allocation.
+    // Typically 1-6 instances per fetch cycle. Soft limit avoids ConcurrentStack.Count overhead.
+    private static readonly ConcurrentStack<PendingFetchData> s_pool = new();
+    private static int s_poolCount;
+    private const int MaxPoolSize = 128;
+
+    private IReadOnlyList<RecordBatch> _batches = null!;
+    private Dictionary<long, Queue<long>>? _abortedProducers;
     private IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
 
-    public string Topic { get; }
-    public int PartitionIndex { get; }
+    public string Topic { get; private set; } = null!;
+    public int PartitionIndex { get; private set; }
 
     /// <summary>
     /// Cached activity name to avoid per-record string interpolation in consume loop.
     /// </summary>
-    internal string ActivityName { get; }
+    internal string ActivityName { get; private set; } = null!;
 
     /// <summary>
     /// Cached TopicPartition to avoid per-message allocation in consume loop.
     /// </summary>
-    public TopicPartition TopicPartition { get; }
+    public TopicPartition TopicPartition { get; private set; }
 
     /// <summary>
     /// Tracks the last offset yielded for batch position updates.
@@ -70,32 +76,52 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public long MessageCount { get; private set; }
 
-    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
+    private PendingFetchData() { }
+
+    /// <summary>
+    /// Rents a PendingFetchData from the pool and initializes it with the given parameters.
+    /// </summary>
+    public static PendingFetchData Create(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
         IReadOnlyList<AbortedTransaction>? abortedTransactions = null,
         IPooledMemory? memoryOwner = null,
         string? activityName = null)
     {
-        Topic = topic;
-        PartitionIndex = partitionIndex;
-        ActivityName = activityName ?? $"{topic} receive";
-        TopicPartition = new TopicPartition(topic, partitionIndex);
-        _batches = batches;
-        _memoryOwner = memoryOwner;
+        var instance = Rent();
+        instance.Topic = topic;
+        instance.PartitionIndex = partitionIndex;
+        instance.ActivityName = activityName ?? $"{topic} receive";
+        instance.TopicPartition = new TopicPartition(topic, partitionIndex);
+        instance._batches = batches;
+        instance._memoryOwner = memoryOwner;
 
         if (abortedTransactions is { Count: > 0 })
         {
-            _abortedProducers = new Dictionary<long, Queue<long>>();
+            instance._abortedProducers ??= new Dictionary<long, Queue<long>>();
             // AbortedTransactions is sorted by FirstOffset per the Kafka protocol
             foreach (var at in abortedTransactions)
             {
-                if (!_abortedProducers.TryGetValue(at.ProducerId, out var queue))
+                if (!instance._abortedProducers.TryGetValue(at.ProducerId, out var queue))
                 {
                     queue = new Queue<long>();
-                    _abortedProducers[at.ProducerId] = queue;
+                    instance._abortedProducers[at.ProducerId] = queue;
                 }
                 queue.Enqueue(at.FirstOffset);
             }
         }
+
+        return instance;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static PendingFetchData Rent()
+    {
+        if (s_pool.TryPop(out var instance))
+        {
+            Interlocked.Decrement(ref s_poolCount);
+            Volatile.Write(ref instance._disposed, 0);
+            return instance;
+        }
+        return new PendingFetchData();
     }
 
     /// <summary>
@@ -221,7 +247,8 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     /// <summary>
-    /// Disposes all record batches and releases the pooled network buffer memory.
+    /// Disposes all record batches, releases the pooled network buffer memory,
+    /// and returns this instance to the pool for reuse.
     /// </summary>
     public void Dispose()
     {
@@ -242,6 +269,25 @@ internal sealed class PendingFetchData : IDisposable
 
         // Release the pooled network buffer
         _memoryOwner?.Dispose();
+
+        // Reset state for reuse
+        _batches = null!;
+        _memoryOwner = null;
+        _batchIndex = -1;
+        _recordIndex = -1;
+        LastYieldedOffset = -1;
+        TotalBytesConsumed = 0;
+        MessageCount = 0;
+        Topic = null!;
+        ActivityName = null!;
+        _abortedProducers?.Clear();
+
+        // Return to pool (soft limit)
+        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        {
+            s_pool.Push(this);
+            Interlocked.Increment(ref s_poolCount);
+        }
     }
 }
 
@@ -1234,7 +1280,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         _eofEmitted.Remove(tp);
                     }
 
-                    var pending = new PendingFetchData(
+                    var pending = PendingFetchData.Create(
                         topic,
                         partitionResponse.PartitionIndex,
                         records,
@@ -2506,7 +2552,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Collect pending fetch data for lazy record iteration
                     pendingItems ??= [];
-                    pendingItems.Add(new PendingFetchData(
+                    pendingItems.Add(PendingFetchData.Create(
                         topic,
                         partitionResponse.PartitionIndex,
                         records,

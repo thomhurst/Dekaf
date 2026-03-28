@@ -57,7 +57,7 @@ public class LazyRecordListTests
         var truncatedData = fullData[..truncatedLength];
 
         // Act: create LazyRecordList claiming 3 records but with truncated data
-        using var lazyList = new LazyRecordList(truncatedData, count: 3);
+        using var lazyList = LazyRecordList.Create(truncatedData, count: 3);
 
         // Assert: Count should start at 3 (the claimed count)
         await Assert.That(lazyList.Count).IsEqualTo(3);
@@ -119,7 +119,7 @@ public class LazyRecordListTests
         var truncatedData = buffer.WrittenMemory[..(oneRecordLength + 1)];
 
         // Act: create LazyRecordList claiming 2 records
-        using var lazyList = new LazyRecordList(truncatedData, count: 2);
+        using var lazyList = LazyRecordList.Create(truncatedData, count: 2);
 
         // Access record 0 — should succeed
         var record0 = lazyList[0];
@@ -174,7 +174,7 @@ public class LazyRecordListTests
         malformedVarint.CopyTo(combinedBuffer.AsSpan(goodDataLength));
 
         // Act: create LazyRecordList claiming 3 records but with malformed data for the 3rd
-        using var lazyList = new LazyRecordList(combinedBuffer.AsMemory(), count: 3);
+        using var lazyList = LazyRecordList.Create(combinedBuffer.AsMemory(), count: 3);
 
         // Enumerate all available records
         var enumeratedRecords = new List<Record>();
@@ -197,7 +197,7 @@ public class LazyRecordListTests
         var truncatedData = new byte[] { 0xFF }.AsMemory();
 
         // Act
-        using var lazyList = new LazyRecordList(truncatedData, count: 5);
+        using var lazyList = LazyRecordList.Create(truncatedData, count: 5);
 
         // Enumerate — should get 0 records with no exception
         var enumeratedRecords = new List<Record>();
@@ -208,5 +208,62 @@ public class LazyRecordListTests
 
         await Assert.That(lazyList.Count).IsEqualTo(0);
         await Assert.That(enumeratedRecords).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task LazyRecordList_PooledInstance_ReusesCorrectlyAfterDispose()
+    {
+        // Arrange: create a LazyRecordList with valid data, dispose it (returns to pool),
+        // then create another to verify pool reuse works correctly.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        var record = new Record
+        {
+            OffsetDelta = 0,
+            TimestampDelta = 0,
+            Key = "key"u8.ToArray(),
+            Value = "value"u8.ToArray()
+        };
+        record.Write(ref writer);
+        var data = buffer.WrittenMemory;
+
+        // First usage: create, iterate, dispose
+        var list1 = LazyRecordList.Create(data, count: 1);
+        var record0 = list1[0];
+        await Assert.That(record0.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        list1.Dispose();
+
+        // Second usage: should reuse pooled instance
+        var list2 = LazyRecordList.Create(data, count: 1);
+        var record1 = list2[0];
+        await Assert.That(record1.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        list2.Dispose();
+    }
+
+    [Test]
+    public async Task LazyRecordList_DisposedInstance_ThrowsOnAccess()
+    {
+        // Arrange
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        var record = new Record
+        {
+            OffsetDelta = 0,
+            TimestampDelta = 0,
+            Key = "key"u8.ToArray(),
+            Value = "value"u8.ToArray()
+        };
+        record.Write(ref writer);
+
+        var list = LazyRecordList.Create(buffer.WrittenMemory, count: 1);
+
+        // Access before dispose works
+        _ = list[0];
+
+        // Dispose
+        list.Dispose();
+
+        // Access after dispose throws
+        await Assert.That(() => list[0]).ThrowsExactly<ObjectDisposedException>();
     }
 }

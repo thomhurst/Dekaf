@@ -12,7 +12,7 @@ public class PendingFetchDataTests
         const string topic = "test-topic";
         const string activityName = "test-topic receive";
 
-        using var pending = new PendingFetchData(
+        using var pending = PendingFetchData.Create(
             topic,
             partitionIndex: 0,
             batches: Array.Empty<RecordBatch>(),
@@ -28,7 +28,7 @@ public class PendingFetchDataTests
         // Arrange
         const string topic = "my-topic";
 
-        using var pending = new PendingFetchData(
+        using var pending = PendingFetchData.Create(
             topic,
             partitionIndex: 0,
             batches: Array.Empty<RecordBatch>());
@@ -44,13 +44,13 @@ public class PendingFetchDataTests
         const string topic = "shared-topic";
         var activityName = $"{topic} receive";
 
-        using var pending1 = new PendingFetchData(
+        using var pending1 = PendingFetchData.Create(
             topic,
             partitionIndex: 0,
             batches: Array.Empty<RecordBatch>(),
             activityName: activityName);
 
-        using var pending2 = new PendingFetchData(
+        using var pending2 = PendingFetchData.Create(
             topic,
             partitionIndex: 1,
             batches: Array.Empty<RecordBatch>(),
@@ -58,5 +58,52 @@ public class PendingFetchDataTests
 
         // Assert - both instances share the exact same string reference
         await Assert.That(ReferenceEquals(pending1.ActivityName, pending2.ActivityName)).IsTrue();
+    }
+
+    [Test]
+    public async Task Create_AfterDispose_ReusesPooledInstance()
+    {
+        // Arrange: create and dispose a PendingFetchData to return it to pool
+        var first = PendingFetchData.Create(
+            "topic-1",
+            partitionIndex: 0,
+            batches: Array.Empty<RecordBatch>());
+        first.Dispose();
+
+        // Act: create another, which should reuse the pooled instance
+        using var second = PendingFetchData.Create(
+            "topic-2",
+            partitionIndex: 1,
+            batches: Array.Empty<RecordBatch>());
+
+        // Assert: the second instance has the correct new state
+        await Assert.That(second.Topic).IsEqualTo("topic-2");
+        await Assert.That(second.PartitionIndex).IsEqualTo(1);
+        await Assert.That(second.LastYieldedOffset).IsEqualTo(-1L);
+        await Assert.That(second.TotalBytesConsumed).IsEqualTo(0L);
+        await Assert.That(second.MessageCount).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Create_WithAbortedTransactions_ReusesClearedDictionary()
+    {
+        // Arrange: first instance has aborted transactions, dispose returns to pool
+        var abortedTxns = new[] { new Dekaf.Protocol.Messages.AbortedTransaction { ProducerId = 1, FirstOffset = 10 } };
+        var first = PendingFetchData.Create(
+            "topic",
+            partitionIndex: 0,
+            batches: Array.Empty<RecordBatch>(),
+            abortedTransactions: abortedTxns);
+        first.Dispose();
+
+        // Act: second instance without aborted transactions (reuses pooled dictionary, now empty)
+        using var second = PendingFetchData.Create(
+            "topic",
+            partitionIndex: 0,
+            batches: Array.Empty<RecordBatch>());
+
+        // Assert: instance is usable and has correct state
+        await Assert.That(second.Topic).IsEqualTo("topic");
+        await Assert.That(second.LastYieldedOffset).IsEqualTo(-1L);
     }
 }
