@@ -31,8 +31,11 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// </summary>
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_payloadBuffer;
+
     private readonly ISchemaRegistryClient _schemaRegistry;
-    private readonly Func<T, byte[]> _serialize;
+    private readonly Action<T, IBufferWriter<byte>> _serialize;
     private readonly Func<string, Schema> _getSchema;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
@@ -45,14 +48,14 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// Creates a new Schema Registry serializer.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="serialize">Action to serialize the value by writing to the provided buffer (without wire format).</param>
     /// <param name="getSchema">Function to get the schema for a type.</param>
     /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
-        Func<T, byte[]> serialize,
+        Action<T, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
@@ -70,14 +73,14 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// Creates a new Schema Registry serializer with a custom subject name strategy.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="serialize">Action to serialize the value by writing to the provided buffer (without wire format).</param>
     /// <param name="getSchema">Function to get the schema for a type.</param>
     /// <param name="customSubjectNameStrategy">Custom strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
-        Func<T, byte[]> serialize,
+        Action<T, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         ISubjectNameStrategy customSubjectNameStrategy,
         bool autoRegisterSchemas = true,
@@ -100,16 +103,19 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         // Get or register schema ID (cached after first call per subject)
         var schemaId = GetSchemaIdSync(subject, schema);
 
-        // Serialize the payload
-        var payload = _serialize(value);
+        // Serialize payload into thread-local buffer to avoid per-message byte[] allocation.
+        // One ArrayBufferWriter<byte> is allocated per thread and reused across all calls.
+        var payloadBuffer = t_payloadBuffer ??= new ArrayBufferWriter<byte>();
+        payloadBuffer.Clear();
+        _serialize(value, payloadBuffer);
 
         // Write wire format: [0x00] [schema ID] [payload]
-        var totalSize = 1 + 4 + payload.Length;
+        var totalSize = 1 + 4 + payloadBuffer.WrittenCount;
         var span = destination.GetSpan(totalSize);
 
         span[0] = MagicByte;
         BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        payload.AsSpan().CopyTo(span.Slice(5));
+        payloadBuffer.WrittenSpan.CopyTo(span.Slice(5));
 
         destination.Advance(totalSize);
     }

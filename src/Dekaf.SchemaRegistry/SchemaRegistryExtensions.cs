@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 
 namespace Dekaf.SchemaRegistry;
@@ -65,7 +66,7 @@ public static class SchemaRegistryExtensions
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="builder">The producer builder.</param>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="serialize">Action to serialize the value by writing to the provided buffer (without wire format).</param>
     /// <param name="getSchema">Function to get the schema for a subject.</param>
     /// <param name="subjectNameStrategy">Subject name strategy.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
@@ -73,7 +74,7 @@ public static class SchemaRegistryExtensions
     public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
-        Func<TValue, byte[]> serialize,
+        Action<TValue, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true)
@@ -96,7 +97,7 @@ public static class SchemaRegistryExtensions
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="builder">The producer builder.</param>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="serialize">Action to serialize the value by writing to the provided buffer (without wire format).</param>
     /// <param name="getSchema">Function to get the schema for a subject.</param>
     /// <param name="customSubjectNameStrategy">Custom subject name strategy implementation.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
@@ -104,7 +105,7 @@ public static class SchemaRegistryExtensions
     public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
-        Func<TValue, byte[]> serialize,
+        Action<TValue, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         ISubjectNameStrategy customSubjectNameStrategy,
         bool autoRegisterSchemas = true)
