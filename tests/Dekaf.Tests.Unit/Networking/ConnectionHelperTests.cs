@@ -197,7 +197,7 @@ public class ConnectionHelperTests
     [Test]
     public async Task CalculatePipelineThresholds_VeryLargeBufferMemory_ClampsToMaximum()
     {
-        // ulong.MaxValue would overflow long — verify it clamps to MaximumPauseThresholdBytes (4 MB)
+        // Very large BufferMemory still clamps to MaximumPauseThresholdBytes (4 MB)
         const ulong bufferMemory = ulong.MaxValue;
         const long expectedPause = 4L * 1024 * 1024; // 4 MB cap
 
