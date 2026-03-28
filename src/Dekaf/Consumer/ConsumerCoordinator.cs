@@ -42,6 +42,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
+
+    private bool IsCooperativeProtocol =>
+        _options.CustomPartitionAssignmentStrategy?.Name == "cooperative-sticky"
+        || _options.PartitionAssignmentStrategy == PartitionAssignmentStrategy.CooperativeSticky;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -194,6 +198,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
                 await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Cooperative protocol: if partitions were revoked, trigger a second rebalance round
+        // so the revoked partitions can be assigned to their new owners.
+        // The recursive call is bounded: round 2 has no ownership transfers, so no further revocations.
+        if (syncResult.Revoked is { Count: > 0 } && IsCooperativeProtocol)
+        {
+            LogCooperativeRejoin(syncResult.Revoked.Count);
+            _state = CoordinatorState.Unjoined;
+            await EnsureActiveGroupAsync(topics, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -535,6 +549,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
+                    // Cooperative protocol: fire OnPartitionsLost for involuntary loss
+                    if (IsCooperativeProtocol && _rebalanceListener is not null
+                        && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
+                    {
+                        var lostPartitions = _assignedPartitions.ToList();
+                        if (lostPartitions.Count > 0)
+                        {
+                            try
+                            {
+                                await _rebalanceListener.OnPartitionsLostAsync(lostPartitions, CancellationToken.None)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (Exception lostEx)
+                            {
+                                LogPartitionsLostCallbackError(lostEx);
+                            }
+                        }
+                    }
+
                     // Mark coordinator unknown if it's a coordinator error
                     if (IsRetriableCoordinatorError(ge.ErrorCode))
                     {
@@ -1260,6 +1293,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
+    private partial void LogCooperativeRejoin(int revokedCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsLost callback threw an exception")]
+    private partial void LogPartitionsLostCallbackError(Exception exception);
 
     #endregion
 }
