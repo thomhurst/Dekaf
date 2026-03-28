@@ -760,6 +760,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // sealed batches exist. Total size <= number of sealed batches <= BufferMemory / BatchSize.
     private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
 
+    // Flag set by DrainBatchesForOneNode when a broker's partition list is empty (leader
+    // migration between Ready() and Drain()). Instead of immediately re-enqueuing ALL
+    // non-empty partitions (O(n) scan per broker, causing unbounded queue growth in
+    // multi-broker scenarios), this defers the scan to the next Ready() call where it
+    // runs at most once. Prevents the multiplicative re-enqueue storm that caused GC
+    // pressure collapse at ~68M messages in 3-broker configurations (#657).
+    private int _needsFullPartitionScan;
+
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
     // Ensures linger and flush don't both seal batches simultaneously,
     // which could cause ordering or double-seal issues.
@@ -1008,6 +1016,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var unknownLeadersExist = false;
         var nowTimestamp = Stopwatch.GetTimestamp();
 
+        // Deferred full scan — see _needsFullPartitionScan field comment.
+        if (Interlocked.Exchange(ref _needsFullPartitionScan, 0) != 0)
+        {
+            foreach (var (tp, pd) in _partitionDeques)
+            {
+                if (pd.Count > 0)
+                    _readyPartitions.Enqueue(tp);
+            }
+        }
+
         // Snapshot the current queue length to avoid infinite loop: partitions that need
         // re-enqueue (backoff, unknown leader) are added back during the loop, but we only
         // process items that were present at the start of this call.
@@ -1129,15 +1147,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var partitions = metadataManager.GetPartitionsForNode(nodeId);
         if (partitions.Count == 0)
         {
-            // Leader migrated between Ready() and Drain(): the notification was consumed but
-            // the partition now belongs to a different node. Without re-enqueue, the batch is
-            // stranded in the deque until the 3x delivery timeout orphan sweep.
-            foreach (var (tp, pd) in _partitionDeques)
-            {
-                if (pd.Count > 0)
-                    _readyPartitions.Enqueue(tp);
-            }
-
+            // Leader migrated between Ready() and Drain() — defer re-enqueue to next
+            // Ready() call via _needsFullPartitionScan (see field comment).
+            Volatile.Write(ref _needsFullPartitionScan, 1);
+            SignalWakeup();
             return;
         }
 
