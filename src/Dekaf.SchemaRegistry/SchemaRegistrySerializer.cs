@@ -32,7 +32,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
-    private readonly Func<T, byte[]> _serialize;
+    private readonly Action<T, IBufferWriter<byte>> _serialize;
     private readonly Func<string, Schema> _getSchema;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
@@ -45,14 +45,14 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// Creates a new Schema Registry serializer.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="serialize">Action to serialize the value by writing to the provided buffer (without wire format).</param>
     /// <param name="getSchema">Function to get the schema for a type.</param>
     /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
-        Func<T, byte[]> serialize,
+        Action<T, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
@@ -70,14 +70,14 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// Creates a new Schema Registry serializer with a custom subject name strategy.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="serialize">Action to serialize the value by writing to the provided buffer (without wire format).</param>
     /// <param name="getSchema">Function to get the schema for a type.</param>
     /// <param name="customSubjectNameStrategy">Custom strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
-        Func<T, byte[]> serialize,
+        Action<T, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         ISubjectNameStrategy customSubjectNameStrategy,
         bool autoRegisterSchemas = true,
@@ -100,16 +100,20 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         // Get or register schema ID (cached after first call per subject)
         var schemaId = GetSchemaIdSync(subject, schema);
 
-        // Serialize the payload
-        var payload = _serialize(value);
+        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
+        payloadBuffer.ResetWrittenCount();
+        _serialize(value, payloadBuffer);
+        // Drop an oversized buffer so a single large message doesn't permanently hold capacity on this thread.
+        if (payloadBuffer.Capacity > 1024 * 1024)
+            SchemaRegistryBuffers.PayloadBuffer = null;
 
         // Write wire format: [0x00] [schema ID] [payload]
-        var totalSize = 1 + 4 + payload.Length;
+        var totalSize = 1 + 4 + payloadBuffer.WrittenCount;
         var span = destination.GetSpan(totalSize);
 
         span[0] = MagicByte;
         BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        payload.AsSpan().CopyTo(span.Slice(5));
+        payloadBuffer.WrittenSpan.CopyTo(span.Slice(5));
 
         destination.Advance(totalSize);
     }
@@ -153,6 +157,15 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
     }
+}
+
+/// Non-generic holder for the thread-local serialization buffer.
+/// Kept outside SchemaRegistrySerializer&lt;T&gt; so all generic instantiations
+/// share one buffer per thread rather than one per (type × thread).
+internal static class SchemaRegistryBuffers
+{
+    [ThreadStatic]
+    internal static ArrayBufferWriter<byte>? PayloadBuffer;
 }
 
 /// <summary>

@@ -66,7 +66,12 @@ public sealed class SchemaRegistryCacheTests
 
         await using var serializer = new SchemaRegistrySerializer<string>(
             registry,
-            serialize: value => System.Text.Encoding.UTF8.GetBytes(value),
+            serialize: static (value, writer) =>
+            {
+                var byteCount = System.Text.Encoding.UTF8.GetByteCount(value);
+                System.Text.Encoding.UTF8.GetBytes(value, writer.GetSpan(byteCount));
+                writer.Advance(byteCount);
+            },
             getSchema: _ => schema);
 
         var contextA = new SerializationContext { Topic = "topic-a", Component = SerializationComponent.Value };
