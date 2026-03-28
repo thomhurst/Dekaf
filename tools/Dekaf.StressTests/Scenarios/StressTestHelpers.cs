@@ -27,6 +27,11 @@ internal static class StressTestHelpers
     /// This prevents the Dekaf background producer from dominating CPU and GC pressure,
     /// which unfairly penalizes consumer throughput measurements vs Confluent (whose native
     /// librdkafka producer has no .NET GC impact).
+    ///
+    /// The threshold of 4 CPUs was chosen because the stress test runs a producer, consumer,
+    /// heartbeat timer, and Kafka broker concurrently - at least 4 active threads. With 4 or
+    /// fewer processors there is no spare capacity, so the producer must yield aggressively.
+    /// GitHub Actions runners typically have 2-4 vCPUs, making this the common CI case.
     /// </summary>
     private static readonly int BackgroundProducerYieldInterval =
         Environment.ProcessorCount <= 4 ? 1_000 : 10_000;

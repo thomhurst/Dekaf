@@ -1353,9 +1353,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Per-partition response overhead in a FetchResponse: partition header (4 bytes partition index,
-    /// 2 bytes error code, 8 bytes high watermark, 8 bytes last stable offset, 8 bytes log start offset,
-    /// 4 bytes aborted transactions count, 4 bytes record set size) = ~38 bytes.
+    /// Per-partition response overhead in a FetchResponse (Kafka FetchResponse API version 11+):
+    /// partition header (4 bytes partition index, 2 bytes error code, 8 bytes high watermark,
+    /// 8 bytes last stable offset, 8 bytes log start offset, 4 bytes aborted transactions count,
+    /// 4 bytes record set size) = ~38 bytes.
     /// Plus per-batch header overhead (baseOffset + batchLength prefix = 12 bytes) not included in BatchLength.
     /// </summary>
     private const int PerPartitionResponseOverhead = 38;
