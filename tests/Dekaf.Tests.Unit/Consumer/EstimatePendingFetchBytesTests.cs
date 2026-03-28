@@ -9,7 +9,7 @@ public class EstimatePendingFetchBytesTests
     public async Task EmptyBatches_ReturnsPartitionOverheadOnly()
     {
         // Arrange - no batches, just partition-level overhead
-        using var pending = new PendingFetchData(
+        using var pending = PendingFetchData.Create(
             "test-topic",
             partitionIndex: 0,
             batches: Array.Empty<RecordBatch>());
@@ -34,7 +34,7 @@ public class EstimatePendingFetchBytesTests
             Records = []
         };
 
-        using var pending = new PendingFetchData(
+        using var pending = PendingFetchData.Create(
             "test-topic",
             partitionIndex: 0,
             batches: [batch]);
@@ -67,7 +67,7 @@ public class EstimatePendingFetchBytesTests
             Records = []
         };
 
-        using var pending = new PendingFetchData(
+        using var pending = PendingFetchData.Create(
             "test-topic",
             partitionIndex: 0,
             batches: [batch1, batch2]);
@@ -92,7 +92,7 @@ public class EstimatePendingFetchBytesTests
             Records = []
         };
 
-        using var pending = new PendingFetchData(
+        using var pending = PendingFetchData.Create(
             "test-topic",
             partitionIndex: 0,
             batches: [batch]);
