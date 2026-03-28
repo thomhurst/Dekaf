@@ -876,18 +876,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // linger timer to seal the next wave of batches. This avoids the
                     // send-idle-send pattern that creates small ProduceRequests in
                     // multi-broker setups with few partitions per broker and fast acks.
-                    // Amortized near-zero allocation: reuses pre-allocated microLingerCts via TryReset(),
-                    // but TryReset() can fail and allocate a new CTS.
                     if (coalescedCount > 0
                         && coalescedCount <= MicroLingerBatchThreshold
                         && coalescedPartitions.Count < _knownPartitions.Count)
                     {
-                        if (!microLingerCts.TryReset())
-                        {
-                            microLingerCts.Dispose();
-                            microLingerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                        }
-                        microLingerCts.CancelAfter(MicroLingerAsyncWaitMs);
+                        ResetLinkedCts(ref microLingerCts, MicroLingerAsyncWaitMs, cancellationToken);
                         try
                         {
                             if (await eventReader.WaitToReadAsync(microLingerCts.Token).ConfigureAwait(false))
@@ -1065,7 +1058,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (!connectionBuckets[c].HasBatches) continue;
                                 if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
-                                ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
+                                ResetLinkedCts(ref bucketTimeoutCts[c], SendCoalescedTimeoutMs, cancellationToken);
                                 parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
                                     scratches[c], bucketTimeoutCts[c].Token);
                             }
@@ -1091,7 +1084,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     if (!connectionBuckets[c].HasBatches) continue;
                                     if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
-                                    ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
+                                    ResetLinkedCts(ref bucketTimeoutCts[c], SendCoalescedTimeoutMs, cancellationToken);
                                     parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
                                         scratches[c], bucketTimeoutCts[c].Token);
                                 }
@@ -2386,14 +2379,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Resets a per-connection timeout CTS for reuse, or recreates it if TryReset fails.
     /// Mirrors the single-connection path's sendTimeoutCts reuse pattern.
     /// </summary>
-    private static void ResetBucketTimeout(ref CancellationTokenSource cts, CancellationToken shutdownToken)
+    private static void ResetLinkedCts(ref CancellationTokenSource cts, int cancelAfterMs, CancellationToken shutdownToken)
     {
         if (!cts.TryReset())
         {
             cts.Dispose();
             cts = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
         }
-        cts.CancelAfter(SendCoalescedTimeoutMs);
+        cts.CancelAfter(cancelAfterMs);
     }
 
     /// <summary>
