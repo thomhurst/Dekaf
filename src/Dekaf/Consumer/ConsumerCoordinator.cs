@@ -42,10 +42,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-
-    private bool IsCooperativeProtocol =>
-        _options.CustomPartitionAssignmentStrategy?.Name == "cooperative-sticky"
-        || _options.PartitionAssignmentStrategy == PartitionAssignmentStrategy.CooperativeSticky;
+    private readonly bool _isCooperativeProtocol;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -67,6 +64,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
+        _isCooperativeProtocol = options.CustomPartitionAssignmentStrategy?.Name == "cooperative-sticky"
+            || options.PartitionAssignmentStrategy == PartitionAssignmentStrategy.CooperativeSticky;
     }
 
     public string? MemberId => _memberId;
@@ -203,7 +202,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Cooperative protocol: if partitions were revoked, trigger a second rebalance round
         // so the revoked partitions can be assigned to their new owners.
         // The recursive call is bounded: round 2 has no ownership transfers, so no further revocations.
-        if (syncResult.Revoked is { Count: > 0 } && IsCooperativeProtocol)
+        if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol)
         {
             LogCooperativeRejoin(syncResult.Revoked.Count);
             _state = CoordinatorState.Unjoined;
@@ -550,7 +549,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
                     // Cooperative protocol: fire OnPartitionsLost for involuntary loss
-                    if (IsCooperativeProtocol && _rebalanceListener is not null
+                    if (_isCooperativeProtocol && _rebalanceListener is not null
                         && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
                     {
                         var lostPartitions = _assignedPartitions.ToList();
@@ -964,7 +963,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         foreach (var member in members)
         {
             var (subscribedTopics, memberOwned) = ParseSubscriptionMetadata(member.Metadata);
-            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, memberOwned.ToList(), member.Metadata));
+            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, memberOwned, member.Metadata));
         }
 
         // Delegate to the resolved strategy

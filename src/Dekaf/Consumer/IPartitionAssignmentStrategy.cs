@@ -12,7 +12,7 @@ namespace Dekaf.Consumer;
 public readonly record struct ConsumerGroupMember(
     string MemberId,
     IReadOnlySet<string> Subscriptions,
-    IReadOnlyList<TopicPartition> OwnedPartitions,
+    IReadOnlyCollection<TopicPartition> OwnedPartitions,
     byte[] Metadata);
 
 /// <summary>
@@ -51,4 +51,14 @@ public static class PartitionAssignors
     /// Round-robin assignor: distributes all topic-partitions in round-robin order.
     /// </summary>
     public static IPartitionAssignmentStrategy RoundRobin { get; } = new RoundRobinAssignor();
+
+    /// <summary>
+    /// Sticky assignor: preserves existing assignments while maintaining balance (KIP-54).
+    /// </summary>
+    public static IPartitionAssignmentStrategy Sticky { get; } = new StickyAssignor();
+
+    /// <summary>
+    /// Cooperative sticky assignor: sticky assignment with incremental rebalancing (KIP-429).
+    /// </summary>
+    public static IPartitionAssignmentStrategy CooperativeSticky { get; } = new CooperativeStickyAssignor();
 }

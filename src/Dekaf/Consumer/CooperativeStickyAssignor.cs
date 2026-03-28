@@ -55,13 +55,14 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
             adjusted[memberId] = filtered;
         }
 
-        // Step 5: Ensure old owners keep their transferring partitions
+        // Step 5: Ensure old owners keep their transferring partitions.
+        // These partitions were targeted at the new owner (not the old owner) in the sticky assignment,
+        // so they won't be in the old owner's filtered list — we can add directly.
         foreach (var tp in transferring)
         {
             if (currentOwner.TryGetValue(tp, out var oldOwner) && adjusted.TryGetValue(oldOwner, out var ownerList))
             {
-                if (!ownerList.Contains(tp))
-                    ownerList.Add(tp);
+                ownerList.Add(tp);
             }
         }
 

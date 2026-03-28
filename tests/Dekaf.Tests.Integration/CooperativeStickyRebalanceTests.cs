@@ -185,12 +185,15 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             // May timeout if no messages left, that's OK
         }
 
-        // Wait for rebalance to settle
-        await Task.Delay(5000).ConfigureAwait(false);
+        // Wait for cooperative rebalance to complete (may need 2 rounds)
+        await Task.Delay(10_000).ConfigureAwait(false);
 
         // Both listeners should have been called (rebalance happened)
         await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
         await Assert.That(listener2.AssignedCallCount).IsGreaterThanOrEqualTo(1);
+
+        // In cooperative mode, consumer 1 should have had partitions revoked (not all, just the moved ones)
+        await Assert.That(listener1.RevokedCallCount).IsGreaterThanOrEqualTo(1);
     }
 
     [Test]

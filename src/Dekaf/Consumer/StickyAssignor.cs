@@ -38,34 +38,31 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             memberPartitions[member.MemberId] = [];
         }
 
-        // Build set of all valid topic-partitions and track which are claimed
-        var allPartitions = new HashSet<TopicPartition>();
         var sortedTopics = new List<string>(topicPartitionCounts.Keys);
         sortedTopics.Sort(StringComparer.Ordinal);
 
-        foreach (var topic in sortedTopics)
-        {
-            var partitionCount = topicPartitionCounts[topic];
-            for (var p = 0; p < partitionCount; p++)
-            {
-                allPartitions.Add(new TopicPartition(topic, p));
-            }
-        }
-
         // Track claimed partitions to prevent duplicates
         var claimed = new HashSet<TopicPartition>();
+
+        // Running per-member-per-topic counts to avoid O(M*P) linear scans
+        var topicCounts = new Dictionary<(string MemberId, string Topic), int>();
 
         // Step 1: Preserve valid existing assignments (first member by sorted order wins conflicts)
         foreach (var member in sortedMembers)
         {
             foreach (var tp in member.OwnedPartitions)
             {
-                if (allPartitions.Contains(tp) &&
-                    member.Subscriptions.Contains(tp.Topic) &&
-                    !claimed.Contains(tp))
+                // Validate partition exists via topicPartitionCounts (avoids allPartitions HashSet)
+                if (topicPartitionCounts.TryGetValue(tp.Topic, out var count)
+                    && tp.Partition >= 0 && tp.Partition < count
+                    && member.Subscriptions.Contains(tp.Topic)
+                    && !claimed.Contains(tp))
                 {
                     memberPartitions[member.MemberId].Add(tp);
                     claimed.Add(tp);
+
+                    var key = (member.MemberId, tp.Topic);
+                    topicCounts[key] = topicCounts.GetValueOrDefault(key) + 1;
                 }
             }
         }
@@ -97,33 +94,19 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             var minQuota = partitionCount / interested.Count;
             var extraSlots = partitionCount % interested.Count;
 
-            // Count how many partitions each interested member has for this topic
-            // Members sorted by member ID; first 'extraSlots' members get maxQuota, rest get minQuota
+            // Read per-topic counts from running tracker
             var memberTopicCounts = new Dictionary<string, int>(interested.Count);
             foreach (var memberId in interested)
             {
-                var count = 0;
-                foreach (var tp in memberPartitions[memberId])
-                {
-                    if (tp.Topic == topic)
-                        count++;
-                }
-                memberTopicCounts[memberId] = count;
+                memberTopicCounts[memberId] = topicCounts.GetValueOrDefault((memberId, topic));
             }
 
             // Determine which members get maxQuota (minQuota + 1)
-            // Sort interested members by their current count descending, then by member ID
-            // to determine who gets extra slots. Members with more existing partitions
-            // for this topic are more likely to keep them.
-            var membersForQuota = new List<string>(interested);
-
-            // Assign max quota slots: members that already have more partitions get priority
-            // to avoid unnecessary movement
+            // Members with more existing partitions get priority to avoid unnecessary movement
             var maxQuotaMembers = new HashSet<string>();
             if (extraSlots > 0)
             {
-                // Sort by current count descending (prefer members that already have more),
-                // then by member ID for determinism
+                var membersForQuota = new List<string>(interested);
                 membersForQuota.Sort((a, b) =>
                 {
                     var cmp = memberTopicCounts[b].CompareTo(memberTopicCounts[a]);
@@ -136,7 +119,7 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
                 }
             }
 
-            // Revoke excess partitions
+            // Revoke excess partitions using RemoveAll to avoid O(n^2) RemoveAt shifts
             foreach (var memberId in interested)
             {
                 var quota = maxQuotaMembers.Contains(memberId) ? minQuota + 1 : minQuota;
@@ -144,18 +127,20 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
 
                 if (currentCount > quota)
                 {
-                    // Remove excess from end of the member's list for this topic
                     var toRevoke = currentCount - quota;
                     var revoked = 0;
-                    for (var i = memberPartitions[memberId].Count - 1; i >= 0 && revoked < toRevoke; i--)
+                    var partList = memberPartitions[memberId];
+
+                    partList.RemoveAll(tp =>
                     {
-                        if (memberPartitions[memberId][i].Topic == topic)
-                        {
-                            claimed.Remove(memberPartitions[memberId][i]);
-                            memberPartitions[memberId].RemoveAt(i);
-                            revoked++;
-                        }
-                    }
+                        if (revoked >= toRevoke || tp.Topic != topic)
+                            return false;
+
+                        claimed.Remove(tp);
+                        topicCounts[(memberId, topic)]--;
+                        revoked++;
+                        return true;
+                    });
                 }
             }
         }
@@ -182,26 +167,17 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             if (interested.Count == 0)
                 continue;
 
-            var partitionCount = topicPartitionCounts[tp.Topic];
-            var minQuota = partitionCount / interested.Count;
-            var extraSlots = partitionCount % interested.Count;
-
-            // Find the interested member with fewest partitions for this topic
+            // Find the interested member with fewest partitions for this topic (O(1) per member via topicCounts)
             string? bestMember = null;
             var bestCount = int.MaxValue;
 
             foreach (var memberId in interested)
             {
-                var count = 0;
-                foreach (var existing in memberPartitions[memberId])
-                {
-                    if (existing.Topic == tp.Topic)
-                        count++;
-                }
+                var memberCount = topicCounts.GetValueOrDefault((memberId, tp.Topic));
 
-                if (count < bestCount)
+                if (memberCount < bestCount)
                 {
-                    bestCount = count;
+                    bestCount = memberCount;
                     bestMember = memberId;
                 }
             }
@@ -210,6 +186,9 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             {
                 memberPartitions[bestMember].Add(tp);
                 claimed.Add(tp);
+
+                var key = (bestMember, tp.Topic);
+                topicCounts[key] = topicCounts.GetValueOrDefault(key) + 1;
             }
         }
 

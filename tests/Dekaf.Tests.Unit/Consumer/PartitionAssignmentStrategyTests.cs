@@ -276,6 +276,26 @@ public sealed class PartitionAssignmentStrategyTests
         await Assert.That(a).IsSameReferenceAs(b);
     }
 
+    [Test]
+    public async Task PartitionAssignors_Sticky_IsSingleton()
+    {
+        var a = PartitionAssignors.Sticky;
+        var b = PartitionAssignors.Sticky;
+
+        await Assert.That(a).IsSameReferenceAs(b);
+        await Assert.That(a.Name).IsEqualTo("sticky");
+    }
+
+    [Test]
+    public async Task PartitionAssignors_CooperativeSticky_IsSingleton()
+    {
+        var a = PartitionAssignors.CooperativeSticky;
+        var b = PartitionAssignors.CooperativeSticky;
+
+        await Assert.That(a).IsSameReferenceAs(b);
+        await Assert.That(a.Name).IsEqualTo("cooperative-sticky");
+    }
+
     #endregion
 
     #region Builder integration
