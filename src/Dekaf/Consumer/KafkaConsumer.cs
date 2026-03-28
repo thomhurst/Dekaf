@@ -831,7 +831,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                                 batch.BaseTimestamp + record.TimestampDelta);
 
-                            var headers = GetHeaders(record.Headers, record.HeaderCount);
+                            var headers = GetHeaders(record.Headers);
                             var timestampType = ((int)batch.Attributes & 0x08) != 0
                                 ? TimestampType.LogAppendTime
                                 : TimestampType.CreateTime;
@@ -2565,27 +2565,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Returns headers as a read-only list, handling pooled (oversized) arrays correctly.
-    /// When headers come from ArrayPool, the array may be larger than the actual header count.
+    /// Returns headers directly without conversion. Returns null if empty.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders, int headerCount)
+    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
     {
-        // Return null for empty to avoid exposing empty lists
-        if (recordHeaders is null || headerCount == 0)
+        if (recordHeaders is null || recordHeaders.Length == 0)
             return null;
 
-        // If the array is exact-sized (e.g., from producer path), return directly
-        if (recordHeaders.Length == headerCount)
-            return recordHeaders;
-
-        // Pooled array is oversized — copy to an exact-sized array for user ownership.
-        // This ensures ConsumeResult.Headers outlives the batch (the pooled array is
-        // returned in LazyRecordList.Dispose). Header counts are typically 0-5, so the
-        // copy is negligible and avoids both use-after-return bugs and ArraySegment boxing.
-        var owned = new Header[headerCount];
-        recordHeaders.AsSpan(0, headerCount).CopyTo(owned);
-        return owned;
+        return recordHeaders;
     }
 
     /// <summary>
