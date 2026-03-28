@@ -502,15 +502,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogReceivedAssignment(partitions);
         }
 
-        // Compute revoked and assigned partitions for rebalance listener
-        // Return them to caller so listener can be called OUTSIDE the lock
-        // This prevents deadlock if listener calls back into the consumer
-        if (_rebalanceListener is null)
-        {
-            return new SyncGroupResult(null, null);
-        }
-
-        // Compute revoked and assigned partitions without LINQ to avoid allocations
+        // Always compute revoked and assigned partitions — the cooperative rebalance
+        // round 2 logic depends on knowing what was revoked, regardless of whether
+        // a rebalance listener is configured. Listener notifications are gated separately
+        // in EnsureActiveGroupAsync.
+        // Compute without LINQ to avoid allocations
         List<TopicPartition>? revoked = null;
         foreach (var partition in oldAssignment)
         {
