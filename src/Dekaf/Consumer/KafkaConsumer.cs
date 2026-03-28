@@ -283,6 +283,7 @@ internal sealed class PendingFetchData : IDisposable
         Topic = null!;
         ActivityName = null!;
         _abortedProducers?.Clear();
+        _abortedProducers = null;
 
         // Soft limit: the check-then-act is intentionally non-atomic.
         // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
