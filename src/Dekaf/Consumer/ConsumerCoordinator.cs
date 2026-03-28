@@ -842,27 +842,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    internal static byte[] BuildSubscriptionMetadataV0(IReadOnlySet<string> topics)
-    {
-        // Simple subscription format - convert set to list for writer
-        var topicList = new List<string>(topics.Count);
-        foreach (var topic in topics)
-        {
-            topicList.Add(topic);
-        }
-
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        writer.WriteInt16(0); // Version
-        writer.WriteArray(
-            topicList,
-            (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
-        writer.WriteBytes([]); // User data
-
-        return buffer.WrittenSpan.ToArray();
-    }
-
     internal static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics, IReadOnlySet<TopicPartition> ownedPartitions)
     {
         var topicList = new List<string>(topics.Count);
@@ -871,8 +850,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             topicList.Add(topic);
         }
 
-        // Group owned partitions by topic
-        var ownedByTopic = new Dictionary<string, List<int>>();
+        // Group owned partitions by topic, sorted for deterministic wire format
+        var ownedByTopic = new SortedDictionary<string, List<int>>(StringComparer.Ordinal);
         foreach (var tp in ownedPartitions)
         {
             if (!ownedByTopic.TryGetValue(tp.Topic, out var partitions))
@@ -883,11 +862,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             partitions.Add(tp.Partition);
         }
 
-        var ownedTopicList = new List<(string Topic, List<int> Partitions)>(ownedByTopic.Count);
-        foreach (var kvp in ownedByTopic)
-        {
-            ownedTopicList.Add((kvp.Key, kvp.Value));
-        }
+        // WriteArray requires IReadOnlyList<T>, so convert from SortedDictionary
+        var ownedTopicList = new List<KeyValuePair<string, List<int>>>(ownedByTopic);
 
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
@@ -901,10 +877,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // v1: owned partitions array
         writer.WriteArray(
             ownedTopicList,
-            static (ref KafkaProtocolWriter w, (string Topic, List<int> Partitions) entry) =>
+            static (ref KafkaProtocolWriter w, KeyValuePair<string, List<int>> entry) =>
             {
-                w.WriteString(entry.Topic);
-                w.WriteArray(entry.Partitions, static (ref KafkaProtocolWriter w2, int p) => w2.WriteInt32(p));
+                w.WriteString(entry.Key);
+                w.WriteArray(entry.Value, static (ref KafkaProtocolWriter w2, int p) => w2.WriteInt32(p));
             });
 
         return buffer.WrittenSpan.ToArray();
@@ -1040,10 +1016,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Read past userData (bytes with int32 length prefix)
         _ = reader.ReadBytes();
 
-        var ownedPartitions = new HashSet<TopicPartition>();
-
         if (version >= 1 && reader.Remaining > 0)
         {
+            var ownedPartitions = new HashSet<TopicPartition>();
             var ownedTopics = reader.ReadArray((ref KafkaProtocolReader r) =>
             {
                 var topic = r.ReadString()!;
@@ -1058,9 +1033,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     ownedPartitions.Add(new TopicPartition(topic, partition));
                 }
             }
+
+            return (topics, ownedPartitions);
         }
 
-        return (topics, ownedPartitions);
+        return (topics, []);
     }
 
     private byte[] BuildAssignmentData(IReadOnlyList<TopicPartition> partitions)

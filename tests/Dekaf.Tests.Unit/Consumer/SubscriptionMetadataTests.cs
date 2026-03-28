@@ -1,4 +1,6 @@
+using System.Buffers;
 using Dekaf.Consumer;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -70,9 +72,17 @@ public class SubscriptionMetadataTests
     [Test]
     public async Task BackwardCompat_V0Metadata_ParsesWithEmptyOwned()
     {
-        var topics = new HashSet<string> { "topic-a", "topic-b" };
+        // Build v0 subscription metadata (no owned partitions array) using the protocol writer
+        // directly, simulating what an older consumer would send.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16(0); // Version 0
+        writer.WriteArray(
+            (IReadOnlyList<string>)["topic-a", "topic-b"],
+            (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
+        writer.WriteBytes([]); // User data
+        var data = buffer.WrittenSpan.ToArray();
 
-        var data = ConsumerCoordinator.BuildSubscriptionMetadataV0(topics);
         var (parsedTopics, parsedOwned) = ConsumerCoordinator.ParseSubscriptionMetadata(data);
 
         await Assert.That(parsedTopics.Count).IsEqualTo(2);
