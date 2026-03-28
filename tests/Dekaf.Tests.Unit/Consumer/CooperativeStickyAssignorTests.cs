@@ -33,8 +33,9 @@ public sealed class CooperativeStickyAssignorTests
     [Test]
     public async Task OwnershipTransfer_PartitionsWithheldFromNewOwner()
     {
-        // member-a owns all 4. member-b joins. Sticky wants to move 2 to member-b.
-        // Cooperative should withhold those 2 from member-b, keeping them with member-a.
+        // member-a owns all 4. member-b joins. Sticky wants to give 2 to member-b.
+        // Per KIP-429: transferring partitions are removed from new owner AND from old owner.
+        // They are temporarily unassigned, triggering revocation from member-a in round 2.
         var assignor = new CooperativeStickyAssignor();
         var members = new List<ConsumerGroupMember>
         {
@@ -47,14 +48,14 @@ public sealed class CooperativeStickyAssignorTests
 
         var result = assignor.Assign(members, topicPartitionCounts);
 
-        // Total should be 4 (not 6) — transferring partitions withheld from member-b
-        var totalAssigned = result["member-a"].Count + result["member-b"].Count;
-        await Assert.That(totalAssigned).IsEqualTo(4);
-
-        // member-a keeps all 4 in round 1
-        await Assert.That(result["member-a"].Count).IsEqualTo(4);
-        // member-b gets 0 in round 1
+        // member-a keeps only its target share (2), transferring partitions are removed
+        await Assert.That(result["member-a"].Count).IsEqualTo(2);
+        // member-b gets 0 in round 1 — transferring partitions are withheld
         await Assert.That(result["member-b"].Count).IsEqualTo(0);
+
+        // Total is 2, not 4 — 2 partitions are temporarily unassigned
+        var totalAssigned = result["member-a"].Count + result["member-b"].Count;
+        await Assert.That(totalAssigned).IsEqualTo(2);
     }
 
     [Test]

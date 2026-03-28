@@ -548,8 +548,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
-                    // Cooperative protocol: fire OnPartitionsLost for involuntary loss
+                    // Cooperative protocol: fire OnPartitionsLost for involuntary loss.
+                    // Guard with _state == Stable: during a cooperative two-round rebalance, the
+                    // stale heartbeat from round 1 may get ILLEGAL_GENERATION when the group moves
+                    // to round 2's generation. That's an expected transition, not involuntary loss.
                     if (_isCooperativeProtocol && _rebalanceListener is not null
+                        && _state == CoordinatorState.Stable
                         && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
                     {
                         var lostPartitions = _assignedPartitions.ToList();

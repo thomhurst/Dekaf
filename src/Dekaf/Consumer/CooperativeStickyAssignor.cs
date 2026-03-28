@@ -4,8 +4,9 @@ namespace Dekaf.Consumer;
 
 /// <summary>
 /// Cooperative sticky partition assignor (KIP-429): runs the sticky assignment algorithm
-/// then withholds partitions transferring ownership from the new owner. The old owner keeps
-/// them until it revokes in the next rebalance round, enabling incremental (non-stop-the-world) rebalancing.
+/// then withholds partitions transferring ownership. Transferring partitions are removed from
+/// the new owner's assignment and left temporarily unassigned — the old owner sees them revoked
+/// and triggers a second rebalance round, enabling incremental (non-stop-the-world) rebalancing.
 /// </summary>
 public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
 {
@@ -42,8 +43,11 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
         if (transferring.Count == 0)
             return targetAssignments;
 
-        // Step 4: Build adjusted assignments - remove transferring from new owner, keep with old owner
-        var adjusted = new Dictionary<string, List<TopicPartition>>(targetAssignments.Count);
+        // Step 4: Build adjusted assignments — remove transferring partitions from their new owner.
+        // Per KIP-429, transferring partitions are left temporarily unassigned: they are NOT added
+        // back to the old owner. The old owner sees them revoked, calls OnPartitionsRevoked, and
+        // triggers a second rebalance round where the partitions (now unowned) are assigned directly.
+        var adjusted = new Dictionary<string, IReadOnlyList<TopicPartition>>(targetAssignments.Count);
         foreach (var (memberId, partitions) in targetAssignments)
         {
             var filtered = new List<TopicPartition>(partitions.Count);
@@ -55,22 +59,6 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
             adjusted[memberId] = filtered;
         }
 
-        // Step 5: Ensure old owners keep their transferring partitions.
-        // These partitions were targeted at the new owner (not the old owner) in the sticky assignment,
-        // so they won't be in the old owner's filtered list — we can add directly.
-        foreach (var tp in transferring)
-        {
-            if (currentOwner.TryGetValue(tp, out var oldOwner) && adjusted.TryGetValue(oldOwner, out var ownerList))
-            {
-                ownerList.Add(tp);
-            }
-        }
-
-        // Convert to IReadOnlyList
-        var result = new Dictionary<string, IReadOnlyList<TopicPartition>>(adjusted.Count);
-        foreach (var (memberId, partitions) in adjusted)
-            result[memberId] = partitions;
-
-        return result;
+        return adjusted;
     }
 }
