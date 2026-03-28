@@ -100,7 +100,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         // Get or register schema ID (cached after first call per subject)
         var schemaId = GetSchemaIdSync(subject, schema);
 
-        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>();
+        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
         payloadBuffer.ResetWrittenCount();
         _serialize(value, payloadBuffer);
         // Drop an oversized buffer so a single large message doesn't permanently hold capacity on this thread.
