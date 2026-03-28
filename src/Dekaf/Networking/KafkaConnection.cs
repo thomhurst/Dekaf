@@ -850,13 +850,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     //    the receive loop.
                     //
                     // 3. IsCanceled=true:
-                    //    The read was canceled via PipeReader.CancelPendingRead(). This does NOT
-                    //    throw OperationCanceledException — instead it returns a result with IsCanceled
-                    //    set. Note: CancellationToken-based cancellation (via timeoutCts.Token) throws
-                    //    OperationCanceledException and is handled by the catch block below.
-                    //    CancelPendingRead() is not currently called in this codebase, so IsCanceled
-                    //    is not explicitly checked here. If future code introduces CancelPendingRead(),
-                    //    an IsCanceled check should be added.
+                    //    The read was canceled. With Pipe.Reader (used via SocketPipe/DuplexPipe since
+                    //    PR #458), CancellationToken-based cancellation returns IsCanceled=true instead
+                    //    of throwing OperationCanceledException. Both paths must be handled.
                     result = await _reader!.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -868,6 +864,25 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
                     throw new KafkaException(
                         $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                }
+
+                // Pipe.Reader.ReadAsync returns IsCanceled=true on token cancellation instead of
+                // throwing OperationCanceledException (unlike PipeReader.Create(Stream)). Without
+                // this check, timeouts are silently swallowed: the connection stays in the pool
+                // appearing healthy, and all subsequent requests on it also time out (#670).
+                if (result.IsCanceled)
+                {
+                    if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
+                        Volatile.Write(ref _disposed, 1);
+
+                        throw new KafkaException(
+                            $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                    }
+
+                    // Outer cancellation (disposal) — exit cleanly
+                    break;
                 }
 
                 var buffer = result.Buffer;
