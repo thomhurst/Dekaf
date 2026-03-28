@@ -232,7 +232,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
-                catch (Errors.KafkaException) when (cancellationToken is { IsCancellationRequested: false })
+                catch (Errors.KafkaException ex) when (ex is not Errors.GroupException && cancellationToken is { IsCancellationRequested: false })
                 {
                     // Connection-level failure (receive timeout, connection reset) - reconnect
                     LogCoordinatorConnectionDisposed();
