@@ -876,8 +876,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // linger timer to seal the next wave of batches. This avoids the
                     // send-idle-send pattern that creates small ProduceRequests in
                     // multi-broker setups with few partitions per broker and fast acks.
-                    // Zero allocation: reuses pre-allocated microLingerCts via TryReset().
+                    // Amortized near-zero allocation: reuses pre-allocated microLingerCts via TryReset(),
+                    // but TryReset() can fail and allocate a new CTS.
                     if (coalescedCount > 0
+                        && coalescedCount <= MicroLingerBatchThreshold
                         && coalescedPartitions.Count < _knownPartitions.Count)
                     {
                         if (!microLingerCts.TryReset())
@@ -1136,6 +1138,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Pipelining: in-flight capacity remains and more batches are waiting.
                     // Loop immediately to coalesce and send without waiting for any response.
                     // Prevents send-wait-send starvation in multi-broker setups with fast acks.
+                    continue;
                 }
                 else if (carryOver.Count > 0 && sentThisIteration)
                 {

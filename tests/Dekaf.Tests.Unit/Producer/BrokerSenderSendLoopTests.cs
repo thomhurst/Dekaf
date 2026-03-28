@@ -891,12 +891,12 @@ public sealed class BrokerSenderSendLoopTests
 
         var sendCount = 0;
         var firstSendDone = new TaskCompletionSource();
-        var secondSendDone = new TaskCompletionSource();
+        var secondSendAttempted = new SemaphoreSlim(0, 1);
         var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
         {
             var count = Interlocked.Increment(ref sendCount);
             if (count == 1) firstSendDone.TrySetResult();
-            if (count == 2) secondSendDone.TrySetResult();
+            if (count == 2) secondSendAttempted.Release();
         });
 
         // maxInFlight=1: only one request can be in-flight at a time
@@ -924,17 +924,20 @@ public sealed class BrokerSenderSendLoopTests
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
             await sender.EnqueueAsync(batch2, CancellationToken.None);
 
-            // Give the send loop a moment to potentially (incorrectly) send the second request
-            await Task.Delay(100, cancellationToken);
+            // The semaphore in the onSend callback captures the exact moment a second send
+            // is attempted. Wait with a generous timeout — if the semaphore is NOT signaled,
+            // the send loop correctly blocked on the in-flight limit.
+            var secondSendOccurred = await secondSendAttempted.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
 
             // Second send should NOT have happened yet (maxInFlight=1 prevents pipelining)
-            await Assert.That(secondSendDone.Task.IsCompleted).IsFalse();
+            await Assert.That(secondSendOccurred).IsFalse();
 
             // Complete first response to free the in-flight slot
             tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
 
-            // Now second send should proceed
-            await secondSendDone.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            // Now second send should proceed — the semaphore must be signaled
+            var secondSendProceeded = await secondSendAttempted.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            await Assert.That(secondSendProceeded).IsTrue();
 
             // Complete second response
             tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
