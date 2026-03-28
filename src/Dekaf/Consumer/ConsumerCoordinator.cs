@@ -862,9 +862,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             partitions.Add(tp.Partition);
         }
 
-        // WriteArray requires IReadOnlyList<T>, so convert from SortedDictionary
-        var ownedTopicList = new List<KeyValuePair<string, List<int>>>(ownedByTopic);
-
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
 
@@ -874,9 +871,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
         writer.WriteBytes([]); // User data
 
-        // v1: owned partitions array
+        // v1: owned partitions array — SortedDictionary provides deterministic key order
         writer.WriteArray(
-            ownedTopicList,
+            ownedByTopic,
             static (ref KafkaProtocolWriter w, KeyValuePair<string, List<int>> entry) =>
             {
                 w.WriteString(entry.Key);
@@ -997,10 +994,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result.ToArray();
     }
 
-    internal static (HashSet<string> Topics, HashSet<TopicPartition> OwnedPartitions) ParseSubscriptionMetadata(byte[] data)
+    internal static (HashSet<string> Topics, IReadOnlyCollection<TopicPartition> OwnedPartitions) ParseSubscriptionMetadata(byte[] data)
     {
         if (data.Length == 0)
-            return ([], []);
+            return ([], Array.Empty<TopicPartition>());
 
         var topics = new HashSet<string>();
         var reader = new KafkaProtocolReader(data);
@@ -1037,7 +1034,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return (topics, ownedPartitions);
         }
 
-        return (topics, []);
+        return (topics, Array.Empty<TopicPartition>());
     }
 
     private byte[] BuildAssignmentData(IReadOnlyList<TopicPartition> partitions)
