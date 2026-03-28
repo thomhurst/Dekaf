@@ -212,6 +212,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
+                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.RebalanceInProgress)
+                {
+                    // SyncGroup returned RebalanceInProgress — the group is mid-rebalance
+                    // (e.g., cooperative round 2 is needed, or another member joined concurrently).
+                    // Loop back to JoinGroup to re-enter the rebalance.
+                    LogRetriableCoordinatorError(ex.ErrorCode);
+                    _state = CoordinatorState.Unjoined;
+                }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     // Coordinator has changed, is unavailable, or still loading - mark unknown and retry
