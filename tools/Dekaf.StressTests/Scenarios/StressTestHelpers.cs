@@ -21,6 +21,28 @@ internal static class StressTestHelpers
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 
+    /// <summary>
+    /// Yield frequency for the background producer. On low-CPU machines (4 or fewer processors),
+    /// yield more frequently to avoid starving the consumer and heartbeat threads.
+    /// This prevents the Dekaf background producer from dominating CPU and GC pressure,
+    /// which unfairly penalizes consumer throughput measurements vs Confluent (whose native
+    /// librdkafka producer has no .NET GC impact).
+    ///
+    /// The threshold of 4 CPUs was chosen because the stress test runs a producer, consumer,
+    /// heartbeat timer, and Kafka broker concurrently - at least 4 active threads. With 4 or
+    /// fewer processors there is no spare capacity, so the producer must yield aggressively.
+    /// GitHub Actions runners typically have 2-4 vCPUs, making this the common CI case.
+    /// </summary>
+    private static readonly int BackgroundProducerYieldInterval =
+        Environment.ProcessorCount <= 4 ? 1_000 : 10_000;
+
+    /// <summary>
+    /// Brief pause between yield batches on CPU-constrained machines to let the consumer
+    /// and heartbeat threads make progress. On well-provisioned machines, no delay is added.
+    /// </summary>
+    private static readonly int BackgroundProducerThrottleMs =
+        Environment.ProcessorCount <= 4 ? 10 : 0;
+
     internal static async Task RunBackgroundProducerAsync(
         IKafkaProducer<string, string> producer,
         string topic,
@@ -28,6 +50,8 @@ internal static class StressTestHelpers
         CancellationToken cancellationToken)
     {
         var messageIndex = 0L;
+        var yieldInterval = BackgroundProducerYieldInterval;
+        var throttleMs = BackgroundProducerThrottleMs;
 
         await Task.Yield();
 
@@ -38,10 +62,15 @@ internal static class StressTestHelpers
                 await producer.FireAsync(topic, GetKey(messageIndex), messageValue).ConfigureAwait(false);
                 messageIndex++;
 
-                // Yield periodically to avoid starving other tasks
-                if (messageIndex % 10_000 == 0)
+                // Yield periodically to avoid starving other tasks.
+                // On low-CPU machines, yield more frequently and add a brief pause
+                // to reduce GC pressure from the .NET producer competing with the consumer.
+                if (messageIndex % yieldInterval == 0)
                 {
-                    await Task.Yield();
+                    if (throttleMs > 0)
+                        await Task.Delay(throttleMs, cancellationToken).ConfigureAwait(false);
+                    else
+                        await Task.Yield();
                 }
             }
             catch (OperationCanceledException)
