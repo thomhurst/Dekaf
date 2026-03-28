@@ -25,11 +25,12 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Use ProduceAsync to ensure all messages are acknowledged
         for (var i = 0; i < messageCount; i++)
         {
             await producer.FireAsync(topic, $"key-{i % 100}", $"msg-{i}");
         }
+
+        await producer.FlushWithTimeoutAsync();
 
         // Consume using Assign for reliability (no group coordination delay)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -185,6 +186,8 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             await producer.FireAsync(topic, $"key-{i}", $"single-part-{i}");
         }
 
+        await producer.FlushWithTimeoutAsync();
+
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -294,6 +297,8 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         {
             await producer.FireAsync(topic, $"key-{i % 50}", $"rr-msg-{i}");
         }
+
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

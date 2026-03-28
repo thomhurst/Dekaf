@@ -318,9 +318,6 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
 
         await producer.FlushWithTimeoutAsync();
 
-        // Wait for callbacks to complete
-        await Task.Delay(1000);
-
         await Assert.That(deliveryErrors).IsEmpty();
         await Assert.That(delivered).Count().IsEqualTo(messageCount);
 

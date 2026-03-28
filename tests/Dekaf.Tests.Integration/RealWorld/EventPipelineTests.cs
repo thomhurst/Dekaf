@@ -393,6 +393,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await producer.FireAsync(inputTopic, "evt-3", "HIGH:error-alert");
         await producer.FireAsync(inputTopic, "evt-4", "LOW:debug-log");
 
+        await producer.FlushWithTimeoutAsync();
+
         // Router consumer
         await using var router = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -417,6 +419,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             routed++;
             if (routed >= 4) break;
         }
+
+        await routerProducer.FlushWithTimeoutAsync();
 
         // Verify high priority topic
         await using var highConsumer = await Kafka.CreateConsumer<string, string>()
