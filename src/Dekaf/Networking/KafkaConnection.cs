@@ -132,6 +132,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     // Using globally unique correlation IDs prevents this issue.
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
+    private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
     private readonly PendingRequestPool _pendingRequestPool = new();
     private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -530,6 +531,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        var responseReceived = false;
         try
         {
             LogWaitingForResponse(correlationId);
@@ -554,6 +556,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
             {
                 pending.DisposeRegistration();
             }
+
+            responseReceived = true;
 
             LogResponseReceived(correlationId);
 
@@ -604,6 +608,15 @@ public sealed partial class KafkaConnection : IKafkaConnection
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
                 _pendingRequestPool.Return(removed);
+
+                // Broker may still send a response for a timed-out/cancelled request.
+                // Record it so the receive loop discards silently instead of warning.
+                // If the receive loop already called TryComplete (and lost the CAS),
+                // this entry becomes a harmless no-op cleaned up by DisposeAsync.
+                if (!responseReceived)
+                {
+                    _cancelledCorrelationIds.TryAdd(correlationId, 0);
+                }
             }
         }
     }
@@ -872,6 +885,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
                             // Request was already cancelled/failed - dispose the buffer
                             responseData.Dispose();
                         }
+                    }
+                    else if (_cancelledCorrelationIds.TryRemove(correlationId, out _))
+                    {
+                        LogLateResponseForCancelledRequest(correlationId);
+                        responseData.Dispose();
                     }
                     else
                     {
@@ -1793,6 +1811,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 _pendingRequestPool.Return(orphaned);
             }
         }
+
+        _cancelledCorrelationIds.Clear();
     }
 
 
@@ -1839,6 +1859,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Received response for correlation ID {CorrelationId}, {Length} bytes")]
     private partial void LogReceivedResponse(int correlationId, int length);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Received late response for cancelled/timed-out correlation ID {CorrelationId}, discarding")]
+    private partial void LogLateResponseForCancelledRequest(int correlationId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Received response for unknown correlation ID {CorrelationId}")]
     private partial void LogUnknownCorrelationId(int correlationId);
