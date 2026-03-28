@@ -596,6 +596,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
+                    // RebalanceInProgress: another member joined/left; we need to rejoin.
+                    // DON'T exit the heartbeat loop — keep sending heartbeats to keep the
+                    // coordination connection alive. The consumer's poll loop will call
+                    // EnsureActiveGroupAsync when it sees _state == Unjoined, which drives
+                    // the actual JoinGroup/SyncGroup cycle. If we exit the heartbeat loop,
+                    // the JoinGroup becomes the only pending request on the connection and
+                    // the 30s receive timeout kills it.
+                    if (ge.ErrorCode == ErrorCode.RebalanceInProgress)
+                    {
+                        _state = CoordinatorState.Unjoined;
+                        continue;
+                    }
+
                     // Cooperative protocol: fire OnPartitionsLost for involuntary loss.
                     // Guard with _state == Stable: during a cooperative two-round rebalance, the
                     // stale heartbeat from round 1 may get ILLEGAL_GENERATION when the group moves

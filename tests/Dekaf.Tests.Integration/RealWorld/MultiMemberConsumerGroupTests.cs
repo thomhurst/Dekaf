@@ -60,24 +60,23 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
             }
 
-            // Wait for group to fully stabilize after all joins
-            await Task.Delay(5000).ConfigureAwait(false);
+            // Wait for cooperative rebalance to settle (may require multiple rounds)
+            foreach (var consumer in consumers)
+            {
+                await Assert.That(() => consumer.Assignment.ToArray().Count(tp => tp.Topic == topic))
+                    .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+            }
 
-            // Assert - collect all assignments
+            // Assert - all 6 partitions should be covered with no overlap
             var allAssignedPartitions = new HashSet<int>();
             foreach (var consumer in consumers)
             {
-                var assignment = consumer.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-                // Each consumer should have exactly 2 partitions
-                await Assert.That(assignment.Count).IsEqualTo(2);
-
-                foreach (var tp in assignment)
+                foreach (var tp in consumer.Assignment.ToArray().Where(tp => tp.Topic == topic))
                 {
                     allAssignedPartitions.Add(tp.Partition);
                 }
             }
 
-            // All 6 partitions should be covered with no overlap
             await Assert.That(allAssignedPartitions.Count).IsEqualTo(6);
         }
         finally
@@ -160,20 +159,15 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
 
-        // Wait for rebalance to stabilize
-        await Task.Delay(5000).ConfigureAwait(false);
-
-        // Assert - partitions should be redistributed
-        var c1Assignment = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-        var c2Assignment = consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-
-        // Both consumers should have partitions (2 each for even distribution)
-        await Assert.That(c1Assignment.Count).IsEqualTo(2);
-        await Assert.That(c2Assignment.Count).IsEqualTo(2);
+        // Wait for cooperative rebalance to settle (may require two rounds)
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+        await Assert.That(() => consumer2.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
 
         // No overlap
-        var allPartitions = c1Assignment.Select(tp => tp.Partition)
-            .Concat(c2Assignment.Select(tp => tp.Partition))
+        var allPartitions = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Select(tp => tp.Partition)
+            .Concat(consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).Select(tp => tp.Partition))
             .Distinct()
             .ToList();
         await Assert.That(allPartitions.Count).IsEqualTo(4);

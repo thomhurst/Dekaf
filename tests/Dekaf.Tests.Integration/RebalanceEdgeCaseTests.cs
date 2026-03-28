@@ -99,11 +99,19 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         consumer1.Subscribe(topic);
 
-        // Consume one message to trigger initial assignment for consumer 1
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+        // Start consumer1 consuming in background so it can drive cooperative rebalance
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var consumer1Task = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { }
+            }
+            catch (OperationCanceledException) { }
+        });
 
-        await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
+        await Assert.That(() => listener1.AssignedCallCount)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
         // Consumer 2 joins the group, triggering rebalance
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -116,29 +124,30 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         consumer2.Subscribe(topic);
 
-        // Consume a message with consumer 2 to trigger the rebalance
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        try
+        // Start consumer2 consuming in background to trigger group join and drive rebalance
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var consumer2Messages = new List<ConsumeResult<string, string>>();
+        var consumer2Task = Task.Run(async () =>
         {
-            await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // May timeout if all messages were consumed by consumer 1
-        }
+            try
+            {
+                await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
+                {
+                    consumer2Messages.Add(msg);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
 
-        // Wait for rebalance to settle - poll until consumer 2 gets assigned
-        await WaitForConditionAsync(
-            () => listener2.AssignedCallCount >= 1,
-            timeout: TimeSpan.FromSeconds(15),
-            pollInterval: TimeSpan.FromMilliseconds(500));
-
-        // Assert - both consumers should have been assigned partitions
-        await Assert.That(listener2.AssignedCallCount).IsGreaterThanOrEqualTo(1);
+        // Wait for cooperative rebalance to settle
+        await Assert.That(() => listener2.AssignedCallCount)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
         var revokedCountBefore = listener2.RevokedCallCount + listener2.AssignedCallCount;
 
-        // Now dispose consumer 1 to simulate it leaving the group
+        // Stop consumer1's background consume and dispose it to simulate leaving the group
+        await cts1.CancelAsync();
+        try { await consumer1Task; } catch (OperationCanceledException) { }
         try
         {
             await consumer1.DisposeAsync();
@@ -148,12 +157,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             // Expected - consumer may have background work completing
         }
 
-        // Wait for session timeout to expire and rebalance to happen
-        // Poll until consumer 2 sees a new rebalance event
-        await WaitForConditionAsync(
-            () => (listener2.RevokedCallCount + listener2.AssignedCallCount) > revokedCountBefore,
-            timeout: TimeSpan.FromSeconds(30),
-            pollInterval: TimeSpan.FromMilliseconds(500));
+        // Wait for consumer 2 to see a new rebalance event after consumer 1 leaves
+        await Assert.That(() => listener2.RevokedCallCount + listener2.AssignedCallCount)
+            .Eventually(x => x.IsGreaterThan(revokedCountBefore), TimeSpan.FromSeconds(30));
 
         // Produce more messages for consumer 2 to pick up after rebalance
         for (var i = 0; i < 4; i++)
@@ -166,18 +172,13 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             }, CancellationToken.None);
         }
 
-        // Consumer 2 should now get all partitions
-        var messages = new List<ConsumeResult<string, string>>();
-        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // Wait for consumer 2 to receive messages
+        await Assert.That(() => consumer2Messages.Count)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
-        await foreach (var msg in consumer2.ConsumeAsync(cts3.Token))
-        {
-            messages.Add(msg);
-            if (messages.Count >= 4) break;
-        }
-
-        // Consumer 2 should have received messages after the slow consumer was removed
-        await Assert.That(messages).Count().IsGreaterThanOrEqualTo(1);
+        // Clean up
+        await cts2.CancelAsync();
+        try { await consumer2Task; } catch (OperationCanceledException) { }
     }
 
     [Test]
@@ -447,40 +448,39 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         consumer2.Subscribe(topic);
 
-        // Both consumers try to consume during the rebalance period
-        // Consumer 1 continues consuming
+        // Both consumers consume concurrently during the rebalance period
+        // (must be concurrent so both can drive the cooperative rebalance state machine)
         var consumer1Messages = new List<ConsumeResult<string, string>>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-
-        try
-        {
-            await foreach (var msg in consumer1.ConsumeAsync(cts2.Token))
-            {
-                consumer1Messages.Add(msg);
-                if (consumer1Messages.Count >= 3) break;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Some messages may have been consumed by consumer 2
-        }
-
-        // Consumer 2 also tries to consume
         var consumer2Messages = new List<ConsumeResult<string, string>>();
-        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        try
+        var task1 = Task.Run(async () =>
         {
-            await foreach (var msg in consumer2.ConsumeAsync(cts3.Token))
+            try
             {
-                consumer2Messages.Add(msg);
-                if (consumer2Messages.Count >= 1) break;
+                await foreach (var msg in consumer1.ConsumeAsync(cts2.Token))
+                {
+                    consumer1Messages.Add(msg);
+                    if (consumer1Messages.Count >= 3) break;
+                }
             }
-        }
-        catch (OperationCanceledException)
+            catch (OperationCanceledException) { }
+        });
+
+        var task2 = Task.Run(async () =>
         {
-            // May not get any messages if consumer 1 consumed them all
-        }
+            try
+            {
+                await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
+                {
+                    consumer2Messages.Add(msg);
+                    if (consumer2Messages.Count >= 1) break;
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+
+        await Task.WhenAll(task1, task2);
 
         // Assert - rebalance happened and at least consumer 1 processed something
         // The second consumer should have triggered a rebalance on consumer 1

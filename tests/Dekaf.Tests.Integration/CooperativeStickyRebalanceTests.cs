@@ -157,12 +157,23 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
 
         consumer1.Subscribe(topic);
 
-        // Consume a message to trigger initial assignment
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+        // Start consumer1 consuming in background so it can drive cooperative rebalance rounds
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var consumer1Task = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token))
+                {
+                    // Keep consuming to drive rebalance state machine
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
 
-        // First consumer should have all 4 partitions
-        await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
+        // Wait for initial assignment
+        await Assert.That(() => listener1.AssignedCallCount)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
         // Second consumer joins the same group
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -174,18 +185,21 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
 
         consumer2.Subscribe(topic);
 
-        // Wait for rebalance to redistribute partitions
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        try
+        // Start consumer2 consuming in background to trigger group join
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var consumer2Task = Task.Run(async () =>
         {
-            await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // May timeout if no messages left, that's OK
-        }
+            try
+            {
+                await foreach (var _ in consumer2.ConsumeAsync(cts2.Token))
+                {
+                    // Keep consuming to drive rebalance state machine
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
 
-        // Wait for cooperative rebalance to complete (2 rounds) using TUnit's polling assertion
+        // Wait for cooperative rebalance to complete (2 rounds)
         await Assert.That(() => listener1.RevokedCallCount)
             .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
@@ -193,6 +207,12 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
         await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
+
+        // Clean up background tasks
+        await cts1.CancelAsync();
+        await cts2.CancelAsync();
+        try { await Task.WhenAll(consumer1Task, consumer2Task); }
+        catch (OperationCanceledException) { }
     }
 
     [Test]
