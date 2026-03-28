@@ -767,6 +767,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Single-threaded access: both Ready() and Drain() run on the sender thread.
     // Dictionary reused across cycles (cleared at start of Ready()). Lists are pooled
     // in _partitionListPool to avoid per-cycle allocations.
+    // INVARIANT: Ready() and Drain() are called in strict Ready→Drain→Ready order on the sender
+    // thread. Entries survive after Drain re-enqueues partitions and are only cleared by the next
+    // Ready() call. Breaking this ordering could cause duplicate re-enqueues.
     private readonly Dictionary<int, List<TopicPartition>> _readyPartitionsPerNode = new();
     private readonly Stack<List<TopicPartition>> _partitionListPool = new();
 
