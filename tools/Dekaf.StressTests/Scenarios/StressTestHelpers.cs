@@ -138,24 +138,25 @@ internal static class StressTestHelpers
 }
 
 /// <summary>
-/// Tracks message progress and emits periodic status lines with instant/average throughput.
+/// Emits periodic status lines with instant/average throughput.
+/// Uses <see cref="ThroughputTracker.MessageCount"/> as the single source of truth for message counts.
 /// Call <see cref="RecordMessage"/> for each consumed or produced message; it checks internally
 /// whether enough time has elapsed to warrant a log line (every ~10 seconds).
 /// </summary>
 internal sealed class PeriodicProgressReporter(ThroughputTracker throughput)
 {
-    private const long CheckInterval = 100_000;
+    private const long CheckInterval = 10_000;
     private const double ReportIntervalSeconds = 10;
 
-    private long _messageIndex;
+    private long _callCount;
     private DateTime _lastStatusTime = DateTime.UtcNow;
-    private long _lastStatusMessageCount;
+    private long _lastLoggedMessageCount;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RecordMessage()
     {
-        _messageIndex++;
-        if (_messageIndex % CheckInterval == 0)
+        _callCount++;
+        if (_callCount % CheckInterval == 0)
         {
             TryLogProgress();
         }
@@ -167,11 +168,12 @@ internal sealed class PeriodicProgressReporter(ThroughputTracker throughput)
         if ((now - _lastStatusTime).TotalSeconds < ReportIntervalSeconds)
             return;
 
+        var currentMessageCount = throughput.MessageCount;
         var elapsedSinceLastStatus = (now - _lastStatusTime).TotalSeconds;
-        var messagesSinceLastStatus = _messageIndex - _lastStatusMessageCount;
+        var messagesSinceLastStatus = currentMessageCount - _lastLoggedMessageCount;
         var instantaneousMsgSec = messagesSinceLastStatus / elapsedSinceLastStatus;
-        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {_messageIndex:N0} messages | instant: {instantaneousMsgSec:N0} msg/sec | avg: {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {currentMessageCount:N0} messages | instant: {instantaneousMsgSec:N0} msg/sec | avg: {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
         _lastStatusTime = now;
-        _lastStatusMessageCount = _messageIndex;
+        _lastLoggedMessageCount = currentMessageCount;
     }
 }
