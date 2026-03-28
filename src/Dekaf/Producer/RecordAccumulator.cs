@@ -760,13 +760,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // sealed batches exist. Total size <= number of sealed batches <= BufferMemory / BatchSize.
     private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
 
-    // Flag set by DrainBatchesForOneNode when a broker's partition list is empty (leader
-    // migration between Ready() and Drain()). Instead of immediately re-enqueuing ALL
-    // non-empty partitions (O(n) scan per broker, causing unbounded queue growth in
-    // multi-broker scenarios), this defers the scan to the next Ready() call where it
-    // runs at most once. Prevents the multiplicative re-enqueue storm that caused GC
-    // pressure collapse at ~68M messages in 3-broker configurations (#657).
-    private int _needsFullPartitionScan;
+    // Per-node partition tracking: populated by Ready() with the specific partitions it
+    // consumed from _readyPartitions for each node. Used by DrainBatchesForOneNode to
+    // re-enqueue only those specific partitions on leader migration (instead of the O(n)
+    // full _partitionDeques scan that _needsFullPartitionScan previously triggered).
+    // Single-threaded access: both Ready() and Drain() run on the sender thread.
+    // Dictionary reused across cycles (cleared at start of Ready()). Lists are pooled
+    // in _partitionListPool to avoid per-cycle allocations.
+    private readonly Dictionary<int, List<TopicPartition>> _readyPartitionsPerNode = new();
+    private readonly Stack<List<TopicPartition>> _partitionListPool = new();
 
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
     // Ensures linger and flush don't both seal batches simultaneously,
@@ -1016,15 +1018,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var unknownLeadersExist = false;
         var nowTimestamp = Stopwatch.GetTimestamp();
 
-        // Deferred full scan — see _needsFullPartitionScan field comment.
-        if (Interlocked.Exchange(ref _needsFullPartitionScan, 0) != 0)
+        // Return all per-node partition lists to the pool and clear the mapping.
+        // This runs once per sender cycle (not per message) so the iteration is acceptable.
+        foreach (var (_, list) in _readyPartitionsPerNode)
         {
-            foreach (var (tp, pd) in _partitionDeques)
-            {
-                if (pd.Count > 0)
-                    _readyPartitions.Enqueue(tp);
-            }
+            list.Clear();
+            _partitionListPool.Push(list);
         }
+        _readyPartitionsPerNode.Clear();
 
         // Snapshot the current queue length to avoid infinite loop: partitions that need
         // re-enqueue (backoff, unknown leader) are added back during the loop, but we only
@@ -1093,6 +1094,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // after 1ms would wait another 5000ms with lingerMs=5000).
             // Only retry backoff (handled above) can delay a sealed batch.
             readyNodes.Add(leader.NodeId);
+
+            // Track which partitions Ready() consumed for each node so Drain can
+            // re-enqueue only these specific partitions on leader migration, avoiding
+            // the O(n) full _partitionDeques scan (#577).
+            if (!_readyPartitionsPerNode.TryGetValue(leader.NodeId, out var nodePartitions))
+            {
+                nodePartitions = _partitionListPool.Count > 0
+                    ? _partitionListPool.Pop()
+                    : new List<TopicPartition>();
+                _readyPartitionsPerNode[leader.NodeId] = nodePartitions;
+            }
+            nodePartitions.Add(tp);
         }
 
         // With push-based notifications, the sender wakes on SignalWakeup() from batch
@@ -1147,9 +1160,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var partitions = metadataManager.GetPartitionsForNode(nodeId);
         if (partitions.Count == 0)
         {
-            // Leader migrated between Ready() and Drain() — defer re-enqueue to next
-            // Ready() call via _needsFullPartitionScan (see field comment).
-            Volatile.Write(ref _needsFullPartitionScan, 1);
+            // Leader migrated between Ready() and Drain(). Re-enqueue only the specific
+            // partitions that Ready() consumed for this node — O(k) where k is the number
+            // of ready partitions for this node, not O(n) over all partition deques (#577).
+            if (_readyPartitionsPerNode.TryGetValue(nodeId, out var trackedPartitions))
+            {
+                for (var j = 0; j < trackedPartitions.Count; j++)
+                    _readyPartitions.Enqueue(trackedPartitions[j]);
+            }
             SignalWakeup();
             return;
         }
