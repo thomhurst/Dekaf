@@ -1100,6 +1100,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // the O(n) full _partitionDeques scan (#577).
             if (!_readyPartitionsPerNode.TryGetValue(leader.NodeId, out var nodePartitions))
             {
+                // Count check is load-bearing: Stack<T>.Pop() throws on empty stack.
                 nodePartitions = _partitionListPool.Count > 0
                     ? _partitionListPool.Pop()
                     : new List<TopicPartition>();
