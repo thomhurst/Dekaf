@@ -239,6 +239,8 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         var message = ProducerMessage<string, string>.Create(topic, "key", "value", headers);
         await producer.FireAsync(message);
 
+        await producer.FlushWithTimeoutAsync();
+
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"headers-create-{Guid.NewGuid():N}")
