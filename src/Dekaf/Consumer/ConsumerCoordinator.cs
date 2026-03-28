@@ -85,6 +85,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        // Fast path: if already stable, nothing to do. This is the common case on every
+        // ConsumeAsync iteration after the initial join. CRITICAL: we must NOT call
+        // StartHeartbeatAsync here — doing so would cancel and restart the heartbeat on every
+        // poll (~100ms), preventing it from ever surviving the 3s delay to actually send.
+        if (_state == CoordinatorState.Stable)
+            return;
+
         // Cooperative rebalancing may require multiple rounds (KIP-429):
         // Round 1 identifies partitions to transfer, round 2 assigns them.
         // Cap at 2 rounds to prevent unbounded looping if the assignor has a bug.
@@ -125,11 +132,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Writing _state outside _lock is safe here: _state is volatile, and a concurrent
             // heartbeat seeing Unjoined will simply skip OnPartitionsLost (guarded by _state == Stable)
             // and trigger a rejoin — which is the correct behavior during a cooperative rebalance.
-            LogCooperativeRoundCheck(
-                syncResult.Revoked?.Count ?? 0,
-                _isCooperativeProtocol,
-                cooperativeRound,
-                _assignedPartitions.Count);
             if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol
                 && ++cooperativeRound < maxCooperativeRounds)
             {
@@ -1290,16 +1292,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Joined group {GroupId}, member={MemberId}, generation={Generation}, isLeader={IsLeader}")]
     private partial void LogJoinGroupResult(string groupId, string memberId, int generation, bool isLeader);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Leader computed {Count} assignments")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Leader computed {Count} assignments")]
     private partial void LogLeaderComputedAssignments(int count);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Received assignment: {Partitions}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Received assignment: {Partitions}")]
     private partial void LogReceivedAssignment(string partitions);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Assigned {Count} partitions to member {MemberId}: {Partitions}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Assigned {Count} partitions to member {MemberId}: {Partitions}")]
     private partial void LogAssignedPartitionsToMember(int count, string memberId, string partitions);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
@@ -1314,7 +1316,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "EnsureActiveGroup: group={GroupId}, current state={State}")]
     private partial void LogEnsureActiveGroupStarted(string groupId, CoordinatorState state);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Coordinator state transition to {NewState}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator state transition to {NewState}")]
     private partial void LogCoordinatorStateTransition(CoordinatorState newState);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Rebalance listener {CallbackName}: {PartitionCount} partitions")]
@@ -1323,7 +1325,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "JoinGroup: MemberIdRequired, assigned memberId={MemberId}")]
     private partial void LogJoinGroupMemberIdRequired(string memberId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
     private partial void LogHeartbeatStarted(int intervalMs);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "CommitOffsets started for group {GroupId}")]
@@ -1332,11 +1334,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
     private partial void LogCooperativeRejoin(int revokedCount);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Cooperative round check: revokedCount={RevokedCount}, isCooperative={IsCooperative}, round={Round}, assignedCount={AssignedCount}")]
-    private partial void LogCooperativeRoundCheck(int revokedCount, bool isCooperative, int round, int assignedCount);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsLost callback threw an exception")]
     private partial void LogPartitionsLostCallbackError(Exception exception);
