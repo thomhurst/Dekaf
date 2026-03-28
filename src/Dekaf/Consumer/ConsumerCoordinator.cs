@@ -42,7 +42,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-    private bool _isCooperativeProtocol;
+    private volatile bool _isCooperativeProtocol;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -414,13 +414,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Determine cooperative protocol from the broker-elected strategy (not the local config).
         // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
-        _isCooperativeProtocol = response.ProtocolName switch
-        {
-            _ when response.ProtocolName == PartitionAssignors.CooperativeSticky.Name => true,
-            _ when _options.CustomPartitionAssignmentStrategy is { IsCooperative: true }
-                && response.ProtocolName == _options.CustomPartitionAssignmentStrategy.Name => true,
-            _ => false
-        };
+        var electedStrategy = ResolveAssignmentStrategy();
+        _isCooperativeProtocol = electedStrategy.IsCooperative
+            && response.ProtocolName == electedStrategy.Name;
 
         // Store members list if we're the leader (need it for assignment)
         _groupMembers = response.IsLeader ? response.Members : null;
@@ -876,6 +872,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             partitions.Add(tp.Partition);
         }
 
+        // Sort partition IDs within each topic for deterministic wire format
         foreach (var list in ownedByTopic.Values)
             list.Sort();
 
