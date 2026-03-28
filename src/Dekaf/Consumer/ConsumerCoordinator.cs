@@ -1290,16 +1290,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Joined group {GroupId}, member={MemberId}, generation={Generation}, isLeader={IsLeader}")]
     private partial void LogJoinGroupResult(string groupId, string memberId, int generation, bool isLeader);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Leader computed {Count} assignments")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Leader computed {Count} assignments")]
     private partial void LogLeaderComputedAssignments(int count);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Received assignment: {Partitions}")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Received assignment: {Partitions}")]
     private partial void LogReceivedAssignment(string partitions);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Assigned {Count} partitions to member {MemberId}: {Partitions}")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Assigned {Count} partitions to member {MemberId}: {Partitions}")]
     private partial void LogAssignedPartitionsToMember(int count, string memberId, string partitions);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
@@ -1314,7 +1314,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "EnsureActiveGroup: group={GroupId}, current state={State}")]
     private partial void LogEnsureActiveGroupStarted(string groupId, CoordinatorState state);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator state transition to {NewState}")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Coordinator state transition to {NewState}")]
     private partial void LogCoordinatorStateTransition(CoordinatorState newState);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Rebalance listener {CallbackName}: {PartitionCount} partitions")]
@@ -1323,7 +1323,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "JoinGroup: MemberIdRequired, assigned memberId={MemberId}")]
     private partial void LogJoinGroupMemberIdRequired(string memberId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
     private partial void LogHeartbeatStarted(int intervalMs);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "CommitOffsets started for group {GroupId}")]
