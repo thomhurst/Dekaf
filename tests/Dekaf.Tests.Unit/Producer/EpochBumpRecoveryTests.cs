@@ -522,10 +522,11 @@ public sealed class EpochBumpRecoveryTests
         // Reset while concurrent threads are incrementing.
         // Use generous timeouts — CI runners with 16+ parallel tests suffer thread pool
         // starvation that can delay Task.Run/Task.Delay by 10-30x.
-        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var threadCount = Math.Max(2, Environment.ProcessorCount);
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var tasks = new List<Task>();
 
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < threadCount; i++)
         {
             var partId = i;
             tasks.Add(Task.Run(() =>

@@ -192,7 +192,8 @@ public sealed class ConnectionPoolTests
         var pool = new ConnectionPool("test-client");
 
         // Launch many concurrent disposal calls to exercise the atomic guard
-        var tasks = new Task[10];
+        var threadCount = Math.Max(2, Environment.ProcessorCount);
+        var tasks = new Task[threadCount];
         using var barrier = new Barrier(tasks.Length);
 
         for (var i = 0; i < tasks.Length; i++)

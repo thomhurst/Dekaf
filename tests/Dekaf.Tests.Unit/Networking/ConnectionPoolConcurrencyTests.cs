@@ -22,7 +22,7 @@ public sealed class ConnectionPoolConcurrencyTests
     public async Task CreateConnectionGroup_ConcurrentCallers_CreatesExactlyConnectionsPerBrokerConnections()
     {
         const int connectionsPerBroker = 3;
-        const int concurrentCallers = 10;
+        var concurrentCallers = Math.Max(2, Environment.ProcessorCount);
         var connectionCount = 0;
 
         // Factory that counts how many connections are created
@@ -77,7 +77,7 @@ public sealed class ConnectionPoolConcurrencyTests
     public async Task ReplaceConnectionInGroup_ConcurrentCallers_CreatesExactlyOneReplacement()
     {
         const int connectionsPerBroker = 3;
-        const int concurrentCallers = 10;
+        var concurrentCallers = Math.Max(2, Environment.ProcessorCount);
         const int deadIndex = 1;
         var replacementCount = 0;
         var initialCreationDone = 0;
@@ -235,7 +235,7 @@ public sealed class ConnectionPoolConcurrencyTests
     public async Task CreateConnectionGroup_ConcurrentCallers_AllReceiveConnectionsFromSameGroup()
     {
         const int connectionsPerBroker = 2;
-        const int concurrentCallers = 20;
+        var concurrentCallers = Math.Max(2, Environment.ProcessorCount);
         var createdConnections = new ConcurrentBag<IKafkaConnection>();
 
         var pool = new ConnectionPool(

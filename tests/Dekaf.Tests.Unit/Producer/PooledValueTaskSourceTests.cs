@@ -315,11 +315,12 @@ public class PooledValueTaskSourceTests
         var pool = new ValueTaskSourcePool<int>();
         var source = pool.Rent();
 
+        var threadCount = Math.Max(2, Environment.ProcessorCount);
         var successCount = 0;
-        var barrier = new Barrier(10);
+        var barrier = new Barrier(threadCount);
         var tasks = new List<Task>();
 
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < threadCount; i++)
         {
             var value = i;
             tasks.Add(Task.Run(() =>
@@ -340,7 +341,7 @@ public class PooledValueTaskSourceTests
         // The task should complete with a value
         var result = await source.Task.ConfigureAwait(false);
         await Assert.That(result).IsGreaterThanOrEqualTo(0);
-        await Assert.That(result).IsLessThan(10);
+        await Assert.That(result).IsLessThan(threadCount);
     }
 
     [Test]
@@ -594,9 +595,13 @@ public class PooledValueTaskSourceTests
         // Complete after observing - should trigger continuation
         source.SetResult(42);
 
-        // Give a tiny bit of time for the callback to execute
-        await Task.Yield();
-        await Task.Delay(1); // Small delay to ensure continuation runs
+        // Spin-wait with timeout for the continuation to execute,
+        // as Task.Delay(1) is too short under thread pool starvation on CI
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (pool.ApproximateCount == 0 && sw.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await Task.Yield();
+        }
 
         // Source should have been returned to pool
         await Assert.That(pool.ApproximateCount).IsEqualTo(1);

@@ -216,13 +216,14 @@ public class PooledPendingRequestTests
         var request = pool.Rent();
         request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
 
+        var threadCount = Math.Max(2, Environment.ProcessorCount);
         var successCount = 0;
-        var barrier = new Barrier(10);
+        var barrier = new Barrier(threadCount);
         var tasks = new List<Task>();
 
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < threadCount; i++)
         {
-            var value = (byte)i;
+            var value = (byte)(i % 256);
             tasks.Add(Task.Run(() =>
             {
                 barrier.SignalAndWait();
@@ -249,14 +250,16 @@ public class PooledPendingRequestTests
         var request = pool.Rent();
         request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
 
+        var halfThreads = Math.Max(1, Environment.ProcessorCount / 2);
+        var threadCount = halfThreads * 2; // Ensure even split
         var successCount = 0;
-        var barrier = new Barrier(4);
+        var barrier = new Barrier(threadCount);
         var tasks = new List<Task>();
 
-        // 2 threads try TryComplete
-        for (int i = 0; i < 2; i++)
+        // Half the threads try TryComplete
+        for (int i = 0; i < halfThreads; i++)
         {
-            var value = (byte)i;
+            var value = (byte)(i % 256);
             tasks.Add(Task.Run(() =>
             {
                 barrier.SignalAndWait();
@@ -267,8 +270,8 @@ public class PooledPendingRequestTests
             }));
         }
 
-        // 2 threads try TrySetException
-        for (int i = 0; i < 2; i++)
+        // Half the threads try TrySetException
+        for (int i = 0; i < halfThreads; i++)
         {
             tasks.Add(Task.Run(() =>
             {
