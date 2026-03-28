@@ -943,10 +943,13 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
         // Reset state for reuse
         _rawData = default;
+        _count = 0;
         _parsedCount = 0;
         _nextParseOffset = 0;
 
-        // Return this instance to the pool (soft limit)
+        // Soft limit: the check-then-act is intentionally non-atomic.
+        // Under high concurrency, the pool may briefly exceed MaxPooledInstances by a few items.
+        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
         if (Volatile.Read(ref s_instancePoolCount) < MaxPooledInstances)
         {
             s_instancePool.Push(this);

@@ -278,11 +278,15 @@ internal sealed class PendingFetchData : IDisposable
         LastYieldedOffset = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
+        PartitionIndex = 0;
+        TopicPartition = default;
         Topic = null!;
         ActivityName = null!;
         _abortedProducers?.Clear();
 
-        // Return to pool (soft limit)
+        // Soft limit: the check-then-act is intentionally non-atomic.
+        // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
+        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
         if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
         {
             s_pool.Push(this);
