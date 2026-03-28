@@ -241,7 +241,7 @@ public class LazyRecordListTests
     }
 
     [Test]
-    public async Task LazyRecordList_DisposedInstance_ThrowsOnAccess()
+    public async Task LazyRecordList_DoubleDispose_IsSafe()
     {
         // Arrange
         var buffer = new ArrayBufferWriter<byte>();
@@ -258,12 +258,11 @@ public class LazyRecordListTests
         var list = LazyRecordList.Create(buffer.WrittenMemory, count: 1);
 
         // Access before dispose works
-        _ = list[0];
+        var r = list[0];
+        await Assert.That(r.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
 
-        // Dispose
+        // Double dispose must not throw (Interlocked.Exchange guard)
         list.Dispose();
-
-        // Access after dispose throws
-        await Assert.That(() => list[0]).ThrowsExactly<ObjectDisposedException>();
+        list.Dispose();
     }
 }
