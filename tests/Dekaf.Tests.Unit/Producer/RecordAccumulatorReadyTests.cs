@@ -590,4 +590,252 @@ public class RecordAccumulatorReadyTests
         accumulator.Ready(metadataManager, readyNodes2);
         await Assert.That(readyNodes2).Contains(1);
     }
+
+    [Test]
+    public async Task Drain_LeaderMigration_ReenqueuesOnlyAffectedPartitions()
+    {
+        // Verifies that when GetPartitionsForNode returns empty (leader migrated between
+        // Ready() and Drain()), only the specific partitions Ready() consumed for that node
+        // are re-enqueued — not all partition deques (the O(n) scan from #577).
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        // Setup: 2 brokers, 4 partitions — partitions 0,1 on node 1; partitions 2,3 on node 2
+        var metadataManager = CreateMultiBrokerMetadataManager("test-topic",
+            [(0, 1), (1, 1), (2, 2), (3, 2)]);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Seal batches on partition 0 (node 1) and partition 2 (node 2)
+            for (var p = 0; p <= 2; p += 2) // partitions 0 and 2
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    var completion = pool.Rent();
+                    accumulator.TryAppendWithCompletion("test-topic", p,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        pooledKey, pooledValue, null, 0, completion);
+                }
+            }
+
+            // Ready() resolves partition 0 → node 1, partition 2 → node 2
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+            await Assert.That(readyNodes).Contains(2);
+
+            // Simulate leader migration: update metadata so node 1 owns no partitions.
+            // Partition 0 moves to node 2. Node 1 now returns empty from GetPartitionsForNode.
+            var migratedManager = CreateMultiBrokerMetadataManager("test-topic",
+                [(0, 2), (1, 2), (2, 2), (3, 2)]);
+
+            // Drain with migrated metadata — node 1's partitions should be re-enqueued,
+            // node 2's partitions should drain normally.
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(migratedManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+
+            // Node 1 had leader migration — its batches should NOT be in drain result
+            await Assert.That(drainResult.ContainsKey(1)).IsFalse();
+
+            // Node 2 should have drained its partition 2 batch
+            await Assert.That(drainResult).ContainsKey(2);
+
+            // After migration, the next Ready() with updated metadata should find partition 0
+            // re-enqueued and now resolving to node 2
+            var readyNodes2 = new HashSet<int>();
+            accumulator.Ready(migratedManager, readyNodes2);
+            await Assert.That(readyNodes2).Contains(2);
+
+            await migratedManager.DisposeAsync();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Drain_LeaderMigration_DoesNotReenqueueUnrelatedPartitions()
+    {
+        // Verifies that leader migration for node 1 does NOT cause partition 2 (on node 2)
+        // to be re-enqueued — only partition 0 (which Ready() consumed for node 1) is affected.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        // Partition 0 on node 1, partition 1 on node 2
+        var metadataManager = CreateMultiBrokerMetadataManager("test-topic",
+            [(0, 1), (1, 2)]);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Seal batch only on partition 0 (node 1)
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.TryAppendWithCompletion("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion);
+            }
+
+            // Also put an unsealed record on partition 1 (node 2)
+            var comp2 = pool.Rent();
+            accumulator.TryAppendWithCompletion("test-topic", 1,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, comp2);
+
+            // Ready() only sees partition 0 as ready (sealed)
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes.Count).IsEqualTo(1);
+            await Assert.That(readyNodes).Contains(1);
+
+            // Migrate node 1 away — all partitions now on node 2
+            var migratedManager = CreateMultiBrokerMetadataManager("test-topic",
+                [(0, 2), (1, 2)]);
+
+            // Drain — node 1 migration causes re-enqueue of partition 0 only
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(migratedManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+
+            // Nothing should be drained for node 1 (migration)
+            await Assert.That(drainResult.ContainsKey(1)).IsFalse();
+
+            // Next Ready() should find partition 0 re-enqueued and resolving to node 2
+            var readyNodes2 = new HashSet<int>();
+            accumulator.Ready(migratedManager, readyNodes2);
+            await Assert.That(readyNodes2).Contains(2);
+
+            // Drain node 2 — should get partition 0's batch
+            var drainResult2 = new Dictionary<int, List<ReadyBatch>>();
+            accumulator.Drain(migratedManager, readyNodes2, int.MaxValue, drainResult2, batchListPool);
+            await Assert.That(drainResult2).ContainsKey(2);
+            await Assert.That(drainResult2[2].Count).IsGreaterThanOrEqualTo(1);
+
+            await migratedManager.DisposeAsync();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Drain_LeaderMigration_MultipleCycles_NoPartitionLoss()
+    {
+        // Verifies that repeated leader migration cycles don't lose partition notifications.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var metadataManager = CreateMultiBrokerMetadataManager("test-topic",
+            [(0, 1)]);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Seal a batch on partition 0
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.TryAppendWithCompletion("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion);
+            }
+
+            // Ready() sees partition 0 on node 1
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            // First migration: node 1 → empty
+            var emptyManager = new MetadataManager(connectionPool: null!, bootstrapServers: ["localhost:9092"]);
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(emptyManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+            await Assert.That(drainResult.ContainsKey(1)).IsFalse();
+
+            // Partition 0 should be re-enqueued. Ready() with correct metadata should find it.
+            var readyNodes2 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes2);
+            await Assert.That(readyNodes2).Contains(1);
+
+            // Drain successfully this time
+            drainResult.Clear();
+            accumulator.Drain(metadataManager, readyNodes2, int.MaxValue, drainResult, batchListPool);
+            await Assert.That(drainResult).ContainsKey(1);
+            await Assert.That(drainResult[1].Count).IsGreaterThanOrEqualTo(1);
+
+            await emptyManager.DisposeAsync();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Creates a MetadataManager with multiple brokers and per-partition leader assignments.
+    /// </summary>
+    private static MetadataManager CreateMultiBrokerMetadataManager(
+        string topic, (int PartitionIndex, int LeaderId)[] assignments)
+    {
+        var manager = new MetadataManager(connectionPool: null!, bootstrapServers: ["localhost:9092"]);
+
+        var brokerIds = new HashSet<int>();
+        var partitions = new List<PartitionMetadata>();
+
+        foreach (var (partitionIndex, leaderId) in assignments)
+        {
+            brokerIds.Add(leaderId);
+            partitions.Add(new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = partitionIndex,
+                LeaderId = leaderId,
+                ReplicaNodes = [leaderId],
+                IsrNodes = [leaderId]
+            });
+        }
+
+        var brokers = new List<BrokerMetadata>();
+        foreach (var nodeId in brokerIds)
+        {
+            brokers.Add(new BrokerMetadata { NodeId = nodeId, Host = "localhost", Port = 9090 + nodeId });
+        }
+
+        var response = new MetadataResponse
+        {
+            Brokers = brokers,
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = topic,
+                    Partitions = partitions
+                }
+            ]
+        };
+
+        manager.Metadata.Update(response);
+        return manager;
+    }
 }
