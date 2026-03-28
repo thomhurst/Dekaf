@@ -116,10 +116,7 @@ internal static class ConnectionHelper
         var totalConnections = (ulong)connectionsPerBroker * (ulong)brokerCount;
         var perPipeBudget = bufferMemory / totalConnections / BufferMemoryDivisor;
 
-        // Ensure we don't overflow long when casting, clamp to [Min, Max] range
-        var pauseThreshold = perPipeBudget > (ulong)long.MaxValue
-            ? MaximumPauseThresholdBytes
-            : Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
+        var pauseThreshold = Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
 
         var resumeThreshold = pauseThreshold / 2;
 
