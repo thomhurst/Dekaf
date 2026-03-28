@@ -1368,8 +1368,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         long bytes = PerPartitionResponseOverhead;
         foreach (var batch in batches)
         {
-            // BatchLength covers the batch body only; add the 12-byte prefix
-            // (baseOffset + batchLength field) that the broker sends but BatchLength excludes.
             bytes += batch.BatchLength + PerBatchHeaderOverhead;
         }
         return bytes;
