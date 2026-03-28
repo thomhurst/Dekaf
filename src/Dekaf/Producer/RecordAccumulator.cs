@@ -1149,7 +1149,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             // Leader migrated between Ready() and Drain() — defer re-enqueue to next
             // Ready() call via _needsFullPartitionScan (see field comment).
-            Interlocked.Exchange(ref _needsFullPartitionScan, 1);
+            Volatile.Write(ref _needsFullPartitionScan, 1);
             SignalWakeup();
             return;
         }
