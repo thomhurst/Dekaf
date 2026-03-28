@@ -1016,10 +1016,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var unknownLeadersExist = false;
         var nowTimestamp = Stopwatch.GetTimestamp();
 
-        // If a previous Drain() found a broker with no partitions (leader migration),
-        // re-enqueue all non-empty partition deques once. This replaces the per-broker
-        // O(n) scan that previously ran inside DrainBatchesForOneNode, preventing
-        // multiplicative re-enqueue storms in multi-broker configurations (#657).
+        // Deferred full scan — see _needsFullPartitionScan field comment.
         if (Interlocked.Exchange(ref _needsFullPartitionScan, 0) != 0)
         {
             foreach (var (tp, pd) in _partitionDeques)
@@ -1150,11 +1147,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var partitions = metadataManager.GetPartitionsForNode(nodeId);
         if (partitions.Count == 0)
         {
-            // Leader migrated between Ready() and Drain(): the notification was consumed but
-            // the partition now belongs to a different node. Without re-enqueue, the batch is
-            // stranded in the deque until the 3x delivery timeout orphan sweep.
-            // Set a flag so the next Ready() call does ONE full scan — avoids the per-broker
-            // O(n) re-enqueue that caused unbounded queue growth in multi-broker configs (#657).
+            // Leader migrated between Ready() and Drain() — defer re-enqueue to next
+            // Ready() call via _needsFullPartitionScan (see field comment).
             Interlocked.Exchange(ref _needsFullPartitionScan, 1);
             SignalWakeup();
             return;
