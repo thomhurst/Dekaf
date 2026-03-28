@@ -98,22 +98,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             needsCooperativeRound = false;
             syncResult = await RunJoinSyncCycleAsync(topics, cancellationToken).ConfigureAwait(false);
 
-            // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
-            // callers while awaiting the old heartbeat task cleanup (up to 5 seconds).
-            // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
-            // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
-            // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
-            // serialized old-heartbeat teardown.
-            if (_state == CoordinatorState.Stable)
-            {
-                await StartHeartbeatAsync().ConfigureAwait(false);
-            }
-
             // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
             // If the listener calls back into the consumer (e.g., commit, seek), it would
             // otherwise deadlock trying to acquire _lock or other coordinator locks.
             // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
             // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
+            // Listeners fire between cooperative rounds so that OnPartitionsRevoked can commit
+            // offsets for revoked partitions before round 2 reassigns them.
             if (_rebalanceListener is not null)
             {
                 if (syncResult.Revoked is { Count: > 0 })
@@ -143,6 +134,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
         while (needsCooperativeRound);
+
+        // Start heartbeat AFTER the cooperative rebalance loop completes — not between rounds.
+        // Starting a heartbeat between rounds causes a connection death spiral: the heartbeat
+        // gets REBALANCE_IN_PROGRESS (correct, since round 2 hasn't happened yet), exits its loop,
+        // and the JoinGroup for round 2 becomes the only pending request on the connection. With
+        // no heartbeat keeping the connection alive, the receive loop times out after 30s, killing
+        // both the connection and the pending JoinGroup.
+        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
+        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
+        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
+        // serialized old-heartbeat teardown.
+        if (_state == CoordinatorState.Stable)
+        {
+            await StartHeartbeatAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -219,6 +225,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 catch (ObjectDisposedException)
                 {
                     // Connection was disposed (e.g., broker closed it or receive timeout) - reconnect
+                    LogCoordinatorConnectionDisposed();
+
+                    MarkCoordinatorUnknown();
+
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                }
+                catch (Errors.KafkaException) when (cancellationToken is { IsCancellationRequested: false })
+                {
+                    // Connection-level failure (receive timeout, connection reset) - reconnect
                     LogCoordinatorConnectionDisposed();
 
                     MarkCoordinatorUnknown();
