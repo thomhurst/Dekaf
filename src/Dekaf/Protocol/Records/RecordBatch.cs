@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
+using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
 
@@ -910,6 +911,20 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         if (pooledArray is not null)
         {
             ArrayPool<byte>.Shared.Return(pooledArray, clearArray: false);
+        }
+
+        // Return pooled header arrays from parsed records to avoid memory leaks.
+        // Record.Read() rents from ArrayPool<Header>, so we must return them here.
+        if (_parsedRecords is not null)
+        {
+            for (var i = 0; i < _parsedRecords.Count; i++)
+            {
+                var record = _parsedRecords[i];
+                if (record.Headers is not null && record.HeaderCount > 0)
+                {
+                    ArrayPool<Header>.Shared.Return(record.Headers, clearArray: false);
+                }
+            }
         }
 
         // Return list to pool for reuse (soft limit - see MaxPooledLists comment)

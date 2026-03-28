@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Text;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
@@ -232,6 +233,15 @@ public sealed class Headers : IEnumerable<Header>
 public readonly record struct Header
 {
     /// <summary>
+    /// Cache of interned header key strings to avoid per-message allocations.
+    /// Kafka headers typically reuse the same small set of keys across all messages,
+    /// so caching them avoids repeated string allocations. Capped to prevent unbounded growth.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, string> s_keyCache = new();
+    private static int s_keyCacheCount;
+    private const int MaxCachedKeys = 128;
+
+    /// <summary>
     /// Creates a new header with a byte array value.
     /// </summary>
     public Header(string key, byte[]? value)
@@ -310,6 +320,23 @@ public readonly record struct Header
     {
         var keyLength = reader.ReadVarInt();
         var key = reader.ReadStringContent(keyLength);
+
+        // Intern the key string: Kafka headers typically reuse the same keys
+        // across all messages, so caching avoids per-message string allocation.
+        // Use TryGetValue first (lock-free read) for the common case where the key is already cached.
+        if (s_keyCache.TryGetValue(key, out var cached))
+        {
+            key = cached;
+        }
+        else if (Volatile.Read(ref s_keyCacheCount) < MaxCachedKeys)
+        {
+            // Only attempt to add if under the cap. The volatile read avoids
+            // ConcurrentDictionary.Count which acquires all bucket locks.
+            if (s_keyCache.TryAdd(key, key))
+            {
+                Interlocked.Increment(ref s_keyCacheCount);
+            }
+        }
 
         var valueLength = reader.ReadVarInt();
         var isValueNull = valueLength < 0;

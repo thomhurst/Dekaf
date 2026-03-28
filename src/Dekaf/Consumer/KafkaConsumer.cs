@@ -831,7 +831,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                                 batch.BaseTimestamp + record.TimestampDelta);
 
-                            var headers = GetHeaders(record.Headers);
+                            var headers = GetHeaders(record.Headers, record.HeaderCount);
                             var timestampType = ((int)batch.Attributes & 0x08) != 0
                                 ? TimestampType.LogAppendTime
                                 : TimestampType.CreateTime;
@@ -871,8 +871,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // Check both instruments independently since Enabled is per-instrument.
                             if (Diagnostics.DekafMetrics.MessagesReceived.Enabled || Diagnostics.DekafMetrics.BytesReceived.Enabled)
                             {
-                                var metricTags = new System.Diagnostics.TagList
-                                    { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                                if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
+                                {
+                                    metricTags = new System.Diagnostics.TagList
+                                        { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                                    _metricTagsCache[pending.Topic] = metricTags;
+                                }
                                 Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
                                 Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
                             }
@@ -2561,17 +2565,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Returns headers directly without conversion. Returns null if empty.
+    /// Returns headers as a read-only list, handling pooled (oversized) arrays correctly.
+    /// When headers come from ArrayPool, the array may be larger than the actual header count.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
+    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders, int headerCount)
     {
         // Return null for empty to avoid exposing empty lists
-        if (recordHeaders is null || recordHeaders.Length == 0)
+        if (recordHeaders is null || headerCount == 0)
             return null;
 
-        // Return directly - Header[] implements IReadOnlyList<Header>, no boxing
-        return recordHeaders;
+        // If the array is exact-sized (e.g., from producer path), return directly - no boxing
+        if (recordHeaders.Length == headerCount)
+            return recordHeaders;
+
+        // Pooled array is oversized — return a segment view to expose only the valid headers.
+        // ArraySegment<T> implements IReadOnlyList<T>; boxing allocates ~40 bytes, still
+        // cheaper than the original per-message Header[] allocation it replaces.
+        return new ArraySegment<Header>(recordHeaders, 0, headerCount);
     }
 
     /// <summary>

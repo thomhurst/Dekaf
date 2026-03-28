@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
@@ -127,8 +128,9 @@ public readonly record struct Record
 
         if (headerCount > 0)
         {
-            // Use array directly instead of List to avoid List's internal array allocation
-            headers = new Header[headerCount];
+            // Rent from ArrayPool to avoid per-message allocation.
+            // The rented array may be oversized; HeaderCount tracks the actual count.
+            headers = ArrayPool<Header>.Shared.Rent(headerCount);
             for (var i = 0; i < headerCount; i++)
             {
                 headers[i] = Header.Read(ref reader);
@@ -146,7 +148,7 @@ public readonly record struct Record
             Value = value,
             IsValueNull = isValueNull,
             Headers = headers,
-            HeaderCount = headers?.Length ?? 0
+            HeaderCount = headerCount
         };
     }
 
