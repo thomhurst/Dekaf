@@ -242,13 +242,11 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
 
-        await Task.Delay(3000).ConfigureAwait(false);
-
-        // Both should have 2 partitions each
-        var c1Before = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
-        var c2Before = consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
-        await Assert.That(c1Before).IsEqualTo(2);
-        await Assert.That(c2Before).IsEqualTo(2);
+        // Wait for cooperative rebalance to complete (may require two rounds)
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+        await Assert.That(() => consumer2.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
 
         // Act - consumer2 leaves
         await consumer2.DisposeAsync().ConfigureAwait(false);
@@ -265,18 +263,14 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             }, CancellationToken.None);
         }
 
-        // Wait for session timeout to expire and rebalance to complete
-        await Task.Delay(15000).ConfigureAwait(false);
-
-        // Consumer1 needs to consume to discover the rebalance
+        // Consumer1 needs to consume to discover the rebalance after consumer2 leaves
         using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token);
+        try { await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token); }
+        catch (OperationCanceledException) { }
 
-        await Task.Delay(3000).ConfigureAwait(false);
-
-        // Assert - consumer1 should now have all 4 partitions
-        var c1After = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
-        await Assert.That(c1After).IsEqualTo(4);
+        // Wait for consumer1 to pick up all 4 partitions after rebalance
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(4), TimeSpan.FromSeconds(30));
     }
 
     [Test]
@@ -406,15 +400,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         // Consumer1 needs to consume to discover and handle the rebalance
         using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token);
+        try { await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token); }
+        catch (OperationCanceledException) { }
 
-        // Wait for rebalance to fully stabilize
-        await Task.Delay(5000).ConfigureAwait(false);
-
-        // Assert - revoked should have been called as partitions were taken from consumer1
-        // With CooperativeSticky, the rebalance revokes some partitions from consumer1
-        var totalRevokedOrLost = listener.RevokedPartitions.Count + listener.LostPartitions.Count;
-        await Assert.That(totalRevokedOrLost).IsGreaterThanOrEqualTo(1);
+        // Wait for revoked callback to fire (cooperative rebalance may take two rounds)
+        await Assert.That(() => listener.RevokedPartitions.Count + listener.LostPartitions.Count)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
     }
 
     [Test]

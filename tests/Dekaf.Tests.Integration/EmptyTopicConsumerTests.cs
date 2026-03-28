@@ -342,21 +342,15 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
             catch (OperationCanceledException) { }
         });
 
-        // Wait for rebalance to complete - both consumers should have assignments
-        sw.Restart();
-        while ((consumer1.Assignment.Count == 0 || consumer2.Assignment.Count == 0)
-               && sw.Elapsed < TimeSpan.FromSeconds(20))
-        {
-            await Task.Delay(200);
-        }
-
-        // Both consumers should have assignments (partitions split between them)
-        await Assert.That(consumer1.Assignment.Count).IsGreaterThanOrEqualTo(1);
-        await Assert.That(consumer2.Assignment.Count).IsGreaterThanOrEqualTo(1);
+        // Wait for cooperative rebalance to complete (may require two rounds with CooperativeSticky)
+        await Assert.That(() => consumer1.Assignment.Count)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
+        await Assert.That(() => consumer2.Assignment.Count)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
         // Total assignments should cover all partitions
-        var totalAssigned = consumer1.Assignment.Count + consumer2.Assignment.Count;
-        await Assert.That(totalAssigned).IsEqualTo(4);
+        await Assert.That(() => consumer1.Assignment.Count + consumer2.Assignment.Count)
+            .Eventually(x => x.IsEqualTo(4), TimeSpan.FromSeconds(30));
 
         // Now produce messages - they should be distributed across consumers
         await using var producer = await Kafka.CreateProducer<string, string>()
