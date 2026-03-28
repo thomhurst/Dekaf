@@ -893,6 +893,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                         CoalesceBatch(evt2.Batch!, coalescedBatches, ref coalescedCount,
                                             coalescedPartitions, carryOver);
                                     }
+                                    // ResponseReady/Unmute: safe to ignore here — Phase 2 only runs when
+                                    // _totalPendingResponseCount == 0, so ResponseReady is spurious.
+                                    // ProcessCompletedResponses at step 1 of the next iteration handles any completion.
                                 }
                             }
                         }
