@@ -321,7 +321,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             .ConfigureAwait(false);
 
         // Build subscription metadata
-        var metadata = BuildSubscriptionMetadata(topics);
+        var metadata = BuildSubscriptionMetadata(topics, _assignedPartitions);
 
         var request = new JoinGroupRequest
         {
@@ -784,7 +784,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics)
+    internal static byte[] BuildSubscriptionMetadataV0(IReadOnlySet<string> topics)
     {
         // Simple subscription format - convert set to list for writer
         var topicList = new List<string>(topics.Count);
@@ -801,6 +801,53 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             topicList,
             (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
         writer.WriteBytes([]); // User data
+
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    internal static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics, IReadOnlySet<TopicPartition> ownedPartitions)
+    {
+        var topicList = new List<string>(topics.Count);
+        foreach (var topic in topics)
+        {
+            topicList.Add(topic);
+        }
+
+        // Group owned partitions by topic
+        var ownedByTopic = new Dictionary<string, List<int>>();
+        foreach (var tp in ownedPartitions)
+        {
+            if (!ownedByTopic.TryGetValue(tp.Topic, out var partitions))
+            {
+                partitions = [];
+                ownedByTopic[tp.Topic] = partitions;
+            }
+            partitions.Add(tp.Partition);
+        }
+
+        var ownedTopicList = new List<(string Topic, List<int> Partitions)>(ownedByTopic.Count);
+        foreach (var kvp in ownedByTopic)
+        {
+            ownedTopicList.Add((kvp.Key, kvp.Value));
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt16(1); // Version 1
+        writer.WriteArray(
+            topicList,
+            (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
+        writer.WriteBytes([]); // User data
+
+        // v1: owned partitions array
+        writer.WriteArray(
+            ownedTopicList,
+            static (ref KafkaProtocolWriter w, (string Topic, List<int> Partitions) entry) =>
+            {
+                w.WriteString(entry.Topic);
+                w.WriteArray(entry.Partitions, static (ref KafkaProtocolWriter w2, int p) => w2.WriteInt32(p));
+            });
 
         return buffer.WrittenSpan.ToArray();
     }
@@ -856,15 +903,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             PartitionAssignmentStrategy.Range => PartitionAssignors.Range,
             PartitionAssignmentStrategy.RoundRobin => PartitionAssignors.RoundRobin,
-            PartitionAssignmentStrategy.Sticky or PartitionAssignmentStrategy.CooperativeSticky => FallbackToRange(),
+            PartitionAssignmentStrategy.Sticky => PartitionAssignors.Sticky,
+            PartitionAssignmentStrategy.CooperativeSticky => PartitionAssignors.CooperativeSticky,
             _ => PartitionAssignors.Range
         };
-    }
-
-    private IPartitionAssignmentStrategy FallbackToRange()
-    {
-        LogStickyFallbackToRange(_options.PartitionAssignmentStrategy);
-        return PartitionAssignors.Range;
     }
 
     private async ValueTask<SyncGroupRequestAssignment[]> ComputeAssignmentsAsync(
@@ -888,8 +930,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var groupMembers = new List<ConsumerGroupMember>(members.Count);
         foreach (var member in members)
         {
-            var subscribedTopics = ParseSubscriptionMetadata(member.Metadata);
-            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, [], member.Metadata));
+            var (subscribedTopics, memberOwned) = ParseSubscriptionMetadata(member.Metadata);
+            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, memberOwned.ToList(), member.Metadata));
         }
 
         // Delegate to the resolved strategy
@@ -921,23 +963,46 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result.ToArray();
     }
 
-    private static HashSet<string> ParseSubscriptionMetadata(byte[] data)
+    internal static (HashSet<string> Topics, HashSet<TopicPartition> OwnedPartitions) ParseSubscriptionMetadata(byte[] data)
     {
         if (data.Length == 0)
-            return [];
+            return ([], []);
 
-        var result = new HashSet<string>();
+        var topics = new HashSet<string>();
         var reader = new KafkaProtocolReader(data);
 
         var version = reader.ReadInt16();
-        var topics = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadString()!);
+        var topicArray = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadString()!);
 
-        foreach (var topic in topics)
+        foreach (var topic in topicArray)
         {
-            result.Add(topic);
+            topics.Add(topic);
         }
 
-        return result;
+        // Read past userData (bytes with int32 length prefix)
+        _ = reader.ReadBytes();
+
+        var ownedPartitions = new HashSet<TopicPartition>();
+
+        if (version >= 1 && reader.Remaining > 0)
+        {
+            var ownedTopics = reader.ReadArray((ref KafkaProtocolReader r) =>
+            {
+                var topic = r.ReadString()!;
+                var partitions = r.ReadArray((ref KafkaProtocolReader r2) => r2.ReadInt32());
+                return (topic, partitions);
+            });
+
+            foreach (var (topic, partitions) in ownedTopics)
+            {
+                foreach (var partition in partitions)
+                {
+                    ownedPartitions.Add(new TopicPartition(topic, partition));
+                }
+            }
+        }
+
+        return (topics, ownedPartitions);
     }
 
     private byte[] BuildAssignmentData(IReadOnlyList<TopicPartition> partitions)
@@ -1195,9 +1260,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "{Strategy} assignment strategy is not yet implemented, falling back to Range assignor")]
-    private partial void LogStickyFallbackToRange(PartitionAssignmentStrategy strategy);
 
     #endregion
 }
