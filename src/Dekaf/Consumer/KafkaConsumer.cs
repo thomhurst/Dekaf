@@ -2575,14 +2575,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (recordHeaders is null || headerCount == 0)
             return null;
 
-        // If the array is exact-sized (e.g., from producer path), return directly - no boxing
+        // If the array is exact-sized (e.g., from producer path), return directly
         if (recordHeaders.Length == headerCount)
             return recordHeaders;
 
-        // Pooled array is oversized — return a segment view to expose only the valid headers.
-        // ArraySegment<T> implements IReadOnlyList<T>; boxing allocates ~40 bytes, still
-        // cheaper than the original per-message Header[] allocation it replaces.
-        return new ArraySegment<Header>(recordHeaders, 0, headerCount);
+        // Pooled array is oversized — copy to an exact-sized array for user ownership.
+        // This ensures ConsumeResult.Headers outlives the batch (the pooled array is
+        // returned in LazyRecordList.Dispose). Header counts are typically 0-5, so the
+        // copy is negligible and avoids both use-after-return bugs and ArraySegment boxing.
+        var owned = new Header[headerCount];
+        recordHeaders.AsSpan(0, headerCount).CopyTo(owned);
+        return owned;
     }
 
     /// <summary>
