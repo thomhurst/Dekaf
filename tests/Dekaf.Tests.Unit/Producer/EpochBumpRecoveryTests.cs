@@ -315,7 +315,8 @@ public sealed class EpochBumpRecoveryTests
                 {
                     new("trace-id", "abc123"u8.ToArray()),
                     new("version", "1"u8.ToArray()),
-                }
+                },
+                HeaderCount = 2
             }
         };
 

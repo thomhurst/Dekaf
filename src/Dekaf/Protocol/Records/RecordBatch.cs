@@ -950,6 +950,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 var headers = parsedRecords[i].Headers;
                 if (headers is not null)
                 {
+                    // clearArray: true is intentional — Header.Value is ReadOnlyMemory<byte>
+                    // referencing the network buffer. Clearing releases those references back
+                    // to the GC, preventing the pool from holding onto network buffer memory.
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
                 }
             }

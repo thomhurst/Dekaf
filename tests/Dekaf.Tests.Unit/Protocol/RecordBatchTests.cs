@@ -1,6 +1,7 @@
 using System.Buffers;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Protocol;
 
@@ -990,6 +991,68 @@ public class RecordBatchTests
 
         await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
         await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
+    }
+
+    #endregion
+
+    #region Header Copy Correctness Tests
+
+    [Test]
+    public async Task GetHeaders_CopiedHeaders_RemainValidAfterLazyRecordListDispose()
+    {
+        // Arrange: create a batch with records that have headers
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray(),
+                    Headers =
+                    [
+                        new Header("h1", "header-value-1"u8.ToArray()),
+                        new Header("h2", "header-value-2"u8.ToArray())
+                    ],
+                    HeaderCount = 2
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+
+        // Act: read the batch back (uses pooled Header[] arrays)
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsedBatch = RecordBatch.Read(ref reader);
+
+        var record = parsedBatch.Records[0];
+
+        // Simulate what KafkaConsumer.GetHeaders() does: copy into an owned array
+        // so headers survive after the pooled arrays are returned on dispose.
+        Header[]? copiedHeaders = null;
+        if (record.Headers is not null && record.HeaderCount > 0)
+        {
+            copiedHeaders = new Header[record.HeaderCount];
+            record.Headers.AsSpan(0, record.HeaderCount).CopyTo(copiedHeaders);
+        }
+
+        // Dispose the batch — this returns pooled Header[] arrays to ArrayPool
+        parsedBatch.Dispose();
+
+        // Assert: copied headers are still valid after dispose
+        await Assert.That(copiedHeaders).IsNotNull();
+        await Assert.That(copiedHeaders!.Length).IsEqualTo(2);
+        await Assert.That(copiedHeaders[0].Key).IsEqualTo("h1");
+        await Assert.That(copiedHeaders[0].GetValueAsString()).IsEqualTo("header-value-1");
+        await Assert.That(copiedHeaders[1].Key).IsEqualTo("h2");
+        await Assert.That(copiedHeaders[1].GetValueAsString()).IsEqualTo("header-value-2");
     }
 
     #endregion

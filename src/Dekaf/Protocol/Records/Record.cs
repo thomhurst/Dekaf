@@ -22,7 +22,6 @@ public readonly record struct Record
     /// <summary>
     /// The number of valid headers in the Headers array.
     /// Required because the array may be rented from ArrayPool and oversized.
-    /// When 0 and Headers is not null, defaults to Headers.Length.
     /// </summary>
     public int HeaderCount { get; init; }
 
@@ -45,7 +44,12 @@ public readonly record struct Record
     /// <summary>
     /// Gets the effective header count, handling both exact-sized and pooled arrays.
     /// </summary>
-    private int EffectiveHeaderCount => Headers is null ? 0 : (HeaderCount > 0 ? HeaderCount : Headers.Length);
+    /// <remarks>
+    /// Invariant: HeaderCount always equals the actual number of valid headers.
+    /// When Headers is a pooled array (from Record.Read), HeaderCount &lt; Headers.Length is expected.
+    /// When Headers is an exact-sized array (from producer path), HeaderCount == Headers.Length.
+    /// </remarks>
+    private int EffectiveHeaderCount => Headers is null ? 0 : HeaderCount;
 
     /// <summary>
     /// Writes the record to the protocol writer.
