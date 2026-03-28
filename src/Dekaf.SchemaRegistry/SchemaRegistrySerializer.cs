@@ -31,9 +31,6 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// </summary>
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
-    [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_payloadBuffer;
-
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly Action<T, IBufferWriter<byte>> _serialize;
     private readonly Func<string, Schema> _getSchema;
@@ -103,9 +100,12 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         // Get or register schema ID (cached after first call per subject)
         var schemaId = GetSchemaIdSync(subject, schema);
 
-        var payloadBuffer = t_payloadBuffer ??= new ArrayBufferWriter<byte>();
+        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>();
         payloadBuffer.ResetWrittenCount();
         _serialize(value, payloadBuffer);
+        // Drop an oversized buffer so a single large message doesn't permanently hold capacity on this thread.
+        if (payloadBuffer.Capacity > 1024 * 1024)
+            SchemaRegistryBuffers.PayloadBuffer = null;
 
         // Write wire format: [0x00] [schema ID] [payload]
         var totalSize = 1 + 4 + payloadBuffer.WrittenCount;
@@ -157,6 +157,15 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
     }
+}
+
+/// Non-generic holder for the thread-local serialization buffer.
+/// Kept outside SchemaRegistrySerializer&lt;T&gt; so all generic instantiations
+/// share one buffer per thread rather than one per (type × thread).
+internal static class SchemaRegistryBuffers
+{
+    [ThreadStatic]
+    internal static ArrayBufferWriter<byte>? PayloadBuffer;
 }
 
 /// <summary>
