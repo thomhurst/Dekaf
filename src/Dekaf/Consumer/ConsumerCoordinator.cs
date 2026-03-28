@@ -125,6 +125,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Writing _state outside _lock is safe here: _state is volatile, and a concurrent
             // heartbeat seeing Unjoined will simply skip OnPartitionsLost (guarded by _state == Stable)
             // and trigger a rejoin — which is the correct behavior during a cooperative rebalance.
+            LogCooperativeRoundCheck(
+                syncResult.Revoked?.Count ?? 0,
+                _isCooperativeProtocol,
+                cooperativeRound,
+                _assignedPartitions.Count);
             if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol
                 && ++cooperativeRound < maxCooperativeRounds)
             {
@@ -1329,6 +1334,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
     private partial void LogCooperativeRejoin(int revokedCount);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cooperative round check: revokedCount={RevokedCount}, isCooperative={IsCooperative}, round={Round}, assignedCount={AssignedCount}")]
+    private partial void LogCooperativeRoundCheck(int revokedCount, bool isCooperative, int round, int assignedCount);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsLost callback threw an exception")]
     private partial void LogPartitionsLostCallbackError(Exception exception);
