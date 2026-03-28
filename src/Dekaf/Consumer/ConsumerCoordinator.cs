@@ -889,7 +889,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         foreach (var member in members)
         {
             var subscribedTopics = ParseSubscriptionMetadata(member.Metadata);
-            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, member.Metadata));
+            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, [], member.Metadata));
         }
 
         // Delegate to the resolved strategy

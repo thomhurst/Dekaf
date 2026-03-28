@@ -7,10 +7,12 @@ namespace Dekaf.Consumer;
 /// </summary>
 /// <param name="MemberId">The member's unique identifier.</param>
 /// <param name="Subscriptions">The set of topics this member is subscribed to.</param>
+/// <param name="OwnedPartitions">The partitions currently owned by this member, used by sticky assignors.</param>
 /// <param name="Metadata">Raw metadata bytes from the member's JoinGroup request, for custom strategies.</param>
 public readonly record struct ConsumerGroupMember(
     string MemberId,
     IReadOnlySet<string> Subscriptions,
+    IReadOnlyList<TopicPartition> OwnedPartitions,
     byte[] Metadata);
 
 /// <summary>
