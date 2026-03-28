@@ -404,7 +404,6 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
     }
 
     [Test]
-    [Arguments(ErrorCode.RebalanceInProgress)]
     [Arguments(ErrorCode.UnknownMemberId)]
     public async Task EnsureActiveGroupAsync_SyncGroupError_ThrowsGroupException(ErrorCode errorCode)
     {
@@ -437,6 +436,79 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
 
         await Assert.That(caught).IsNotNull();
         await Assert.That(caught!.ErrorCode).IsEqualTo(errorCode);
+    }
+
+    [Test]
+    public async Task EnsureActiveGroupAsync_SyncGroupRebalanceInProgress_RetriesAndRecovers()
+    {
+        var syncCallCount = 0;
+
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                ErrorCode = ErrorCode.None,
+                NodeId = 0,
+                Host = "localhost",
+                Port = 9092
+            }));
+
+        _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
+                Arg.Any<JoinGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new JoinGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                GenerationId = 1,
+                Leader = "member-1",
+                Members = []
+            }));
+
+        // SyncGroup returns RebalanceInProgress once, then succeeds
+        _connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
+                Arg.Any<SyncGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                syncCallCount++;
+                if (syncCallCount == 1)
+                {
+                    return ValueTask.FromResult(new SyncGroupResponse
+                    {
+                        ErrorCode = ErrorCode.RebalanceInProgress,
+                        Assignment = []
+                    });
+                }
+
+                return ValueTask.FromResult(new SyncGroupResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    Assignment = []
+                });
+            });
+
+        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
+                Arg.Any<HeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new HeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None
+            }));
+
+        var options = CreateOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        // Should have retried and recovered
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(syncCallCount).IsEqualTo(2);
     }
 
     [Test]
