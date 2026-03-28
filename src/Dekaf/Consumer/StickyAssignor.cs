@@ -94,13 +94,6 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             var minQuota = partitionCount / interested.Count;
             var extraSlots = partitionCount % interested.Count;
 
-            // Read per-topic counts from running tracker
-            var memberTopicCounts = new Dictionary<string, int>(interested.Count);
-            foreach (var memberId in interested)
-            {
-                memberTopicCounts[memberId] = topicCounts.GetValueOrDefault((memberId, topic));
-            }
-
             // Determine which members get maxQuota (minQuota + 1)
             // Members with more existing partitions get priority to avoid unnecessary movement
             var maxQuotaMembers = new HashSet<string>();
@@ -109,7 +102,8 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
                 var membersForQuota = new List<string>(interested);
                 membersForQuota.Sort((a, b) =>
                 {
-                    var cmp = memberTopicCounts[b].CompareTo(memberTopicCounts[a]);
+                    var cmp = topicCounts.GetValueOrDefault((b, topic))
+                        .CompareTo(topicCounts.GetValueOrDefault((a, topic)));
                     return cmp != 0 ? cmp : string.Compare(a, b, StringComparison.Ordinal);
                 });
 
@@ -123,7 +117,7 @@ public sealed class StickyAssignor : IPartitionAssignmentStrategy
             foreach (var memberId in interested)
             {
                 var quota = maxQuotaMembers.Contains(memberId) ? minQuota + 1 : minQuota;
-                var currentCount = memberTopicCounts[memberId];
+                var currentCount = topicCounts.GetValueOrDefault((memberId, topic));
 
                 if (currentCount > quota)
                 {

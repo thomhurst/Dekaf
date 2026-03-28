@@ -138,7 +138,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 _state = CoordinatorState.Unjoined;
             }
         }
-        while (_state == CoordinatorState.Unjoined && _isCooperativeProtocol && cooperativeRound > 0);
+        while (_state == CoordinatorState.Unjoined && cooperativeRound > 0);
     }
 
     /// <summary>

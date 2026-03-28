@@ -21,10 +21,8 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
         IReadOnlyList<ConsumerGroupMember> members,
         IReadOnlyDictionary<string, int> topicPartitionCounts)
     {
-        // Step 1: Run the base sticky assignment to get target state
         var targetAssignments = StickyAssignor.AssignSticky(members, topicPartitionCounts);
 
-        // Step 2: Build owned-partition-to-owner index from current state
         var currentOwner = new Dictionary<TopicPartition, string>();
         foreach (var member in members)
         {
@@ -32,7 +30,6 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
                 currentOwner[tp] = member.MemberId;
         }
 
-        // Step 3: Find partitions transferring ownership
         var transferring = new HashSet<TopicPartition>();
         foreach (var (memberId, partitions) in targetAssignments)
         {
@@ -46,7 +43,6 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
         if (transferring.Count == 0)
             return targetAssignments;
 
-        // Step 4: Build adjusted assignments — remove transferring partitions from their new owner.
         // Per KIP-429, transferring partitions are left temporarily unassigned: they are NOT added
         // back to the old owner. The old owner sees them revoked, calls OnPartitionsRevoked, and
         // triggers a second rebalance round where the partitions (now unowned) are assigned directly.
