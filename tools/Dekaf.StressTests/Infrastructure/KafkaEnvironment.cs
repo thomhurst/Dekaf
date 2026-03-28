@@ -13,17 +13,20 @@ namespace Dekaf.StressTests.Infrastructure;
 /// </summary>
 internal sealed class KafkaEnvironment : IAsyncDisposable
 {
-    // Retention limits to prevent disk filling during stress tests while avoiding
-    // premature log deletion that causes consumer offset resets.
-    // Limits: 256MB per partition, 30-minute retention (covers full test duration + margin),
-    // 60-second cleanup checks
+    // Retention tuned to balance two constraints:
+    // 1. Original 5s retention was too aggressive — caused constant "offset out of range" resets
+    // 2. Long time-based retention (e.g. 30 min) would retain ~360 GB at high throughput,
+    //    exhausting disk/memory on CI runners
+    // Solution: byte-based retention (128 MB/partition × 6 partitions ≈ 768 MB max disk) is
+    // the primary bound. Time-based retention (5 min) is a secondary backstop. Small 16 MB
+    // segments let Kafka reclaim space incrementally as the consumer keeps up.
     private static readonly Dictionary<string, string> RetentionConfig = new()
     {
-        ["KAFKA_LOG_RETENTION_MS"] = "1800000",
-        ["KAFKA_LOG_RETENTION_BYTES"] = "268435456",
-        ["KAFKA_LOG_SEGMENT_BYTES"] = "67108864",
+        ["KAFKA_LOG_RETENTION_MS"] = "300000",
+        ["KAFKA_LOG_RETENTION_BYTES"] = "134217728",
+        ["KAFKA_LOG_SEGMENT_BYTES"] = "16777216",
         ["KAFKA_LOG_SEGMENT_DELETE_DELAY_MS"] = "1000",
-        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "60000",
+        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "10000",
         ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
     };
 
