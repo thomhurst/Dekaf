@@ -857,6 +857,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
+                    // Idle timeout — no requests pending, just loop and wait again
+                    if (_pendingRequests.IsEmpty)
+                        continue;
+
                     LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
                     // Mark connection as failed to trigger reconnection
@@ -874,6 +878,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 {
                     if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                     {
+                        // Idle timeout — no requests are waiting for a response, so the 30s
+                        // RequestTimeout firing is harmless. Reset and wait again. Only treat
+                        // it as fatal when requests are actually pending.
+                        if (_pendingRequests.IsEmpty)
+                            continue;
+
                         LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
                         Volatile.Write(ref _disposed, 1);
 
