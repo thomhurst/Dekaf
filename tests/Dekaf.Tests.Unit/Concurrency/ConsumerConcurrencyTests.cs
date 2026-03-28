@@ -310,10 +310,14 @@ public class ConsumerConcurrencyTests
         var consumedAtLeastOne = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cts = new CancellationTokenSource();
 
-        // Writer task (simulates prefetch)
+        // Pre-fill the channel so the reader has data immediately, regardless of
+        // whether the writer task has been scheduled yet. This eliminates the
+        // dependency on thread pool scheduling order that caused timeouts on CI.
+        channel.Writer.TryWrite(0);
+
         var writerTask = Task.Run(async () =>
         {
-            var i = 0;
+            var i = 1;
             while (!Volatile.Read(ref disposed))
             {
                 try
