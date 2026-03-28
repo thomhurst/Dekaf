@@ -164,6 +164,22 @@ public class ProtocolBenchmarks
     public RecordBatch ReadRecordBatch()
     {
         var reader = new KafkaProtocolReader(_recordBatchBytes);
-        return RecordBatch.Read(ref reader);
+        var batch = RecordBatch.Read(ref reader);
+        batch.Dispose();
+        return batch;
+    }
+
+    [Benchmark(Description = "Read + Iterate RecordBatch (10 records)")]
+    public int ReadAndIterateRecordBatch()
+    {
+        var reader = new KafkaProtocolReader(_recordBatchBytes);
+        var batch = RecordBatch.Read(ref reader);
+        var sum = 0;
+        for (var i = 0; i < batch.Records.Count; i++)
+        {
+            sum += batch.Records[i].OffsetDelta;
+        }
+        batch.Dispose();
+        return sum;
     }
 }

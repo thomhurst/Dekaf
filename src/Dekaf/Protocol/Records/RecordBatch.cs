@@ -695,7 +695,7 @@ public sealed class RecordBatch : IDisposable
             var pooledArray = ArrayPool<byte>.Shared.Rent(writtenLength);
             decompressedBuffer.WrittenSpan.CopyTo(pooledArray);
             var pooledData = new PooledRecordData(pooledArray, writtenLength);
-            lazyRecords = new LazyRecordList(pooledData, recordCount);
+            lazyRecords = LazyRecordList.Create(pooledData, recordCount);
         }
         else if (ResponseParsingContext.HasPooledMemory)
         {
@@ -703,7 +703,7 @@ public sealed class RecordBatch : IDisposable
             // Mark that at least one batch used the pooled memory, so ownership
             // will be transferred to PendingFetchData after parsing completes
             ResponseParsingContext.MarkMemoryUsed();
-            lazyRecords = new LazyRecordList(rawRecordData, recordCount);
+            lazyRecords = LazyRecordList.Create(rawRecordData, recordCount);
         }
         else
         {
@@ -713,7 +713,7 @@ public sealed class RecordBatch : IDisposable
             var pooledArray = ArrayPool<byte>.Shared.Rent(length);
             rawRecordData.Span.CopyTo(pooledArray);
             var pooledData = new PooledRecordData(pooledArray, length);
-            lazyRecords = new LazyRecordList(pooledData, recordCount);
+            lazyRecords = LazyRecordList.Create(pooledData, recordCount);
         }
 
         var batch = RentFromPool();
@@ -768,33 +768,56 @@ internal readonly struct PooledRecordData
 
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
-    // Pool for reusing List<Record> instances to reduce GC pressure.
-    // Using ConcurrentBag for thread-safe pooling with good performance.
-    // Note: MaxPooledLists is a soft limit because ConcurrentBag.Count is not atomic with Add().
-    // Under high concurrency, the pool may temporarily exceed MaxPooledLists, but this is acceptable
-    // as it only affects memory usage slightly and avoids the overhead of stricter synchronization.
-    private static readonly System.Collections.Concurrent.ConcurrentBag<List<Record>> s_listPool = new();
-    private const int MaxPooledLists = 256;
+    // Pool for reusing LazyRecordList instances to eliminate per-batch class allocation.
+    // Soft limit via Volatile.Read avoids ConcurrentStack.Count overhead.
+    private static readonly ConcurrentStack<LazyRecordList> s_instancePool = new();
+    private static int s_instancePoolCount;
+    private const int MaxPooledInstances = 256;
 
-    private readonly ReadOnlyMemory<byte> _rawData;
+    private ReadOnlyMemory<byte> _rawData;
     private byte[]? _pooledArray; // Track pooled array for cleanup (mutable for idempotent dispose)
     private int _count;
-    private List<Record>? _parsedRecords;
+    private Record[]? _parsedRecords; // Rented from ArrayPool<Record>.Shared
+    private int _parsedCount;         // Number of records parsed into _parsedRecords
     private int _nextParseOffset;
     private int _disposed;
 
-    public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
+    private LazyRecordList() { }
+
+    /// <summary>
+    /// Rents a LazyRecordList from the pool or creates a new one.
+    /// </summary>
+    internal static LazyRecordList Create(ReadOnlyMemory<byte> rawData, int count)
     {
-        _rawData = rawData;
-        _pooledArray = null;
-        _count = count;
+        var instance = Rent();
+        instance._rawData = rawData;
+        instance._pooledArray = null;
+        instance._count = count;
+        return instance;
     }
 
-    public LazyRecordList(PooledRecordData pooledData, int count)
+    /// <summary>
+    /// Rents a LazyRecordList from the pool or creates a new one, with pooled byte array ownership.
+    /// </summary>
+    internal static LazyRecordList Create(PooledRecordData pooledData, int count)
     {
-        _rawData = pooledData.Memory;
-        _pooledArray = pooledData.PooledArray;
-        _count = count;
+        var instance = Rent();
+        instance._rawData = pooledData.Memory;
+        instance._pooledArray = pooledData.PooledArray;
+        instance._count = count;
+        return instance;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static LazyRecordList Rent()
+    {
+        if (s_instancePool.TryPop(out var instance))
+        {
+            Interlocked.Decrement(ref s_instancePoolCount);
+            Volatile.Write(ref instance._disposed, 0);
+            return instance;
+        }
+        return new LazyRecordList();
     }
 
     public int Count => _count;
@@ -846,33 +869,32 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     {
         if (_parsedRecords is null)
         {
-            // Try to get a pooled list, otherwise create new
-            if (!s_listPool.TryTake(out _parsedRecords))
-            {
-                // Pre-allocate with known count to avoid growth allocations
-                var capacityToAllocate = _count > MaxReasonableRecordCount ? 0 : _count;
-                _parsedRecords = new List<Record>(capacityToAllocate);
-            }
-            else
-            {
-                // Ensure pooled list has enough capacity
-                var capacityNeeded = _count > MaxReasonableRecordCount ? 0 : _count;
-                if (_parsedRecords.Capacity < capacityNeeded)
-                {
-                    _parsedRecords.Capacity = capacityNeeded;
-                }
-            }
+            // Rent from ArrayPool instead of allocating a List<Record>.
+            // Eliminates per-batch List object allocation (~32 bytes) and uses pooled arrays
+            // that are returned to the shared pool on dispose.
+            var capacityToAllocate = _count > MaxReasonableRecordCount ? 16 : _count;
+            _parsedRecords = ArrayPool<Record>.Shared.Rent(capacityToAllocate);
+            _parsedCount = 0;
         }
 
-        while (_parsedRecords.Count <= index && _parsedRecords.Count < _count)
+        while (_parsedCount <= index && _parsedCount < _count)
         {
+            // Grow the array if needed (rare: only when _count was capped by MaxReasonableRecordCount)
+            if (_parsedCount >= _parsedRecords.Length)
+            {
+                var newArray = ArrayPool<Record>.Shared.Rent(_parsedRecords.Length * 2);
+                _parsedRecords.AsSpan(0, _parsedCount).CopyTo(newArray);
+                ArrayPool<Record>.Shared.Return(_parsedRecords, clearArray: true);
+                _parsedRecords = newArray;
+            }
+
             var slice = _rawData.Slice(_nextParseOffset);
             var reader = new KafkaProtocolReader(slice);
 
             try
             {
                 var record = Record.Read(ref reader);
-                _parsedRecords.Add(record);
+                _parsedRecords[_parsedCount++] = record;
                 _nextParseOffset += (int)reader.Consumed;
             }
             catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
@@ -882,17 +904,16 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 // prevent further attempts. This mirrors the partial batch handling in
                 // FetchResponse. MalformedProtocolDataException covers malformed variable-length
                 // integers that throw "Malformed variable-length integer".
-                // Note: The pre-allocated List capacity may now exceed _count — this
-                // over-allocation is intentional and harmless (one batch lifetime).
-                Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecords.Count} of {_count} records parsed successfully.");
-                _count = _parsedRecords.Count;
+                Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedCount} of {_count} records parsed successfully.");
+                _count = _parsedCount;
                 break;
             }
         }
     }
 
     /// <summary>
-    /// Marks the list as disposed and returns the pooled list for reuse.
+    /// Marks the list as disposed, returns the pooled Record[] array, and returns
+    /// this instance to the instance pool for reuse.
     /// After disposal, accessing records will throw ObjectDisposedException.
     /// Note: Memory ownership is managed at PendingFetchData level for non-compressed data,
     /// but pooled decompression buffers are returned here.
@@ -902,7 +923,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Return pooled array if we own one, and null out to prevent double-return.
+        // Return pooled byte array if we own one, and null out to prevent double-return.
         // Double-return would allow ArrayPool to hand the same array to two different
         // renters simultaneously, causing data corruption.
         var pooledArray = _pooledArray;
@@ -912,13 +933,28 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
             ArrayPool<byte>.Shared.Return(pooledArray, clearArray: false);
         }
 
-        // Return list to pool for reuse (soft limit - see MaxPooledLists comment)
-        if (_parsedRecords is not null && s_listPool.Count < MaxPooledLists)
-        {
-            _parsedRecords.Clear();
-            s_listPool.Add(_parsedRecords);
-        }
+        // Return Record[] to ArrayPool (clear references to avoid holding onto GC-tracked objects)
+        var parsedRecords = _parsedRecords;
         _parsedRecords = null;
+        if (parsedRecords is not null)
+        {
+            ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
+        }
+
+        // Reset state for reuse
+        _rawData = default;
+        _count = 0;
+        _parsedCount = 0;
+        _nextParseOffset = 0;
+
+        // Soft limit: the check-then-act is intentionally non-atomic.
+        // Under high concurrency, the pool may briefly exceed MaxPooledInstances by a few items.
+        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
+        if (Volatile.Read(ref s_instancePoolCount) < MaxPooledInstances)
+        {
+            s_instancePool.Push(this);
+            Interlocked.Increment(ref s_instancePoolCount);
+        }
     }
 }
 

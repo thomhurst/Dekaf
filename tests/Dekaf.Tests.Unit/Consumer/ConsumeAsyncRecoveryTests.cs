@@ -136,7 +136,7 @@ public sealed class ConsumeAsyncRecoveryTests
             Records = new ThrowingRecordList(goodRecords, faultAtIndex)
         };
 
-        return new PendingFetchData(Topic, Partition, [batch]);
+        return PendingFetchData.Create(Topic, Partition, [batch]);
     }
 
     /// <summary>
@@ -153,7 +153,7 @@ public sealed class ConsumeAsyncRecoveryTests
             Records = new CancellationThrowingRecordList()
         };
 
-        return new PendingFetchData(Topic, Partition, [batch]);
+        return PendingFetchData.Create(Topic, Partition, [batch]);
     }
 
     #region Test 1: Consumer continues after a faulted fetch
@@ -163,7 +163,7 @@ public sealed class ConsumeAsyncRecoveryTests
     {
         // Arrange: first fetch faults immediately (at record 0), second fetch has 2 valid records
         var faultingFetch = CreateFaultingFetch(baseOffset: 0, goodRecordCount: 0, faultAtIndex: 0);
-        var goodFetch = new PendingFetchData(Topic, Partition,
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
             [CreateBatch(100, CreateRecord(0, "k1", "v1"), CreateRecord(1, "k2", "v2"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
@@ -193,7 +193,7 @@ public sealed class ConsumeAsyncRecoveryTests
     {
         // Arrange: first fetch yields 2 records then faults at record 2, second fetch has 1 record
         var faultingFetch = CreateFaultingFetch(baseOffset: 0, goodRecordCount: 2, faultAtIndex: 2);
-        var goodFetch = new PendingFetchData(Topic, Partition,
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
             [CreateBatch(100, CreateRecord(0, "k-after", "v-after"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
@@ -235,8 +235,8 @@ public sealed class ConsumeAsyncRecoveryTests
             Attributes = 0,
             Records = new MalformedProtocolDataThrowingRecordList()
         };
-        var faultingFetch = new PendingFetchData(Topic, Partition, [batch]);
-        var goodFetch = new PendingFetchData(Topic, Partition,
+        var faultingFetch = PendingFetchData.Create(Topic, Partition, [batch]);
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
             [CreateBatch(100, CreateRecord(0, "k1", "v1"), CreateRecord(1, "k2", "v2"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
@@ -271,7 +271,7 @@ public sealed class ConsumeAsyncRecoveryTests
         // Arrange: fetch with baseOffset 10, 3 good records (offsets 10, 11, 12), faults at record 3
         var faultingFetch = CreateFaultingFetch(baseOffset: 10, goodRecordCount: 3, faultAtIndex: 3);
         // Need a second fetch to keep the loop alive so we can read position
-        var goodFetch = new PendingFetchData(Topic, Partition,
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
             [CreateBatch(100, CreateRecord(0, "k", "v"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
@@ -310,7 +310,7 @@ public sealed class ConsumeAsyncRecoveryTests
     {
         // Arrange: fault at the very first record — no position update should occur from this fetch
         var faultingFetch = CreateFaultingFetch(baseOffset: 0, goodRecordCount: 0, faultAtIndex: 0);
-        var goodFetch = new PendingFetchData(Topic, Partition,
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
             [CreateBatch(50, CreateRecord(0, "k", "v"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(null, faultingFetch, goodFetch);
@@ -339,7 +339,7 @@ public sealed class ConsumeAsyncRecoveryTests
     {
         // Arrange: a single fetch with 5 records at offsets 20..24.
         // We consume 3 of the 5 and then check GetPosition mid-batch.
-        var fetch = new PendingFetchData(Topic, Partition,
+        var fetch = PendingFetchData.Create(Topic, Partition,
         [
             CreateBatch(20,
                 CreateRecord(0, "a", "1"),
@@ -427,7 +427,7 @@ public sealed class ConsumeAsyncRecoveryTests
         // Arrange: use a capturing logger to verify LogRecordParsingError is called
         var loggerFactory = new CapturingLoggerFactory();
         var faultingFetch = CreateFaultingFetch(baseOffset: 0, goodRecordCount: 0, faultAtIndex: 0);
-        var goodFetch = new PendingFetchData(Topic, Partition,
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
             [CreateBatch(100, CreateRecord(0, "k", "v"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(loggerFactory, faultingFetch, goodFetch);
@@ -465,8 +465,8 @@ public sealed class ConsumeAsyncRecoveryTests
             Attributes = 0,
             Records = new ThrowingRecordList([], 0)
         };
-        var faultingFetch = new PendingFetchData("orders", partitionIndex, [batch]);
-        var goodFetch = new PendingFetchData("orders", partitionIndex,
+        var faultingFetch = PendingFetchData.Create("orders", partitionIndex, [batch]);
+        var goodFetch = PendingFetchData.Create("orders", partitionIndex,
             [CreateBatch(100, CreateRecord(0, "k", "v"))]);
 
         await using var consumer = CreateConsumerWithPendingFetches(
