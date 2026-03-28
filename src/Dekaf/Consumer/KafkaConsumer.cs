@@ -882,7 +882,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                                 batch.BaseTimestamp + record.TimestampDelta);
 
-                            var headers = GetHeaders(record.Headers);
+                            var headers = GetHeaders(record);
                             var timestampType = ((int)batch.Attributes & 0x08) != 0
                                 ? TimestampType.LogAppendTime
                                 : TimestampType.CreateTime;
@@ -2626,15 +2626,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Returns headers directly without conversion. Returns null if empty.
+    /// Returns headers as IReadOnlyList with correct count. Returns null if empty.
+    /// Header arrays may be rented from ArrayPool and oversized, so we use
+    /// the Record's HeaderCount to wrap with the correct element count.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
+    private static IReadOnlyList<Header>? GetHeaders(Record record)
     {
-        if (recordHeaders is null || recordHeaders.Length == 0)
+        if (record.Headers is null || record.HeaderCount == 0)
             return null;
 
-        return recordHeaders;
+        // When HeaderCount matches array length, return the array directly (zero-alloc).
+        // When the array is oversized (from ArrayPool), wrap with ArraySegment to expose
+        // correct Count without allocating a new array.
+        if (record.HeaderCount == record.Headers.Length)
+            return record.Headers;
+
+        return new ArraySegment<Header>(record.Headers, 0, record.HeaderCount);
     }
 
     /// <summary>

@@ -340,7 +340,7 @@ public sealed class EpochBumpRecoveryTests
 
         var record = readBack.Records[0];
         await Assert.That(record.Headers).IsNotNull();
-        await Assert.That(record.Headers!.Length).IsEqualTo(2);
+        await Assert.That(record.HeaderCount).IsEqualTo(2);
         await Assert.That(record.Headers[0].Key).IsEqualTo("trace-id");
         await Assert.That(record.Headers[0].Value.ToArray()).IsEquivalentTo("abc123"u8.ToArray());
         await Assert.That(record.Headers[1].Key).IsEqualTo("version");

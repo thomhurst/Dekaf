@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
+using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
 
@@ -877,6 +878,14 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
             _parsedCount = 0;
         }
 
+        if (_parsedCount > index || _parsedCount >= _count)
+            return;
+
+        // Create reader once for all records to parse in this call.
+        // Reusing the reader across iterations avoids redundant Slice() + ReadOnlyMemory construction per record.
+        var reader = new KafkaProtocolReader(_rawData.Slice(_nextParseOffset));
+        var readerStartOffset = _nextParseOffset;
+
         while (_parsedCount <= index && _parsedCount < _count)
         {
             // Grow the array if needed (rare: only when _count was capped by MaxReasonableRecordCount)
@@ -888,14 +897,11 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords = newArray;
             }
 
-            var slice = _rawData.Slice(_nextParseOffset);
-            var reader = new KafkaProtocolReader(slice);
-
             try
             {
                 var record = Record.Read(ref reader);
                 _parsedRecords[_parsedCount++] = record;
-                _nextParseOffset += (int)reader.Consumed;
+                _nextParseOffset = readerStartOffset + (int)reader.Consumed;
             }
             catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
             {
@@ -933,11 +939,21 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
             ArrayPool<byte>.Shared.Return(pooledArray, clearArray: false);
         }
 
-        // Return Record[] to ArrayPool (clear references to avoid holding onto GC-tracked objects)
+        // Return pooled Header[] arrays from parsed records before returning Record[] to pool.
+        // Records with headers rent Header[] from ArrayPool<Header> in Record.Read().
         var parsedRecords = _parsedRecords;
         _parsedRecords = null;
         if (parsedRecords is not null)
         {
+            for (var i = 0; i < _parsedCount; i++)
+            {
+                var headers = parsedRecords[i].Headers;
+                if (headers is not null)
+                {
+                    ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                }
+            }
+
             ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
         }
 
