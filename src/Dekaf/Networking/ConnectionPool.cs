@@ -32,6 +32,13 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Current broker count for pipeline threshold calculation. Returns at least 1
     /// to avoid division by zero when connections are created before brokers are registered.
     /// </summary>
+    /// <remarks>
+    /// Known limitation: BrokerCount is a stale snapshot at connection-creation time. Early
+    /// connections may be created before all brokers are discovered (e.g., BrokerCount=1 when
+    /// there are actually 3 brokers), resulting in a higher per-connection threshold than
+    /// intended. This is acceptable in practice because MaximumPauseThresholdBytes (4 MB)
+    /// caps the per-connection threshold regardless of how few brokers are known at the time.
+    /// </remarks>
     private int BrokerCount => Math.Max(1, _brokers.Count);
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();

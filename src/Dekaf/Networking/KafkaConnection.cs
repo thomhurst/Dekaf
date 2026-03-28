@@ -157,11 +157,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
-    // Maximum size before forced cleanup of _cancelledCorrelationIds.
-    // Each entry is a cancelled request whose response hasn't arrived yet.
-    // If the broker never sends the response (connection issue, acks=0 edge case),
-    // entries accumulate. This cap triggers a full clear to bound memory growth.
-    private const int MaxCancelledCorrelationIds = 1024;
     private readonly PendingRequestPool _pendingRequestPool = new();
     private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -652,16 +647,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 if (!responseReceived)
                 {
                     _cancelledCorrelationIds.TryAdd(correlationId, 0);
-
-                    // Bound the dictionary to prevent unbounded growth when responses
-                    // for cancelled requests never arrive (e.g., broker dropped the request).
-                    // Clear is O(n) but only triggers after 1024 accumulated entries — well
-                    // outside the hot path. This trades occasional spurious "unknown correlation"
-                    // log messages for bounded memory.
-                    if (_cancelledCorrelationIds.Count > MaxCancelledCorrelationIds)
-                    {
-                        _cancelledCorrelationIds.Clear();
-                    }
                 }
             }
         }
