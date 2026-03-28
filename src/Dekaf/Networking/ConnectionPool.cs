@@ -27,6 +27,12 @@ public sealed partial class ConnectionPool : IConnectionPool
     private const ulong DefaultBufferMemory = 268435456;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
+
+    /// <summary>
+    /// Current broker count for pipeline threshold calculation. Returns at least 1
+    /// to avoid division by zero when connections are created before brokers are registered.
+    /// </summary>
+    private int BrokerCount => Math.Max(1, _brokers.Count);
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     // Per-endpoint semaphores to deduplicate concurrent single-connection creation
@@ -486,6 +492,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             _clientId, _connectionOptions,
             _loggerFactory?.CreateLogger<KafkaConnection>(),
             DefaultBufferMemory, _connectionsPerBroker,
+            BrokerCount,
             _responseBufferPool);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
@@ -603,6 +610,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             _clientId, _connectionOptions,
             _loggerFactory?.CreateLogger<KafkaConnection>(),
             DefaultBufferMemory, _connectionsPerBroker,
+            BrokerCount,
             _responseBufferPool);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
