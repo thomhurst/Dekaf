@@ -14,6 +14,9 @@ public sealed class CooperativeStickyAssignor : IPartitionAssignmentStrategy
     public string Name => "cooperative-sticky";
 
     /// <inheritdoc />
+    public bool IsCooperative => true;
+
+    /// <inheritdoc />
     public IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>> Assign(
         IReadOnlyList<ConsumerGroupMember> members,
         IReadOnlyDictionary<string, int> topicPartitionCounts)

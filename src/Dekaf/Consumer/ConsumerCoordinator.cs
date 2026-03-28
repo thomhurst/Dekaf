@@ -64,7 +64,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
-        _isCooperativeProtocol = options.CustomPartitionAssignmentStrategy?.Name == "cooperative-sticky"
+        _isCooperativeProtocol = options.CustomPartitionAssignmentStrategy?.IsCooperative == true
             || options.PartitionAssignmentStrategy == PartitionAssignmentStrategy.CooperativeSticky;
     }
 
@@ -87,13 +87,74 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        // Cooperative rebalancing may require multiple rounds (KIP-429):
+        // Round 1 identifies partitions to transfer, round 2 assigns them.
+        // Cap at 2 rounds to prevent unbounded looping if the assignor has a bug.
+        const int maxCooperativeRounds = 2;
+        var cooperativeRound = 0;
+        SyncGroupResult syncResult;
+
+        do
+        {
+            syncResult = await RunJoinSyncCycleAsync(topics, cancellationToken).ConfigureAwait(false);
+
+            // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
+            // callers while awaiting the old heartbeat task cleanup (up to 5 seconds).
+            // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
+            // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
+            // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
+            // serialized old-heartbeat teardown.
+            if (_state == CoordinatorState.Stable)
+            {
+                await StartHeartbeatAsync().ConfigureAwait(false);
+            }
+
+            // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
+            // If the listener calls back into the consumer (e.g., commit, seek), it would
+            // otherwise deadlock trying to acquire _lock or other coordinator locks.
+            // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
+            // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
+            if (_rebalanceListener is not null)
+            {
+                if (syncResult.Revoked is { Count: > 0 })
+                {
+                    LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
+                    await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (syncResult.Assigned is { Count: > 0 })
+                {
+                    LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
+                    await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            // Cooperative protocol: if partitions were revoked, trigger another round
+            // so the revoked partitions can be assigned to their new owners.
+            if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol
+                && ++cooperativeRound < maxCooperativeRounds)
+            {
+                LogCooperativeRejoin(syncResult.Revoked.Count);
+                _state = CoordinatorState.Unjoined;
+            }
+        }
+        while (_state == CoordinatorState.Unjoined && _isCooperativeProtocol && cooperativeRound > 0);
+    }
+
+    /// <summary>
+    /// Runs one JoinGroup + SyncGroup cycle, acquiring the lock for the duration.
+    /// </summary>
+    private async ValueTask<SyncGroupResult> RunJoinSyncCycleAsync(
+        IReadOnlySet<string> topics,
+        CancellationToken cancellationToken)
+    {
         SyncGroupResult syncResult = default;
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (_state == CoordinatorState.Stable)
-                return;
+                return syncResult;
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
@@ -168,46 +229,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
 
-        // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
-        // callers while awaiting the old heartbeat task cleanup (up to 5 seconds).
-        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
-        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
-        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
-        // serialized old-heartbeat teardown.
-        if (_state == CoordinatorState.Stable)
-        {
-            await StartHeartbeatAsync().ConfigureAwait(false);
-        }
-
-        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
-        // If the listener calls back into the consumer (e.g., commit, seek), it would
-        // otherwise deadlock trying to acquire _lock or other coordinator locks.
-        // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
-        // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
-        if (_rebalanceListener is not null)
-        {
-            if (syncResult.Revoked is { Count: > 0 })
-            {
-                LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
-                await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (syncResult.Assigned is { Count: > 0 })
-            {
-                LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
-                await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        // Cooperative protocol: if partitions were revoked, trigger a second rebalance round
-        // so the revoked partitions can be assigned to their new owners.
-        // The recursive call is bounded: round 2 has no ownership transfers, so no further revocations.
-        if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol)
-        {
-            LogCooperativeRejoin(syncResult.Revoked.Count);
-            _state = CoordinatorState.Unjoined;
-            await EnsureActiveGroupAsync(topics, cancellationToken).ConfigureAwait(false);
-        }
+        return syncResult;
     }
 
     /// <summary>

@@ -27,6 +27,13 @@ public interface IPartitionAssignmentStrategy
     string Name { get; }
 
     /// <summary>
+    /// Whether this strategy uses cooperative (incremental) rebalancing.
+    /// Cooperative strategies only revoke partitions that are transferring ownership,
+    /// enabling non-stop-the-world rebalancing via multiple rebalance rounds.
+    /// </summary>
+    bool IsCooperative => false;
+
+    /// <summary>
     /// Computes partition assignments for the given consumer group members.
     /// </summary>
     /// <param name="members">The consumer group members with their subscriptions.</param>
