@@ -103,10 +103,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         // Get or register schema ID (cached after first call per subject)
         var schemaId = GetSchemaIdSync(subject, schema);
 
-        // Serialize payload into thread-local buffer to avoid per-message byte[] allocation.
-        // One ArrayBufferWriter<byte> is allocated per thread and reused across all calls.
         var payloadBuffer = t_payloadBuffer ??= new ArrayBufferWriter<byte>();
-        payloadBuffer.Clear();
+        payloadBuffer.ResetWrittenCount();
         _serialize(value, payloadBuffer);
 
         // Write wire format: [0x00] [schema ID] [payload]
