@@ -803,4 +803,152 @@ public sealed class BrokerSenderSendLoopTests
             await vtPool.DisposeAsync();
         }
     }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_PipeliningFastPath_SendsSecondRequestBeforeFirstResponse(CancellationToken cancellationToken)
+    {
+        // With maxInFlight=5, send a batch and then enqueue another while the first
+        // response is pending. The pipelining fast-path should allow the send loop to
+        // detect the new batch in the channel and send it immediately — without waiting
+        // for the first response to complete. This verifies the fix for multi-broker
+        // throughput starvation where the send loop was waiting for a response between sends.
+
+        var tcs1 = new TaskCompletionSource<ProduceResponse>();
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1);
+        responseQueue.Enqueue(tcs2);
+
+        var sendCount = 0;
+        var firstSendDone = new TaskCompletionSource();
+        var secondSendDone = new TaskCompletionSource();
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var count = Interlocked.Increment(ref sendCount);
+            if (count == 1) firstSendDone.TrySetResult();
+            if (count == 2) secondSendDone.TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 5);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var ackCount = 0;
+        var allAcknowledged = new TaskCompletionSource();
+
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
+        {
+            if (ex is null && Interlocked.Increment(ref ackCount) >= 2)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            // Enqueue first batch
+            var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
+            await sender.EnqueueAsync(batch1, CancellationToken.None);
+
+            // Wait for first send to complete
+            await firstSendDone.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+            // Now enqueue second batch while first response is still pending.
+            // The pipelining fast-path should detect it in the channel and send immediately.
+            var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
+            await sender.EnqueueAsync(batch2, CancellationToken.None);
+
+            // Second send should happen before the first response is completed.
+            await secondSendDone.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+            // Now complete both responses
+            tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
+
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_PipeliningRespected_ThirdRequestWaitsWhenInFlightFull(CancellationToken cancellationToken)
+    {
+        // With maxInFlight=1, the third batch on a different partition arrives after the
+        // first request is sent. Since we can only have 1 in-flight request, the second
+        // request (formed from batches that coalesced in the first iteration) must wait
+        // for the first response before sending.
+
+        var tcs1 = new TaskCompletionSource<ProduceResponse>();
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1);
+        responseQueue.Enqueue(tcs2);
+
+        var sendCount = 0;
+        var firstSendDone = new TaskCompletionSource();
+        var secondSendAttempted = new SemaphoreSlim(0, 1);
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var count = Interlocked.Increment(ref sendCount);
+            if (count == 1) firstSendDone.TrySetResult();
+            if (count == 2) secondSendAttempted.Release();
+        });
+
+        // maxInFlight=1: only one request can be in-flight at a time
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var ackCount = 0;
+        var allAcknowledged = new TaskCompletionSource();
+
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
+        {
+            if (ex is null && Interlocked.Increment(ref ackCount) >= 2)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            // Enqueue first batch and wait for it to be sent
+            var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
+            await sender.EnqueueAsync(batch1, CancellationToken.None);
+            await firstSendDone.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+            // Enqueue second batch on a different partition while in-flight is full
+            var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
+            await sender.EnqueueAsync(batch2, CancellationToken.None);
+
+            // The semaphore in the onSend callback captures the exact moment a second send
+            // is attempted. Wait with a generous timeout — if the semaphore is NOT signaled,
+            // the send loop correctly blocked on the in-flight limit.
+            var secondSendOccurred = await secondSendAttempted.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
+
+            // Second send should NOT have happened yet (maxInFlight=1 prevents pipelining)
+            await Assert.That(secondSendOccurred).IsFalse();
+
+            // Complete first response to free the in-flight slot
+            tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+
+            // Now second send should proceed — the semaphore must be signaled
+            var secondSendProceeded = await secondSendAttempted.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            await Assert.That(secondSendProceeded).IsTrue();
+
+            // Complete second response
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
+
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
 }
