@@ -212,11 +212,14 @@ public sealed class MaxBlockMsTests
     [Test]
     public async Task RecordAccumulator_TimeoutMessage_ContainsMaxBlockMs()
     {
+        // Use a generous MaxBlockMs to give timer callbacks headroom on CI runners
+        // where thread pool starvation can delay async callbacks significantly.
+        var maxBlockMs = 5000;
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
             BufferMemory = 1,
-            MaxBlockMs = 2000
+            MaxBlockMs = maxBlockMs
         };
 
         await using var accumulator = new RecordAccumulator(options);
@@ -232,9 +235,9 @@ public sealed class MaxBlockMsTests
         catch (KafkaTimeoutException ex)
         {
             await Assert.That(ex.Message).Contains("max.block.ms");
-            await Assert.That(ex.Message).Contains("2000");
+            await Assert.That(ex.Message).Contains(maxBlockMs.ToString());
             await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(2000));
+            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(maxBlockMs));
             await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
             // Generous upper bound: on CI with 16 parallel tests on 4 cores, thread pool
             // starvation can delay async timer callbacks by 3-5 minutes. This only asserts

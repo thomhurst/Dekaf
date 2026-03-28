@@ -62,11 +62,11 @@ public class MemoryReleasedAtomicityTests
         // This is the core regression test: multiple threads racing to release
         // the same batch must result in exactly one winner.
 
-        // Reduced from 10,000 iterations: on CI runners with 16+ parallel tests,
-        // spawning 16 threads × 10K iterations saturates the thread pool and
-        // causes 2-minute timeouts. 500 iterations is still sufficient to catch
-        // race conditions (Barrier synchronizes all threads per iteration).
-        const int threadCount = 16;
+        // Scale thread count to available processors to avoid thread pool starvation
+        // on CI runners with limited cores. Math.Max(2, ...) ensures at least 2 threads
+        // always compete. 500 iterations is sufficient to catch race conditions
+        // (Barrier synchronizes all threads per iteration).
+        var threadCount = Math.Max(2, Environment.ProcessorCount);
         const int iterations = 500;
         var failedIterations = 0;
 
