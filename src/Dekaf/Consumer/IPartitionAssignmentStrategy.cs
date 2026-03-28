@@ -13,7 +13,14 @@ public readonly record struct ConsumerGroupMember(
     string MemberId,
     IReadOnlySet<string> Subscriptions,
     IReadOnlyCollection<TopicPartition> OwnedPartitions,
-    byte[] Metadata);
+    byte[] Metadata)
+{
+    /// <summary>
+    /// Backward-compatible constructor for strategies that don't need OwnedPartitions.
+    /// </summary>
+    public ConsumerGroupMember(string memberId, IReadOnlySet<string> subscriptions, byte[] metadata)
+        : this(memberId, subscriptions, Array.Empty<TopicPartition>(), metadata) { }
+}
 
 /// <summary>
 /// Defines a pluggable strategy for assigning topic partitions to consumer group members.

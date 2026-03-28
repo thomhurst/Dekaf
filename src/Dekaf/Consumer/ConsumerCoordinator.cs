@@ -42,7 +42,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-    private readonly bool _isCooperativeProtocol;
+    private bool _isCooperativeProtocol;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -64,8 +64,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
-        _isCooperativeProtocol = options.CustomPartitionAssignmentStrategy?.IsCooperative == true
-            || options.PartitionAssignmentStrategy == PartitionAssignmentStrategy.CooperativeSticky;
     }
 
     public string? MemberId => _memberId;
@@ -131,6 +129,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             // Cooperative protocol: if partitions were revoked, trigger another round
             // so the revoked partitions can be assigned to their new owners.
+            // Writing _state outside _lock is safe here: _state is volatile, and a concurrent
+            // heartbeat seeing Unjoined will simply skip OnPartitionsLost (guarded by _state == Stable)
+            // and trigger a rejoin — which is the correct behavior during a cooperative rebalance.
             if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol
                 && ++cooperativeRound < maxCooperativeRounds)
             {
@@ -407,6 +408,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _memberId = response.MemberId;
         _generationId = response.GenerationId;
         _leaderId = response.Leader;
+
+        // Determine cooperative protocol from the broker-elected strategy (not the local config).
+        // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
+        _isCooperativeProtocol = response.ProtocolName switch
+        {
+            "cooperative-sticky" => true,
+            _ when _options.CustomPartitionAssignmentStrategy is { IsCooperative: true }
+                && response.ProtocolName == _options.CustomPartitionAssignmentStrategy.Name => true,
+            _ => false
+        };
 
         // Store members list if we're the leader (need it for assignment)
         _groupMembers = response.IsLeader ? response.Members : null;
