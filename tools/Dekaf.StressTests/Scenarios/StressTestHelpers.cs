@@ -121,6 +121,8 @@ internal static class StressTestHelpers
     internal static void LogResourceUsage(string label, Process? process = null)
     {
         process ??= Process.GetCurrentProcess();
+        // Refresh is essential: Process caches metrics at creation time, so without
+        // this call the properties below would return stale values.
         process.Refresh();
 
         var workingSet = process.WorkingSet64 / (1024.0 * 1024.0);

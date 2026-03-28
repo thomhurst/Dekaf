@@ -84,9 +84,10 @@ internal sealed class ProducerStressTest : IStressTestScenario
 
                 // Yield periodically to avoid starving other tasks
                 if (messageIndex % 100_000 == 0)
+                {
                     await Task.Yield();
-
-                progress.RecordMessage();
+                    progress.RecordMessage();
+                }
             }
             catch (OperationCanceledException)
             {
