@@ -7,11 +7,20 @@ namespace Dekaf.Consumer;
 /// </summary>
 /// <param name="MemberId">The member's unique identifier.</param>
 /// <param name="Subscriptions">The set of topics this member is subscribed to.</param>
+/// <param name="OwnedPartitions">The partitions currently owned by this member, used by sticky assignors.</param>
 /// <param name="Metadata">Raw metadata bytes from the member's JoinGroup request, for custom strategies.</param>
 public readonly record struct ConsumerGroupMember(
     string MemberId,
     IReadOnlySet<string> Subscriptions,
-    byte[] Metadata);
+    IReadOnlyCollection<TopicPartition> OwnedPartitions,
+    byte[] Metadata)
+{
+    /// <summary>
+    /// Backward-compatible constructor for strategies that don't need OwnedPartitions.
+    /// </summary>
+    public ConsumerGroupMember(string memberId, IReadOnlySet<string> subscriptions, byte[] metadata)
+        : this(memberId, subscriptions, Array.Empty<TopicPartition>(), metadata) { }
+}
 
 /// <summary>
 /// Defines a pluggable strategy for assigning topic partitions to consumer group members.
@@ -23,6 +32,13 @@ public interface IPartitionAssignmentStrategy
     /// Must match the Kafka protocol name (e.g., "range", "roundrobin").
     /// </summary>
     string Name { get; }
+
+    /// <summary>
+    /// Whether this strategy uses cooperative (incremental) rebalancing.
+    /// Cooperative strategies only revoke partitions that are transferring ownership,
+    /// enabling non-stop-the-world rebalancing via multiple rebalance rounds.
+    /// </summary>
+    bool IsCooperative => false;
 
     /// <summary>
     /// Computes partition assignments for the given consumer group members.
@@ -49,4 +65,14 @@ public static class PartitionAssignors
     /// Round-robin assignor: distributes all topic-partitions in round-robin order.
     /// </summary>
     public static IPartitionAssignmentStrategy RoundRobin { get; } = new RoundRobinAssignor();
+
+    /// <summary>
+    /// Sticky assignor: preserves existing assignments while maintaining balance (KIP-54).
+    /// </summary>
+    public static IPartitionAssignmentStrategy Sticky { get; } = new StickyAssignor();
+
+    /// <summary>
+    /// Cooperative sticky assignor: sticky assignment with incremental rebalancing (KIP-429).
+    /// </summary>
+    public static IPartitionAssignmentStrategy CooperativeSticky { get; } = new CooperativeStickyAssignor();
 }

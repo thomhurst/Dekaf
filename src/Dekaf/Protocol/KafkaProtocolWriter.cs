@@ -453,6 +453,19 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes an array with 4-byte length prefix (legacy format).
+    /// Overload for collections that don't support indexed access (e.g., SortedDictionary).
+    /// </summary>
+    public void WriteArray<T>(IReadOnlyCollection<T> items, WriteAction<T> writeItem)
+    {
+        WriteInt32(items.Count);
+        foreach (var item in items)
+        {
+            writeItem(ref this, item);
+        }
+    }
+
+    /// <summary>
     /// Writes a nullable array with 4-byte length prefix.
     /// </summary>
     public void WriteNullableArray<T>(ReadOnlySpan<T> items, WriteAction<T> writeItem, bool isNull)

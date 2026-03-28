@@ -42,6 +42,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
+    private volatile bool _isCooperativeProtocol;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -84,13 +85,93 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        // Fast path: if already stable, nothing to do. This is the common case on every
+        // ConsumeAsync iteration after the initial join. CRITICAL: we must NOT call
+        // StartHeartbeatAsync here — doing so would cancel and restart the heartbeat on every
+        // poll (~100ms), preventing it from ever surviving the 3s delay to actually send.
+        if (_state == CoordinatorState.Stable)
+            return;
+
+        // Cooperative rebalancing may require multiple rounds (KIP-429):
+        // Round 1 identifies partitions to transfer, round 2 assigns them.
+        // Cap at 2 rounds to prevent unbounded looping if the assignor has a bug.
+        const int maxCooperativeRounds = 2;
+        var cooperativeRound = 0;
+        var needsCooperativeRound = false;
+        SyncGroupResult syncResult;
+
+        do
+        {
+            needsCooperativeRound = false;
+            syncResult = await RunJoinSyncCycleAsync(topics, cancellationToken).ConfigureAwait(false);
+
+            // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
+            // If the listener calls back into the consumer (e.g., commit, seek), it would
+            // otherwise deadlock trying to acquire _lock or other coordinator locks.
+            // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
+            // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
+            // Listeners fire between cooperative rounds so that OnPartitionsRevoked can commit
+            // offsets for revoked partitions before round 2 reassigns them.
+            if (_rebalanceListener is not null)
+            {
+                if (syncResult.Revoked is { Count: > 0 })
+                {
+                    LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
+                    await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (syncResult.Assigned is { Count: > 0 })
+                {
+                    LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
+                    await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            // Cooperative protocol: if partitions were revoked, trigger another round
+            // so the revoked partitions can be assigned to their new owners.
+            // Writing _state outside _lock is safe here: _state is volatile, and a concurrent
+            // heartbeat seeing Unjoined will simply skip OnPartitionsLost (guarded by _state == Stable)
+            // and trigger a rejoin — which is the correct behavior during a cooperative rebalance.
+            if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol
+                && ++cooperativeRound < maxCooperativeRounds)
+            {
+                LogCooperativeRejoin(syncResult.Revoked.Count);
+                needsCooperativeRound = true;
+                _state = CoordinatorState.Unjoined;
+            }
+        }
+        while (needsCooperativeRound);
+
+        // Start heartbeat AFTER the cooperative rebalance loop completes — not between rounds.
+        // Starting a heartbeat between rounds causes a connection death spiral: the heartbeat
+        // gets REBALANCE_IN_PROGRESS (correct, since round 2 hasn't happened yet), exits its loop,
+        // and the JoinGroup for round 2 becomes the only pending request on the connection. With
+        // no heartbeat keeping the connection alive, the receive loop times out after 30s, killing
+        // both the connection and the pending JoinGroup.
+        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
+        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
+        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
+        // serialized old-heartbeat teardown.
+        if (_state == CoordinatorState.Stable)
+        {
+            await StartHeartbeatAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Runs one JoinGroup + SyncGroup cycle, acquiring the lock for the duration.
+    /// </summary>
+    private async ValueTask<SyncGroupResult> RunJoinSyncCycleAsync(
+        IReadOnlySet<string> topics,
+        CancellationToken cancellationToken)
+    {
         SyncGroupResult syncResult = default;
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (_state == CoordinatorState.Stable)
-                return;
+                return syncResult;
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
@@ -138,6 +219,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
+                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.RebalanceInProgress)
+                {
+                    // SyncGroup returned RebalanceInProgress — the group is mid-rebalance
+                    // (e.g., cooperative round 2 is needed, or another member joined concurrently).
+                    // Loop back to JoinGroup to re-enter the rebalance.
+                    LogRetriableCoordinatorError(ex.ErrorCode);
+                    _state = CoordinatorState.Unjoined;
+                }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     // Coordinator has changed, is unavailable, or still loading - mark unknown and retry
@@ -158,6 +247,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
+                catch (Errors.KafkaException ex) when (ex is not Errors.GroupException && cancellationToken is { IsCancellationRequested: false })
+                {
+                    // Connection-level failure (receive timeout, connection reset) - reconnect
+                    LogCoordinatorConnectionDisposed();
+
+                    MarkCoordinatorUnknown();
+
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                }
             }
         }
         finally
@@ -165,36 +264,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
 
-        // Start heartbeat OUTSIDE the lock to avoid blocking other EnsureActiveGroupAsync
-        // callers while awaiting the old heartbeat task cleanup (up to 5 seconds).
-        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
-        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
-        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
-        // serialized old-heartbeat teardown.
-        if (_state == CoordinatorState.Stable)
-        {
-            await StartHeartbeatAsync().ConfigureAwait(false);
-        }
-
-        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
-        // If the listener calls back into the consumer (e.g., commit, seek), it would
-        // otherwise deadlock trying to acquire _lock or other coordinator locks.
-        // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
-        // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
-        if (_rebalanceListener is not null)
-        {
-            if (syncResult.Revoked is { Count: > 0 })
-            {
-                LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
-                await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (syncResult.Assigned is { Count: > 0 })
-            {
-                LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
-                await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
-            }
-        }
+        return syncResult;
     }
 
     /// <summary>
@@ -321,7 +391,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             .ConfigureAwait(false);
 
         // Build subscription metadata
-        var metadata = BuildSubscriptionMetadata(topics);
+        var metadata = BuildSubscriptionMetadata(topics, _assignedPartitions);
 
         var request = new JoinGroupRequest
         {
@@ -372,6 +442,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _memberId = response.MemberId;
         _generationId = response.GenerationId;
         _leaderId = response.Leader;
+
+        // Determine cooperative protocol from the broker-elected strategy (not the local config).
+        // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
+        var electedStrategy = ResolveAssignmentStrategy();
+        _isCooperativeProtocol = electedStrategy.IsCooperative
+            && response.ProtocolName == electedStrategy.Name;
 
         // Store members list if we're the leader (need it for assignment)
         _groupMembers = response.IsLeader ? response.Members : null;
@@ -441,15 +517,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogReceivedAssignment(partitions);
         }
 
-        // Compute revoked and assigned partitions for rebalance listener
-        // Return them to caller so listener can be called OUTSIDE the lock
-        // This prevents deadlock if listener calls back into the consumer
-        if (_rebalanceListener is null)
-        {
-            return new SyncGroupResult(null, null);
-        }
-
-        // Compute revoked and assigned partitions without LINQ to avoid allocations
+        // Always compute revoked and assigned partitions — the cooperative rebalance
+        // round 2 logic depends on knowing what was revoked, regardless of whether
+        // a rebalance listener is configured. Listener notifications are gated separately
+        // in EnsureActiveGroupAsync.
+        // Compute without LINQ to avoid allocations
         List<TopicPartition>? revoked = null;
         foreach (var partition in oldAssignment)
         {
@@ -535,6 +607,42 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
+                    // RebalanceInProgress: another member joined/left; we need to rejoin.
+                    // DON'T exit the heartbeat loop — keep sending heartbeats to keep the
+                    // coordination connection alive. The consumer's poll loop will call
+                    // EnsureActiveGroupAsync when it sees _state == Unjoined, which drives
+                    // the actual JoinGroup/SyncGroup cycle. If we exit the heartbeat loop,
+                    // the JoinGroup becomes the only pending request on the connection and
+                    // the 30s receive timeout kills it.
+                    if (ge.ErrorCode == ErrorCode.RebalanceInProgress)
+                    {
+                        _state = CoordinatorState.Unjoined;
+                        continue;
+                    }
+
+                    // Cooperative protocol: fire OnPartitionsLost for involuntary loss.
+                    // Guard with _state == Stable: during a cooperative two-round rebalance, the
+                    // stale heartbeat from round 1 may get ILLEGAL_GENERATION when the group moves
+                    // to round 2's generation. That's an expected transition, not involuntary loss.
+                    if (_isCooperativeProtocol && _rebalanceListener is not null
+                        && _state == CoordinatorState.Stable
+                        && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
+                    {
+                        var lostPartitions = _assignedPartitions.ToList();
+                        if (lostPartitions.Count > 0)
+                        {
+                            try
+                            {
+                                await _rebalanceListener.OnPartitionsLostAsync(lostPartitions, CancellationToken.None)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (Exception lostEx)
+                            {
+                                LogPartitionsLostCallbackError(lostEx);
+                            }
+                        }
+                    }
+
                     // Mark coordinator unknown if it's a coordinator error
                     if (IsRetriableCoordinatorError(ge.ErrorCode))
                     {
@@ -784,23 +892,47 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics)
+    internal static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics, IReadOnlySet<TopicPartition> ownedPartitions)
     {
-        // Simple subscription format - convert set to list for writer
         var topicList = new List<string>(topics.Count);
         foreach (var topic in topics)
         {
             topicList.Add(topic);
         }
 
+        // Group owned partitions by topic, sorted for deterministic wire format
+        var ownedByTopic = new SortedDictionary<string, List<int>>(StringComparer.Ordinal);
+        foreach (var tp in ownedPartitions)
+        {
+            if (!ownedByTopic.TryGetValue(tp.Topic, out var partitions))
+            {
+                partitions = [];
+                ownedByTopic[tp.Topic] = partitions;
+            }
+            partitions.Add(tp.Partition);
+        }
+
+        // Sort partition IDs within each topic for deterministic wire format
+        foreach (var list in ownedByTopic.Values)
+            list.Sort();
+
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
 
-        writer.WriteInt16(0); // Version
+        writer.WriteInt16(1); // Version 1
         writer.WriteArray(
             topicList,
             (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
         writer.WriteBytes([]); // User data
+
+        // v1: owned partitions array — SortedDictionary provides deterministic key order
+        writer.WriteArray(
+            ownedByTopic,
+            static (ref KafkaProtocolWriter w, KeyValuePair<string, List<int>> entry) =>
+            {
+                w.WriteString(entry.Key);
+                w.WriteArray(entry.Value, static (ref KafkaProtocolWriter w2, int p) => w2.WriteInt32(p));
+            });
 
         return buffer.WrittenSpan.ToArray();
     }
@@ -832,20 +964,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    private string GetAssignorName()
-    {
-        if (_options.CustomPartitionAssignmentStrategy is not null)
-            return _options.CustomPartitionAssignmentStrategy.Name;
-
-        return _options.PartitionAssignmentStrategy switch
-        {
-            PartitionAssignmentStrategy.Range => "range",
-            PartitionAssignmentStrategy.RoundRobin => "roundrobin",
-            PartitionAssignmentStrategy.Sticky => "sticky",
-            PartitionAssignmentStrategy.CooperativeSticky => "cooperative-sticky",
-            _ => "range"
-        };
-    }
+    private string GetAssignorName() => ResolveAssignmentStrategy().Name;
 
     private IPartitionAssignmentStrategy ResolveAssignmentStrategy()
     {
@@ -856,15 +975,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             PartitionAssignmentStrategy.Range => PartitionAssignors.Range,
             PartitionAssignmentStrategy.RoundRobin => PartitionAssignors.RoundRobin,
-            PartitionAssignmentStrategy.Sticky or PartitionAssignmentStrategy.CooperativeSticky => FallbackToRange(),
+            PartitionAssignmentStrategy.Sticky => PartitionAssignors.Sticky,
+            PartitionAssignmentStrategy.CooperativeSticky => PartitionAssignors.CooperativeSticky,
             _ => PartitionAssignors.Range
         };
-    }
-
-    private IPartitionAssignmentStrategy FallbackToRange()
-    {
-        LogStickyFallbackToRange(_options.PartitionAssignmentStrategy);
-        return PartitionAssignors.Range;
     }
 
     private async ValueTask<SyncGroupRequestAssignment[]> ComputeAssignmentsAsync(
@@ -888,8 +1002,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var groupMembers = new List<ConsumerGroupMember>(members.Count);
         foreach (var member in members)
         {
-            var subscribedTopics = ParseSubscriptionMetadata(member.Metadata);
-            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, member.Metadata));
+            var (subscribedTopics, memberOwned) = ParseSubscriptionMetadata(member.Metadata);
+            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, memberOwned, member.Metadata));
         }
 
         // Delegate to the resolved strategy
@@ -921,23 +1035,47 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result.ToArray();
     }
 
-    private static HashSet<string> ParseSubscriptionMetadata(byte[] data)
+    internal static (HashSet<string> Topics, IReadOnlyCollection<TopicPartition> OwnedPartitions) ParseSubscriptionMetadata(byte[] data)
     {
         if (data.Length == 0)
-            return [];
+            return ([], Array.Empty<TopicPartition>());
 
-        var result = new HashSet<string>();
+        var topics = new HashSet<string>();
         var reader = new KafkaProtocolReader(data);
 
         var version = reader.ReadInt16();
-        var topics = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadString()!);
+        var topicArray = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadString()!);
 
-        foreach (var topic in topics)
+        foreach (var topic in topicArray)
         {
-            result.Add(topic);
+            topics.Add(topic);
         }
 
-        return result;
+        // Read past userData (bytes with int32 length prefix)
+        _ = reader.ReadBytes();
+
+        if (version >= 1 && reader.Remaining > 0)
+        {
+            var ownedPartitions = new HashSet<TopicPartition>();
+            var ownedTopics = reader.ReadArray((ref KafkaProtocolReader r) =>
+            {
+                var topic = r.ReadString()!;
+                var partitions = r.ReadArray((ref KafkaProtocolReader r2) => r2.ReadInt32());
+                return (topic, partitions);
+            });
+
+            foreach (var (topic, partitions) in ownedTopics)
+            {
+                foreach (var partition in partitions)
+                {
+                    ownedPartitions.Add(new TopicPartition(topic, partition));
+                }
+            }
+
+            return (topics, ownedPartitions);
+        }
+
+        return (topics, Array.Empty<TopicPartition>());
     }
 
     private byte[] BuildAssignmentData(IReadOnlyList<TopicPartition> partitions)
@@ -1196,8 +1334,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "{Strategy} assignment strategy is not yet implemented, falling back to Range assignor")]
-    private partial void LogStickyFallbackToRange(PartitionAssignmentStrategy strategy);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
+    private partial void LogCooperativeRejoin(int revokedCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsLost callback threw an exception")]
+    private partial void LogPartitionsLostCallbackError(Exception exception);
 
     #endregion
 }

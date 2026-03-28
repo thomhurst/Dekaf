@@ -60,24 +60,23 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
                 await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
             }
 
-            // Wait for group to fully stabilize after all joins
-            await Task.Delay(5000).ConfigureAwait(false);
+            // Wait for cooperative rebalance to settle (may require multiple rounds)
+            foreach (var consumer in consumers)
+            {
+                await Assert.That(() => consumer.Assignment.ToArray().Count(tp => tp.Topic == topic))
+                    .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+            }
 
-            // Assert - collect all assignments
+            // Assert - all 6 partitions should be covered with no overlap
             var allAssignedPartitions = new HashSet<int>();
             foreach (var consumer in consumers)
             {
-                var assignment = consumer.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-                // Each consumer should have exactly 2 partitions
-                await Assert.That(assignment.Count).IsEqualTo(2);
-
-                foreach (var tp in assignment)
+                foreach (var tp in consumer.Assignment.ToArray().Where(tp => tp.Topic == topic))
                 {
                     allAssignedPartitions.Add(tp.Partition);
                 }
             }
 
-            // All 6 partitions should be covered with no overlap
             await Assert.That(allAssignedPartitions.Count).IsEqualTo(6);
         }
         finally
@@ -124,14 +123,17 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         consumer1.Subscribe(topic);
 
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts1.Token);
+        // Start consumer1 consuming in background so it can drive cooperative rebalance rounds
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var c1Task = Task.Run(async () =>
+        {
+            try { await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { } }
+            catch (OperationCanceledException) { }
+        });
 
-        // Wait for group to stabilize and assignment to be fully reflected
-        await Task.Delay(3000).ConfigureAwait(false);
-
-        var initialAssignment = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-        await Assert.That(initialAssignment.Count).IsEqualTo(4);
+        // Wait for consumer1 to get all 4 partitions
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(4), TimeSpan.FromSeconds(30));
 
         // Act - start second consumer, triggering rebalance
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -144,36 +146,28 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         consumer2.Subscribe(topic);
 
-        // Produce more messages to trigger fetching and rebalance
-        for (var p = 0; p < 4; p++)
+        // Start consumer2 consuming in background to trigger group join and drive rebalance
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var c2Task = Task.Run(async () =>
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-extra-{p}",
-                Value = $"value-extra-{p}",
-                Partition = p
-            }, CancellationToken.None);
-        }
+            try { await foreach (var _ in consumer2.ConsumeAsync(cts2.Token)) { } }
+            catch (OperationCanceledException) { }
+        });
 
-        // Consumer 2 needs to consume to trigger group join
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
+        // Wait for cooperative rebalance to settle (may require two rounds)
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+        await Assert.That(() => consumer2.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
 
-        // Wait for rebalance to stabilize
-        await Task.Delay(5000).ConfigureAwait(false);
-
-        // Assert - partitions should be redistributed
-        var c1Assignment = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-        var c2Assignment = consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
-
-        // Both consumers should have partitions (2 each for even distribution)
-        await Assert.That(c1Assignment.Count).IsEqualTo(2);
-        await Assert.That(c2Assignment.Count).IsEqualTo(2);
+        // Clean up background tasks
+        await cts1.CancelAsync();
+        await cts2.CancelAsync();
+        try { await Task.WhenAll(c1Task, c2Task); } catch (OperationCanceledException) { }
 
         // No overlap
-        var allPartitions = c1Assignment.Select(tp => tp.Partition)
-            .Concat(c2Assignment.Select(tp => tp.Partition))
+        var allPartitions = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Select(tp => tp.Partition)
+            .Concat(consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).Select(tp => tp.Partition))
             .Distinct()
             .ToList();
         await Assert.That(allPartitions.Count).IsEqualTo(4);
@@ -214,8 +208,13 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         consumer1.Subscribe(topic);
 
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts1.Token);
+        // Start both consumers consuming in background to drive cooperative rebalance
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var c1Task = Task.Run(async () =>
+        {
+            try { await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { } }
+            catch (OperationCanceledException) { }
+        });
 
         var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -227,56 +226,30 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         consumer2.Subscribe(topic);
 
-        // Produce more messages for consumer2 to fetch
-        for (var p = 0; p < 4; p++)
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var c2Task = Task.Run(async () =>
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-more-{p}",
-                Value = $"value-more-{p}",
-                Partition = p
-            }, CancellationToken.None);
-        }
+            try { await foreach (var _ in consumer2.ConsumeAsync(cts2.Token)) { } }
+            catch (OperationCanceledException) { }
+        });
 
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
-
-        await Task.Delay(3000).ConfigureAwait(false);
-
-        // Both should have 2 partitions each
-        var c1Before = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
-        var c2Before = consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
-        await Assert.That(c1Before).IsEqualTo(2);
-        await Assert.That(c2Before).IsEqualTo(2);
+        // Wait for cooperative rebalance to complete (may require two rounds)
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+        await Assert.That(() => consumer2.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
 
         // Act - consumer2 leaves
+        await cts2.CancelAsync();
+        try { await c2Task; } catch (OperationCanceledException) { }
         await consumer2.DisposeAsync().ConfigureAwait(false);
 
-        // Produce more messages to trigger consumer1 to rebalance
-        for (var p = 0; p < 4; p++)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-after-{p}",
-                Value = $"value-after-{p}",
-                Partition = p
-            }, CancellationToken.None);
-        }
+        // Wait for consumer1 to pick up all 4 partitions after rebalance
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(4), TimeSpan.FromSeconds(30));
 
-        // Wait for session timeout to expire and rebalance to complete
-        await Task.Delay(15000).ConfigureAwait(false);
-
-        // Consumer1 needs to consume to discover the rebalance
-        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token);
-
-        await Task.Delay(3000).ConfigureAwait(false);
-
-        // Assert - consumer1 should now have all 4 partitions
-        var c1After = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
-        await Assert.That(c1After).IsEqualTo(4);
+        await cts1.CancelAsync();
+        try { await c1Task; } catch (OperationCanceledException) { }
     }
 
     [Test]
@@ -371,11 +344,17 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         consumer1.Subscribe(topic);
 
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts1.Token);
+        // Start consumer1 consuming in background to drive cooperative rebalance rounds
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var c1Task = Task.Run(async () =>
+        {
+            try { await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { } }
+            catch (OperationCanceledException) { }
+        });
 
-        // Verify assigned was called with all partitions
-        await Assert.That(listener.AssignedPartitions.Count).IsGreaterThanOrEqualTo(1);
+        // Wait for consumer1 to get assigned
+        await Assert.That(() => listener.AssignedPartitions.Count)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
         // Act - second consumer joins, forcing a rebalance that revokes partitions from consumer1
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
@@ -388,33 +367,22 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         consumer2.Subscribe(topic);
 
-        // Produce more messages so consumers have data to trigger rebalance handling
-        for (var p = 0; p < 4; p++)
+        // Start consumer2 consuming in background to trigger group join and drive rebalance
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var c2Task = Task.Run(async () =>
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-extra-{p}",
-                Value = $"value-extra-{p}",
-                Partition = p
-            }, CancellationToken.None);
-        }
+            try { await foreach (var _ in consumer2.ConsumeAsync(cts2.Token)) { } }
+            catch (OperationCanceledException) { }
+        });
 
-        // Consumer2 consuming triggers group join and rebalance
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
+        // Wait for revoked callback to fire (cooperative rebalance may take two rounds)
+        await Assert.That(() => listener.RevokedPartitions.Count + listener.LostPartitions.Count)
+            .Eventually(x => x.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(30));
 
-        // Consumer1 needs to consume to discover and handle the rebalance
-        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token);
-
-        // Wait for rebalance to fully stabilize
-        await Task.Delay(5000).ConfigureAwait(false);
-
-        // Assert - revoked should have been called as partitions were taken from consumer1
-        // With CooperativeSticky, the rebalance revokes some partitions from consumer1
-        var totalRevokedOrLost = listener.RevokedPartitions.Count + listener.LostPartitions.Count;
-        await Assert.That(totalRevokedOrLost).IsGreaterThanOrEqualTo(1);
+        // Clean up background tasks
+        await cts1.CancelAsync();
+        await cts2.CancelAsync();
+        try { await Task.WhenAll(c1Task, c2Task); } catch (OperationCanceledException) { }
     }
 
     [Test]

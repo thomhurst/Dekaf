@@ -21,7 +21,7 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RangeAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-0", new HashSet<string> { "topic-a" }, [])
+            new("member-0", new HashSet<string> { "topic-a" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int> { ["topic-a"] = 6 };
 
@@ -40,8 +40,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RangeAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-0", new HashSet<string> { "topic-a" }, []),
-            new("member-1", new HashSet<string> { "topic-a" }, [])
+            new("member-0", new HashSet<string> { "topic-a" }, [], []),
+            new("member-1", new HashSet<string> { "topic-a" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int> { ["topic-a"] = 6 };
 
@@ -63,8 +63,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RangeAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-0", new HashSet<string> { "topic-a" }, []),
-            new("member-1", new HashSet<string> { "topic-a" }, [])
+            new("member-0", new HashSet<string> { "topic-a" }, [], []),
+            new("member-1", new HashSet<string> { "topic-a" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int> { ["topic-a"] = 7 };
 
@@ -81,8 +81,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RangeAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-0", new HashSet<string> { "topic-a" }, []),
-            new("member-1", new HashSet<string> { "topic-b" }, [])
+            new("member-0", new HashSet<string> { "topic-a" }, [], []),
+            new("member-1", new HashSet<string> { "topic-b" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int>
         {
@@ -113,8 +113,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RangeAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-0", new HashSet<string> { "topic-a", "topic-b" }, []),
-            new("member-1", new HashSet<string> { "topic-a", "topic-b" }, [])
+            new("member-0", new HashSet<string> { "topic-a", "topic-b" }, [], []),
+            new("member-1", new HashSet<string> { "topic-a", "topic-b" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int>
         {
@@ -137,8 +137,8 @@ public sealed class PartitionAssignmentStrategyTests
         // Provide members in reverse order to verify sorting
         var members = new List<ConsumerGroupMember>
         {
-            new("member-z", new HashSet<string> { "topic-a" }, []),
-            new("member-a", new HashSet<string> { "topic-a" }, [])
+            new("member-z", new HashSet<string> { "topic-a" }, [], []),
+            new("member-a", new HashSet<string> { "topic-a" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int> { ["topic-a"] = 4 };
 
@@ -169,7 +169,7 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RoundRobinAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-0", new HashSet<string> { "topic-a" }, [])
+            new("member-0", new HashSet<string> { "topic-a" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int> { ["topic-a"] = 4 };
 
@@ -184,8 +184,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RoundRobinAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-a", new HashSet<string> { "topic-a" }, []),
-            new("member-b", new HashSet<string> { "topic-a" }, [])
+            new("member-a", new HashSet<string> { "topic-a" }, [], []),
+            new("member-b", new HashSet<string> { "topic-a" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int> { ["topic-a"] = 4 };
 
@@ -207,8 +207,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RoundRobinAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-a", new HashSet<string> { "topic-a" }, []),
-            new("member-b", new HashSet<string> { "topic-b" }, [])
+            new("member-a", new HashSet<string> { "topic-a" }, [], []),
+            new("member-b", new HashSet<string> { "topic-b" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int>
         {
@@ -238,8 +238,8 @@ public sealed class PartitionAssignmentStrategyTests
         var assignor = new RoundRobinAssignor();
         var members = new List<ConsumerGroupMember>
         {
-            new("member-a", new HashSet<string> { "topic-a", "topic-b" }, []),
-            new("member-b", new HashSet<string> { "topic-a", "topic-b" }, [])
+            new("member-a", new HashSet<string> { "topic-a", "topic-b" }, [], []),
+            new("member-b", new HashSet<string> { "topic-a", "topic-b" }, [], [])
         };
         var topicPartitionCounts = new Dictionary<string, int>
         {
@@ -274,6 +274,26 @@ public sealed class PartitionAssignmentStrategyTests
         var b = PartitionAssignors.RoundRobin;
 
         await Assert.That(a).IsSameReferenceAs(b);
+    }
+
+    [Test]
+    public async Task PartitionAssignors_Sticky_IsSingleton()
+    {
+        var a = PartitionAssignors.Sticky;
+        var b = PartitionAssignors.Sticky;
+
+        await Assert.That(a).IsSameReferenceAs(b);
+        await Assert.That(a.Name).IsEqualTo("sticky");
+    }
+
+    [Test]
+    public async Task PartitionAssignors_CooperativeSticky_IsSingleton()
+    {
+        var a = PartitionAssignors.CooperativeSticky;
+        var b = PartitionAssignors.CooperativeSticky;
+
+        await Assert.That(a).IsSameReferenceAs(b);
+        await Assert.That(a.Name).IsEqualTo("cooperative-sticky");
     }
 
     #endregion
