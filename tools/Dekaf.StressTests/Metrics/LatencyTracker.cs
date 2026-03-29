@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 
 namespace Dekaf.StressTests.Metrics;
 
@@ -75,40 +76,72 @@ internal sealed class LatencyTracker
         } while (Interlocked.CompareExchange(ref _maxTicks, ticks, currentMax) != currentMax);
     }
 
-    private double GetPercentileUs(double percentile)
+    /// <summary>
+    /// Computes multiple percentiles in a single pass over the histogram buckets.
+    /// </summary>
+    private (double P50, double P95, double P99) GetPercentilesUs()
     {
         var count = Interlocked.Read(ref _count);
         if (count == 0)
-            return 0;
+            return (0, 0, 0);
 
-        var targetCount = (long)(count * percentile / 100.0);
+        var targetP50 = Math.Max(1L, (long)(count * 50 / 100.0));
+        var targetP95 = Math.Max(1L, (long)(count * 95 / 100.0));
+        var targetP99 = Math.Max(1L, (long)(count * 99 / 100.0));
+
+        double p50 = 0, p95 = 0, p99 = 0;
+        var foundP50 = false;
+        var foundP95 = false;
+        var foundP99 = false;
         var cumulativeCount = 0L;
 
         for (var i = 0; i < _buckets.Length; i++)
         {
             cumulativeCount += Interlocked.Read(ref _buckets[i]);
-            if (cumulativeCount >= targetCount)
+            var bucketMidpoint = (i + 0.5) * _bucketWidthUs;
+
+            if (!foundP50 && cumulativeCount >= targetP50)
             {
-                return (i + 0.5) * _bucketWidthUs;
+                p50 = bucketMidpoint;
+                foundP50 = true;
+            }
+
+            if (!foundP95 && cumulativeCount >= targetP95)
+            {
+                p95 = bucketMidpoint;
+                foundP95 = true;
+            }
+
+            if (!foundP99 && cumulativeCount >= targetP99)
+            {
+                p99 = bucketMidpoint;
+                foundP99 = true;
+                break; // All percentiles found
             }
         }
 
-        return TicksToUs(Interlocked.Read(ref _maxTicks));
+        var maxUs = TicksToUs(Interlocked.Read(ref _maxTicks));
+        if (!foundP50) p50 = maxUs;
+        if (!foundP95) p95 = maxUs;
+        if (!foundP99) p99 = maxUs;
+
+        return (p50, p95, p99);
     }
 
     public LatencySnapshot GetSnapshot()
     {
         var minTicks = Interlocked.Read(ref _minTicks);
         var maxTicks = Interlocked.Read(ref _maxTicks);
+        var (p50, p95, p99) = GetPercentilesUs();
 
         return new LatencySnapshot
         {
             Count = Interlocked.Read(ref _count),
             MinUs = minTicks == long.MaxValue ? 0 : TicksToUs(minTicks),
             MaxUs = TicksToUs(maxTicks),
-            P50Us = GetPercentileUs(50),
-            P95Us = GetPercentileUs(95),
-            P99Us = GetPercentileUs(99),
+            P50Us = p50,
+            P95Us = p95,
+            P99Us = p99,
             OverflowCount = Interlocked.Read(ref _overflowCount)
         };
     }
@@ -127,10 +160,10 @@ internal sealed class LatencySnapshot
     public required double P99Us { get; init; }
     public required long OverflowCount { get; init; }
 
-    // Convenience properties for backward compatibility with JSON serialization
-    public double MinMs => MinUs / 1000.0;
-    public double MaxMs => MaxUs / 1000.0;
-    public double P50Ms => P50Us / 1000.0;
-    public double P95Ms => P95Us / 1000.0;
-    public double P99Ms => P99Us / 1000.0;
+    // Convenience properties for backward compatibility (excluded from JSON output)
+    [JsonIgnore] public double MinMs => MinUs / 1000.0;
+    [JsonIgnore] public double MaxMs => MaxUs / 1000.0;
+    [JsonIgnore] public double P50Ms => P50Us / 1000.0;
+    [JsonIgnore] public double P95Ms => P95Us / 1000.0;
+    [JsonIgnore] public double P99Ms => P99Us / 1000.0;
 }
