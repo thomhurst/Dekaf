@@ -619,6 +619,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
+
+        // Clear stale fetched data (same rationale as Assign).
+        ClearFetchBuffer();
+
         InvalidateFetchRequestCache();
         return this;
     }
@@ -640,6 +644,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
+
+        // Clear stale fetched data (same rationale as Assign).
+        ClearFetchBuffer();
+
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -661,6 +669,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
+
+        // Clear stale fetched data (same rationale as Assign).
+        ClearFetchBuffer();
+
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -684,6 +696,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
+
+        // Clear stale fetched data from the previous assignment. Without this,
+        // PendingFetchData (and prefetch channel items) from old partitions would
+        // be yielded by the next ConsumeAsync call as if they belonged to the new
+        // assignment, causing "partition data misrouted" failures when the caller
+        // re-assigns and iterates (e.g., consume-per-partition patterns).
+        ClearFetchBuffer();
+
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -701,6 +721,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
+
+        // Clear stale fetched data (same rationale as Assign).
+        ClearFetchBuffer();
+
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -1674,6 +1698,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         while (_pendingFetches.TryDequeue(out var pending))
         {
             pending.Dispose();
+        }
+        // Also drain prefetched items that haven't been moved to _pendingFetches yet.
+        // Without this, stale data from old partitions would surface after reassignment.
+        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        {
+            prefetched.Dispose();
         }
         // Clear pending EOF events as they are stale after buffer clear
         _pendingEofEvents.Clear();
