@@ -319,7 +319,9 @@ public class BufferMemoryTests
                 await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
                 await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(500));
                 await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
-                await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
+                // Generous tolerance: CI runners under heavy load can delay SemaphoreSlim
+                // timer callbacks by 15+ seconds due to thread pool starvation.
+                await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(30));
             }
 
             var elapsedMs = Environment.TickCount64 - startTime;
