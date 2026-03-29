@@ -191,7 +191,35 @@ internal static class ProducerDebugCounters
 }
 
 /// <summary>
-/// Represents memory rented from ArrayPool that must be returned when no longer needed.
+/// Dedicated <see cref="ArrayPool{T}"/> for producer key/value data arrays.
+/// <para/>
+/// <b>Why not <see cref="ArrayPool{T}.Shared"/>?</b>
+/// <c>ArrayPool&lt;byte&gt;.Shared</c> is a <c>TlsOverPerCoreLockedStacksArrayPool</c> that retains
+/// returned arrays in per-thread (TLS) and per-core stacks. These stacks grow to accommodate access
+/// patterns but never shrink. Producer key/value arrays are rented on the caller's thread during
+/// serialization but returned on BrokerSender LongRunning threads during batch cleanup. With N
+/// brokers, N dedicated BrokerSender threads each accumulate returned arrays in their TLS slots,
+/// causing working set growth proportional to broker count (~1-2 GB per broker over 15 minutes).
+/// <para/>
+/// <c>ArrayPool&lt;byte&gt;.Create()</c> returns a <c>ConfigurableArrayPool</c> that uses per-bucket
+/// locks instead of TLS caching. Cross-thread rent/return patterns do not cause unbounded growth
+/// because all threads share the same bounded bucket arrays.
+/// </summary>
+internal static class ProducerDataPool
+{
+    /// <summary>
+    /// Shared pool for producer key/value data arrays. Bounded to 4 MB max array size
+    /// (covers the default 1 MB BatchSize with headroom for oversized messages)
+    /// with 16 arrays per bucket to handle concurrent producer threads.
+    /// </summary>
+    internal static readonly ArrayPool<byte> BytePool = ArrayPool<byte>.Create(
+        maxArrayLength: 4 * 1024 * 1024,
+        maxArraysPerBucket: 16);
+}
+
+/// <summary>
+/// Represents memory rented from <see cref="ProducerDataPool.BytePool"/> that must be returned
+/// when no longer needed.
 /// </summary>
 public readonly struct PooledMemory
 {
@@ -240,13 +268,13 @@ public readonly struct PooledMemory
     public ReadOnlySpan<byte> Span => _array is null ? ReadOnlySpan<byte>.Empty : _array.AsSpan(0, _length);
 
     /// <summary>
-    /// Returns the array to the shared pool.
+    /// Returns the array to the producer data pool.
     /// </summary>
     public void Return()
     {
         if (_array is not null)
         {
-            ArrayPool<byte>.Shared.Return(_array, clearArray: false);
+            ProducerDataPool.BytePool.Return(_array, clearArray: false);
         }
     }
 }
@@ -2058,7 +2086,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private static PooledMemory CopySpanToPooledMemory(ReadOnlySpan<byte> data)
     {
-        var array = ArrayPool<byte>.Shared.Rent(data.Length);
+        var array = ProducerDataPool.BytePool.Rent(data.Length);
         data.CopyTo(array);
         return new PooledMemory(array, data.Length);
     }
@@ -3640,10 +3668,12 @@ internal sealed class PartitionBatch
             }
         }
 
-        // Fall back to ArrayPool for data that didn't fit in the arena
+        // Fall back to ProducerDataPool for data that didn't fit in the arena.
+        // Uses dedicated pool instead of ArrayPool<byte>.Shared to prevent TLS-based
+        // working set growth from cross-thread rent/return (see ProducerDataPool docs).
         if (!keyIsNull && keyLength > 0 && !usedArenaForKey)
         {
-            var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
+            var keyArray = ProducerDataPool.BytePool.Rent(keyLength);
             keyData.CopyTo(keyArray);
             keyMemory = keyArray.AsMemory(0, keyLength);
             _pooledArrays[_pooledArrayCount++] = keyArray;
@@ -3651,7 +3681,7 @@ internal sealed class PartitionBatch
 
         if (!valueIsNull && valueLength > 0 && !usedArenaForValue)
         {
-            var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
+            var valueArray = ProducerDataPool.BytePool.Rent(valueLength);
             valueData.CopyTo(valueArray);
             valueMemory = valueArray.AsMemory(0, valueLength);
             _pooledArrays[_pooledArrayCount++] = valueArray;
@@ -4484,13 +4514,15 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
 
-        // Return pooled byte arrays (key/value data) - only for non-arena path
-        // Null check defensive against partially constructed batches
+        // Return pooled byte arrays (key/value data) - only for non-arena path.
+        // Uses ProducerDataPool (not ArrayPool<byte>.Shared) to match the rent path
+        // and prevent cross-thread TLS accumulation in multi-broker scenarios.
+        // Null check defensive against partially constructed batches.
         if (_pooledDataArrays is not null)
         {
             for (var i = 0; i < _pooledDataArraysCount; i++)
             {
-                ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: false);
+                ProducerDataPool.BytePool.Return(_pooledDataArrays[i], clearArray: false);
             }
         }
 

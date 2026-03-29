@@ -3179,8 +3179,9 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
         if (_written == 0)
             return new PooledMemory(null, 0, isNull: false);
 
-        // Rent exact-size buffer to minimize memory usage in batches
-        var pooledArray = ArrayPool<byte>.Shared.Rent(_written);
+        // Rent exact-size buffer from ProducerDataPool to prevent cross-thread
+        // TLS accumulation in ArrayPool<byte>.Shared (see ProducerDataPool docs).
+        var pooledArray = ProducerDataPool.BytePool.Rent(_written);
         _buffer.AsSpan(0, _written).CopyTo(pooledArray);
         return new PooledMemory(pooledArray, _written);
     }
@@ -3267,7 +3268,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     /// <param name="initialCapacity">Initial buffer size. Defaults to 256 bytes.</param>
     public PooledBufferWriter(int initialCapacity = 256)
     {
-        _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+        _buffer = ProducerDataPool.BytePool.Rent(initialCapacity);
         _written = 0;
     }
 
@@ -3343,7 +3344,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
             // clearArray: false for performance — avoids unnecessary zero-fill overhead.
             // No security requirement: buffer holds serialized Kafka protocol bytes, not credentials.
             // Consistent with Grow() which also uses clearArray: false.
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+            ProducerDataPool.BytePool.Return(_buffer, clearArray: false);
             _buffer = null;
             _written = 0;
         }
@@ -3389,7 +3390,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         if (newSize <= currentLength)
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
 
-        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+        var newBuffer = ProducerDataPool.BytePool.Rent(newSize);
 
         // Copy existing data
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
@@ -3398,7 +3399,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         // No security requirement: the buffer holds serialized protocol bytes, not credentials.
         var oldBuffer = _buffer;
         _buffer = newBuffer;
-        ArrayPool<byte>.Shared.Return(oldBuffer, clearArray: false);
+        ProducerDataPool.BytePool.Return(oldBuffer, clearArray: false);
     }
 }
 
