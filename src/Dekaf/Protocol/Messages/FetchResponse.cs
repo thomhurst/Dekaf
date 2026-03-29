@@ -551,7 +551,7 @@ public sealed class FetchResponsePartition
         protected override void Reset(List<RecordBatch> item) => item.Clear();
     }
 
-    private sealed class AbortedTransactionListPool() : ObjectPool<List<AbortedTransaction>>(maxPoolSize: 64)
+    private sealed class AbortedTransactionListPool() : ObjectPool<List<AbortedTransaction>>(maxPoolSize: 8)
     {
         protected override List<AbortedTransaction> Create() => [];
 

@@ -1517,17 +1517,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (batches.Count == 0) return;
 
         var lastBatch = batches[^1];
-        var nextOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta + 1;
+        var lastOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta;
         var tp = pending.TopicPartition;
 
-        // Thread-safe update: only advance forward, never backwards.
-        // Uses simple read-then-write instead of AddOrUpdate to avoid closure allocation
-        // from the lambda capturing nextOffset. This is safe because prefetch calls for
-        // the same partition are serialized (one fetch per partition at a time).
-        if (!_fetchPositions.TryGetValue(tp, out var currentPos) || nextOffset > currentPos)
-        {
-            _fetchPositions[tp] = nextOffset;
-        }
+        // Thread-safe update using ConcurrentDictionary — must use AddOrUpdate (not TryGetValue
+        // + indexer) because seek/reset operations on other threads can write to _fetchPositions
+        // concurrently, and AddOrUpdate's CAS loop prevents TOCTOU races from overwriting a
+        // concurrent seek-forward with a stale prefetch offset.
+        _fetchPositions.AddOrUpdate(
+            tp,
+            lastOffset + 1,
+            (_, currentPos) => Math.Max(currentPos, lastOffset + 1));
     }
 
     /// <summary>
