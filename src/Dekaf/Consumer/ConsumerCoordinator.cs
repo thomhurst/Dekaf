@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Retry;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
@@ -709,78 +710,84 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
 
         LogCommitOffsetsStarted(_options.GroupId!);
+        // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
+        // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
+        // the lock can be held for up to ~1.8 seconds. Concurrent callers will block for the full retry duration.
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-                .ConfigureAwait(false);
-
-            // Group offsets by topic using pooled dictionary to avoid allocations
-            // Clear existing Lists before clearing the dictionary to reuse List instances
-            foreach (var list in _commitTopicGroups.Values)
+            await RetryHelper.WithRetryAsync(async () =>
             {
-                list.Clear();
-            }
+                var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                    .ConfigureAwait(false);
 
-            foreach (var offset in offsets)
-            {
-                if (!_commitTopicGroups.TryGetValue(offset.Topic, out var partitions))
+                // Group offsets by topic using pooled dictionary to avoid allocations
+                // Clear existing Lists before clearing the dictionary to reuse List instances
+                foreach (var list in _commitTopicGroups.Values)
                 {
-                    partitions = [];
-                    _commitTopicGroups[offset.Topic] = partitions;
+                    list.Clear();
                 }
-                partitions.Add(new OffsetCommitRequestPartition
+
+                foreach (var offset in offsets)
                 {
-                    PartitionIndex = offset.Partition,
-                    CommittedOffset = offset.Offset
-                });
-            }
-
-            var topicOffsets = new List<OffsetCommitRequestTopic>(_commitTopicGroups.Count);
-            foreach (var kvp in _commitTopicGroups)
-            {
-                topicOffsets.Add(new OffsetCommitRequestTopic
-                {
-                    Name = kvp.Key,
-                    Partitions = kvp.Value
-                });
-            }
-
-            var request = new OffsetCommitRequest
-            {
-                GroupId = _options.GroupId,
-                GenerationIdOrMemberEpoch = _generationId,
-                MemberId = _memberId,
-                GroupInstanceId = _options.GroupInstanceId,
-                Topics = topicOffsets
-            };
-
-            // Use negotiated API version
-            var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.OffsetCommit,
-                OffsetCommitRequest.LowestSupportedVersion,
-                OffsetCommitRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
-                request,
-                offsetCommitVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            // Check for errors
-            foreach (var topic in response.Topics)
-            {
-                foreach (var partition in topic.Partitions)
-                {
-                    if (partition.ErrorCode != ErrorCode.None)
+                    if (!_commitTopicGroups.TryGetValue(offset.Topic, out var partitions))
                     {
-                        throw new Errors.GroupException(partition.ErrorCode,
-                            $"OffsetCommit failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                        partitions = [];
+                        _commitTopicGroups[offset.Topic] = partitions;
+                    }
+                    partitions.Add(new OffsetCommitRequestPartition
+                    {
+                        PartitionIndex = offset.Partition,
+                        CommittedOffset = offset.Offset
+                    });
+                }
+
+                var topicOffsets = new List<OffsetCommitRequestTopic>(_commitTopicGroups.Count);
+                foreach (var kvp in _commitTopicGroups)
+                {
+                    topicOffsets.Add(new OffsetCommitRequestTopic
+                    {
+                        Name = kvp.Key,
+                        Partitions = kvp.Value
+                    });
+                }
+
+                var request = new OffsetCommitRequest
+                {
+                    GroupId = _options.GroupId,
+                    GenerationIdOrMemberEpoch = _generationId,
+                    MemberId = _memberId,
+                    GroupInstanceId = _options.GroupInstanceId,
+                    Topics = topicOffsets
+                };
+
+                // Use negotiated API version
+                var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                    ApiKey.OffsetCommit,
+                    OffsetCommitRequest.LowestSupportedVersion,
+                    OffsetCommitRequest.HighestSupportedVersion);
+
+                var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                    request,
+                    offsetCommitVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                // Check for errors
+                foreach (var topic in response.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        if (partition.ErrorCode != ErrorCode.None)
                         {
-                            GroupId = _options.GroupId
-                        };
+                            throw new Errors.GroupException(partition.ErrorCode,
+                                $"OffsetCommit failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                            {
+                                GroupId = _options.GroupId
+                            };
+                        }
                     }
                 }
-            }
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -802,95 +809,147 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_coordinatorId < 0)
             return new Dictionary<TopicPartition, long>();
 
+        // Lock is intentionally held across retries to protect the shared _fetchTopicGroups dictionary,
+        // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
+        // the lock can be held for up to ~1.8 seconds. Concurrent callers will block for the full retry duration.
         await _fetchLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-                .ConfigureAwait(false);
-
-            // Group partitions by topic using pooled dictionary to avoid allocations
-            // Clear existing Lists before clearing the dictionary to reuse List instances
-            foreach (var list in _fetchTopicGroups.Values)
+            return await RetryHelper.WithRetryAsync(async () =>
             {
-                list.Clear();
-            }
+                var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                    .ConfigureAwait(false);
 
-            foreach (var partition in partitions)
-            {
-                if (!_fetchTopicGroups.TryGetValue(partition.Topic, out var indexes))
+                // Group partitions by topic using pooled dictionary to avoid allocations
+                // Clear existing Lists before clearing the dictionary to reuse List instances
+                foreach (var list in _fetchTopicGroups.Values)
                 {
-                    indexes = [];
-                    _fetchTopicGroups[partition.Topic] = indexes;
+                    list.Clear();
                 }
-                indexes.Add(partition.Partition);
-            }
 
-            var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
-            foreach (var kvp in _fetchTopicGroups)
-            {
-                topicPartitions.Add(new OffsetFetchRequestTopic
+                foreach (var partition in partitions)
                 {
-                    Name = kvp.Key,
-                    PartitionIndexes = kvp.Value
-                });
-            }
-
-            var request = new OffsetFetchRequest
-            {
-                GroupId = _options.GroupId,
-                Topics = topicPartitions
-            };
-
-            // Use negotiated API version
-            var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.OffsetFetch,
-                OffsetFetchRequest.LowestSupportedVersion,
-                OffsetFetchRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
-                request,
-                offsetFetchVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            var result = new Dictionary<TopicPartition, long>();
-
-            // v0-v7: Topics field
-            if (response.Topics is not null)
-            {
-                foreach (var topic in response.Topics)
-                {
-                    foreach (var partition in topic.Partitions)
+                    if (!_fetchTopicGroups.TryGetValue(partition.Topic, out var indexes))
                     {
-                        if (partition.ErrorCode == ErrorCode.None && partition.CommittedOffset >= 0)
-                        {
-                            result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
-                        }
+                        indexes = [];
+                        _fetchTopicGroups[partition.Topic] = indexes;
                     }
+                    indexes.Add(partition.Partition);
                 }
-            }
 
-            // v8+: Groups field
-            if (response.Groups is not null)
-            {
-                foreach (var group in response.Groups)
+                var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
+                foreach (var kvp in _fetchTopicGroups)
                 {
-                    if (group.ErrorCode != ErrorCode.None)
-                        continue;
+                    topicPartitions.Add(new OffsetFetchRequestTopic
+                    {
+                        Name = kvp.Key,
+                        PartitionIndexes = kvp.Value
+                    });
+                }
 
-                    foreach (var topic in group.Topics)
+                var request = new OffsetFetchRequest
+                {
+                    GroupId = _options.GroupId,
+                    Topics = topicPartitions
+                };
+
+                // Use negotiated API version
+                var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                    ApiKey.OffsetFetch,
+                    OffsetFetchRequest.LowestSupportedVersion,
+                    OffsetFetchRequest.HighestSupportedVersion);
+
+                var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                    request,
+                    offsetFetchVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                // Check top-level error (v2-v7)
+                if (response.ErrorCode != ErrorCode.None)
+                {
+                    throw new GroupException(response.ErrorCode,
+                        $"OffsetFetch failed: {response.ErrorCode}")
+                    {
+                        GroupId = _options.GroupId
+                    };
+                }
+
+                var result = new Dictionary<TopicPartition, long>();
+
+                // v0-v7: Topics field
+                if (response.Topics is not null)
+                {
+                    foreach (var topic in response.Topics)
                     {
                         foreach (var partition in topic.Partitions)
                         {
-                            if (partition.ErrorCode == ErrorCode.None && partition.CommittedOffset >= 0)
+                            if (partition.ErrorCode != ErrorCode.None)
+                            {
+                                if (partition.ErrorCode.IsRetriable())
+                                {
+                                    throw new GroupException(partition.ErrorCode,
+                                        $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                    {
+                                        GroupId = _options.GroupId
+                                    };
+                                }
+                                continue;
+                            }
+
+                            if (partition.CommittedOffset >= 0)
                             {
                                 result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
                             }
                         }
                     }
                 }
-            }
 
-            return result;
+                // v8+: Groups field
+                if (response.Groups is not null)
+                {
+                    foreach (var group in response.Groups)
+                    {
+                        if (group.ErrorCode != ErrorCode.None)
+                        {
+                            if (group.ErrorCode.IsRetriable())
+                            {
+                                throw new GroupException(group.ErrorCode,
+                                    $"OffsetFetch failed for group: {group.ErrorCode}")
+                                {
+                                    GroupId = _options.GroupId
+                                };
+                            }
+                            continue;
+                        }
+
+                        foreach (var topic in group.Topics)
+                        {
+                            foreach (var partition in topic.Partitions)
+                            {
+                                if (partition.ErrorCode != ErrorCode.None)
+                                {
+                                    if (partition.ErrorCode.IsRetriable())
+                                    {
+                                        throw new GroupException(partition.ErrorCode,
+                                            $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                        {
+                                            GroupId = _options.GroupId
+                                        };
+                                    }
+                                    continue;
+                                }
+
+                                if (partition.CommittedOffset >= 0)
+                                {
+                                    result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return result;
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -1152,57 +1211,70 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-                .ConfigureAwait(false);
-
-            // Get negotiated API version
-            var leaveGroupVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.LeaveGroup,
-                LeaveGroupRequest.LowestSupportedVersion,
-                LeaveGroupRequest.HighestSupportedVersion);
-
-            LeaveGroupRequest request;
-
-            if (leaveGroupVersion >= 3)
+            await RetryHelper.WithRetryAsync(async () =>
             {
-                // v3+: use members array
-                request = new LeaveGroupRequest
+                var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                    .ConfigureAwait(false);
+
+                // Get negotiated API version
+                var leaveGroupVersion = _metadataManager.GetNegotiatedApiVersion(
+                    ApiKey.LeaveGroup,
+                    LeaveGroupRequest.LowestSupportedVersion,
+                    LeaveGroupRequest.HighestSupportedVersion);
+
+                LeaveGroupRequest request;
+
+                if (leaveGroupVersion >= 3)
                 {
-                    GroupId = _options.GroupId,
-                    Members =
-                    [
-                        new LeaveGroupRequestMember
+                    // v3+: use members array
+                    request = new LeaveGroupRequest
+                    {
+                        GroupId = _options.GroupId,
+                        Members =
+                        [
+                            new LeaveGroupRequestMember
+                            {
+                                MemberId = _memberId,
+                                GroupInstanceId = _options.GroupInstanceId,
+                                Reason = reason
+                            }
+                        ]
+                    };
+                }
+                else
+                {
+                    // v0-v2: use single member ID
+                    request = new LeaveGroupRequest
+                    {
+                        GroupId = _options.GroupId,
+                        MemberId = _memberId
+                    };
+                }
+
+                var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                    request,
+                    leaveGroupVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != ErrorCode.None)
+                {
+                    if (response.ErrorCode.IsRetriable())
+                    {
+                        throw new GroupException(response.ErrorCode,
+                            $"LeaveGroup failed: {response.ErrorCode}")
                         {
-                            MemberId = _memberId,
-                            GroupInstanceId = _options.GroupInstanceId,
-                            Reason = reason
-                        }
-                    ]
-                };
-            }
-            else
-            {
-                // v0-v2: use single member ID
-                request = new LeaveGroupRequest
+                            GroupId = _options.GroupId
+                        };
+                    }
+                    LogLeaveGroupFailed(response.ErrorCode);
+                }
+                else
                 {
-                    GroupId = _options.GroupId,
-                    MemberId = _memberId
-                };
-            }
-
-            var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
-                request,
-                leaveGroupVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            if (response.ErrorCode != ErrorCode.None)
-            {
-                LogLeaveGroupFailed(response.ErrorCode);
-            }
-            else
-            {
-                LogSuccessfullyLeftGroup(_options.GroupId!);
-            }
+                    LogSuccessfullyLeftGroup(_options.GroupId!);
+                }
+            // LeaveGroup is best-effort during shutdown; cap retries to 1 to avoid blocking disposal
+            // for up to ~1.8s during coordinator failover.
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync, maxRetries: 1).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

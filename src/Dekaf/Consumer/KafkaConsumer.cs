@@ -5,13 +5,15 @@ using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
-using Dekaf.Producer;
+using Dekaf.Retry;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
 
@@ -2352,62 +2354,71 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    private async ValueTask<long> ResolveOffsetAsync(TopicPartition partition, long timestamp, CancellationToken cancellationToken)
+    private ValueTask<long> ResolveOffsetAsync(TopicPartition partition, long timestamp, CancellationToken cancellationToken)
     {
-        var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
-        if (connection is null)
-            return 0;
-
-        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ListOffsets,
-            ListOffsetsRequest.LowestSupportedVersion,
-            ListOffsetsRequest.HighestSupportedVersion);
-
-        var request = new ListOffsetsRequest
+        return RetryHelper.WithRetryAsync(async () =>
         {
-            ReplicaId = -1,
-            IsolationLevel = _options.IsolationLevel,
-            Topics =
-            [
-                new ListOffsetsRequestTopic
-                {
-                    Name = partition.Topic,
-                    Partitions =
-                    [
-                        new ListOffsetsRequestPartition
-                        {
-                            PartitionIndex = partition.Partition,
-                            Timestamp = timestamp,
-                            CurrentLeaderEpoch = -1
-                        }
-                    ]
-                }
-            ]
-        };
+            var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
+            if (connection is null)
+                return 0;
 
-        var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            request,
-            listOffsetsVersion,
-            cancellationToken).ConfigureAwait(false);
+            var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.ListOffsets,
+                ListOffsetsRequest.LowestSupportedVersion,
+                ListOffsetsRequest.HighestSupportedVersion);
 
-        ListOffsetsResponsePartition? partitionResponse = null;
-        foreach (var topic in response.Topics)
-        {
-            if (topic.Name == partition.Topic)
+            var request = new ListOffsetsRequest
             {
-                foreach (var p in topic.Partitions)
-                {
-                    if (p.PartitionIndex == partition.Partition)
+                ReplicaId = -1,
+                IsolationLevel = _options.IsolationLevel,
+                Topics =
+                [
+                    new ListOffsetsRequestTopic
                     {
-                        partitionResponse = p;
-                        break;
+                        Name = partition.Topic,
+                        Partitions =
+                        [
+                            new ListOffsetsRequestPartition
+                            {
+                                PartitionIndex = partition.Partition,
+                                Timestamp = timestamp,
+                                CurrentLeaderEpoch = -1
+                            }
+                        ]
                     }
-                }
-                break;
-            }
-        }
+                ]
+            };
 
-        return partitionResponse?.Offset ?? 0;
+            var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                request,
+                listOffsetsVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            ListOffsetsResponsePartition? partitionResponse = null;
+            foreach (var topic in response.Topics)
+            {
+                if (topic.Name == partition.Topic)
+                {
+                    foreach (var p in topic.Partitions)
+                    {
+                        if (p.PartitionIndex == partition.Partition)
+                        {
+                            partitionResponse = p;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (partitionResponse is not null && partitionResponse.ErrorCode != ErrorCode.None)
+            {
+                throw new Errors.ConsumeException(partitionResponse.ErrorCode,
+                    $"ListOffsets failed for {partition}: {partitionResponse.ErrorCode}");
+            }
+
+            return partitionResponse?.Offset ?? 0;
+        }, _metadataManager, cancellationToken);
     }
 
     private async ValueTask<IKafkaConnection?> GetPartitionLeaderConnectionAsync(TopicPartition partition, CancellationToken cancellationToken)

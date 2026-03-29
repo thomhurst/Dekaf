@@ -1538,157 +1538,165 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
     }
 
-    internal async ValueTask SendOffsetsToTransactionInternalAsync(
+    internal ValueTask SendOffsetsToTransactionInternalAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         string consumerGroupId,
         CancellationToken cancellationToken)
     {
-        // Step 1: Add offsets to the transaction via the transaction coordinator
-        var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-            .ConfigureAwait(false);
-
-        var addOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.AddOffsetsToTxn,
-            AddOffsetsToTxnRequest.LowestSupportedVersion,
-            AddOffsetsToTxnRequest.HighestSupportedVersion);
-
-        var addOffsetsRequest = new AddOffsetsToTxnRequest
+        // The entire three-step sequence (AddOffsetsToTxn -> FindCoordinator -> TxnOffsetCommit)
+        // is wrapped in a single retry lambda. If Step 1 succeeds but Step 2 or 3 fails, the
+        // retry re-executes Step 1. This is safe because AddOffsetsToTxn is idempotent in Kafka's
+        // transaction protocol — calling it multiple times with the same group ID within the same
+        // transaction epoch has no additional effect.
+        return RetryHelper.WithRetryAsync(async () =>
         {
-            TransactionalId = _options.TransactionalId!,
-            ProducerId = _producerId,
-            ProducerEpoch = _producerEpoch,
-            GroupId = consumerGroupId
-        };
+            // Step 1: Add offsets to the transaction via the transaction coordinator
+            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+                .ConfigureAwait(false);
 
-        var addOffsetsResponse = (AddOffsetsToTxnResponse)await connection
-            .SendAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
-                addOffsetsRequest, addOffsetsVersion, cancellationToken)
-            .ConfigureAwait(false);
+            var addOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.AddOffsetsToTxn,
+                AddOffsetsToTxnRequest.LowestSupportedVersion,
+                AddOffsetsToTxnRequest.HighestSupportedVersion);
 
-        if (addOffsetsResponse.ErrorCode != ErrorCode.None)
-        {
-            throw new TransactionException(addOffsetsResponse.ErrorCode,
-                $"AddOffsetsToTxn failed: {addOffsetsResponse.ErrorCode}")
+            var addOffsetsRequest = new AddOffsetsToTxnRequest
             {
-                TransactionalId = _options.TransactionalId
+                TransactionalId = _options.TransactionalId!,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch,
+                GroupId = consumerGroupId
             };
-        }
 
-        // Step 2: Find the group coordinator
-        var brokers = _metadataManager.Metadata.GetBrokers();
-        var brokerConnection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-            .ConfigureAwait(false);
+            var addOffsetsResponse = (AddOffsetsToTxnResponse)await connection
+                .SendAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
+                    addOffsetsRequest, addOffsetsVersion, cancellationToken)
+                .ConfigureAwait(false);
 
-        var findCoordVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.FindCoordinator,
-            FindCoordinatorRequest.LowestSupportedVersion,
-            FindCoordinatorRequest.HighestSupportedVersion);
-
-        var findCoordRequest = new FindCoordinatorRequest
-        {
-            Key = consumerGroupId,
-            KeyType = CoordinatorType.Group
-        };
-
-        var findCoordResponse = await brokerConnection
-            .SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                findCoordRequest, findCoordVersion, cancellationToken)
-            .ConfigureAwait(false);
-
-        int groupCoordinatorId;
-        ErrorCode findError;
-
-        if (findCoordResponse.Coordinators is { Count: > 0 })
-        {
-            var coord = findCoordResponse.Coordinators[0];
-            findError = coord.ErrorCode;
-            groupCoordinatorId = coord.NodeId;
-            _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
-        }
-        else
-        {
-            findError = findCoordResponse.ErrorCode;
-            groupCoordinatorId = findCoordResponse.NodeId;
-            if (findCoordResponse.Host is not null)
+            if (addOffsetsResponse.ErrorCode != ErrorCode.None)
             {
-                _connectionPool.RegisterBroker(findCoordResponse.NodeId,
-                    findCoordResponse.Host, findCoordResponse.Port);
-            }
-        }
-
-        if (findError != ErrorCode.None)
-        {
-            throw new TransactionException(findError,
-                $"FindCoordinator for consumer group '{consumerGroupId}' failed: {findError}")
-            {
-                TransactionalId = _options.TransactionalId
-            };
-        }
-
-        // Step 3: Send TxnOffsetCommit to the group coordinator
-        var groupConnection = await _connectionPool.GetConnectionAsync(groupCoordinatorId, cancellationToken)
-            .ConfigureAwait(false);
-
-        var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.TxnOffsetCommit,
-            TxnOffsetCommitRequest.LowestSupportedVersion,
-            TxnOffsetCommitRequest.HighestSupportedVersion);
-
-        // Group offsets by topic
-        var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
-        foreach (var offset in offsets)
-        {
-            if (!topicOffsets.TryGetValue(offset.Topic, out var list))
-            {
-                list = [];
-                topicOffsets[offset.Topic] = list;
-            }
-            list.Add(new TxnOffsetCommitRequestPartition
-            {
-                PartitionIndex = offset.Partition,
-                CommittedOffset = offset.Offset
-            });
-        }
-
-        var txnTopics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
-        foreach (var kvp in topicOffsets)
-        {
-            txnTopics.Add(new TxnOffsetCommitRequestTopic
-            {
-                Name = kvp.Key,
-                Partitions = kvp.Value
-            });
-        }
-
-        var txnOffsetCommitRequest = new TxnOffsetCommitRequest
-        {
-            TransactionalId = _options.TransactionalId!,
-            GroupId = consumerGroupId,
-            ProducerId = _producerId,
-            ProducerEpoch = _producerEpoch,
-            Topics = txnTopics
-        };
-
-        var txnOffsetCommitResponse = (TxnOffsetCommitResponse)await groupConnection
-            .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
-                txnOffsetCommitRequest, txnOffsetCommitVersion, cancellationToken)
-            .ConfigureAwait(false);
-
-        // Check for errors
-        foreach (var topicResult in txnOffsetCommitResponse.Topics)
-        {
-            foreach (var partitionResult in topicResult.Partitions)
-            {
-                if (partitionResult.ErrorCode != ErrorCode.None)
+                throw new TransactionException(addOffsetsResponse.ErrorCode,
+                    $"AddOffsetsToTxn failed: {addOffsetsResponse.ErrorCode}")
                 {
-                    throw new TransactionException(partitionResult.ErrorCode,
-                        $"TxnOffsetCommit failed for {topicResult.Name}-{partitionResult.PartitionIndex}: {partitionResult.ErrorCode}")
-                    {
-                        TransactionalId = _options.TransactionalId
-                    };
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            // Step 2: Find the group coordinator
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            var brokerConnection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var findCoordVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.FindCoordinator,
+                FindCoordinatorRequest.LowestSupportedVersion,
+                FindCoordinatorRequest.HighestSupportedVersion);
+
+            var findCoordRequest = new FindCoordinatorRequest
+            {
+                Key = consumerGroupId,
+                KeyType = CoordinatorType.Group
+            };
+
+            var findCoordResponse = await brokerConnection
+                .SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    findCoordRequest, findCoordVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            int groupCoordinatorId;
+            ErrorCode findError;
+
+            if (findCoordResponse.Coordinators is { Count: > 0 })
+            {
+                var coord = findCoordResponse.Coordinators[0];
+                findError = coord.ErrorCode;
+                groupCoordinatorId = coord.NodeId;
+                _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
+            }
+            else
+            {
+                findError = findCoordResponse.ErrorCode;
+                groupCoordinatorId = findCoordResponse.NodeId;
+                if (findCoordResponse.Host is not null)
+                {
+                    _connectionPool.RegisterBroker(findCoordResponse.NodeId,
+                        findCoordResponse.Host, findCoordResponse.Port);
                 }
             }
-        }
+
+            if (findError != ErrorCode.None)
+            {
+                throw new TransactionException(findError,
+                    $"FindCoordinator for consumer group '{consumerGroupId}' failed: {findError}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            // Step 3: Send TxnOffsetCommit to the group coordinator
+            var groupConnection = await _connectionPool.GetConnectionAsync(groupCoordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.TxnOffsetCommit,
+                TxnOffsetCommitRequest.LowestSupportedVersion,
+                TxnOffsetCommitRequest.HighestSupportedVersion);
+
+            // Group offsets by topic
+            var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
+            foreach (var offset in offsets)
+            {
+                if (!topicOffsets.TryGetValue(offset.Topic, out var list))
+                {
+                    list = [];
+                    topicOffsets[offset.Topic] = list;
+                }
+                list.Add(new TxnOffsetCommitRequestPartition
+                {
+                    PartitionIndex = offset.Partition,
+                    CommittedOffset = offset.Offset
+                });
+            }
+
+            var txnTopics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
+            foreach (var kvp in topicOffsets)
+            {
+                txnTopics.Add(new TxnOffsetCommitRequestTopic
+                {
+                    Name = kvp.Key,
+                    Partitions = kvp.Value
+                });
+            }
+
+            var txnOffsetCommitRequest = new TxnOffsetCommitRequest
+            {
+                TransactionalId = _options.TransactionalId!,
+                GroupId = consumerGroupId,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch,
+                Topics = txnTopics
+            };
+
+            var txnOffsetCommitResponse = (TxnOffsetCommitResponse)await groupConnection
+                .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
+                    txnOffsetCommitRequest, txnOffsetCommitVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var topicResult in txnOffsetCommitResponse.Topics)
+            {
+                foreach (var partitionResult in topicResult.Partitions)
+                {
+                    if (partitionResult.ErrorCode != ErrorCode.None)
+                    {
+                        throw new TransactionException(partitionResult.ErrorCode,
+                            $"TxnOffsetCommit failed for {topicResult.Name}-{partitionResult.PartitionIndex}: {partitionResult.ErrorCode}")
+                        {
+                            TransactionalId = _options.TransactionalId
+                        };
+                    }
+                }
+            }
+        }, _metadataManager, cancellationToken);
     }
 
     /// <inheritdoc />
