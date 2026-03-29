@@ -113,8 +113,14 @@ internal sealed class PartitionState
 /// <summary>
 /// Lock-free pool for InflightEntry objects.
 /// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
+/// Default size 1024: with MaxInFlightRequestsPerConnection=5 and coalesced batches
+/// containing 10-50 partitions each, the steady-state in-flight count can reach
+/// 5 * 50 = 250 entries per connection. Multiple BrokerSenders multiply this further.
+/// The previous size of 128 caused frequent pool misses under high-throughput idempotent
+/// workloads, creating mid-lived InflightEntry objects that survived Gen0 and got
+/// promoted to Gen2 before dying — contributing to pathological Gen2 GC pressure.
 /// </summary>
-internal sealed class InflightEntryPool(int maxPoolSize = 128)
+internal sealed class InflightEntryPool(int maxPoolSize = 1024)
     : ObjectPool<InflightEntry>(maxPoolSize)
 {
     protected override InflightEntry Create() => new();
