@@ -449,11 +449,15 @@ public sealed partial class ConnectionPool : IConnectionPool
             // Acquire _scaleLock to protect the array write against concurrent
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.
             bool stored = false;
+            IKafkaConnection? oldConnection = null;
             await _scaleLock.WaitAsync(token).ConfigureAwait(false);
             try
             {
                 if (_connectionGroupsById.TryGetValue(brokerId, out var connections) && index < connections.Length)
                 {
+                    // Capture old connection for disposal — it still holds Pipe buffers,
+                    // StreamPipeWriter memory, and socket resources that leak without disposal.
+                    oldConnection = connections[index];
                     connections[index] = connection;
                     stored = true;
                 }
@@ -461,6 +465,18 @@ public sealed partial class ConnectionPool : IConnectionPool
             finally
             {
                 _scaleLock.Release();
+            }
+
+            // Dispose old connection outside the lock to avoid blocking scale operations.
+            // Fire-and-forget with exception observation to prevent UnobservedTaskException.
+            if (oldConnection is not null)
+            {
+                _ = oldConnection.DisposeAsync().AsTask().ContinueWith(
+                    static (t, _) => { /* Observe exception — best-effort disposal */ },
+                    null,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
 
             // If the index is now out of bounds (shrink happened concurrently),

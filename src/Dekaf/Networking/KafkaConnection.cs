@@ -326,9 +326,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
+        // minimumBufferSize controls the buffer the writer retains between writes. Keep it
+        // modest (64 KB) — larger values cause each connection to permanently hold a large
+        // ArrayPool buffer, which accumulates across many connections (3 brokers * adaptive
+        // scaling). The writer allocates larger buffers on demand via GetMemory when needed.
         _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(
             pool: MemoryPool<byte>.Shared,
-            minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
+            minimumBufferSize: 65536,
             leaveOpen: true));
 
         // Use a read pump to decouple reads from PipeReader signaling.
