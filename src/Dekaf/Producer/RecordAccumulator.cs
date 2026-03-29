@@ -209,7 +209,7 @@ internal static class ProducerDataPool
 {
     /// <summary>
     /// Shared pool for producer key/value data arrays. Bounded to 4 MB max array size
-    /// (matching the default <see cref="PipeMemoryPool"/> and covering typical message sizes)
+    /// (covers the default 1 MB BatchSize with headroom for oversized messages)
     /// with 16 arrays per bucket to handle concurrent producer threads.
     /// </summary>
     internal static readonly ArrayPool<byte> BytePool = ArrayPool<byte>.Create(
