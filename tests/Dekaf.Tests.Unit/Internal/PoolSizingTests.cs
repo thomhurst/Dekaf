@@ -132,4 +132,67 @@ public class PoolSizingTests
 
         await Assert.That(sizes.FetchDataPool).IsLessThanOrEqualTo(512);
     }
+
+    // --- ForSharedPools tests ---
+
+    [Test]
+    public async Task ForSharedPools_SingleBroker_ReturnsBaseline()
+    {
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 1);
+
+        // 1 broker * 16 = 16
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(16);
+        // 1 broker * 1 conn * 32 = 32
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+        // 1 * 1 * 5 * 2 = 10, clamped to min 64
+        await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(64);
+    }
+
+    [Test]
+    public async Task ForSharedPools_ThreeBrokers_ScalesUp()
+    {
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 3);
+
+        // 3 * 16 = 48
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(48);
+        // 3 * 1 * 32 = 96
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(96);
+        // 3 * 1 * 5 * 2 = 30, clamped to min 64
+        await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(64);
+    }
+
+    [Test]
+    public async Task ForSharedPools_ThreeBrokers_MultipleConnections_ScalesFurther()
+    {
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 3, connectionsPerBroker: 3);
+
+        // 3 * 16 = 48
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(48);
+        // 3 * 3 * 32 = 288, capped at 256
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(256);
+        // 3 * 3 * 5 * 2 = 90
+        await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(90);
+    }
+
+    [Test]
+    public async Task ForSharedPools_ManyBrokers_ClampsToMax()
+    {
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 20, connectionsPerBroker: 10);
+
+        // 16 (capped broker) * 16 = 256, capped at 128
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(128);
+        // 16 * 10 * 32 = 5120, capped at 256
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsLessThanOrEqualTo(256);
+        // 16 * 10 * 5 * 2 = 1600, capped at 512
+        await Assert.That(sizes.ProduceResponsePoolSize).IsLessThanOrEqualTo(512);
+    }
+
+    [Test]
+    public async Task ForSharedPools_ZeroBrokerCount_ClampsToOne()
+    {
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 0);
+
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(16);
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+    }
 }

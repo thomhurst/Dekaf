@@ -85,7 +85,8 @@ public sealed partial class ConnectionPool : IConnectionPool
         ConnectionOptions? connectionOptions,
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
-        ResponseBufferPool responseBufferPool)
+        ResponseBufferPool responseBufferPool,
+        int pipeMemoryBucketCapacity = 0)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
@@ -93,7 +94,10 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
-        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: ScaledBucketCapacity(_connectionsPerBroker));
+        var bucketCapacity = pipeMemoryBucketCapacity > 0
+            ? pipeMemoryBucketCapacity
+            : ScaledBucketCapacity(_connectionsPerBroker);
+        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
     }
 
     /// <summary>
@@ -117,17 +121,11 @@ public sealed partial class ConnectionPool : IConnectionPool
     }
 
     /// <summary>
-    /// Scales the per-bucket array capacity for the shared <see cref="PipeMemoryPool"/>
-    /// based on the number of connections that will share it. A single connection needs ~32
-    /// cached arrays to avoid pool overflow under pipelined load; with N connections sharing
-    /// the same pool, total concurrent demand scales linearly.
+    /// Fallback bucket capacity when broker-aware sizing is not provided.
+    /// Scales by <paramref name="connectionsPerBroker"/> only — callers that know the broker
+    /// count should use <see cref="Internal.PoolSizing.ForSharedPools"/> instead and pass the
+    /// result via the <c>pipeMemoryBucketCapacity</c> constructor parameter.
     /// </summary>
-    /// <remarks>
-    /// Uses <paramref name="connectionsPerBroker"/> (not total connections across all brokers)
-    /// because adaptive scaling keeps per-broker connection counts low in practice.
-    /// The 256 cap bounds memory retention regardless of connection count, preventing
-    /// pathological configurations from accumulating unbounded pooled arrays.
-    /// </remarks>
     private static int ScaledBucketCapacity(int connectionsPerBroker)
         => Math.Min(connectionsPerBroker * 32, 256);
 

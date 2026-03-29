@@ -13,7 +13,7 @@ public sealed class ProduceResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 11;
 
-    private static readonly ProduceResponsePool s_pool = new();
+    private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
 
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
@@ -68,8 +68,21 @@ public sealed class ProduceResponse : IKafkaResponse
     /// </summary>
     internal void Return() => s_pool.Return(this);
 
-    private sealed class ProduceResponsePool()
-        : Producer.ObjectPool<ProduceResponse>(maxPoolSize: 64)
+    /// <summary>
+    /// Increases the response pool capacity if <paramref name="poolSize"/> exceeds the current size.
+    /// Called during producer construction once the broker count is known.
+    /// Uses a ratchet (monotonically increasing) — the old pool's items drain naturally.
+    /// </summary>
+    internal static void RatchetPoolSize(int poolSize)
+    {
+        if (poolSize <= s_pool.MaxPoolSize)
+            return;
+
+        s_pool = new ProduceResponsePool(poolSize);
+    }
+
+    private sealed class ProduceResponsePool(int maxPoolSize)
+        : Producer.ObjectPool<ProduceResponse>(maxPoolSize)
     {
         protected override ProduceResponse Create() => new();
 

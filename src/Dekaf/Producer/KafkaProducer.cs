@@ -175,6 +175,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var producerPoolSizes = PoolSizing.ForProducer(options.BufferMemory, options.BatchSize);
 
+        // Scale shared pools based on bootstrap server count (minimum broker estimate).
+        // This prevents pool contention when multiple brokers concurrently rent/return arrays.
+        var sharedPoolSizes = PoolSizing.ForSharedPools(
+            brokerCount: options.BootstrapServers.Count,
+            connectionsPerBroker: options.ConnectionsPerBroker,
+            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection);
+        ProducerDataPool.RatchetBucketCapacity(sharedPoolSizes.ProducerDataArraysPerBucket);
+        ProduceResponse.RatchetPoolSize(sharedPoolSizes.ProduceResponsePoolSize);
+
         var poolSize = options.ValueTaskSourcePoolSize > 0
             ? options.ValueTaskSourcePoolSize
             : producerPoolSizes.ValueTaskSources;
@@ -207,7 +216,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
             },
             loggerFactory,
-            options.ConnectionsPerBroker);
+            options.ConnectionsPerBroker,
+            ResponseBufferPool.Default,
+            pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket);
 
         _metadataManager = new MetadataManager(
             _connectionPool,
