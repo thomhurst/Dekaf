@@ -362,3 +362,86 @@ public readonly record struct Header
         return size;
     }
 }
+
+/// <summary>
+/// A zero-copy read-only view over a slice of a <see cref="Header"/> array.
+/// Implements <see cref="IReadOnlyList{Header}"/> without allocating a new array,
+/// avoiding per-message header copying in the consumer hot path.
+/// </summary>
+/// <remarks>
+/// The backing array may be rented from <see cref="System.Buffers.ArrayPool{T}"/> and
+/// will be returned when the owning <c>LazyRecordList</c> is disposed.
+/// The <see cref="HeaderSlice"/> is valid only for the lifetime of the current
+/// consume iteration (same as <c>RawBytes</c> deserializer semantics).
+/// This is a class (not struct) because it must implement <see cref="IReadOnlyList{Header}"/>
+/// without boxing on every access. One instance is pooled and reused per consumer thread.
+/// </remarks>
+internal sealed class HeaderSlice : IReadOnlyList<Header>
+{
+    // Pool for reusing HeaderSlice instances to eliminate per-message allocation.
+    // One per consumer thread is typical; small pool suffices.
+    private static readonly ConcurrentStack<HeaderSlice> s_pool = new();
+    private static int s_poolCount;
+    private const int MaxPoolSize = 32;
+
+    private Header[] _array = null!;
+    private int _count;
+
+    private HeaderSlice() { }
+
+    /// <summary>
+    /// Rents a HeaderSlice from the pool, initialized with the given array and count.
+    /// </summary>
+    internal static HeaderSlice Rent(Header[] array, int count)
+    {
+        HeaderSlice instance;
+        if (s_pool.TryPop(out var pooled))
+        {
+            Interlocked.Decrement(ref s_poolCount);
+            instance = pooled;
+        }
+        else
+        {
+            instance = new HeaderSlice();
+        }
+        instance._array = array;
+        instance._count = count;
+        return instance;
+    }
+
+    /// <summary>
+    /// Returns this HeaderSlice to the pool for reuse.
+    /// </summary>
+    internal void Return()
+    {
+        _array = null!;
+        _count = 0;
+        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        {
+            s_pool.Push(this);
+            Interlocked.Increment(ref s_poolCount);
+        }
+    }
+
+    public int Count => _count;
+
+    public Header this[int index]
+    {
+        get
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _count);
+            return _array[index];
+        }
+    }
+
+    public IEnumerator<Header> GetEnumerator()
+    {
+        for (var i = 0; i < _count; i++)
+        {
+            yield return _array[i];
+        }
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}

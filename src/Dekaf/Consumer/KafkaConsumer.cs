@@ -134,7 +134,27 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     public RecordBatch CurrentBatch => _batches[_batchIndex];
-    public Record CurrentRecord => _batches[_batchIndex].Records[_recordIndex];
+
+    /// <summary>
+    /// Gets the current record directly from the cached records list,
+    /// bypassing the RecordBatch.Records property's Volatile.Read check per message.
+    /// Safe because EagerParseAll() is called before iteration, ensuring all records are parsed.
+    /// </summary>
+    public Record CurrentRecord => _currentRecords![_recordIndex];
+
+    // Cached state to avoid per-message property indirection through RecordBatch.Records
+    // (which involves Volatile.Read + ObjectDisposedException check per access).
+    // Updated only on batch transitions, amortizing the cost.
+    private IReadOnlyList<Record>? _currentRecords;
+    private int _currentRecordsCount;
+
+    /// <summary>
+    /// Cached batch properties for the current batch.
+    /// Updated only on batch transitions to avoid per-message property access overhead.
+    /// </summary>
+    internal long CurrentBaseOffset { get; private set; }
+    internal long CurrentBaseTimestamp { get; private set; }
+    internal RecordBatchAttributes CurrentBatchAttributes { get; private set; }
 
     /// <summary>
     /// Updates tracking for batch-level position.
@@ -171,6 +191,21 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     /// <summary>
+    /// Caches batch-level state (Records list, BaseOffset, BaseTimestamp, Attributes)
+    /// so per-message access avoids repeated property indirection through RecordBatch.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CacheCurrentBatchState()
+    {
+        var batch = _batches[_batchIndex];
+        _currentRecords = batch.Records;
+        _currentRecordsCount = _currentRecords.Count;
+        CurrentBaseOffset = batch.BaseOffset;
+        CurrentBaseTimestamp = batch.BaseTimestamp;
+        CurrentBatchAttributes = batch.Attributes;
+    }
+
+    /// <summary>
     /// Advances to the next record across all batches.
     /// Returns false when no more records are available.
     /// </summary>
@@ -187,9 +222,9 @@ internal sealed class PendingFetchData : IDisposable
             return HasCurrentRecord();
         }
 
-        // Try next record in current batch
+        // Try next record in current batch (uses cached count to avoid Records property access)
         _recordIndex++;
-        if (_recordIndex < _batches[_batchIndex].Records.Count)
+        if (_recordIndex < _currentRecordsCount)
             return true;
 
         // Move to next batch
@@ -211,7 +246,11 @@ internal sealed class PendingFetchData : IDisposable
                 continue;
             }
 
-            if (_recordIndex < _batches[_batchIndex].Records.Count)
+            // Cache batch-level state once per batch transition to avoid
+            // per-message property indirection through RecordBatch.Records.
+            CacheCurrentBatchState();
+
+            if (_recordIndex < _currentRecordsCount)
                 return true;
             // Empty batch, try next
             _batchIndex++;
@@ -292,6 +331,11 @@ internal sealed class PendingFetchData : IDisposable
         _memoryOwner = null;
         _batchIndex = -1;
         _recordIndex = -1;
+        _currentRecords = null;
+        _currentRecordsCount = 0;
+        CurrentBaseOffset = 0;
+        CurrentBaseTimestamp = 0;
+        CurrentBatchAttributes = RecordBatchAttributes.None;
         LastYieldedOffset = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
@@ -429,6 +473,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private bool _rawRecordTrackingEnabled;
     private ReadOnlyMemory<byte> _currentRawKey;
     private ReadOnlyMemory<byte> _currentRawValue;
+
+    // Reusable header slice for zero-copy header access in consume loop.
+    // Returned to the HeaderSlice pool after each message iteration.
+    private HeaderSlice? _currentHeaderSlice;
 
     private int _consumerDisposed;
     private int _closed;
@@ -911,19 +959,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             previousActivity = null;
 
                             var record = pending.CurrentRecord;
-                            var batch = pending.CurrentBatch;
 
-                            var offset = batch.BaseOffset + record.OffsetDelta;
+                            // Use cached batch properties (updated once per batch transition
+                            // in MoveNext) to avoid per-message property access overhead on
+                            // RecordBatch (Volatile.Read + disposed check per access).
+                            var offset = pending.CurrentBaseOffset + record.OffsetDelta;
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                                batch.BaseTimestamp + record.TimestampDelta);
+                                pending.CurrentBaseTimestamp + record.TimestampDelta);
 
-                            // Inline header extraction: avoid method call overhead per message.
-                            // Most messages have no headers; this skips the CopyHeaders call entirely.
-                            var headers = record.Headers is not null && record.HeaderCount > 0
-                                ? Record.CopyHeaders(record.Headers, record.HeaderCount)
-                                : null;
+                            // Zero-copy header access: wrap the pooled header array in a
+                            // HeaderSlice instead of copying. The slice is valid for this
+                            // consume iteration (the pooled array lives until PendingFetchData
+                            // is disposed after all records are yielded). The previous
+                            // HeaderSlice is returned to the pool each iteration.
+                            _currentHeaderSlice?.Return();
+                            _currentHeaderSlice = null;
+                            IReadOnlyList<Header>? headers = null;
+                            if (record.Headers is not null && record.HeaderCount > 0)
+                            {
+                                _currentHeaderSlice = HeaderSlice.Rent(record.Headers, record.HeaderCount);
+                                headers = _currentHeaderSlice;
+                            }
 
-                            var timestampType = ((int)batch.Attributes & 0x08) != 0
+                            var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
                                 ? TimestampType.LogAppendTime
                                 : TimestampType.CreateTime;
 
@@ -1007,6 +1065,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         yield return nextResult;
                     }
 
+                    // Return the last header slice from this pending fetch
+                    _currentHeaderSlice?.Return();
+                    _currentHeaderSlice = null;
+
                     // Dispose last activity from this pending fetch
                     previousActivity?.Dispose();
                     previousActivity = null;
@@ -1027,6 +1089,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             finally
             {
+                // Ensure header slice is returned if caller breaks out of enumeration early
+                _currentHeaderSlice?.Return();
+                _currentHeaderSlice = null;
+
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
             }
