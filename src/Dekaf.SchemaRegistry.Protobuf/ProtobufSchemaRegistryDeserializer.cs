@@ -44,7 +44,11 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         _config = config ?? new ProtobufDeserializerConfig();
         _ownsClient = ownsClient;
 
-        // Create the parser for the message type
+        if (!typeof(IBufferMessage).IsAssignableFrom(typeof(T)))
+            throw new InvalidOperationException(
+                $"Type {typeof(T).Name} must implement IBufferMessage for span-based deserialization. " +
+                "Use protoc-generated code (Google.Protobuf 3.21+) or implement IBufferMessage on your message type.");
+
         _parser = new MessageParser<T>(() => new T());
     }
 
@@ -89,16 +93,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         // The rest is the protobuf message
         var protobufData = payload.Slice(bytesRead);
 
-        // Parse directly from span — zero allocation (Google.Protobuf 3.21+ supports ReadOnlySpan<byte>).
-        // Requires IBufferMessage on the message type, which all protoc-generated messages implement.
-        var result = _parser.ParseFrom(protobufData);
-
-        if (result is not IBufferMessage)
-            throw new InvalidOperationException(
-                $"Type {typeof(T).Name} must implement IBufferMessage for span-based deserialization. " +
-                "Use protoc-generated code (Google.Protobuf 3.21+) or implement IBufferMessage on your message type.");
-
-        return result;
+        // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
+        // IBufferMessage requirement is validated at construction time.
+        return _parser.ParseFrom(protobufData);
     }
 
     private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data)
