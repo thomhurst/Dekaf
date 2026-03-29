@@ -870,6 +870,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Yield records lazily from pending fetches
             System.Diagnostics.Activity? previousActivity = null;
+            ReadOnlyHeaderList? previousHeaders = null;
             try
             {
                 // Hoist invariant boolean checks outside inner loops to avoid
@@ -910,6 +911,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             previousActivity?.Dispose();
                             previousActivity = null;
 
+                            // Return previous message's pooled header list to pool.
+                            // Safe because user has already processed the previous result.
+                            previousHeaders?.ReturnToPool();
+                            previousHeaders = null;
+
                             var record = pending.CurrentRecord;
                             var batch = pending.CurrentBatch;
 
@@ -917,11 +923,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                                 batch.BaseTimestamp + record.TimestampDelta);
 
-                            // Inline header extraction: avoid method call overhead per message.
-                            // Most messages have no headers; this skips the CopyHeaders call entirely.
-                            var headers = record.Headers is not null && record.HeaderCount > 0
-                                ? Record.CopyHeaders(record.Headers, record.HeaderCount)
-                                : null;
+                            // Create pooled header list: avoids per-message new Header[] allocation.
+                            // Most messages have no headers; CreateOrNull returns null immediately.
+                            var headers = ReadOnlyHeaderList.CreateOrNull(record.Headers, record.HeaderCount);
+                            previousHeaders = headers;
 
                             var timestampType = ((int)batch.Attributes & 0x08) != 0
                                 ? TimestampType.LogAppendTime
@@ -996,6 +1001,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // propagate normally to the caller.
                             previousActivity?.Dispose();
                             previousActivity = null;
+                            previousHeaders?.ReturnToPool();
+                            previousHeaders = null;
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                             break;
                         }
@@ -1029,6 +1036,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
+                // Return last message's pooled header list
+                previousHeaders?.ReturnToPool();
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
