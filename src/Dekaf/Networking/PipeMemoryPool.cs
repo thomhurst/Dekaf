@@ -17,11 +17,17 @@ namespace Dekaf.Networking;
 /// WorkingSet growth proportional to the number of brokers — even though individual
 /// connections properly return their buffers.
 /// <para/>
-/// By giving each connection its own <see cref="PipeMemoryPool"/>, the retained arrays
-/// are scoped to the connection's lifetime. When the connection is disposed, the pool
-/// is disposed and all retained memory becomes eligible for GC collection, preventing
-/// the cross-connection accumulation that causes WorkingSet growth in multi-broker
-/// producer scenarios.
+/// <b>Shared pool design:</b> A single <see cref="PipeMemoryPool"/> is shared across all
+/// connections managed by a <see cref="ConnectionPool"/>. This bounds total retained memory
+/// to one set of array buckets (maxArraysPerBucket × bucketCount) regardless of how many
+/// connections exist. Without sharing, each connection independently retained up to
+/// <c>maxArraysPerBucket</c> arrays per size class — with 3 brokers × 10 connections/broker
+/// = 30 independent pools, each retaining up to 32 arrays in large buckets, causing
+/// multi-GB WorkingSet growth. With a shared pool, the same 32 array slots are recycled
+/// across all connections, capping total retention at ~128 MB for the 4 MB bucket.
+/// <para/>
+/// Connections created outside a <see cref="ConnectionPool"/> (e.g., in tests) fall back
+/// to creating their own per-connection pool for backward compatibility.
 /// </summary>
 internal sealed class PipeMemoryPool : MemoryPool<byte>
 {

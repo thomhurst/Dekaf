@@ -147,6 +147,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private DuplexPipe? _duplexPipe;
     private PipeMemoryPool? _pipeMemoryPool;
 
+    // When non-null, this connection uses a shared pool owned by the ConnectionPool.
+    // The connection must NOT dispose the shared pool — only its owner does.
+    // When null, the connection creates and owns its own per-connection pool.
+    private readonly PipeMemoryPool? _sharedPipeMemoryPool;
+
     // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
     // When connections are rapidly closed and reopened, the OS may reuse local TCP ports.
     // If a late packet from an old connection arrives on a new connection with matching
@@ -245,6 +250,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
         BrokerId = brokerId;
     }
 
+    /// <summary>
+    /// Internal constructor used by <see cref="ConnectionPool"/>. When <paramref name="sharedPipeMemoryPool"/>
+    /// is provided, all connections sharing the same pool contribute to a single bounded set of
+    /// cached arrays instead of each connection independently retaining up to <c>maxArraysPerBucket</c>
+    /// arrays. This prevents WorkingSet growth proportional to connection count in multi-broker
+    /// scenarios with adaptive scaling.
+    /// </summary>
     internal KafkaConnection(
         int brokerId,
         string host,
@@ -255,10 +267,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ulong bufferMemory,
         int connectionsPerBroker,
         int brokerCount,
-        ResponseBufferPool responseBufferPool)
+        ResponseBufferPool responseBufferPool,
+        PipeMemoryPool? sharedPipeMemoryPool = null)
         : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool)
     {
         BrokerId = brokerId;
+        _sharedPipeMemoryPool = sharedPipeMemoryPool;
     }
 
     public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
@@ -331,10 +345,25 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
-        // Per-connection pool prevents WorkingSet growth from ArrayPool<byte>.Shared's
-        // TLS caches that grow per-thread but never shrink. See PipeMemoryPool for details.
-        _pipeMemoryPool?.Dispose();
-        _pipeMemoryPool = new PipeMemoryPool();
+        // Use a shared pool if provided by the ConnectionPool, otherwise create a per-connection
+        // pool. The shared pool bounds total retained memory across all connections to a single
+        // set of cached arrays, preventing WorkingSet growth proportional to connection count
+        // in multi-broker scenarios. Per-connection pools are used as a fallback for connections
+        // created outside of a ConnectionPool (e.g., in tests).
+        if (_sharedPipeMemoryPool is not null)
+        {
+            // Shared pool — don't dispose the previous reference (it's the same shared instance).
+            // On reconnect, _pipeMemoryPool already equals _sharedPipeMemoryPool; this is a
+            // harmless no-op reassignment that keeps the code path uniform.
+            _pipeMemoryPool = _sharedPipeMemoryPool;
+        }
+        else
+        {
+            // Per-connection pool prevents WorkingSet growth from ArrayPool<byte>.Shared's
+            // TLS caches that grow per-thread but never shrink. See PipeMemoryPool for details.
+            _pipeMemoryPool?.Dispose();
+            _pipeMemoryPool = new PipeMemoryPool();
+        }
 
         // minimumBufferSize controls the buffer the writer retains between writes. Keep it
         // modest (64 KB) — larger values cause each connection to permanently hold a large
@@ -1866,7 +1895,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         // Placed after pipe completion so all outstanding IMemoryOwner<byte> objects are
         // returned before the pool is released for GC.
-        _pipeMemoryPool?.Dispose();
+        // Only dispose per-connection pools — shared pools are owned by the ConnectionPool.
+        if (_sharedPipeMemoryPool is null)
+        {
+            _pipeMemoryPool?.Dispose();
+        }
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
