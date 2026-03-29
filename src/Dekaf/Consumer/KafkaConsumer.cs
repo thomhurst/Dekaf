@@ -474,10 +474,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private ReadOnlyMemory<byte> _currentRawKey;
     private ReadOnlyMemory<byte> _currentRawValue;
 
-    // Reusable header slice for zero-copy header access in consume loop.
-    // Returned to the HeaderSlice pool after each message iteration.
-    private HeaderSlice? _currentHeaderSlice;
-
     private int _consumerDisposed;
     private int _closed;
     private volatile bool _initialized;
@@ -967,18 +963,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                                 pending.CurrentBaseTimestamp + record.TimestampDelta);
 
-                            // Zero-copy header access: wrap the pooled header array in a
+                            // Zero-copy header access: wrap the existing header array in a
                             // HeaderSlice instead of copying. The slice is valid for this
-                            // consume iteration (the pooled array lives until PendingFetchData
-                            // is disposed after all records are yielded). The previous
-                            // HeaderSlice is returned to the pool each iteration.
-                            _currentHeaderSlice?.Return();
-                            _currentHeaderSlice = null;
+                            // consume iteration (the backing array lives until PendingFetchData
+                            // is disposed after all records are yielded). A fresh HeaderSlice
+                            // is allocated per message with headers (tiny: two fields) while
+                            // the expensive per-message Header[] copy is eliminated.
                             IReadOnlyList<Header>? headers = null;
                             if (record.Headers is not null && record.HeaderCount > 0)
                             {
-                                _currentHeaderSlice = HeaderSlice.Rent(record.Headers, record.HeaderCount);
-                                headers = _currentHeaderSlice;
+                                headers = new HeaderSlice(record.Headers, record.HeaderCount);
                             }
 
                             var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
@@ -1065,10 +1059,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         yield return nextResult;
                     }
 
-                    // Return the last header slice from this pending fetch
-                    _currentHeaderSlice?.Return();
-                    _currentHeaderSlice = null;
-
                     // Dispose last activity from this pending fetch
                     previousActivity?.Dispose();
                     previousActivity = null;
@@ -1089,10 +1079,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             finally
             {
-                // Ensure header slice is returned if caller breaks out of enumeration early
-                _currentHeaderSlice?.Return();
-                _currentHeaderSlice = null;
-
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
             }
@@ -1336,98 +1322,98 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Write to prefetch channel
         try
         {
-        foreach (var topicResponse in response.Responses)
-        {
-            var topic = topicResponse.Topic ?? string.Empty;
-            var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
-
-            foreach (var partitionResponse in topicResponse.Partitions)
+            foreach (var topicResponse in response.Responses)
             {
-                var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+                var topic = topicResponse.Topic ?? string.Empty;
+                var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
-                // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                UpdateWatermarksFromFetchResponse(topic, partitionResponse);
-
-                if (partitionResponse.ErrorCode != ErrorCode.None)
+                foreach (var partitionResponse in topicResponse.Partitions)
                 {
-                    if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
+                    var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
+                    // Update watermark cache from fetch response (even on errors, watermarks may be valid)
+                    UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+
+                    if (partitionResponse.ErrorCode != ErrorCode.None)
                     {
-                        // CRITICAL: Reset fetch position based on auto.offset.reset policy
-                        // Without this, we would retry with the same invalid offset forever
-                        var (resetTimestamp, resetName) = _options.AutoOffsetReset switch
+                        if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                         {
-                            AutoOffsetReset.Latest => (-1L, "latest"),
-                            AutoOffsetReset.Earliest => (-2L, "earliest"),
-                            AutoOffsetReset.None => throw new KafkaException(
-                                ErrorCode.OffsetOutOfRange,
-                                $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
-                            _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
-                        };
-                        _fetchPositions[tp] = resetTimestamp;
-                        _positions[tp] = resetTimestamp;
-                        LogOffsetOutOfRangeReset(topic, partitionResponse.PartitionIndex, resetName);
-                    }
-                    else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
-                    {
-                        // Invalidate metadata cache to force re-discovery of leader
-                        InvalidatePartitionCache();
-                        LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
-                    }
-                    else
-                    {
-                        LogPrefetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
-                    }
-                    continue;
-                }
-
-                // Update high watermark from response (thread-safe with ConcurrentDictionary)
-                _highWatermarks[tp] = partitionResponse.HighWatermark;
-
-                // Cache Records reference to avoid repeated Volatile.Read from the pool guard
-                var records = partitionResponse.Records;
-
-                if (records is { Count: > 0 })
-                {
-                    // We have new records - reset EOF state for this partition
-                    lock (_prefetchLock)
-                    {
-                        _eofEmitted.Remove(tp);
-                    }
-
-                    var pending = PendingFetchData.Create(
-                        topic,
-                        partitionResponse.PartitionIndex,
-                        records,
-                        partitionResponse.AbortedTransactions,
-                        activityName: activityName);
-
-                    // Track memory before adding to channel
-                    TrackPrefetchedBytes(pending, release: false);
-
-                    // Update fetch positions for next prefetch
-                    UpdateFetchPositionsFromPrefetch(pending);
-
-                    // Collect for later - we'll assign memory owner to the last one
-                    pendingItems.Add(pending);
-                }
-                else if (_options.EnablePartitionEof)
-                {
-                    // No records returned - check if we're at EOF
-                    lock (_prefetchLock)
-                    {
-                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
-
-                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                            // CRITICAL: Reset fetch position based on auto.offset.reset policy
+                            // Without this, we would retry with the same invalid offset forever
+                            var (resetTimestamp, resetName) = _options.AutoOffsetReset switch
+                            {
+                                AutoOffsetReset.Latest => (-1L, "latest"),
+                                AutoOffsetReset.Earliest => (-2L, "earliest"),
+                                AutoOffsetReset.None => throw new KafkaException(
+                                    ErrorCode.OffsetOutOfRange,
+                                    $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
+                                _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
+                            };
+                            _fetchPositions[tp] = resetTimestamp;
+                            _positions[tp] = resetTimestamp;
+                            LogOffsetOutOfRangeReset(topic, partitionResponse.PartitionIndex, resetName);
+                        }
+                        else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
                         {
-                            // Queue EOF event and mark as emitted
-                            _pendingEofEvents.Enqueue((tp, fetchPosition));
-                            _eofEmitted.Add(tp);
+                            // Invalidate metadata cache to force re-discovery of leader
+                            InvalidatePartitionCache();
+                            LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
+                        }
+                        else
+                        {
+                            LogPrefetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                        }
+                        continue;
+                    }
+
+                    // Update high watermark from response (thread-safe with ConcurrentDictionary)
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+
+                    // Cache Records reference to avoid repeated Volatile.Read from the pool guard
+                    var records = partitionResponse.Records;
+
+                    if (records is { Count: > 0 })
+                    {
+                        // We have new records - reset EOF state for this partition
+                        lock (_prefetchLock)
+                        {
+                            _eofEmitted.Remove(tp);
+                        }
+
+                        var pending = PendingFetchData.Create(
+                            topic,
+                            partitionResponse.PartitionIndex,
+                            records,
+                            partitionResponse.AbortedTransactions,
+                            activityName: activityName);
+
+                        // Track memory before adding to channel
+                        TrackPrefetchedBytes(pending, release: false);
+
+                        // Update fetch positions for next prefetch
+                        UpdateFetchPositionsFromPrefetch(pending);
+
+                        // Collect for later - we'll assign memory owner to the last one
+                        pendingItems.Add(pending);
+                    }
+                    else if (_options.EnablePartitionEof)
+                    {
+                        // No records returned - check if we're at EOF
+                        lock (_prefetchLock)
+                        {
+                            var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                            // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                            if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                            {
+                                // Queue EOF event and mark as emitted
+                                _pendingEofEvents.Enqueue((tp, fetchPosition));
+                                _eofEmitted.Add(tp);
+                            }
                         }
                     }
                 }
             }
-        }
         }
         finally
         {
@@ -2642,65 +2628,65 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Queue pending fetch data for lazy iteration - don't parse records yet!
         try
         {
-        foreach (var topicResponse in response.Responses)
-        {
-            var topic = topicResponse.Topic ?? string.Empty;
-            var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
-
-            foreach (var partitionResponse in topicResponse.Partitions)
+            foreach (var topicResponse in response.Responses)
             {
-                var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+                var topic = topicResponse.Topic ?? string.Empty;
+                var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
-                // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                UpdateWatermarksFromFetchResponse(topic, partitionResponse);
-
-                if (partitionResponse.ErrorCode != ErrorCode.None)
+                foreach (var partitionResponse in topicResponse.Partitions)
                 {
-                    LogFetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
-                    continue;
-                }
+                    var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
 
-                // Update high watermark from response (thread-safe with ConcurrentDictionary)
-                _highWatermarks[tp] = partitionResponse.HighWatermark;
+                    // Update watermark cache from fetch response (even on errors, watermarks may be valid)
+                    UpdateWatermarksFromFetchResponse(topic, partitionResponse);
 
-                // Cache Records reference to avoid repeated Volatile.Read from the pool guard
-                var records = partitionResponse.Records;
-
-                if (records is { Count: > 0 })
-                {
-                    // We have new records - reset EOF state for this partition
-                    lock (_prefetchLock)
+                    if (partitionResponse.ErrorCode != ErrorCode.None)
                     {
-                        _eofEmitted.Remove(tp);
+                        LogFetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                        continue;
                     }
 
-                    // Collect pending fetch data for lazy record iteration
-                    pendingItems ??= [];
-                    pendingItems.Add(PendingFetchData.Create(
-                        topic,
-                        partitionResponse.PartitionIndex,
-                        records,
-                        partitionResponse.AbortedTransactions,
-                        activityName: activityName));
-                }
-                else if (_options.EnablePartitionEof)
-                {
-                    // No records returned - check if we're at EOF
-                    lock (_prefetchLock)
-                    {
-                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+                    // Update high watermark from response (thread-safe with ConcurrentDictionary)
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
 
-                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                    // Cache Records reference to avoid repeated Volatile.Read from the pool guard
+                    var records = partitionResponse.Records;
+
+                    if (records is { Count: > 0 })
+                    {
+                        // We have new records - reset EOF state for this partition
+                        lock (_prefetchLock)
                         {
-                            // Queue EOF event and mark as emitted
-                            _pendingEofEvents.Enqueue((tp, fetchPosition));
-                            _eofEmitted.Add(tp);
+                            _eofEmitted.Remove(tp);
+                        }
+
+                        // Collect pending fetch data for lazy record iteration
+                        pendingItems ??= [];
+                        pendingItems.Add(PendingFetchData.Create(
+                            topic,
+                            partitionResponse.PartitionIndex,
+                            records,
+                            partitionResponse.AbortedTransactions,
+                            activityName: activityName));
+                    }
+                    else if (_options.EnablePartitionEof)
+                    {
+                        // No records returned - check if we're at EOF
+                        lock (_prefetchLock)
+                        {
+                            var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                            // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                            if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                            {
+                                // Queue EOF event and mark as emitted
+                                _pendingEofEvents.Enqueue((tp, fetchPosition));
+                                _eofEmitted.Add(tp);
+                            }
                         }
                     }
                 }
             }
-        }
         }
         finally
         {

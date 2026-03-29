@@ -374,53 +374,18 @@ public readonly record struct Header
 /// The <see cref="HeaderSlice"/> is valid only for the lifetime of the current
 /// consume iteration (same as <c>RawBytes</c> deserializer semantics).
 /// This is a class (not struct) because it must implement <see cref="IReadOnlyList{Header}"/>
-/// without boxing on every access. One instance is pooled and reused per consumer thread.
+/// without boxing on every access. A fresh instance is allocated per message with headers
+/// (tiny: two fields), while the expensive per-message <c>Header[]</c> copy is eliminated.
 /// </remarks>
 internal sealed class HeaderSlice : IReadOnlyList<Header>
 {
-    // Pool for reusing HeaderSlice instances to eliminate per-message allocation.
-    // One per consumer thread is typical; small pool suffices.
-    private static readonly ConcurrentStack<HeaderSlice> s_pool = new();
-    private static int s_poolCount;
-    private const int MaxPoolSize = 32;
+    private readonly Header[] _array;
+    private readonly int _count;
 
-    private Header[] _array = null!;
-    private int _count;
-
-    private HeaderSlice() { }
-
-    /// <summary>
-    /// Rents a HeaderSlice from the pool, initialized with the given array and count.
-    /// </summary>
-    internal static HeaderSlice Rent(Header[] array, int count)
+    internal HeaderSlice(Header[] array, int count)
     {
-        HeaderSlice instance;
-        if (s_pool.TryPop(out var pooled))
-        {
-            Interlocked.Decrement(ref s_poolCount);
-            instance = pooled;
-        }
-        else
-        {
-            instance = new HeaderSlice();
-        }
-        instance._array = array;
-        instance._count = count;
-        return instance;
-    }
-
-    /// <summary>
-    /// Returns this HeaderSlice to the pool for reuse.
-    /// </summary>
-    internal void Return()
-    {
-        _array = null!;
-        _count = 0;
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
-        {
-            s_pool.Push(this);
-            Interlocked.Increment(ref s_poolCount);
-        }
+        _array = array;
+        _count = count;
     }
 
     public int Count => _count;
@@ -435,13 +400,27 @@ internal sealed class HeaderSlice : IReadOnlyList<Header>
         }
     }
 
-    public IEnumerator<Header> GetEnumerator()
-    {
-        for (var i = 0; i < _count; i++)
-        {
-            yield return _array[i];
-        }
-    }
-
+    public Enumerator GetEnumerator() => new Enumerator(_array, _count);
+    IEnumerator<Header> IEnumerable<Header>.GetEnumerator() => GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public struct Enumerator : IEnumerator<Header>
+    {
+        private readonly Header[] _array;
+        private readonly int _count;
+        private int _index;
+
+        internal Enumerator(Header[] array, int count)
+        {
+            _array = array;
+            _count = count;
+            _index = -1;
+        }
+
+        public Header Current => _array[_index];
+        object IEnumerator.Current => Current;
+        public bool MoveNext() => ++_index < _count;
+        public void Reset() => _index = -1;
+        public void Dispose() { }
+    }
 }
