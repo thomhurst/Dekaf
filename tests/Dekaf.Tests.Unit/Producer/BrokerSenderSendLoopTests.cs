@@ -174,7 +174,7 @@ public sealed class BrokerSenderSendLoopTests
         try
         {
             var batch = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batch, CancellationToken.None);
+            sender.Enqueue(batch);
 
             // Wait for the send loop to actually send the request
             await requestSent.Task.WaitAsync(cancellationToken);
@@ -239,8 +239,8 @@ public sealed class BrokerSenderSendLoopTests
             var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
 
-            await sender.EnqueueAsync(batch1, CancellationToken.None);
-            await sender.EnqueueAsync(batch2, CancellationToken.None);
+            sender.Enqueue(batch1);
+            sender.Enqueue(batch2);
 
             // Wait for the send loop to send the coalesced request
             await requestSent.Task.WaitAsync(cancellationToken);
@@ -328,7 +328,7 @@ public sealed class BrokerSenderSendLoopTests
         {
             // Enqueue first batch — send loop sends it immediately
             var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batch1, CancellationToken.None);
+            sender.Enqueue(batch1);
 
             // Wait for first request to be sent (deterministic, no Task.Delay)
             await sendSignals[0].Task.WaitAsync(cancellationToken);
@@ -336,7 +336,7 @@ public sealed class BrokerSenderSendLoopTests
 
             // Enqueue second batch while first is still in-flight
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batch2, CancellationToken.None);
+            sender.Enqueue(batch2);
 
             // Second request should NOT have been sent yet (in-flight limit).
             // Give a brief moment for the send loop to process, then verify.
@@ -400,7 +400,7 @@ public sealed class BrokerSenderSendLoopTests
         try
         {
             var batch = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batch, CancellationToken.None);
+            sender.Enqueue(batch);
 
             // Wait for first send (deterministic)
             await sendSignals[0].Task.WaitAsync(cancellationToken);
@@ -479,7 +479,7 @@ public sealed class BrokerSenderSendLoopTests
             for (var i = 0; i < batchCount; i++)
             {
                 var batch = CreateTestBatch(vtPool, "test-topic", i);
-                await sender.EnqueueAsync(batch, CancellationToken.None);
+                sender.Enqueue(batch);
             }
 
             // Wait for at least one send to occur (deterministic)
@@ -555,7 +555,7 @@ public sealed class BrokerSenderSendLoopTests
         try
         {
             var batch = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batch, CancellationToken.None);
+            sender.Enqueue(batch);
 
             // Fire-and-forget should complete quickly without waiting for a response
             var offset = await acknowledged.Task.WaitAsync(cancellationToken);
@@ -624,7 +624,7 @@ public sealed class BrokerSenderSendLoopTests
         {
             // Enqueue batch A (partition 0) — send loop sends it immediately
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
+            sender.Enqueue(batchA);
 
             // Wait for batch A to be sent (fills in-flight slot)
             await sendSignals[0].Task.WaitAsync(cancellationToken);
@@ -636,7 +636,7 @@ public sealed class BrokerSenderSendLoopTests
             // (ProcessCompletedResponses handles it inline), or wake up from the
             // fault if already waiting. Both paths exercise the carry-over fix.
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchB);
             tcs1.SetException(new IOException("Connection reset"));
 
             // Wait for batch B to be sent (slot freed by processing faulted response)
@@ -706,7 +706,7 @@ public sealed class BrokerSenderSendLoopTests
         try
         {
             var batch = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batch, CancellationToken.None);
+            sender.Enqueue(batch);
 
             // The response is already complete, so acknowledgement should happen very quickly
             var result = await acknowledged.Task.WaitAsync(cancellationToken);
@@ -772,7 +772,7 @@ public sealed class BrokerSenderSendLoopTests
         {
             // Send first batch — response will hang
             var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batch1, CancellationToken.None);
+            sender.Enqueue(batch1);
             await sendSignals[0].Task.WaitAsync(cancellationToken);
 
             // Wait for HandleTimedOutRequests to process batch1 (request timeout 1s +
@@ -783,7 +783,7 @@ public sealed class BrokerSenderSendLoopTests
             // Send second batch on different partition — should not hang
             // (HandleTimedOutRequests cleared _pendingResponses, freeing the capacity slot)
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batch2, CancellationToken.None);
+            sender.Enqueue(batch2);
 
             // Second batch should be sent (send loop freed the capacity slot)
             await sendSignals[1].Task.WaitAsync(cancellationToken);

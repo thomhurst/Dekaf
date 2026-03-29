@@ -1744,7 +1744,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             drainResult,
                             batchListPool);
 
-                        // 3. Distribute pre-drained batch lists to broker senders
+                        // 3. Distribute pre-drained batch lists to broker senders.
+                        // Use bulk enqueue so all batches for a broker are written to the
+                        // event channel in a tight loop without yielding. This ensures the
+                        // BrokerSender's send loop sees all batches when it coalesces,
+                        // reducing per-request overhead in multi-broker setups.
                         foreach (var (brokerId, batchList) in drainResult)
                         {
                             if (batchList.Count == 0)
@@ -1754,32 +1758,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             for (var i = 0; i < batchList.Count; i++)
                             {
                                 batchList[i].CompleteDelivery();
+                                batchList[i].AppendDiag('Q');
                             }
 
                             try
                             {
                                 var brokerSender = GetOrCreateBrokerSender(brokerId);
-
-                                // Bridge: enqueue each batch individually via existing BrokerSender path
-                                // Task 6 will replace this with a batch-list channel
-                                for (var i = 0; i < batchList.Count; i++)
-                                {
-                                    batchList[i].AppendDiag('Q');
-                                    await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
-                                        .ConfigureAwait(false);
-                                }
-                            }
-                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                            {
-                                // Fail remaining batches
-                                for (var i = 0; i < batchList.Count; i++)
-                                    FailAndCleanupBatch(batchList[i],
-                                        new OperationCanceledException(cancellationToken));
-                                throw;
+                                brokerSender.EnqueueBulk(batchList);
                             }
                             catch (Exception ex)
                             {
-                                // Fail all batches in this batch list
+                                // Fail all batches in this batch list.
+                                // Note: if EnqueueBulk hit a completed channel, it already failed
+                                // remaining batches via FailEnqueuedBatch — but batch.Fail() is
+                                // idempotent (guarded by Interlocked.Exchange), so double-fail is safe.
                                 for (var i = 0; i < batchList.Count; i++)
                                     FailAndCleanupBatch(batchList[i], ex);
                             }
