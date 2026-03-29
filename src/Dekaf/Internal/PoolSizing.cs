@@ -35,7 +35,7 @@ internal static class PoolSizing
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
 
         const ulong maxUsefulBatches = 65536 / EstimatedMessagesPerBatch; // 64
-        var maxBatches = Math.Min(bufferMemory / (ulong)Math.Max(batchSize, 1), maxUsefulBatches);
+        var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
         var estimatedMessages = (int)(maxBatches * EstimatedMessagesPerBatch);
 
         return new ProducerPoolSizes

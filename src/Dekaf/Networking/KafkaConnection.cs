@@ -2129,9 +2129,9 @@ public sealed class ConnectionOptions
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Maximum in-flight requests per connection. Used to derive internal pool sizes.
+    /// Maximum in-flight requests per connection. Used internally to derive pool sizes.
     /// </summary>
-    public int MaxInFlightRequestsPerConnection { get; init; } = 5;
+    internal int MaxInFlightRequestsPerConnection { get; init; } = 5;
 }
 
 /// <summary>

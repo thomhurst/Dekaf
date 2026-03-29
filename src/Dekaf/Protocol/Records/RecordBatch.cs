@@ -194,6 +194,9 @@ public sealed class RecordBatch : IDisposable
     /// <summary>
     /// Ratchets up the max retained buffer size for thread-local buffers.
     /// Called by producer initialization when BatchSize exceeds the current value.
+    /// Thread-local buffers created before this call retain their original (smaller) limit,
+    /// which is acceptable since the ratchet only increases — existing buffers are more
+    /// conservative, not less. New buffers on any thread pick up the updated value.
     /// </summary>
     internal static void RatchetMaxRetainedBufferSize(int newSize)
     {
