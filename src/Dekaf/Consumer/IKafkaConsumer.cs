@@ -241,37 +241,6 @@ public readonly struct ConsumeResult<TKey, TValue>
         IDeserializer<TKey>? keyDeserializer,
         IDeserializer<TValue>? valueDeserializer,
         bool isPartitionEof = false)
-        : this(topic, partition, offset, keyData, isKeyNull, valueData, isValueNull,
-               headers, timestamp, timestampType, leaderEpoch,
-               keyDeserializer, valueDeserializer,
-               spanKeyDeserializer: null,  // Public constructor always uses IDeserializer<T> path
-               spanValueDeserializer: null,
-               isPartitionEof)
-    {
-    }
-
-    /// <summary>
-    /// Creates a new ConsumeResult with eager deserialization using pre-cached span deserializer references.
-    /// The consumer caches <see cref="ISpanDeserializer{T}"/> references at build time to avoid
-    /// per-message type checks in the hot path.
-    /// </summary>
-    internal ConsumeResult(
-        string topic,
-        int partition,
-        long offset,
-        ReadOnlyMemory<byte> keyData,
-        bool isKeyNull,
-        ReadOnlyMemory<byte> valueData,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        DateTimeOffset timestamp,
-        TimestampType timestampType,
-        int? leaderEpoch,
-        IDeserializer<TKey>? keyDeserializer,
-        IDeserializer<TValue>? valueDeserializer,
-        ISpanDeserializer<TKey>? spanKeyDeserializer,
-        ISpanDeserializer<TValue>? spanValueDeserializer,
-        bool isPartitionEof = false)
     {
         Topic = topic;
         Partition = partition;
@@ -299,9 +268,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Headers = null;
             t_serializationContext.IsNull = false;
 
-            Key = spanKeyDeserializer is not null
-                ? spanKeyDeserializer.DeserializeSpan(keyData.Span, t_serializationContext)
-                : keyDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(keyData), t_serializationContext);
+            Key = keyDeserializer.Deserialize(keyData.Span, t_serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
@@ -315,18 +282,9 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Headers = null;
             t_serializationContext.IsNull = isValueNull;
 
-            if (isValueNull)
-            {
-                Value = spanValueDeserializer is not null
-                    ? spanValueDeserializer.DeserializeSpan(ReadOnlySpan<byte>.Empty, t_serializationContext)
-                    : valueDeserializer.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, t_serializationContext);
-            }
-            else
-            {
-                Value = spanValueDeserializer is not null
-                    ? spanValueDeserializer.DeserializeSpan(valueData.Span, t_serializationContext)
-                    : valueDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(valueData), t_serializationContext);
-            }
+            Value = isValueNull
+                ? valueDeserializer.Deserialize(ReadOnlySpan<byte>.Empty, t_serializationContext)
+                : valueDeserializer.Deserialize(valueData.Span, t_serializationContext);
         }
     }
 

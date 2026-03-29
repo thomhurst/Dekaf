@@ -87,31 +87,27 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     /// for the same schema ID will use the cached value without blocking.
     /// For best performance, use <see cref="WarmupAsync"/> before starting consumption.
     /// </remarks>
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
     {
         if (data.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        // Read wire format header
-        Span<byte> header = stackalloc byte[5];
-        data.Slice(0, 5).CopyTo(header);
+        if (data[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {data[0]}. Expected Schema Registry format (0x00).");
 
-        if (header[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {header[0]}. Expected Schema Registry format (0x00).");
-
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Slice(1, 4));
 
         // Get writer schema from registry (cached with lazy initialization)
         var writerSchema = GetWriterSchemaCached(schemaId);
 
         // Extract Avro payload using pooled buffer to avoid allocation
-        var payloadLength = (int)(data.Length - 5);
-        var rentedBuffer = ArrayPool<byte>.Shared.Rent(payloadLength);
+        var payload = data.Slice(5);
+        var rentedBuffer = ArrayPool<byte>.Shared.Rent(payload.Length);
         try
         {
-            data.Slice(5, payloadLength).CopyTo(rentedBuffer);
+            payload.CopyTo(rentedBuffer);
 
-            using var memoryStream = new PooledMemoryStream(rentedBuffer, payloadLength);
+            using var memoryStream = new PooledMemoryStream(rentedBuffer, payload.Length);
             var decoder = new BinaryDecoder(memoryStream);
 
             return ReadAvroValue(writerSchema, decoder);

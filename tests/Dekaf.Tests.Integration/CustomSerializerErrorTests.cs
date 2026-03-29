@@ -42,7 +42,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         public const string TriggerValue = "__THROW__";
 
-        public string Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+        public string Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
         {
             // Peek at the value first using the built-in deserializer
             var result = Serializers.String.Deserialize(data, context);

@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Buffers.Binary;
 using Dekaf.Serialization;
 using Google.Protobuf;
@@ -50,21 +49,17 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     }
 
     /// <inheritdoc />
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
     {
         if (data.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        // Read the header into a contiguous span
-        Span<byte> header = stackalloc byte[5];
-        data.Slice(0, 5).CopyTo(header);
-
         // Verify magic byte
-        if (header[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {header[0]}. Expected Schema Registry format (0x00).");
+        if (data[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {data[0]}. Expected Schema Registry format (0x00).");
 
         // Read schema ID (big-endian)
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Slice(1, 4));
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         if (!_config.SkipSchemaValidation)
@@ -97,15 +92,13 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         return _parser.ParseFrom(protobufData.ToArray());
     }
 
-    private static (int value, int bytesRead) ReadVarint(ReadOnlySequence<byte> data)
+    private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data)
     {
         var value = 0;
         var shift = 0;
         var bytesRead = 0;
 
-        var reader = new SequenceReader<byte>(data);
-
-        while (reader.TryRead(out var b))
+        foreach (var b in data)
         {
             bytesRead++;
             value |= (b & 0x7F) << shift;

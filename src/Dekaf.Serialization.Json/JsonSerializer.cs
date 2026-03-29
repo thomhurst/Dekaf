@@ -45,10 +45,9 @@ public sealed class JsonSerializer<T> : ISerde<T>
         destination.Advance(written.Length);
     }
 
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
     {
-        var reader = new Utf8JsonReader(data);
-        return System.Text.Json.JsonSerializer.Deserialize<T>(ref reader, _options)!;
+        return System.Text.Json.JsonSerializer.Deserialize<T>(data, _options)!;
     }
 }
 

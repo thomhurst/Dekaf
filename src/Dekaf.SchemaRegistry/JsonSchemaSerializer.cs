@@ -207,19 +207,15 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         _ownsClient = ownsClient;
     }
 
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
     {
         if (data.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        // Read wire format header
-        Span<byte> header = stackalloc byte[5];
-        data.Slice(0, 5).CopyTo(header);
+        if (data[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {data[0]}. Expected Schema Registry format.");
 
-        if (header[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {header[0]}. Expected Schema Registry format.");
-
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Slice(1, 4));
 
         // Optionally fetch schema for validation (schema is cached)
         // For JSON, we typically just deserialize without validation
@@ -232,16 +228,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
             .GetResult();
 
         // Extract JSON payload and deserialize
-        var payload = data.Slice(5);
-
-        if (payload.IsSingleSegment)
-        {
-            return JsonSerializer.Deserialize<T>(payload.FirstSpan, _jsonOptions)!;
-        }
-
-        // Multi-segment: need to copy to contiguous array
-        var jsonBytes = payload.ToArray();
-        return JsonSerializer.Deserialize<T>(jsonBytes, _jsonOptions)!;
+        return JsonSerializer.Deserialize<T>(data.Slice(5), _jsonOptions)!;
     }
 
     public ValueTask DisposeAsync()

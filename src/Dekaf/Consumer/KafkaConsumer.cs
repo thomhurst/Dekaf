@@ -336,10 +336,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly ConsumerOptions _options;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
-    // Cached span deserializer references to avoid per-message type checks in the hot path.
-    // Set once at construction time; null if the deserializer doesn't implement ISpanDeserializer<T>.
-    private readonly ISpanDeserializer<TKey>? _spanKeyDeserializer;
-    private readonly ISpanDeserializer<TValue>? _spanValueDeserializer;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ConsumerCoordinator? _coordinator;
@@ -459,11 +455,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _options = options;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
-        // Cache ISpanDeserializer<T> references once at build time to avoid per-message type checks.
-        // Most built-in Dekaf deserializers implement ISpanDeserializer<T> for zero-overhead deserialization.
-        // RawBytesSerde is excluded as it already provides zero-copy access via ReadOnlyMemory<byte>.
-        _spanKeyDeserializer = keyDeserializer as ISpanDeserializer<TKey>;
-        _spanValueDeserializer = valueDeserializer as ISpanDeserializer<TValue>;
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
@@ -923,9 +914,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 timestampType: timestampType,
                                 leaderEpoch: null,
                                 keyDeserializer: _keyDeserializer,
-                                valueDeserializer: _valueDeserializer,
-                                spanKeyDeserializer: _spanKeyDeserializer,
-                                spanValueDeserializer: _spanValueDeserializer);
+                                valueDeserializer: _valueDeserializer);
 
                             pending.TrackConsumed(offset, messageBytes);
 
