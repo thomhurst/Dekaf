@@ -472,8 +472,12 @@ public sealed partial class ConnectionPool : IConnectionPool
             if (oldConnection is not null)
             {
                 _ = oldConnection.DisposeAsync().AsTask().ContinueWith(
-                    static (t, _) => { /* Observe exception — best-effort disposal */ },
-                    null,
+                    static (t, state) =>
+                    {
+                        var (logger, id, idx) = ((ILogger, int, int))state!;
+                        LogOldConnectionDisposalFailed(logger, id, idx, t.Exception!);
+                    },
+                    (_logger, brokerId, index),
                     CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default);
@@ -822,6 +826,9 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Shrunk connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
     private partial void LogShrunkConnectionGroup(int oldCount, int newCount, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose replaced connection for broker {BrokerId} index {Index}")]
+    private static partial void LogOldConnectionDisposalFailed(ILogger logger, int brokerId, int index, Exception ex);
 
     #endregion
 
