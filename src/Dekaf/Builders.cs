@@ -1431,6 +1431,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
 
+        // Wrap the built-in string key deserializer with caching to avoid per-message string
+        // allocation for repeated keys. Kafka workloads typically reuse a bounded set of key
+        // values, so caching eliminates ~42 bytes per message for 8-byte keys at 1M+ msg/s.
+        // Only wrap the built-in StringSerde — user-supplied string deserializers may
+        // intentionally return different strings for the same bytes.
+        if (keyDeserializer is StringSerde stringSerde)
+        {
+            keyDeserializer = (IDeserializer<TKey>)(object)new CachingStringKeyDeserializer(stringSerde);
+        }
+
         ValidateGroupProtocolConfig();
 
         if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
