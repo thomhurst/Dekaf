@@ -105,7 +105,7 @@ public static class Serializers
 /// </summary>
 public readonly struct Ignore;
 
-internal sealed class ByteArraySerde : ISerde<byte[]>
+internal sealed class ByteArraySerde : ISerde<byte[]>, ISpanDeserializer<byte[]>
 {
     public void Serialize<TWriter>(byte[] value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -119,9 +119,14 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
     {
         return data.ToArray();
     }
+
+    public byte[] DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return data.ToArray();
+    }
 }
 
-internal sealed class StringSerde : ISerde<string>
+internal sealed class StringSerde : ISerde<string>, ISpanDeserializer<string>
 {
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -152,9 +157,14 @@ internal sealed class StringSerde : ISerde<string>
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+
+    public string DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return Encoding.UTF8.GetString(data);
+    }
 }
 
-internal sealed class NullableStringSerde : ISerde<string?>
+internal sealed class NullableStringSerde : ISerde<string?>, ISpanDeserializer<string?>
 {
     public void Serialize<TWriter>(string? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -194,9 +204,20 @@ internal sealed class NullableStringSerde : ISerde<string?>
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+
+    public string? DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        if (context.IsNull)
+            return null;
+
+        if (data.Length == 0)
+            return string.Empty;
+
+        return Encoding.UTF8.GetString(data);
+    }
 }
 
-internal sealed class Int32Serde : ISerde<int>
+internal sealed class Int32Serde : ISerde<int>, ISpanDeserializer<int>
 {
     public void Serialize<TWriter>(int value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -212,9 +233,14 @@ internal sealed class Int32Serde : ISerde<int>
         data.Slice(0, 4).CopyTo(buffer);
         return BinaryPrimitives.ReadInt32BigEndian(buffer);
     }
+
+    public int DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return BinaryPrimitives.ReadInt32BigEndian(data);
+    }
 }
 
-internal sealed class Int64Serde : ISerde<long>
+internal sealed class Int64Serde : ISerde<long>, ISpanDeserializer<long>
 {
     public void Serialize<TWriter>(long value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -230,9 +256,14 @@ internal sealed class Int64Serde : ISerde<long>
         data.Slice(0, 8).CopyTo(buffer);
         return BinaryPrimitives.ReadInt64BigEndian(buffer);
     }
+
+    public long DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return BinaryPrimitives.ReadInt64BigEndian(data);
+    }
 }
 
-internal sealed class GuidSerde : ISerde<Guid>
+internal sealed class GuidSerde : ISerde<Guid>, ISpanDeserializer<Guid>
 {
     public void Serialize<TWriter>(Guid value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -248,9 +279,14 @@ internal sealed class GuidSerde : ISerde<Guid>
         data.Slice(0, 16).CopyTo(buffer);
         return new Guid(buffer, bigEndian: true);
     }
+
+    public Guid DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return new Guid(data, bigEndian: true);
+    }
 }
 
-internal sealed class DoubleSerde : ISerde<double>
+internal sealed class DoubleSerde : ISerde<double>, ISpanDeserializer<double>
 {
     public void Serialize<TWriter>(double value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -266,9 +302,14 @@ internal sealed class DoubleSerde : ISerde<double>
         data.Slice(0, 8).CopyTo(buffer);
         return BinaryPrimitives.ReadDoubleBigEndian(buffer);
     }
+
+    public double DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return BinaryPrimitives.ReadDoubleBigEndian(data);
+    }
 }
 
-internal sealed class FloatSerde : ISerde<float>
+internal sealed class FloatSerde : ISerde<float>, ISpanDeserializer<float>
 {
     public void Serialize<TWriter>(float value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -284,9 +325,14 @@ internal sealed class FloatSerde : ISerde<float>
         data.Slice(0, 4).CopyTo(buffer);
         return BinaryPrimitives.ReadSingleBigEndian(buffer);
     }
+
+    public float DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return BinaryPrimitives.ReadSingleBigEndian(data);
+    }
 }
 
-internal sealed class DateTimeSerde : ISerde<DateTime>
+internal sealed class DateTimeSerde : ISerde<DateTime>, ISpanDeserializer<DateTime>
 {
     public void Serialize<TWriter>(DateTime value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -303,9 +349,15 @@ internal sealed class DateTimeSerde : ISerde<DateTime>
         var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return new DateTime(ticks, DateTimeKind.Utc);
     }
+
+    public DateTime DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(data);
+        return new DateTime(ticks, DateTimeKind.Utc);
+    }
 }
 
-internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
+internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>, ISpanDeserializer<DateTimeOffset>
 {
     public void Serialize<TWriter>(DateTimeOffset value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -325,9 +377,17 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
         var offset = TimeSpan.FromMinutes(offsetMinutes);
         return new DateTimeOffset(utcTicks + offset.Ticks, offset);
     }
+
+    public DateTimeOffset DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(data);
+        var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(data.Slice(8));
+        var offset = TimeSpan.FromMinutes(offsetMinutes);
+        return new DateTimeOffset(utcTicks + offset.Ticks, offset);
+    }
 }
 
-internal sealed class TimeSpanSerde : ISerde<TimeSpan>
+internal sealed class TimeSpanSerde : ISerde<TimeSpan>, ISpanDeserializer<TimeSpan>
 {
     public void Serialize<TWriter>(TimeSpan value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -344,9 +404,15 @@ internal sealed class TimeSpanSerde : ISerde<TimeSpan>
         var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return new TimeSpan(ticks);
     }
+
+    public TimeSpan DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(data);
+        return new TimeSpan(ticks);
+    }
 }
 
-internal sealed class NullSerde<T> : ISerde<T?> where T : class
+internal sealed class NullSerde<T> : ISerde<T?>, ISpanDeserializer<T?> where T : class
 {
     public void Serialize<TWriter>(T? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -358,9 +424,14 @@ internal sealed class NullSerde<T> : ISerde<T?> where T : class
     {
         return null;
     }
+
+    public T? DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
+    {
+        return null;
+    }
 }
 
-internal sealed class IgnoreSerde : ISerde<Ignore>
+internal sealed class IgnoreSerde : ISerde<Ignore>, ISpanDeserializer<Ignore>
 {
     public void Serialize<TWriter>(Ignore value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
@@ -369,6 +440,11 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
     }
 
     public Ignore Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    {
+        return default;
+    }
+
+    public Ignore DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context)
     {
         return default;
     }

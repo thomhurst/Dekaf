@@ -32,6 +32,26 @@ public interface IDeserializer<out T>
 }
 
 /// <summary>
+/// Optional high-performance deserialization interface that avoids <see cref="ReadOnlySequence{T}"/>
+/// construction overhead. Deserializers that implement this interface will be used in the consumer
+/// hot path when the data is a contiguous memory span (the common case for single-segment fetch responses).
+/// </summary>
+/// <remarks>
+/// <para>All built-in Dekaf deserializers implement this interface. Custom deserializers can opt in
+/// for zero-overhead deserialization in the consumer hot path.</para>
+/// <para>When this interface is not implemented, the consumer falls back to the standard
+/// <see cref="IDeserializer{T}.Deserialize"/> method with <see cref="ReadOnlySequence{T}"/> wrapping.</para>
+/// </remarks>
+/// <typeparam name="T">The type to deserialize.</typeparam>
+public interface ISpanDeserializer<out T> : IDeserializer<T>
+{
+    /// <summary>
+    /// Deserializes a value from contiguous memory, avoiding <see cref="ReadOnlySequence{T}"/> overhead.
+    /// </summary>
+    T DeserializeSpan(ReadOnlySpan<byte> data, SerializationContext context);
+}
+
+/// <summary>
 /// Combined serializer and deserializer interface.
 /// </summary>
 /// <typeparam name="T">The type to serialize/deserialize.</typeparam>
