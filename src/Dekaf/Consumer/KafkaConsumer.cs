@@ -1887,6 +1887,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 pending.Dispose();
             }
         }
+
+        // Also drain prefetch channel items for revoked partitions.
+        // Without this, stale data from revoked partitions sitting in the prefetch
+        // channel would be consumed after an incremental unassign (cooperative rebalance),
+        // causing data for partitions no longer owned by this consumer to be yielded.
+        DrainPrefetchChannelForPartitions(removeSet);
+    }
+
+    private void DrainPrefetchChannelForPartitions(HashSet<TopicPartition> partitionsToRemove)
+    {
+        // O(n) over prefetch channel items — acceptable because rebalance is infrequent (not hot path).
+        // Items for retained partitions move to _pendingFetches; revoked items are disposed.
+        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        {
+            if (partitionsToRemove.Contains(prefetched.TopicPartition))
+            {
+                TrackPrefetchedBytes(prefetched, release: true);
+                prefetched.Dispose();
+            }
+            else
+            {
+                _pendingFetches.Enqueue(prefetched);
+                TrackPrefetchedBytes(prefetched, release: true);
+            }
+        }
     }
 
     public IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions)
