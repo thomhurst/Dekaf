@@ -25,22 +25,8 @@ public static class ValueTaskSourcePool
     internal const int FallbackMaxPoolSize = 4096;
 
     /// <summary>
-    /// Conservative estimate of the number of messages per batch, used as a multiplier
-    /// when calculating pool size. Each in-flight message holds a rented pool source,
-    /// so the pool must be sized per message, not per batch.
-    /// </summary>
-    /// <remarks>
-    /// With the default 1 MB batch size and typical ~1 KB messages, a batch holds ~1024 messages.
-    /// This matches the estimate documented in CLAUDE.md ("Batch = 1MB default = ~1000 messages at 1KB each").
-    /// </remarks>
-    internal const int EstimatedMessagesPerBatch = 1024;
-
-    /// <summary>
     /// Calculates an appropriate pool size based on the estimated number of concurrent in-flight messages.
-    /// The pool is rented per <c>ProduceAsync</c> call (per message), so the formula accounts for
-    /// both the number of in-flight batches and the estimated messages per batch:
-    /// <c>(BufferMemory / BatchSize) * EstimatedMessagesPerBatch</c>, clamped to
-    /// [<see cref="MinAutoPoolSize"/>, <see cref="MaxAutoPoolSize"/>].
+    /// Delegates to <see cref="PoolSizing.ForProducer"/> which centralizes all pool size derivation.
     /// </summary>
     /// <param name="bufferMemory">Total producer buffer memory in bytes.</param>
     /// <param name="batchSize">Maximum batch size in bytes.</param>
