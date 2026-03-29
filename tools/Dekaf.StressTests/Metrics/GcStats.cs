@@ -34,7 +34,18 @@ internal struct GcStats
 
         // precise: true forces cross-heap synchronization, giving an accurate
         // cumulative total regardless of which thread takes the snapshot.
-        AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - _allocatedBefore;
+        // On Server GC, compaction can rarely produce a negative delta — report null
+        // rather than a misleading negative number.
+        var delta = GC.GetTotalAllocatedBytes(precise: true) - _allocatedBefore;
+
+        if (delta < 0)
+        {
+            Console.WriteLine($"[GcStats] Warning: precise allocation delta was negative ({delta:N0} B). Reporting as N/A.");
+            AllocatedBytes = null;
+            return;
+        }
+
+        AllocatedBytes = delta;
     }
 
     public GcSnapshot ToSnapshot() => new()
