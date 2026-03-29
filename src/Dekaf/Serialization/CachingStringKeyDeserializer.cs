@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.IO.Hashing;
 using System.Runtime.CompilerServices;
 
-
 namespace Dekaf.Serialization;
 
 /// <summary>
@@ -22,7 +21,7 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
     private const int MaxCachedEntries = 16_384;
 
     private readonly ISerde<string> _inner;
-    private readonly ConcurrentDictionary<long, CacheEntry> _cache = new();
+    private readonly ConcurrentDictionary<ulong, CacheEntry> _cache = new();
     private int _cacheCount;
 
     internal CachingStringKeyDeserializer(ISerde<string> inner)
@@ -76,9 +75,9 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static long ComputeHash(ReadOnlySpan<byte> data)
+    private static ulong ComputeHash(ReadOnlySpan<byte> data)
     {
-        return (long)XxHash64.HashToUInt64(data);
+        return XxHash64.HashToUInt64(data);
     }
 
     /// <summary>
