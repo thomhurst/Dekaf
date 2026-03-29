@@ -803,6 +803,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _connectionsPerBroker = 2;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 4;
+    private bool _enableAdaptiveFetchSizing;
+    private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1007,6 +1009,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (maxBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max partition fetch bytes must be at least 1");
         _maxPartitionFetchBytes = maxBytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables adaptive fetch sizing, which automatically adjusts <c>MaxPartitionFetchBytes</c>
+    /// and <c>FetchMaxBytes</c> based on consumer throughput. When the consumer is keeping up
+    /// (processing faster than fetching), fetch sizes grow to reduce round-trip overhead.
+    /// When falling behind, fetch sizes shrink to reduce memory pressure.
+    /// </summary>
+    /// <param name="options">
+    /// Optional configuration for the adaptive sizing algorithm. When null, sensible defaults are used.
+    /// </param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithAdaptiveFetchSizing(AdaptiveFetchSizingOptions? options = null)
+    {
+        _enableAdaptiveFetchSizing = true;
+        _adaptiveFetchSizingOptions = options;
         return this;
     }
 
@@ -1338,6 +1357,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
     /// may retain up to 8 arrays of this size per consumer instance)</description></item>
     /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
+    /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks when falling behind)</description></item>
     /// </list>
     /// <para><b>Memory note:</b> The combined in-flight memory ceiling is
     /// <c>PrefetchPipelineDepth × FetchMaxBytes</c> — with these defaults that is
@@ -1353,6 +1373,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _maxPartitionFetchBytes = 4 * 1024 * 1024;
         _fetchMaxBytes = 100 * 1024 * 1024;
         _prefetchPipelineDepth = 5;
+        _enableAdaptiveFetchSizing = true;
+        _adaptiveFetchSizingOptions ??= new AdaptiveFetchSizingOptions
+        {
+            InitialPartitionFetchBytes = 4 * 1024 * 1024,
+            MaxPartitionFetchBytes = 16 * 1024 * 1024,
+            InitialFetchMaxBytes = 100 * 1024 * 1024,
+            MaxFetchMaxBytes = 200 * 1024 * 1024
+        };
         return this;
     }
 
@@ -1487,7 +1515,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             PrefetchPipelineDepth = _prefetchPipelineDepth,
             ConnectionsPerBroker = _connectionsPerBroker,
             EnableAdaptiveConnections = _enableAdaptiveConnections,
-            MaxConnectionsPerBroker = _maxConnectionsPerBroker
+            MaxConnectionsPerBroker = _maxConnectionsPerBroker,
+            EnableAdaptiveFetchSizing = _enableAdaptiveFetchSizing,
+            AdaptiveFetchSizingOptions = _adaptiveFetchSizingOptions
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

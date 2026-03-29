@@ -476,6 +476,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
     private readonly ConsumerConnectionScaler? _connectionScaler;
+    private readonly AdaptiveFetchSizer? _adaptiveFetchSizer;
 
     // Dead letter queue raw byte tracking (zero overhead when not enabled)
     private bool _rawRecordTrackingEnabled;
@@ -599,6 +600,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         await _connectionPool.ShrinkConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
                 },
                 logError: ex => _logger.LogWarning(ex, "Adaptive connection scaling operation failed"));
+        }
+
+        // Initialize adaptive fetch sizer if configured
+        if (options.EnableAdaptiveFetchSizing)
+        {
+            var sizingOptions = options.AdaptiveFetchSizingOptions ?? new AdaptiveFetchSizingOptions
+            {
+                InitialPartitionFetchBytes = options.MaxPartitionFetchBytes,
+                InitialFetchMaxBytes = options.FetchMaxBytes
+            };
+            _adaptiveFetchSizer = new AdaptiveFetchSizer(sizingOptions);
         }
 
         if (!string.IsNullOrEmpty(options.GroupId))
@@ -977,6 +989,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
+                    var batchProcessingStarted = _adaptiveFetchSizer is not null
+                        ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
                     // Eagerly parse all records in this fetch's batches upfront.
                     // This converts per-record lazy parse overhead (disposed check +
@@ -1120,6 +1134,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
                     }
 
+                    // Report batch processing time to the adaptive fetch sizer (per-batch, not per-message)
+                    if (batchProcessingStarted != 0)
+                    {
+                        var processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted);
+                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                    }
+
                     // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
                     _pendingFetches.Dequeue().Dispose();
                 }
@@ -1160,8 +1181,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             getMaxBytes: () => CalculatePrefetchMaxBytes(
                 _options.QueuedMaxMessagesKbytes,
                 _assignmentSnapshot.Count,
-                _options.MaxPartitionFetchBytes,
-                _options.FetchMaxBytes,
+                _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
+                _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
                 _options.PrefetchPipelineDepth),
             getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
             prefetchRecords: PrefetchRecordsAsync,
@@ -1367,10 +1388,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
         request.MinBytes = _options.FetchMinBytes;
-        request.MaxBytes = _options.FetchMaxBytes;
+        request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
         request.IsolationLevel = _options.IsolationLevel;
         request.Topics = topicData;
 
+        _adaptiveFetchSizer?.RecordFetchStart();
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
         FetchResponse response;
@@ -1385,6 +1407,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             request.ReturnToPool();
         }
+
+        _adaptiveFetchSizer?.RecordFetchEnd();
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
@@ -2708,7 +2732,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
         request.MinBytes = _options.FetchMinBytes;
-        request.MaxBytes = _options.FetchMaxBytes;
+        request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
         request.IsolationLevel = _options.IsolationLevel;
         request.Topics = topicData;
 
@@ -2990,7 +3014,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // Each broker task gets its own FetchRequestPartition objects so that
             // concurrent calls cannot mutate offsets visible to another task.
             // This allocates per fetch cycle (per-batch), not per-message.
-            return BuildFetchResult(cachedDict, _fetchPositions);
+            return BuildFetchResult(cachedDict, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes);
         }
 
         // Cache miss (or subrange): build fresh structure with TopicPartition stored alongside
@@ -3011,7 +3035,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 {
                     Partition = p.Partition,
                     FetchOffset = 0, // Placeholder; BuildFetchResult reads fresh from _fetchPositions
-                    PartitionMaxBytes = _options.MaxPartitionFetchBytes
+                    PartitionMaxBytes = _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes
                 },
                 p // Store TopicPartition for reuse in hot path
             ));
@@ -3020,7 +3044,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Build result with fresh copies so the caller owns its own FetchRequestPartition
         // instances. The cached dict stores templates; each caller gets independent copies
         // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
-        var result = BuildFetchResult(topicPartitions, _fetchPositions);
+        var result = BuildFetchResult(topicPartitions, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes);
 
         // Update cache (first writer wins to avoid overwriting fresher data) — only for full-list case
         if (isFullList)
@@ -3048,7 +3072,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// </summary>
     internal static List<FetchRequestTopic> BuildFetchResult(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
-        ConcurrentDictionary<TopicPartition, long> fetchPositions)
+        ConcurrentDictionary<TopicPartition, long> fetchPositions,
+        int? partitionMaxBytesOverride = null)
     {
         var result = new List<FetchRequestTopic>(templateDict.Count);
 
@@ -3066,7 +3091,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     CurrentLeaderEpoch = template.CurrentLeaderEpoch,
                     LastFetchedEpoch = template.LastFetchedEpoch,
                     LogStartOffset = template.LogStartOffset,
-                    PartitionMaxBytes = template.PartitionMaxBytes
+                    PartitionMaxBytes = partitionMaxBytesOverride ?? template.PartitionMaxBytes
                 });
             }
 
