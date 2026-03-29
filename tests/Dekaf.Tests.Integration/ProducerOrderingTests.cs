@@ -359,11 +359,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Multiple partitions with small batch size to force many simultaneous batches.
         // Under load, the sender loop drains multiple batches at once and coalesces them into
         // fewer ProduceRequests per broker. Verify per-partition ordering is preserved.
-        //
-        // Uses moderate parameters (4 partitions × 200 messages) to reliably exercise
-        // coalescing without overwhelming the Testcontainer on resource-constrained CI runners.
-        // The original 8×500 configuration caused receive timeouts on both metadata (broker -1)
-        // and data (broker 1) connections under parallel test load (#578).
+        // Moderate parameters to avoid overwhelming the Testcontainer on CI (#578).
 
         const int partitionCount = 4;
         const int messagesPerPartition = 200;
@@ -409,14 +405,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
         for (var p = 0; p < partitionCount; p++) messagesByPartition[p] = [];
 
-        var totalExpected = partitionCount * messagesPerPartition + partitionCount; // +N for warmup (one per partition)
+        var totalExpected = partitionCount * (messagesPerPartition + 1); // +1 per partition for warmup
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 
+        var totalConsumed = 0;
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messagesByPartition[msg.Partition].Add(msg);
-            var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (++totalConsumed >= totalExpected) break;
         }
 
         // Verify per-partition ordering
