@@ -164,8 +164,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
-    private readonly PendingRequestPool _pendingRequestPool = new();
-    private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
+    private readonly PendingRequestPool _pendingRequestPool;
+    private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
@@ -228,6 +228,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _port = port;
         _clientId = clientId;
         _options = options ?? new ConnectionOptions();
+        var connectionSizes = PoolSizing.ForConnection(_options.MaxInFlightRequestsPerConnection);
+        _pendingRequestPool = new PendingRequestPool(connectionSizes.PendingRequests);
+        _timeoutCtsPool = new CancellationTokenSourcePool(connectionSizes.CancellationTokenSources);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _bufferMemory = bufferMemory;
         _connectionsPerBroker = connectionsPerBroker;
@@ -2124,6 +2127,11 @@ public sealed class ConnectionOptions
     /// Request timeout.
     /// </summary>
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Maximum in-flight requests per connection. Used to derive internal pool sizes.
+    /// </summary>
+    public int MaxInFlightRequestsPerConnection { get; init; } = 5;
 }
 
 /// <summary>
