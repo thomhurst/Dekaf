@@ -1515,10 +1515,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var expectedTopic = batch.TopicPartition.Topic;
                 var expectedPartition = batch.TopicPartition.Partition;
 
-                ProduceResponsePartitionData? partitionResponse = null;
-                responseLookup?.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
+                // default() zero-initializes (LogAppendTimeMs/LogStartOffset get 0, not -1 from property initializers).
+                // This is safe because partitionResponse is only consumed when foundResponse is true,
+                // in which case TryGetValue has populated it with the real response data.
+                var partitionResponse = default(ProduceResponsePartitionData);
+                var foundResponse = responseLookup is not null
+                    && responseLookup.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
 
-                if (partitionResponse is null)
+                if (!foundResponse)
                 {
                     // Log what the response actually contains for diagnosis.
                     // The response may be empty (broker didn't respond for this partition),
