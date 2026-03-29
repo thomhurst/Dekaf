@@ -53,17 +53,18 @@ public sealed class ProducerOptions
     /// <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> block until space is available
     /// (controlled by <see cref="MaxBlockMs"/>).
     /// <para>
-    /// Default is 2GB. Profiling at 268K msg/sec with 1KB messages showed that a 1GB buffer fills
-    /// in ~4 seconds, after which every append blocks in backpressure (5.77% CPU). Doubling the
-    /// buffer delays backpressure onset and reduces blocking frequency under sustained load.
+    /// Default is 256MB, which provides sufficient buffer for most workloads while keeping
+    /// the memory footprint reasonable. At 268K msg/sec with 1KB messages, a 256MB buffer
+    /// holds ~1 second of data before backpressure engages.
     /// </para>
     /// <para>
     /// <b>Tuning guidance:</b> Increase this value if profiling shows significant time in
-    /// <c>ReserveMemoryAsync</c> / <c>SemaphoreSlim.WaitAsync</c>. Decrease it to limit
-    /// memory usage in low-throughput or memory-constrained environments.
+    /// <c>ReserveMemoryAsync</c> / <c>SemaphoreSlim.WaitAsync</c>. For high-throughput
+    /// scenarios, 1-2GB may be appropriate. Decrease it to limit memory usage in
+    /// low-throughput or memory-constrained environments.
     /// </para>
     /// </summary>
-    public ulong BufferMemory { get; init; } = 2L * 1024 * 1024 * 1024;
+    public ulong BufferMemory { get; init; } = 256L * 1024 * 1024;
 
     /// <summary>
     /// Compression type.

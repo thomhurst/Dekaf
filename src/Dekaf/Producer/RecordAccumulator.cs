@@ -344,15 +344,14 @@ internal sealed class BatchArena
     //
     // Pool size scales with BufferMemory/BatchSize to handle high batch churn rates
     // (e.g., 16KB batches create ~6,250 batches/sec at 100K msg/sec vs ~100 for 1MB batches).
-    // The default (1024) covers sustained load with default 2GB buffer and 1MB batches;
-    // smaller batches ratchet up automatically.
-    // Profiling showed 256 caused pool overflow and ~3.9GB of POH allocation churn in 2-min stress tests.
-    internal const int DefaultPoolSize = 1024;
+    // The default (128) covers sustained load with default 256MB buffer and 1MB batches;
+    // smaller batches ratchet up automatically via ComputePoolSize.
+    internal const int DefaultPoolSize = 128;
     // Upper bound on pool size. Worst-case POH retention: MaxPoolSizeCap × arena capacity.
-    // With 16KB batches (the smallest that triggers scaling): 2048 × ~18KB ≈ 36MB.
-    // With 256KB batches and 2GB buffer: 2048 × ~280KB ≈ 560MB POH retention.
-    // With 1MB batches: ComputePoolSize returns 1024 (not 2048), so 1024 × ~1.1MB ≈ ~1.1GB.
-    internal const int MaxPoolSizeCap = 2048;
+    // With 16KB batches (the smallest that triggers scaling): 512 × ~18KB ≈ 9MB.
+    // With 256KB batches and 256MB buffer: 512 × ~280KB ≈ 140MB POH retention.
+    // With 1MB batches: ComputePoolSize returns 128 (not 512), so 128 × ~1.1MB ≈ ~140MB.
+    internal const int MaxPoolSizeCap = 512;
     private static int s_maxPoolSize = DefaultPoolSize;
     private static int s_poolCount;
     private static long s_misses;
@@ -1378,14 +1377,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
 
-        // Pre-warm pools to eliminate ramp-up allocation bursts.
-        // ReadyBatch is lightweight (no arena), so fully warm it.
+        // Pre-warm a small number of pool entries to cover initial burst without
+        // excessive upfront memory usage. The pools grow lazily on demand after this.
+        // ReadyBatch is lightweight (no arena), so warm more of those.
         // PartitionBatch and BatchArena each allocate a ~BatchSize POH buffer,
-        // so pre-warm only a fraction (1/4) to avoid excessive upfront memory usage
-        // (e.g., poolSize=512 × 1MB = 512MB if fully warmed).
-        _readyBatchPool.PreWarm(poolSize * ReadyBatchPoolSizeRatio);
-        _batchPool.PreWarm(poolSize / 4);
-        BatchArena.PreWarm(poolSize / 4, options.BatchSize);
+        // so pre-warm only a handful (e.g., 8 × 1MB = 8MB for default settings).
+        var preWarmCount = Math.Min(poolSize / 8, 16);
+        _readyBatchPool.PreWarm(Math.Min(poolSize, 32));
+        _batchPool.PreWarm(preWarmCount);
+        BatchArena.PreWarm(preWarmCount, options.BatchSize);
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -1407,13 +1407,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal static int ComputePoolSize(ProducerOptions options)
     {
         // BufferMemory / BatchSize gives the max batch count the buffer can hold.
-        // Divide by 2: under sustained load, batches span multiple lifecycle phases
-        // (filling, sealed/queued, in-flight, awaiting ack, cleanup). Profiling showed
-        // that /4 caused pool overflow with default settings (2GB/1MB = 512), leading to
-        // ~3.9GB POH allocation churn and 15 Gen2 GCs in 2-minute stress tests.
-        // /2 provides sufficient headroom for peak in-flight counts without excessive retention.
+        // Divide by 4: most batches are either filling or in-flight, not all in the pool
+        // simultaneously. The pool grows lazily on miss, so undersizing causes a few extra
+        // allocations during ramp-up but avoids excessive steady-state POH retention.
+        // With default 256MB/1MB = 256 batches, pool = 64, which holds ~72MB of arenas.
         var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
-        return Math.Clamp(batchCapacity / 2, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
+        return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
     }
 
     /// <summary>

@@ -35,7 +35,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     /// Larger requests fall through to new allocations.</param>
     /// <param name="maxArraysPerBucket">Maximum number of arrays to retain per size bucket.
     /// Lower values reduce retained memory at the cost of more frequent allocations.</param>
-    public PipeMemoryPool(int maxArrayLength = 1024 * 1024, int maxArraysPerBucket = 8)
+    public PipeMemoryPool(int maxArrayLength = 1024 * 1024, int maxArraysPerBucket = 4)
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
     }

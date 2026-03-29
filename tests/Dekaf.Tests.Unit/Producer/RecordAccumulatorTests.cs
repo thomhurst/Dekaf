@@ -1603,7 +1603,7 @@ public class RecordAccumulatorTests
         var defaultOptions = new ProducerOptions
         {
             BootstrapServers = new[] { "localhost:9092" },
-            // Uses default BufferMemory (2GB) and default BatchSize (1MB)
+            // Uses default BufferMemory (256MB) and default BatchSize (1MB)
         };
 
         var computed = RecordAccumulator.ComputePoolSize(defaultOptions);
@@ -1612,11 +1612,11 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    [Arguments(1073741824UL, 1048576, 1024)]  // 1GB buffer, 1MB batch → 1024/2=512, clamped to 1024 (default floor)
-    [Arguments(1073741824UL, 16384, 2048)]   // 1GB buffer, 16KB batch → 65536/2=32768, capped at 2048
-    [Arguments(1073741824UL, 262144, 2048)]  // 1GB buffer, 256KB batch → 4096/2=2048
-    [Arguments(16777216UL, 16384, 1024)]     // 16MB buffer, 16KB batch → 1024/2=512, clamped to 1024 (default floor)
-    [Arguments(1073741824UL, 1073741824, 1024)] // 1GB buffer, 1GB batch → 1/2=0, clamped to 1024
+    [Arguments(1073741824UL, 1048576, 256)]    // 1GB buffer, 1MB batch → 1024/4=256
+    [Arguments(1073741824UL, 16384, 512)]      // 1GB buffer, 16KB batch → 65536/4=16384, capped at 512
+    [Arguments(1073741824UL, 262144, 512)]     // 1GB buffer, 256KB batch → 4096/4=1024, capped at 512
+    [Arguments(16777216UL, 16384, 256)]        // 16MB buffer, 16KB batch → 1024/4=256
+    [Arguments(1073741824UL, 1073741824, 128)] // 1GB buffer, 1GB batch → 1/4=0, clamped to 128 (default floor)
     public async Task ComputePoolSize_ScalesWithBufferAndBatchSize(
         ulong bufferMemory, int batchSize, int expectedPoolSize)
     {
