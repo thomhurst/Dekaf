@@ -23,7 +23,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Bucket capacity is scaled by <c>_connectionsPerBroker</c> to prevent pool saturation
     /// under high concurrent load (capped at 256 to bound memory).
     /// </summary>
-    private readonly PipeMemoryPool _sharedPipeMemoryPool;
+    private readonly PipeMemoryPool? _sharedPipeMemoryPool;
 
     /// <summary>
     /// Optional factory for creating connections, used by tests to inject fakes.
@@ -113,7 +113,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = ResponseBufferPool.Default;
         _connectionFactory = connectionFactory;
-        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: ScaledBucketCapacity(_connectionsPerBroker));
+        // No shared pool needed: factory-created connections manage their own pools.
     }
 
     /// <summary>
@@ -791,7 +791,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             // Dispose the shared memory pool after all connections are closed.
             // At this point, all pipes have been completed and IMemoryOwner<byte> references
             // returned, so the underlying ArrayPool can be collected by the GC.
-            _sharedPipeMemoryPool.Dispose();
+            _sharedPipeMemoryPool?.Dispose();
 
             LogAllConnectionsClosed();
         }
