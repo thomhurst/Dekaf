@@ -2776,6 +2776,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </param>
     internal void ForceFailAllInFlightBatches(bool returnToPool = true)
     {
+        if (Volatile.Read(ref _inFlightBatchCount) <= 0)
+            return;
+
         // Snapshot the list to iterate outside the lock
         var snapshot = new List<ReadyBatch>();
         InFlightBatchListSnapshot(snapshot);
