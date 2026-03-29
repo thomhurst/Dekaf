@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO.Hashing;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -6,8 +7,15 @@ namespace Dekaf.Serialization;
 
 /// <summary>
 /// String deserializer that caches small key strings to avoid per-message allocation.
-/// Only caches key deserialization (not values). Bounded to prevent unbounded growth.
+/// Only used for key deserialization (not values). Bounded to prevent unbounded growth.
 /// </summary>
+/// <remarks>
+/// <para><b>Hash collision behavior:</b> On a 64-bit hash collision, the first key to claim a
+/// hash slot wins. The second key will always miss the cache (byte-level equality check fails)
+/// and fall through to the inner deserializer, returning correct values but without caching
+/// benefit. This is an acceptable tradeoff given the ~2^64 hash space makes collisions
+/// astronomically unlikely in practice.</para>
+/// </remarks>
 internal sealed class CachingStringKeyDeserializer : ISerde<string>
 {
     private const int MaxCachedKeyBytes = 128;
@@ -31,7 +39,9 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (context.Component != SerializationComponent.Key || data.Length == 0 || data.Length > MaxCachedKeyBytes)
+        // This class is only constructed for key deserializers (in Builders.cs),
+        // so no need to check context.Component here on the hot path.
+        if (data.Length == 0 || data.Length > MaxCachedKeyBytes)
             return _inner.Deserialize(data, context);
 
         return DeserializeWithCache(data, context);
@@ -66,12 +76,7 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static long ComputeHash(ReadOnlySpan<byte> data)
     {
-        // Use two independent hash computations combined into a 64-bit key
-        // to reduce collision probability. Length is mixed in for extra differentiation.
-        var hc = new HashCode();
-        hc.AddBytes(data);
-        var h1 = hc.ToHashCode();
-        return ((long)h1 << 32) | (uint)(data.Length * 397 ^ h1);
+        return (long)XxHash64.HashToUInt64(data);
     }
 
     /// <summary>
