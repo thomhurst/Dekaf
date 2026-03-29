@@ -747,31 +747,36 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TResponse : IKafkaResponse
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
-
-        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
+        byte[]? arrayToReturn = serializedArray;
         try
         {
-            // Copy pre-serialized data into the PipeWriter (synchronous — no thread switch).
-            // Return the serialized array immediately BEFORE FlushAsync to ensure it is returned
-            // to ArrayPool<byte>.Shared on the same thread that rented it. Without this, the
-            // FlushAsync continuation can resume on a different thread, causing cross-thread
-            // returns that accumulate in TlsOverPerCoreLockedStacksArrayPool's per-thread and
-            // per-core locked stacks — growing WorkingSet proportionally to the number of broker
-            // connections (each BrokerSender's LongRunning thread rents, thread pool threads return).
-            CopyPreSerializedToPipeWriter(serializedArray, serializedLength);
-            ArrayPool<byte>.Shared.Return(serializedArray);
-            serializedArray = null!; // Prevent double-return in outer finally
-
-            await FlushPipeWriterAsync(correlationId, cancellationToken, callerOwnsTimeout)
+            await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken)
                 .ConfigureAwait(false);
+            try
+            {
+                // Copy pre-serialized data into the PipeWriter (synchronous — no thread switch).
+                // Return the serialized array immediately BEFORE FlushAsync to ensure it is returned
+                // to ArrayPool<byte>.Shared on the same thread that rented it. Without this, the
+                // FlushAsync continuation can resume on a different thread, causing cross-thread
+                // returns that accumulate in TlsOverPerCoreLockedStacksArrayPool's per-thread and
+                // per-core locked stacks — growing WorkingSet proportionally to the number of broker
+                // connections (each BrokerSender's LongRunning thread rents, thread pool threads return).
+                CopyPreSerializedToPipeWriter(serializedArray, serializedLength);
+                ArrayPool<byte>.Shared.Return(serializedArray);
+                arrayToReturn = null; // Returned on the correct thread — prevent double-return
+
+                await FlushPipeWriterAsync(correlationId, cancellationToken, callerOwnsTimeout)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                SemaphoreHelper.ReleaseSafely(_writeLock);
+            }
         }
         finally
         {
-            SemaphoreHelper.ReleaseSafely(_writeLock);
-            // Return the array if we failed before copying to PipeWriter
-            // (e.g., exception in CopyPreSerializedToPipeWriter — unlikely but safe).
-            if (serializedArray is not null)
-                ArrayPool<byte>.Shared.Return(serializedArray);
+            if (arrayToReturn is not null)
+                ArrayPool<byte>.Shared.Return(arrayToReturn);
         }
     }
 
@@ -781,7 +786,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// to its pool immediately after this call — before any async operations — to prevent
     /// cross-thread ArrayPool returns that cause WorkingSet growth.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CopyPreSerializedToPipeWriter(byte[] serializedData, int length)
     {
         if (_writer is null)
@@ -803,6 +807,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         CancellationToken cancellationToken,
         bool callerOwnsTimeout = false)
     {
+        if (_writer is null)
+            throw new InvalidOperationException("Not connected");
+
 #if DEBUG
         System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
             "callerOwnsTimeout path requires a timeout-bearing token");
@@ -817,7 +824,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             try
             {
-                result = await _writer!.FlushAsync(cancellationToken).ConfigureAwait(false);
+                result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             // callerOwnsTimeout contract: token fires only on timeout, never explicit user cancellation.
             // Any OperationCanceledException here means the caller's timeout elapsed.
@@ -839,7 +846,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
             try
             {
-                result = await _writer!.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+                result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
