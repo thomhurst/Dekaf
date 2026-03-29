@@ -710,6 +710,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
 
         LogCommitOffsetsStarted(_options.GroupId!);
+        // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
+        // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
+        // the lock can be held for up to ~1.8 seconds. Concurrent callers will block for the full retry duration.
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -806,6 +809,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_coordinatorId < 0)
             return new Dictionary<TopicPartition, long>();
 
+        // Lock is intentionally held across retries to protect the shared _fetchTopicGroups dictionary,
+        // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
+        // the lock can be held for up to ~1.8 seconds. Concurrent callers will block for the full retry duration.
         await _fetchLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1266,7 +1272,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     LogSuccessfullyLeftGroup(_options.GroupId!);
                 }
-            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
+            // LeaveGroup is best-effort during shutdown; cap retries to 1 to avoid blocking disposal
+            // for up to ~1.8s during coordinator failover.
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync, maxRetries: 1).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
