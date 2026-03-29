@@ -10,6 +10,12 @@ namespace Dekaf.Consumer;
 /// </summary>
 internal sealed class ConsumerConnectionScaler
 {
+    /// <summary>
+    /// Maximum number of fetch connections per broker. Used for stackalloc sizing
+    /// and as an upper bound for connection scaling.
+    /// </summary>
+    internal const int MaxFetchConnectionsPerBroker = 8;
+
     private static readonly TimeSpan ScaleUpSustained = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ScaleDownSustained = TimeSpan.FromSeconds(120);
     private static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(5);
@@ -117,16 +123,6 @@ internal sealed class ConsumerConnectionScaler
     internal static int GetFetchConnectionCount(int connectionsPerBroker)
         => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
 
-    /// <summary>
-    /// Returns the next fetch connection index using round-robin.
-    /// </summary>
-    internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
-    {
-        if (fetchConnectionCount == 1) return 0;
-        var next = Interlocked.Increment(ref counter) - 1;
-        return next % fetchConnectionCount;
-    }
-
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
     {
         var task = action(CancellationToken.None);
@@ -138,6 +134,42 @@ internal sealed class ConsumerConnectionScaler
             if (t.Exception is not null)
                 ((Action<Exception>?)state)?.Invoke(t.Exception.InnerException ?? t.Exception);
         }, _logError, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Splits partitions across fetch connections using chunked distribution.
+    /// Returns the number of groups written to <paramref name="groups"/>.
+    /// Each group is a (startIndex, count) range into the original partition list.
+    /// When <paramref name="fetchConnectionCount"/> is 1, returns a single group spanning all partitions.
+    /// </summary>
+    internal static int SplitPartitionsAcrossConnections(
+        int partitionCount,
+        int fetchConnectionCount,
+        Span<(int StartIndex, int Count)> groups)
+    {
+        Debug.Assert(groups.Length >= Math.Min(fetchConnectionCount, partitionCount),
+            $"groups span too small: {groups.Length} < Min({fetchConnectionCount}, {partitionCount})");
+
+        if (fetchConnectionCount <= 1 || partitionCount <= 1)
+        {
+            groups[0] = (0, partitionCount);
+            return 1;
+        }
+
+        // Limit connections to partition count (no empty groups)
+        var effectiveConnections = Math.Min(fetchConnectionCount, partitionCount);
+        var baseSize = partitionCount / effectiveConnections;
+        var remainder = partitionCount % effectiveConnections;
+
+        var offset = 0;
+        for (var i = 0; i < effectiveConnections; i++)
+        {
+            var count = baseSize + (i < remainder ? 1 : 0);
+            groups[i] = (offset, count);
+            offset += count;
+        }
+
+        return effectiveConnections;
     }
 
     internal void TestAdvanceTime(TimeSpan duration)
