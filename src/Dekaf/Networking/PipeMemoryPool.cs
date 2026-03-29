@@ -32,17 +32,24 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     /// Creates a new pool with a dedicated <see cref="ArrayPool{T}"/> instance.
     /// </summary>
     /// <param name="maxArrayLength">Maximum size of arrays that the pool will cache.
-    /// Larger requests fall through to new allocations.</param>
+    /// Larger requests fall through to new allocations. Defaults to 4 MB to cover
+    /// ProduceRequests with 1 MB batches plus header/framing overhead, and coalesced
+    /// multi-batch requests.</param>
     /// <param name="maxArraysPerBucket">Maximum number of arrays to retain per size bucket.
-    /// Lower values reduce retained memory at the cost of more frequent allocations.</param>
-    public PipeMemoryPool(int maxArrayLength = 1024 * 1024, int maxArraysPerBucket = 4)
+    /// Must be large enough to cover the concurrent segment demand from both the input
+    /// pipe (read pump creating ~64 KB segments that stay alive until AdvanceTo) and the
+    /// output PipeWriter (large GetMemory calls for serialized requests). With pipelined
+    /// ProduceResponses (idempotent producers), the input pipe can hold 16-32 active
+    /// segments simultaneously. Defaults to 32 to prevent pool overflow allocations under
+    /// high-throughput pipelining.</param>
+    public PipeMemoryPool(int maxArrayLength = 4 * 1024 * 1024, int maxArraysPerBucket = 32)
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
     }
 
     // Returns int.MaxValue to match MemoryPool<byte>.Shared behavior.
     // System.IO.Pipelines does not rely on MaxBufferSize for sizing decisions;
-    // actual caching is bounded by the maxArrayLength passed to ArrayPool.Create.
+    // actual caching is bounded by the maxArrayLength (4 MB) passed to ArrayPool.Create.
     public override int MaxBufferSize => int.MaxValue;
 
     public override IMemoryOwner<byte> Rent(int minBufferSize = -1)

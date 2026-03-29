@@ -64,10 +64,10 @@ public class PipeMemoryPoolTests
     {
         using var pool = new PipeMemoryPool();
 
-        // Request larger than default maxArrayLength (1MB) — falls through to new allocation
-        using var owner = pool.Rent(2 * 1024 * 1024);
+        // Request larger than default maxArrayLength (4 MB) — falls through to new allocation
+        using var owner = pool.Rent(8 * 1024 * 1024);
 
-        await Assert.That(owner.Memory.Length).IsGreaterThanOrEqualTo(2 * 1024 * 1024);
+        await Assert.That(owner.Memory.Length).IsGreaterThanOrEqualTo(8 * 1024 * 1024);
     }
 
     [Test]
