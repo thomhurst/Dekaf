@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Dekaf.Internal;
 
 namespace Dekaf.Producer;
 
@@ -45,17 +46,7 @@ public static class ValueTaskSourcePool
     /// <param name="batchSize">Maximum batch size in bytes.</param>
     /// <returns>A pool size scaled to the expected concurrency level.</returns>
     public static int CalculatePoolSize(ulong bufferMemory, int batchSize)
-    {
-        if (batchSize <= 0)
-            throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
-
-        // Clamp maxBatches before multiplying to prevent overflow for large bufferMemory values.
-        const ulong maxUsefulBatches = MaxAutoPoolSize / EstimatedMessagesPerBatch; // 64
-        var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
-        var estimatedSources = (int)(maxBatches * EstimatedMessagesPerBatch);
-
-        return Math.Clamp(estimatedSources, MinAutoPoolSize, MaxAutoPoolSize);
-    }
+        => PoolSizing.ForProducer(bufferMemory, batchSize).ValueTaskSources;
 }
 
 /// <summary>

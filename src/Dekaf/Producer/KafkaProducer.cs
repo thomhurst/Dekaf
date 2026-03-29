@@ -173,11 +173,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         _retryPolicy = options.RetryPolicy;
 
-        // Initialize ValueTaskSource pool: auto-calculate from BufferMemory/BatchSize when 0
+        // Derive all producer pool sizes from user-facing configuration
+        var producerPoolSizes = PoolSizing.ForProducer(options.BufferMemory, options.BatchSize);
+
         var poolSize = options.ValueTaskSourcePoolSize > 0
             ? options.ValueTaskSourcePoolSize
-            : ValueTaskSourcePool.CalculatePoolSize(options.BufferMemory, options.BatchSize);
+            : producerPoolSizes.ValueTaskSources;
         _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(poolSize);
+
+        // Configure thread-local buffer retention to match batch size
+        RecordBatch.RatchetMaxRetainedBufferSize(producerPoolSizes.MaxRetainedBufferSize);
 
         _partitioner = options.CustomPartitioner ?? options.Partitioner switch
         {
