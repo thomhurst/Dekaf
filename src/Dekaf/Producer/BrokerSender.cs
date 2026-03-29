@@ -1111,16 +1111,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // linger cycle, this eliminates dead time where the BrokerSender waits for
                     // a response while new batches sit unprocessed in the channel.
                     //
-                    // Guards:
-                    // - sentThisIteration: ensures progress was made this iteration, preventing
-                    //   spin loops when carry-over is all muted (stale events cause immediate
-                    //   WaitToReadAsync return but nothing is sendable)
-                    // - carryOver.Count == 0: no muted partitions that could create stale
-                    //   channel events, making WaitToReadAsync safe to use
-                    // - waitPendingCount < _totalMaxInFlight: in-flight capacity available to
-                    //   actually send new batches if they arrive
-                    if (sentThisIteration && carryOver.Count == 0
-                        && waitPendingCount < _totalMaxInFlight)
+                    // Can pipeline: progress was made, no muted carry-over that could
+                    // generate stale channel events, and in-flight capacity remains.
+                    var canPipeline = sentThisIteration
+                        && carryOver.Count == 0
+                        && waitPendingCount < _totalMaxInFlight;
+
+                    if (canPipeline)
                     {
                         if (!await eventReader.WaitToReadAsync(cancellationToken)
                             .ConfigureAwait(false))
@@ -1128,10 +1125,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
-                        // Carry-over exists (possibly muted) or at in-flight limit — wait
-                        // for a response only. Cannot use eventReader.WaitToReadAsync here
-                        // because the channel may contain stale NewBatch events from muted
-                        // carry-over, causing immediate return and a spin loop.
+                        // Either carry-over exists (muted partitions may generate stale events),
+                        // or at in-flight capacity limit, or no progress was made this iteration —
+                        // wait for a response only.
                         await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                     }
                 }
