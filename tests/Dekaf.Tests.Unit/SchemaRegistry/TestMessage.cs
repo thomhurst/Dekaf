@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 /// A simple test protobuf message for unit testing.
 /// This class is a manually-created protobuf message that would typically be generated from a .proto file.
 /// </summary>
-public sealed class TestMessage : IMessage<TestMessage>
+public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
 {
     private static readonly MessageParser<TestMessage> _parser = new(() => new TestMessage());
     private static readonly MessageDescriptor _descriptor;
@@ -155,6 +155,50 @@ public sealed class TestMessage : IMessage<TestMessage>
         if (Value != 0)
         {
             output.WriteRawTag(25); // Field 3, wire type fixed64
+            output.WriteDouble(Value);
+        }
+    }
+
+    void IBufferMessage.InternalMergeFrom(ref ParseContext input)
+    {
+        uint tag;
+        while ((tag = input.ReadTag()) != 0)
+        {
+            switch (tag)
+            {
+                case 8: // Field 1, type int32
+                    Id = input.ReadInt32();
+                    break;
+                case 18: // Field 2, type string (length-delimited)
+                    Name = input.ReadString();
+                    break;
+                case 25: // Field 3, type double (fixed64)
+                    Value = input.ReadDouble();
+                    break;
+                default:
+                    // For unknown fields in test code, just continue reading
+                    break;
+            }
+        }
+    }
+
+    void IBufferMessage.InternalWriteTo(ref WriteContext output)
+    {
+        if (Id != 0)
+        {
+            output.WriteRawTag(8);
+            output.WriteInt32(Id);
+        }
+
+        if (!string.IsNullOrEmpty(Name))
+        {
+            output.WriteRawTag(18);
+            output.WriteString(Name);
+        }
+
+        if (Value != 0)
+        {
+            output.WriteRawTag(25);
             output.WriteDouble(Value);
         }
     }

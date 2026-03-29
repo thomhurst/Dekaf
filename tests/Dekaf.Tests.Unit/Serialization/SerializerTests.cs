@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.InteropServices;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Serialization;
@@ -462,6 +463,40 @@ public class SerializerTests
 
     #endregion
 
+    #region NullableString Serializer Tests
+
+    [Test]
+    public async Task NullableStringSerializer_NonNull_SerializesAndDeserializes()
+    {
+        var serializer = Serializers.NullableString;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize("test value", ref buffer, context);
+
+        var result = serializer.Deserialize(buffer.WrittenMemory, context);
+
+        await Assert.That(result).IsEqualTo("test value");
+    }
+
+    [Test]
+    public async Task NullableStringSerializer_Null_ReturnsNull()
+    {
+        var serializer = Serializers.NullableString;
+        var context = new SerializationContext
+        {
+            Topic = "test",
+            Component = SerializationComponent.Value,
+            IsNull = true
+        };
+
+        var result = serializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(result).IsNull();
+    }
+
+    #endregion
+
     #region RawBytes Serializer Tests
 
     [Test]
@@ -479,7 +514,7 @@ public class SerializerTests
     }
 
     [Test]
-    public async Task RawBytesSerializer_ReturnsCorrectData()
+    public async Task RawBytesSerializer_Deserialize_IsZeroCopy_SameUnderlyingArray()
     {
         var serializer = Serializers.RawBytes;
         var context = CreateContext();
@@ -487,7 +522,13 @@ public class SerializerTests
 
         var result = serializer.Deserialize((ReadOnlyMemory<byte>)originalData, context);
 
+        // Verify value equality
         await Assert.That(result.ToArray()).IsEquivalentTo(originalData);
+
+        // Verify zero-copy: the returned memory must share the same underlying array
+        var gotSegment = MemoryMarshal.TryGetArray(result, out var segment);
+        await Assert.That(gotSegment).IsTrue();
+        await Assert.That(ReferenceEquals(segment.Array, originalData)).IsTrue();
     }
 
     [Test]
