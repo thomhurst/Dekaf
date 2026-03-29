@@ -1122,6 +1122,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     if (canPipeline)
                     {
+                        // Note: if this wakes on a ResponseReady event, the freed in-flight slot
+                        // is only visible after ProcessCompletedResponses runs at the top of the
+                        // next iteration — not in this one.
                         if (!await eventReader.WaitToReadAsync(cancellationToken)
                             .ConfigureAwait(false))
                             break;
