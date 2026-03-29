@@ -40,6 +40,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
     }
 
+    // Returns int.MaxValue to match MemoryPool<byte>.Shared behavior.
+    // System.IO.Pipelines does not rely on MaxBufferSize for sizing decisions;
+    // actual caching is bounded by the maxArrayLength passed to ArrayPool.Create.
     public override int MaxBufferSize => int.MaxValue;
 
     public override IMemoryOwner<byte> Rent(int minBufferSize = -1)

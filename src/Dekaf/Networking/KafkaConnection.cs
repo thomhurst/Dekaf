@@ -333,6 +333,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         // Per-connection pool prevents WorkingSet growth from ArrayPool<byte>.Shared's
         // TLS caches that grow per-thread but never shrink. See PipeMemoryPool for details.
+        _pipeMemoryPool?.Dispose();
         _pipeMemoryPool = new PipeMemoryPool();
 
         // minimumBufferSize controls the buffer the writer retains between writes. Keep it
@@ -654,6 +655,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 // Record it so the receive loop discards silently instead of warning.
                 // If the receive loop already called TryComplete (and lost the CAS),
                 // this entry becomes a harmless no-op cleaned up by DisposeAsync.
+                // Count check + TryAdd is not atomic, so the cap is approximate (soft cap).
+                // This is fine — the goal is preventing unbounded growth, not enforcing an exact limit.
                 if (!responseReceived && _cancelledCorrelationIds.Count < MaxCancelledCorrelationIds)
                 {
                     _cancelledCorrelationIds.TryAdd(correlationId, 0);
@@ -1838,7 +1841,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
             _socket?.Dispose();
         }
 
-        // Must happen after pipes are completed so no IMemoryOwner returns to a disposed pool.
+        // Placed after pipe completion so all outstanding IMemoryOwner<byte> objects are
+        // returned before the pool is released for GC.
         _pipeMemoryPool?.Dispose();
 
         _reauthTimer?.Dispose();
