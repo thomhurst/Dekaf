@@ -140,6 +140,39 @@ internal sealed class ConsumerConnectionScaler
         }, _logError, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     }
 
+    /// <summary>
+    /// Splits partitions across fetch connections using chunked distribution.
+    /// Returns the number of groups written to <paramref name="groups"/>.
+    /// Each group is a (startIndex, count) range into the original partition list.
+    /// When <paramref name="fetchConnectionCount"/> is 1, returns a single group spanning all partitions.
+    /// </summary>
+    internal static int SplitPartitionsAcrossConnections(
+        int partitionCount,
+        int fetchConnectionCount,
+        Span<(int StartIndex, int Count)> groups)
+    {
+        if (fetchConnectionCount <= 1 || partitionCount <= 1)
+        {
+            groups[0] = (0, partitionCount);
+            return 1;
+        }
+
+        // Limit connections to partition count (no empty groups)
+        var effectiveConnections = Math.Min(fetchConnectionCount, partitionCount);
+        var baseSize = partitionCount / effectiveConnections;
+        var remainder = partitionCount % effectiveConnections;
+
+        var offset = 0;
+        for (var i = 0; i < effectiveConnections; i++)
+        {
+            var count = baseSize + (i < remainder ? 1 : 0);
+            groups[i] = (offset, count);
+            offset += count;
+        }
+
+        return effectiveConnections;
+    }
+
     internal void TestAdvanceTime(TimeSpan duration)
         => _testTimeOffsetTicks += (long)(duration.TotalSeconds * Stopwatch.Frequency);
 

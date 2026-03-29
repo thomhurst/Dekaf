@@ -402,9 +402,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // the loop waits for a Release() that never comes because the consumer has no data yet.
     private readonly SemaphoreSlim _prefetchMemoryAvailable = new(1, int.MaxValue);
 
-    // Per-broker reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
-    // Keyed by brokerId since PrefetchFromBrokerAsync runs concurrently for multiple brokers
-    private readonly ConcurrentDictionary<int, List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
+    // Per-fetch reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
+    // Keyed by (brokerId, connectionIndex) since PrefetchFromBrokerAsync runs concurrently
+    // for multiple brokers AND multiple connections to the same broker
+    private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -1109,20 +1110,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 return;
             }
 
-            // Fetch from all brokers in parallel for maximum throughput
-            // Use pooled array to avoid allocation per fetch cycle
-            var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
+            // Fetch from all brokers in parallel for maximum throughput.
+            // When multiple fetch connections are available, split each broker's partitions
+            // across connections to issue concurrent fetches to the same broker.
+            var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+            var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
+
+            // Upper bound: each broker can produce up to fetchConnectionCount tasks
+            var maxTasks = brokerCount * Math.Max(fetchConnectionCount, 1);
+            var fetchTasks = ArrayPool<Task>.Shared.Rent(maxTasks);
             try
             {
-                var i = 0;
+                var taskCount = 0;
+
+                // Stack-allocate group ranges (max 8 connections per broker is generous)
+                Span<(int StartIndex, int Count)> groups = stackalloc (int, int)[Math.Min(fetchConnectionCount, 8)];
+
                 foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
-                    fetchTasks[i++] = PrefetchFromBrokerWithErrorHandlingAsync(
-                        brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
+                    var groupCount = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(
+                        partitions.Count, fetchConnectionCount, groups);
+
+                    for (var g = 0; g < groupCount; g++)
+                    {
+                        var (startIndex, count) = groups[g];
+                        var connectionIndex = ConsumerConnectionScaler.GetNextFetchConnectionIndex(
+                            ref _fetchRoundRobinCounter, fetchConnectionCount);
+
+                        fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
+                            brokerId, partitions, startIndex, count, connectionIndex,
+                            wakeupCts.Token, wakeupCts.Token);
+                    }
                 }
 
                 // ReadOnlySpan overload (.NET 9+) avoids internal array copy and ArraySegment boxing
-                await Task.WhenAll(new ReadOnlySpan<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                await Task.WhenAll(new ReadOnlySpan<Task>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
             }
             finally
             {
@@ -1139,12 +1161,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private async Task PrefetchFromBrokerWithErrorHandlingAsync(
         int brokerId,
         List<TopicPartition> partitions,
+        int partitionStartIndex,
+        int partitionCount,
+        int connectionIndex,
         CancellationToken linkedToken,
         CancellationToken wakeupToken)
     {
         try
         {
-            await PrefetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
+            await PrefetchFromBrokerAsync(brokerId, partitions, partitionStartIndex, partitionCount, connectionIndex, linkedToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
         {
@@ -1204,12 +1229,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         Errors.AuthorizationException or
         KafkaException { ErrorCode: not null, IsRetriable: false };
 
-    private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
+    private async ValueTask PrefetchFromBrokerAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        int partitionStartIndex,
+        int partitionCount,
+        int connectionIndex,
+        CancellationToken cancellationToken)
     {
-        var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
-        var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
-        var connectionIndex = ConsumerConnectionScaler.GetNextFetchConnectionIndex(ref _fetchRoundRobinCounter, fetchConnectionCount);
         var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
+
+        // When splitting across connections, extract the partition subset.
+        // This is a per-fetch (per-batch) allocation, not per-message.
+        var effectivePartitions = (partitionStartIndex == 0 && partitionCount == partitions.Count)
+            ? partitions
+            : partitions.GetRange(partitionStartIndex, partitionCount);
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -1224,10 +1258,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Resolve any special offset values
-        await ResolveSpecialOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
+        await ResolveSpecialOffsetsAsync(effectivePartitions, cancellationToken).ConfigureAwait(false);
 
         // Build fetch request
-        var topicData = BuildFetchRequestTopics(partitions);
+        var topicData = BuildFetchRequestTopics(effectivePartitions);
 
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
@@ -1262,9 +1296,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Collect pending fetch data items - we need to assign memory owner to the last one
         // since FIFO processing means the last one will be disposed last
-        // Reuse list per broker across prefetch cycles to avoid per-cycle allocation
-        // Each broker gets its own list since PrefetchFromBrokerAsync runs concurrently
-        var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd(brokerId, static _ => []);
+        // Reuse list per (broker, connection) across prefetch cycles to avoid per-cycle allocation
+        // Each (broker, connection) pair gets its own list since PrefetchFromBrokerAsync runs
+        // concurrently for different brokers AND different connections to the same broker
+        var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd((brokerId, connectionIndex), static _ => []);
         pendingItems.Clear();
 
         // Write to prefetch channel

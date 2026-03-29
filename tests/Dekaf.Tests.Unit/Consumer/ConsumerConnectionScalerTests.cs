@@ -154,4 +154,82 @@ public sealed class ConsumerConnectionScalerTests
         scaler.MaybeScale();
         await Assert.That(scaleUpCount).IsEqualTo(0); // Cannot scale
     }
+
+    [Test]
+    public async Task SplitPartitions_SingleConnection_ReturnsSingleGroup()
+    {
+        var groups = new (int StartIndex, int Count)[1];
+        var count = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(6, 1, groups);
+
+        await Assert.That(count).IsEqualTo(1);
+        await Assert.That(groups[0].StartIndex).IsEqualTo(0);
+        await Assert.That(groups[0].Count).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task SplitPartitions_EvenSplit_DistributesEqually()
+    {
+        var groups = new (int StartIndex, int Count)[3];
+        var count = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(6, 3, groups);
+
+        await Assert.That(count).IsEqualTo(3);
+        await Assert.That(groups[0]).IsEqualTo((0, 2));
+        await Assert.That(groups[1]).IsEqualTo((2, 2));
+        await Assert.That(groups[2]).IsEqualTo((4, 2));
+    }
+
+    [Test]
+    public async Task SplitPartitions_UnevenSplit_DistributesRemainderToFirstGroups()
+    {
+        var groups = new (int StartIndex, int Count)[3];
+        var count = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(7, 3, groups);
+
+        await Assert.That(count).IsEqualTo(3);
+        // 7 / 3 = 2 base + 1 remainder => first group gets 3, others get 2
+        await Assert.That(groups[0]).IsEqualTo((0, 3));
+        await Assert.That(groups[1]).IsEqualTo((3, 2));
+        await Assert.That(groups[2]).IsEqualTo((5, 2));
+    }
+
+    [Test]
+    public async Task SplitPartitions_MoreConnectionsThanPartitions_LimitsToPartitionCount()
+    {
+        var groups = new (int StartIndex, int Count)[5];
+        var count = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(2, 5, groups);
+
+        await Assert.That(count).IsEqualTo(2);
+        await Assert.That(groups[0]).IsEqualTo((0, 1));
+        await Assert.That(groups[1]).IsEqualTo((1, 1));
+    }
+
+    [Test]
+    public async Task SplitPartitions_SinglePartition_ReturnsSingleGroup()
+    {
+        var groups = new (int StartIndex, int Count)[3];
+        var count = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(1, 3, groups);
+
+        await Assert.That(count).IsEqualTo(1);
+        await Assert.That(groups[0]).IsEqualTo((0, 1));
+    }
+
+    [Test]
+    public async Task SplitPartitions_CoversAllPartitions()
+    {
+        // Verify that all partitions are accounted for with various splits
+        var groups = new (int StartIndex, int Count)[8];
+        for (var partitions = 1; partitions <= 20; partitions++)
+        {
+            for (var connections = 1; connections <= 5; connections++)
+            {
+                var groupCount = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(
+                    partitions, connections, groups);
+
+                var totalPartitions = 0;
+                for (var i = 0; i < groupCount; i++)
+                    totalPartitions += groups[i].Count;
+
+                await Assert.That(totalPartitions).IsEqualTo(partitions);
+            }
+        }
+    }
 }
