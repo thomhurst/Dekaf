@@ -747,12 +747,25 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TResponse : IKafkaResponse
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
+        byte[]? arrayToReturn = serializedArray;
         try
         {
-            await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
+            await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken)
+                .ConfigureAwait(false);
             try
             {
-                await WritePreSerializedAndFlushAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
+                // Copy pre-serialized data into the PipeWriter (synchronous — no thread switch).
+                // Return the serialized array immediately BEFORE FlushAsync to ensure it is returned
+                // to ArrayPool<byte>.Shared on the same thread that rented it. Without this, the
+                // FlushAsync continuation can resume on a different thread, causing cross-thread
+                // returns that accumulate in TlsOverPerCoreLockedStacksArrayPool's per-thread and
+                // per-core locked stacks — growing WorkingSet proportionally to the number of broker
+                // connections (each BrokerSender's LongRunning thread rents, thread pool threads return).
+                CopyPreSerializedToPipeWriter(serializedArray, serializedLength);
+                ArrayPool<byte>.Shared.Return(serializedArray);
+                arrayToReturn = null; // Returned on the correct thread — prevent double-return
+
+                await FlushPipeWriterAsync(correlationId, cancellationToken, callerOwnsTimeout)
                     .ConfigureAwait(false);
             }
             finally
@@ -762,27 +775,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(serializedArray);
+            if (arrayToReturn is not null)
+                ArrayPool<byte>.Shared.Return(arrayToReturn);
         }
     }
 
     /// <summary>
-    /// Writes pre-serialized request data to the PipeWriter and flushes.
-    /// Must be called under the write lock. The lock now only covers the memory copy
-    /// and I/O flush, not the CPU-bound serialization.
+    /// Copies pre-serialized request data into the PipeWriter's buffer (synchronous).
+    /// Must be called under the write lock. The caller should return the serialized array
+    /// to its pool immediately after this call — before any async operations — to prevent
+    /// cross-thread ArrayPool returns that cause WorkingSet growth.
     /// </summary>
-    private async ValueTask WritePreSerializedAndFlushAsync(
-        byte[] serializedData,
-        int length,
-        int correlationId,
-        CancellationToken cancellationToken,
-        bool callerOwnsTimeout = false)
+    private void CopyPreSerializedToPipeWriter(byte[] serializedData, int length)
     {
-#if DEBUG
-        System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
-            "callerOwnsTimeout path requires a timeout-bearing token");
-#endif
-
         if (_writer is null)
             throw new InvalidOperationException("Not connected");
 
@@ -791,6 +796,24 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var memory = _writer.GetMemory(length);
         serializedData.AsSpan(0, length).CopyTo(memory.Span);
         _writer.Advance(length);
+    }
+
+    /// <summary>
+    /// Flushes the PipeWriter with timeout handling. Must be called under the write lock
+    /// after <see cref="CopyPreSerializedToPipeWriter"/>.
+    /// </summary>
+    private async ValueTask FlushPipeWriterAsync(
+        int correlationId,
+        CancellationToken cancellationToken,
+        bool callerOwnsTimeout = false)
+    {
+        if (_writer is null)
+            throw new InvalidOperationException("Not connected");
+
+#if DEBUG
+        System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
+            "callerOwnsTimeout path requires a timeout-bearing token");
+#endif
 
         // Apply timeout to the flush operation.
         // When callerOwnsTimeout is true, the caller's cancellationToken already carries
