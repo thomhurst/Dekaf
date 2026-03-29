@@ -117,7 +117,7 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
 
     public byte[] Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return data.Span.ToArray();
+        return data.ToArray();
     }
 }
 

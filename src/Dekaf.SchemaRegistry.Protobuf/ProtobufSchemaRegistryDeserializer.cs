@@ -19,7 +19,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// </remarks>
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
 public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
-    where T : IMessage<T>, new()
+    where T : IMessage<T>, IBufferMessage, new()
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
@@ -43,12 +43,6 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufDeserializerConfig();
         _ownsClient = ownsClient;
-
-        if (!typeof(IBufferMessage).IsAssignableFrom(typeof(T)))
-            throw new InvalidOperationException(
-                $"Type {typeof(T).Name} must implement IBufferMessage for span-based deserialization. " +
-                "Use protoc-generated code (Google.Protobuf 3.21+) or implement IBufferMessage on your message type.");
-
         _parser = new MessageParser<T>(() => new T());
     }
 
@@ -94,7 +88,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         var protobufData = payload.Slice(bytesRead);
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
-        // IBufferMessage requirement is validated at construction time.
+        // IBufferMessage constraint is enforced at compile time.
         return _parser.ParseFrom(protobufData);
     }
 
