@@ -874,6 +874,42 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads an array with 4-byte length prefix into a pre-existing list to avoid allocating a new array.
+    /// The list is cleared before use. Returns the count of items read.
+    /// </summary>
+    public int ReadArrayInto<T, TState>(List<T> destination, ReadFunc<T, TState> readItem, TState state)
+    {
+        destination.Clear();
+        var length = ReadInt32();
+        if (length <= 0)
+            return 0;
+
+        for (var i = 0; i < length; i++)
+        {
+            destination.Add(readItem(ref this, state));
+        }
+        return length;
+    }
+
+    /// <summary>
+    /// Reads a compact array with unsigned varint length prefix into a pre-existing list to avoid allocating a new array.
+    /// The list is cleared before use. Returns the count of items read.
+    /// </summary>
+    public int ReadCompactArrayInto<T, TState>(List<T> destination, ReadFunc<T, TState> readItem, TState state)
+    {
+        destination.Clear();
+        var length = ReadUnsignedVarInt() - 1;
+        if (length <= 0)
+            return 0;
+
+        for (var i = 0; i < length; i++)
+        {
+            destination.Add(readItem(ref this, state));
+        }
+        return length;
+    }
+
+    /// <summary>
     /// Delegate for reading a single item in an array.
     /// </summary>
     public delegate T ReadFunc<out T>(ref KafkaProtocolReader reader);

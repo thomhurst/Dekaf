@@ -346,7 +346,6 @@ internal sealed class PendingFetchData : IDisposable
         Topic = null!;
         ActivityName = null!;
         _abortedProducers?.Clear();
-        _abortedProducers = null;
 
         // Soft limit: the check-then-act is intentionally non-atomic.
         // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
@@ -1521,11 +1520,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var lastOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta;
         var tp = pending.TopicPartition;
 
-        // Thread-safe update using ConcurrentDictionary
+        // Thread-safe update using ConcurrentDictionary — must use AddOrUpdate (not TryGetValue
+        // + indexer) because seek/reset operations on other threads can write to _fetchPositions
+        // concurrently, and AddOrUpdate's CAS loop prevents TOCTOU races from overwriting a
+        // concurrent seek-forward with a stale prefetch offset.
+        // Uses the factoryArgument overload with static lambdas to avoid closure allocation.
+        var nextOffset = lastOffset + 1;
         _fetchPositions.AddOrUpdate(
             tp,
-            lastOffset + 1,
-            (_, currentPos) => Math.Max(currentPos, lastOffset + 1));
+            static (_, nextOffset) => nextOffset,
+            static (_, currentPos, nextOffset) => Math.Max(currentPos, nextOffset),
+            nextOffset);
     }
 
     /// <summary>
