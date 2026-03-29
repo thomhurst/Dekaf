@@ -39,16 +39,8 @@ internal sealed class PendingFetchData : IDisposable
 
     internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
 
-    internal static void RatchetPoolSize(int newSize)
-    {
-        int current;
-        do
-        {
-            current = Volatile.Read(ref s_maxPoolSize);
-            if (newSize <= current) return;
-        }
-        while (Interlocked.CompareExchange(ref s_maxPoolSize, newSize, current) != current);
-    }
+    internal static void RatchetPoolSize(int newSize) =>
+        InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
 
     private IReadOnlyList<RecordBatch> _batches = null!;
     private Dictionary<long, Queue<long>>? _abortedProducers;

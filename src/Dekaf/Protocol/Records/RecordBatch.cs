@@ -5,13 +5,14 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
+using Dekaf.Internal;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
 
 /// <summary>
 /// Reusable buffer writer backed by ArrayPool. Two memory management mechanisms:
-/// 1. Hard cap: buffers exceeding <see cref="_maxRetainedBufferSize"/> are returned to the pool
+/// 1. Hard cap: buffers exceeding the configured max retained size are returned to the pool
 ///    and replaced with a fresh initial-size buffer on every Clear().
 /// 2. Adaptive shrink: every ShrinkCheckInterval (64) clears, if peak usage was below
 ///    half the buffer size, the buffer is downsized to 2x peak (minimum _initialCapacity).
@@ -53,7 +54,7 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 
     /// <summary>
     /// Resets the write position without zeroing the buffer.
-    /// If the buffer has grown beyond <see cref="_maxRetainedBufferSize"/>, it is returned
+    /// If the buffer has grown beyond the configured max retained size, it is returned
     /// to the pool and replaced with a fresh initial-size buffer to prevent unbounded growth.
     /// Additionally, every <see cref="ShrinkCheckInterval"/> clears, if the high-water mark
     /// is less than half the buffer size, the buffer is shrunk to 2x the high-water mark
@@ -198,16 +199,8 @@ public sealed class RecordBatch : IDisposable
     /// which is acceptable since the ratchet only increases — existing buffers are more
     /// conservative, not less. New buffers on any thread pick up the updated value.
     /// </summary>
-    internal static void RatchetMaxRetainedBufferSize(int newSize)
-    {
-        int current;
-        do
-        {
-            current = Volatile.Read(ref s_maxRetainedBufferSize);
-            if (newSize <= current) return;
-        }
-        while (Interlocked.CompareExchange(ref s_maxRetainedBufferSize, newSize, current) != current);
-    }
+    internal static void RatchetMaxRetainedBufferSize(int newSize) =>
+        InterlockedHelper.RatchetUp(ref s_maxRetainedBufferSize, newSize);
 
     internal const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
 
