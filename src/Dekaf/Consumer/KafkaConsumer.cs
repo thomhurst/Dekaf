@@ -874,8 +874,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Hoist invariant boolean checks outside inner loops to avoid
                 // per-message overhead. These values are stable during a single
-                // ConsumeAsync iteration and are each a virtual/interface dispatch
-                // or volatile read that adds ~2-5ns per message at 100K+ msg/s.
+                // ConsumeAsync iteration (snapshotted once per call, not per message)
+                // and are each a virtual/interface dispatch or volatile read that
+                // adds ~2-5ns per message at 100K+ msg/s.
                 var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
                 var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
                                      || Diagnostics.DekafMetrics.BytesReceived.Enabled;
@@ -2665,16 +2666,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             pendingItems[i].SetMemoryOwner(shared);
         }
-    }
-
-    /// <summary>
-    /// Returns headers as IReadOnlyList with correct count. Returns null if empty.
-    /// Header arrays may be rented from ArrayPool and returned on batch dispose,
-    /// so we must copy into an owned array to prevent use-after-return corruption.
-    /// </summary>
-    private static IReadOnlyList<Header>? GetHeaders(Record record)
-    {
-        return Record.CopyHeaders(record.Headers, record.HeaderCount);
     }
 
     /// <summary>
