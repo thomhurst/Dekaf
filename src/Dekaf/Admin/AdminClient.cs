@@ -4,6 +4,7 @@ using System.Text;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Retry;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -164,11 +165,11 @@ public sealed class AdminClient : IAdminClient
             if (allReady)
                 return;
 
-            await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(RetryHelper.RetryDelayMs, cancellationToken).ConfigureAwait(false);
         }
 
         throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
-            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {leaderWaitRetries * RetryDelayMs}ms");
+            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {leaderWaitRetries * RetryHelper.RetryDelayMs}ms");
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -1568,41 +1569,11 @@ public sealed class AdminClient : IAdminClient
         }
     }
 
-    private const int MaxRetries = 3;
-    private const int RetryDelayMs = 500;
+    private ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
+        => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
 
-    private async ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                await operation().ConfigureAwait(false);
-                return;
-            }
-            catch (Errors.KafkaException ex) when (ex.IsRetriable && attempt < MaxRetries)
-            {
-                await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-                await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    private async ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                return await operation().ConfigureAwait(false);
-            }
-            catch (Errors.KafkaException ex) when (ex.IsRetriable && attempt < MaxRetries)
-            {
-                await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-                await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
+    private ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
+        => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
 
     private async ValueTask<IKafkaConnection> GetControllerAsync(CancellationToken cancellationToken)
     {
