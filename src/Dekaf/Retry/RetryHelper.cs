@@ -15,12 +15,14 @@ internal static class RetryHelper
 
     /// <summary>
     /// Executes an async operation with retry logic for retriable Kafka errors.
-    /// On retriable failure, refreshes metadata and retries after a delay.
+    /// On retriable failure, refreshes metadata, invokes the optional <paramref name="onRetry"/>
+    /// callback (e.g. to re-discover a coordinator), and retries after a jittered delay.
     /// </summary>
     internal static async ValueTask WithRetryAsync(
         Func<ValueTask> operation,
         MetadataManager metadataManager,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onRetry = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -32,19 +34,26 @@ internal static class RetryHelper
             catch (KafkaException ex) when (ex.IsRetriable && attempt < MaxRetries)
             {
                 await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-                await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
+
+                if (onRetry is not null)
+                    await onRetry(cancellationToken).ConfigureAwait(false);
+
+                var jitter = Random.Shared.Next(0, 100);
+                await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
     /// <summary>
     /// Executes an async operation with retry logic for retriable Kafka errors,
-    /// returning a result on success.
+    /// returning a result on success. On retriable failure, refreshes metadata,
+    /// invokes the optional <paramref name="onRetry"/> callback, and retries after a jittered delay.
     /// </summary>
     internal static async ValueTask<T> WithRetryAsync<T>(
         Func<ValueTask<T>> operation,
         MetadataManager metadataManager,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onRetry = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -55,7 +64,12 @@ internal static class RetryHelper
             catch (KafkaException ex) when (ex.IsRetriable && attempt < MaxRetries)
             {
                 await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-                await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
+
+                if (onRetry is not null)
+                    await onRetry(cancellationToken).ConfigureAwait(false);
+
+                var jitter = Random.Shared.Next(0, 100);
+                await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
             }
         }
     }

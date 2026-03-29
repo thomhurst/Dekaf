@@ -784,7 +784,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         }
                     }
                 }
-            }, _metadataManager, cancellationToken).ConfigureAwait(false);
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -943,7 +943,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
 
                 return result;
-            }, _metadataManager, cancellationToken).ConfigureAwait(false);
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -1266,7 +1266,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     LogSuccessfullyLeftGroup(_options.GroupId!);
                 }
-            }, _metadataManager, cancellationToken).ConfigureAwait(false);
+            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

@@ -1543,6 +1543,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         string consumerGroupId,
         CancellationToken cancellationToken)
     {
+        // The entire three-step sequence (AddOffsetsToTxn -> FindCoordinator -> TxnOffsetCommit)
+        // is wrapped in a single retry lambda. If Step 1 succeeds but Step 2 or 3 fails, the
+        // retry re-executes Step 1. This is safe because AddOffsetsToTxn is idempotent in Kafka's
+        // transaction protocol — calling it multiple times with the same group ID within the same
+        // transaction epoch has no additional effect.
         return RetryHelper.WithRetryAsync(async () =>
         {
             // Step 1: Add offsets to the transaction via the transaction coordinator
