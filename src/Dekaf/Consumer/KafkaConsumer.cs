@@ -405,7 +405,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Per-fetch reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
     // Keyed by (brokerId, connectionIndex) since PrefetchFromBrokerAsync runs concurrently
     // for multiple brokers AND multiple connections to the same broker.
-    // Entries for scaled-down connections persist but are bounded: brokers × MaxFetchConnectionsPerBroker.
+    // Stale entries from scaled-down connections are pruned lazily in PrefetchRecordsAsync.
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
@@ -1115,6 +1115,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // across connections to issue concurrent fetches to the same broker.
             var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
             var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
+
+            // Lazily prune stale entries from scaled-down connections.
+            // O(k) over a small dictionary (brokers × connections), once per fetch cycle — not hot path.
+            foreach (var key in _prefetchPendingItemsByBroker.Keys)
+            {
+                if (key.ConnectionIndex >= fetchConnectionCount)
+                    _prefetchPendingItemsByBroker.TryRemove(key, out _);
+            }
 
             // Upper bound: each broker can produce up to fetchConnectionCount tasks
             var maxTasks = brokerCount * fetchConnectionCount;
@@ -2847,7 +2855,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             cachedList = _cachedPartitionsList;
         }
 
-        // Check if cache is valid (same partition list as before) — only for full-list case
+        // Check if cache is valid (same partition list as before) — only for full-list case.
+        // When fetchConnectionCount > 1, all calls use subranges so the cache is bypassed.
+        // This is intentional: the cache avoids rebuilding the topic→partition dictionary when
+        // partitions are stable, but subranges change per-connection and aren't worth caching.
         if (isFullList && cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
         {
             // Cache hit: build a fresh result list with snapshot offsets under lock.
