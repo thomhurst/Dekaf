@@ -45,10 +45,13 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     /// high-throughput pipelining.
     /// <para/>
     /// <b>Memory tradeoff:</b> <c>ArrayPool.Create()</c> applies the same bucket count to all
-    /// size classes. In practice, only the small buckets (64 KB) fill to capacity; the large
-    /// buckets (4 MB) rarely retain more than 1-2 arrays because there are far fewer concurrent
-    /// large allocations. Peak per-connection retention is bounded by connection lifetime — when
-    /// the connection is disposed, all retained arrays become GC-eligible.</param>
+    /// size classes. <c>ConfigurableArrayPool</c> pre-allocates a fixed-size reference array per
+    /// bucket (32 slots), but the actual <c>byte[]</c> arrays are only allocated when rented and
+    /// cached when returned — idle buckets hold null slots, not memory. In practice, only the
+    /// small buckets (64 KB) fill to capacity; the large buckets (4 MB) rarely cache more than
+    /// 1-2 arrays because there are far fewer concurrent large allocations. Peak per-connection
+    /// retention is bounded by connection lifetime — when the connection is disposed, all retained
+    /// arrays become GC-eligible.</param>
     public PipeMemoryPool(int maxArrayLength = 4 * 1024 * 1024, int maxArraysPerBucket = 32)
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);

@@ -60,7 +60,7 @@ public class PipeMemoryPoolTests
     }
 
     [Test]
-    public async Task Rent_LargeBuffer_Succeeds()
+    public async Task Rent_BufferExceedingMaxArrayLength_FallsThrough()
     {
         using var pool = new PipeMemoryPool();
 
