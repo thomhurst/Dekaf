@@ -723,6 +723,91 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_PipeliningEnabled_SendsSecondBatchBeforeFirstResponse(CancellationToken cancellationToken)
+    {
+        // With maxInFlight=2, after sending batch A (in-flight=1), the canPipeline guard
+        // evaluates to true (sentThisIteration=true, carryOver empty, 1 < 2). The send loop
+        // waits on the event channel instead of WaitForAnyResponseAsync. When batch B arrives
+        // via a NewBatch event, the loop wakes and sends B immediately — before A's response
+        // arrives. This verifies the pipelining optimization introduced in PR #704.
+
+        var tcs1 = new TaskCompletionSource<ProduceResponse>();
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1);
+        responseQueue.Enqueue(tcs2);
+
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 2);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var ackOffsets = new List<long>();
+        var allAcknowledged = new TaskCompletionSource();
+
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
+        {
+            if (ex is null)
+            {
+                lock (ackOffsets)
+                {
+                    ackOffsets.Add(offset);
+                    if (ackOffsets.Count >= 2)
+                        allAcknowledged.TrySetResult();
+                }
+            }
+        });
+
+        try
+        {
+            // Send batch A (partition 0) — in-flight count becomes 1
+            var batchA = CreateTestBatch(vtPool, "test-topic", 0);
+            sender.Enqueue(batchA);
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            // Batch A's response is still pending. canPipeline = true because:
+            // sentThisIteration=true, carryOver.Count=0, waitPendingCount(1) < _totalMaxInFlight(2).
+            // The send loop is now waiting on the event channel (not WaitForAnyResponseAsync).
+
+            // Enqueue batch B (partition 1) — this pushes a NewBatch event to the channel,
+            // waking the send loop. It should send B immediately without waiting for A's response.
+            var batchB = CreateTestBatch(vtPool, "test-topic", 1);
+            sender.Enqueue(batchB);
+
+            // Wait for batch B to be sent — this proves pipelining worked: B was sent
+            // while A's response was still pending.
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+
+            // Both requests are now in-flight. Verify A's response hasn't arrived yet.
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+
+            // Complete both responses
+            tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
+
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(ackOffsets).Contains(100L);
+            await Assert.That(ackOffsets).Contains(200L);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
     {
         // Regression test: when a response task never completes (hung connection),

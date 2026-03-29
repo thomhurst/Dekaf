@@ -1099,11 +1099,43 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else if (waitPendingCount > 0)
                 {
-                    // Carry-over (possibly all muted) and/or pending responses — wait for
-                    // any response to complete. Cannot use eventReader.WaitToReadAsync here
-                    // because the channel may contain stale NewBatch events that cause
-                    // immediate return, creating a spin loop when all carry-over is muted.
-                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                    // When we just sent successfully with no carry-over (no muted partitions)
+                    // and have in-flight capacity, use the event channel as the unified wait
+                    // source. The channel receives both NewBatch events (from the sender loop)
+                    // and ResponseReady events (from _responseCompletionCallback).
+                    // This wakes the send loop on whichever arrives first, enabling pipelining:
+                    // new batches can be sent immediately using remaining in-flight slots
+                    // without waiting for the previous response to complete first.
+                    //
+                    // In multi-broker setups where each broker receives only 2 partitions per
+                    // linger cycle, this eliminates dead time where the BrokerSender waits for
+                    // a response while new batches sit unprocessed in the channel.
+                    //
+                    // Can pipeline: progress was made, no muted carry-over that could
+                    // generate stale channel events, and in-flight capacity remains.
+                    // Note: when _muteOnSend is true (MaxInFlightRequestsPerConnection == 1),
+                    // waitPendingCount == _totalMaxInFlight after every send, so canPipeline
+                    // is always false — single-in-flight producers always take the response-wait path.
+                    var canPipeline = sentThisIteration
+                        && carryOver.Count == 0
+                        && waitPendingCount < _totalMaxInFlight;
+
+                    if (canPipeline)
+                    {
+                        // Note: if this wakes on a ResponseReady event, the freed in-flight slot
+                        // is only visible after ProcessCompletedResponses runs at the top of the
+                        // next iteration — not in this one.
+                        if (!await eventReader.WaitToReadAsync(cancellationToken)
+                            .ConfigureAwait(false))
+                            break;
+                    }
+                    else
+                    {
+                        // Either carry-over exists (muted partitions may generate stale events),
+                        // or at in-flight capacity limit, or no progress was made this iteration —
+                        // wait for a response only.
+                        await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 else if (carryOver.Count > 0)
                 {
