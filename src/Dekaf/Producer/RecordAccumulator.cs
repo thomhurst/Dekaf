@@ -2554,8 +2554,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void OnBatchEntersPipeline(ReadyBatch batch)
     {
-        // Counter first, list second. If the orphan sweep runs between these two
-        // operations, the counter is already incremented so the sweep's Exchange(0) resets it.
+        // Counter first, list second. If a batch races between the counter increment
+        // and the list add, the sweep will miss it in the snapshot — but that's acceptable
+        // because the sweep is defense-in-depth at 3× delivery timeout and the batch will
+        // be caught on the next sweep interval.
         Interlocked.Increment(ref _inFlightBatchCount);
         InFlightBatchListAdd(batch);
         batch.AppendDiag('E');
@@ -4023,10 +4025,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations
     // that caused pathological Gen2 GC promotion (nodes survived Gen0 during network
     // round-trip, got promoted to Gen2, then died — creating near 1:1 Gen0:Gen2 ratio).
-    // Protected by RecordAccumulator._inFlightBatchLock.
+    // Read and written only while holding RecordAccumulator._inFlightBatchLock.
     internal ReadyBatch? InFlightPrev;
     internal ReadyBatch? InFlightNext;
-    internal bool InFlightLinked; // Guards against double-remove races
+    // Read and written only while holding RecordAccumulator._inFlightBatchLock.
+    // Guards against double-remove races.
+    internal bool InFlightLinked;
 
     /// <summary>
     /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
