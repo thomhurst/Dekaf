@@ -356,27 +356,33 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     [Test]
     public async Task MultiPartition_CoalescedSend_OrderingPreserved()
     {
-        // 8 partitions with small batch size to force many simultaneous batches.
+        // Multiple partitions with small batch size to force many simultaneous batches.
         // Under load, the sender loop drains multiple batches at once and coalesces them into
         // fewer ProduceRequests per broker. Verify per-partition ordering is preserved.
-    
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 8);
-        const int messagesPerPartition = 500;
+        //
+        // Uses moderate parameters (4 partitions × 200 messages) to reliably exercise
+        // coalescing without overwhelming the Testcontainer on resource-constrained CI runners.
+        // The original 8×500 configuration caused receive timeouts on both metadata (broker -1)
+        // and data (broker 1) connections under parallel test load (#578).
+
+        const int partitionCount = 4;
+        const int messagesPerPartition = 200;
+
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-coalesced-ordering")
             .WithAcks(Acks.All)
-
             .WithBatchSize(1024) // Small to force many batches
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        await producer.WarmUpAllPartitionsAsync(topic, 8);
+        await producer.WarmUpAllPartitionsAsync(topic, partitionCount);
 
-        // Fire-and-forget to all 8 partitions rapidly to stress the coalescing path
-        for (var p = 0; p < 8; p++)
+        // Fire-and-forget to all partitions rapidly to stress the coalescing path
+        for (var p = 0; p < partitionCount; p++)
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
@@ -398,12 +404,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
-        consumer.Assign(Enumerable.Range(0, 8).Select(p => new TopicPartition(topic, p)).ToArray());
+        consumer.Assign(Enumerable.Range(0, partitionCount).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 8; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < partitionCount; p++) messagesByPartition[p] = [];
 
-        var totalExpected = 8 * messagesPerPartition + 8; // +8 for warmup (one per partition)
+        var totalExpected = partitionCount * messagesPerPartition + partitionCount; // +N for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -414,7 +420,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Verify per-partition ordering
-        for (var p = 0; p < 8; p++)
+        for (var p = 0; p < partitionCount; p++)
         {
             var partitionMessages = messagesByPartition[p]
                 .Where(m => m.Key != "warmup").ToList();
