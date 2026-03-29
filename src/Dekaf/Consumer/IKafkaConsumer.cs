@@ -343,8 +343,15 @@ public readonly struct ConsumeResult<TKey, TValue>
     public TValue Value { get; }
 
     /// <summary>
-    /// The message headers. Returns null if no headers.
+    /// The message headers, or null if the message has no headers.
     /// </summary>
+    /// <remarks>
+    /// The returned list is valid only for the duration of the current iteration step.
+    /// Do not store a reference to <c>Headers</c> or access it after advancing the
+    /// <c>await foreach</c> loop, as the backing memory may be reused. This is the same
+    /// lifetime contract as values deserialized with <c>Serializers.RawBytes</c>.
+    /// To retain headers across iterations, copy them: <c>Headers?.ToList()</c>.
+    /// </remarks>
     public IReadOnlyList<Header>? Headers { get; }
 
     /// <summary>
