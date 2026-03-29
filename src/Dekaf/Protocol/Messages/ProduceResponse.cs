@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>
@@ -15,11 +13,7 @@ public sealed class ProduceResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 11;
 
-    // Pool for reusing ProduceResponse instances to eliminate per-response class allocation.
-    // Max 64 entries covers MaxInFlightRequestsPerConnection=5 × multiple connections with headroom.
-    private static readonly ConcurrentStack<ProduceResponse> s_pool = new();
-    private static int s_poolCount;
-    private const int MaxPoolSize = 64;
+    private static readonly ProduceResponsePool s_pool = new();
 
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
@@ -47,7 +41,7 @@ public sealed class ProduceResponse : IKafkaResponse
             ? reader.ReadUnsignedVarInt() - 1
             : reader.ReadInt32();
 
-        var response = Rent();
+        var response = s_pool.Rent();
 
         if (topicCount > 0)
         {
@@ -69,27 +63,20 @@ public sealed class ProduceResponse : IKafkaResponse
         return response;
     }
 
-    private static ProduceResponse Rent()
-    {
-        if (s_pool.TryPop(out var response))
-        {
-            Interlocked.Decrement(ref s_poolCount);
-            return response;
-        }
-        return new ProduceResponse();
-    }
-
     /// <summary>
     /// Returns this response to the pool for reuse. Must be called after processing is complete.
     /// </summary>
-    public void Return()
+    internal void Return() => s_pool.Return(this);
+
+    private sealed class ProduceResponsePool()
+        : Producer.ObjectPool<ProduceResponse>(maxPoolSize: 64)
     {
-        TopicCount = 0;
-        ThrottleTimeMs = 0;
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        protected override ProduceResponse Create() => new();
+
+        protected override void Reset(ProduceResponse item)
         {
-            Interlocked.Increment(ref s_poolCount);
-            s_pool.Push(this);
+            item.TopicCount = 0;
+            item.ThrottleTimeMs = 0;
         }
     }
 }
@@ -116,37 +103,22 @@ public struct ProduceResponseTopicData
     /// </summary>
     public int PartitionCount { get; internal set; }
 
+    /// <summary>
+    /// Non-pooled path: allocates a fresh struct and array. Used by tests and direct construction.
+    /// </summary>
     public static ProduceResponseTopicData Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
-        var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
-
-        var partitionCount = isFlexible
-            ? reader.ReadUnsignedVarInt() - 1
-            : reader.ReadInt32();
-
-        var result = new ProduceResponseTopicData
-        {
-            Name = name,
-            PartitionResponses = partitionCount > 0 ? new ProduceResponsePartitionData[partitionCount] : [],
-            PartitionCount = Math.Max(partitionCount, 0)
-        };
-
-        for (var i = 0; i < result.PartitionCount; i++)
-            result.PartitionResponses[i] = ProduceResponsePartitionData.Read(ref reader, version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
-
+        var result = default(ProduceResponseTopicData);
+        result.ReadInto(ref reader, version);
         return result;
     }
 
     /// <summary>
     /// Reads into this existing struct, reusing the PartitionResponses array if large enough.
     /// Called from <see cref="ProduceResponse.Read"/> to avoid per-response array allocations.
+    /// Note: this mutates the struct in-place. When called via array indexer (e.g.,
+    /// <c>response.Responses[i].ReadInto(...)</c>), the array element is modified directly
+    /// because array element access yields a managed reference, not a copy.
     /// </summary>
     internal void ReadInto(ref KafkaProtocolReader reader, short version)
     {
