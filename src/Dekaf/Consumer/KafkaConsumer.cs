@@ -621,6 +621,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Clear stale fetched data (same rationale as Assign).
+        // NOTE: This runs after releasing _assignmentLock, so there is a small race window
+        // where the prefetch worker could write new valid items into _prefetchChannel between
+        // lock release and this call. Those items get discarded here. Correctness is maintained
+        // because the worker will re-fetch them on the next iteration, but there is a small
+        // one-time latency cost for the discarded prefetch.
         ClearFetchBuffer();
 
         InvalidateFetchRequestCache();
