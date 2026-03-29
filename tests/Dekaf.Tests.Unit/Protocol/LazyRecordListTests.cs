@@ -246,7 +246,7 @@ public class LazyRecordListTests
             record.Write(ref writer);
         }
 
-        // Find boundary after record 1 to truncate partway through record 2
+        // Find boundary after record 1 to truncate partway through the third record (index 2)
         var twoRecordBuffer = new ArrayBufferWriter<byte>();
         var twoWriter = new KafkaProtocolWriter(twoRecordBuffer);
         records[0].Write(ref twoWriter);
