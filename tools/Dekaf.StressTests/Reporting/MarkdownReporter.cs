@@ -96,13 +96,13 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## {title}");
         sb.AppendLine();
-        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | p50    | p95    | p99    | Max    |");
-        sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------|--------|--------|--------|");
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | p50      | p95      | p99      | Max      |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|----------|----------|----------|----------|");
 
-        foreach (var result in results.OrderBy(r => r.Latency!.P50Ms))
+        foreach (var result in results.OrderBy(r => r.Latency!.P50Us))
         {
             var latency = result.Latency!;
-            sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {FormatLatency(latency.P50Ms)} | {FormatLatency(latency.P95Ms)} | {FormatLatency(latency.P99Ms)} | {FormatLatency(latency.MaxMs)} |");
+            sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {FormatLatencyUs(latency.P50Us)} | {FormatLatencyUs(latency.P95Us)} | {FormatLatencyUs(latency.P99Us)} | {FormatLatencyUs(latency.MaxUs)} |");
         }
 
         sb.AppendLine();
@@ -145,15 +145,18 @@ internal static class MarkdownReporter
         _ => scenario
     };
 
-    private static string FormatLatency(double ms)
+    private static string FormatLatencyUs(double us)
     {
-        return ms switch
+        var formatted = us switch
         {
-            < 1 => $"{ms:F2}ms",
-            < 10 => $"{ms:F1}ms",
-            < 1000 => $"{ms:F0}ms",
-            _ => $"{ms / 1000:F1}s"
+            < 1 => $"{us:F3}\u03bcs",
+            < 10 => $"{us:F2}\u03bcs",
+            < 1000 => $"{us:F0}\u03bcs",
+            < 1_000_000 => $"{us / 1000.0:F2}ms",
+            _ => $"{us / 1_000_000.0:F1}s"
         };
+
+        return formatted.PadRight(8);
     }
 
     public static async Task WriteToFileAsync(StressTestResults results, string filePath)
