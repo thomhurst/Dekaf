@@ -198,6 +198,9 @@ public sealed class RecordBatch : IDisposable
     /// Thread-local buffers created before this call retain their original (smaller) limit,
     /// which is acceptable since the ratchet only increases — existing buffers are more
     /// conservative, not less. New buffers on any thread pick up the updated value.
+    /// Note: this is process-global — if multiple producers coexist with different batch sizes,
+    /// the largest wins. Over-retention wastes some memory but under-retention would cause
+    /// frequent ArrayPool churn on the large-batch producer.
     /// </summary>
     internal static void RatchetMaxRetainedBufferSize(int newSize) =>
         InterlockedHelper.RatchetUp(ref s_maxRetainedBufferSize, newSize);

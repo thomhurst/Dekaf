@@ -27,9 +27,10 @@ public class PoolSizingTests
     }
 
     [Test]
-    public async Task ForProducer_SmallBatch_ScalesRetainedBufferDown()
+    public async Task ForProducer_SmallBatch_ClampsToMinRetainedBufferSize()
     {
-        var sizes = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 256 * 1024);
+        // batchSize (128KB) < floor (256KB), so MaxRetainedBufferSize should be clamped to 256KB
+        var sizes = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 128 * 1024);
 
         await Assert.That(sizes.MaxRetainedBufferSize).IsEqualTo(256 * 1024);
     }

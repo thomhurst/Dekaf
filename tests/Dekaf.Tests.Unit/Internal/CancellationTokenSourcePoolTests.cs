@@ -168,20 +168,25 @@ public class CancellationTokenSourcePoolTests
         var cts2 = pool.Rent();
         var cts3 = pool.Rent();
 
-        // Return all three
+        // Return all three — only 2 should be pooled (third is disposed for real)
         cts1.Dispose();
         cts2.Dispose();
         cts3.Dispose();
 
-        // Only 2 should be pooled (third is disposed for real)
-        // Rent 2 back — should succeed from pool
+        // Rent back: first 2 should be reused from pool, third must be a new instance
         var r1 = pool.Rent();
         var r2 = pool.Rent();
         var r3 = pool.Rent();
 
-        await Assert.That(r1).IsNotNull();
-        await Assert.That(r2).IsNotNull();
-        await Assert.That(r3).IsNotNull();
+        var originals = new HashSet<CancellationTokenSource> { cts1, cts2, cts3 };
+        var reusedCount = new[] { r1, r2, r3 }.Count(r => originals.Contains(r));
+
+        // Exactly 2 were retained in pool (max queue size), 1 was truly disposed
+        await Assert.That(reusedCount).IsEqualTo(2);
+
+        r1.Dispose();
+        r2.Dispose();
+        r3.Dispose();
     }
 
     [Test]
