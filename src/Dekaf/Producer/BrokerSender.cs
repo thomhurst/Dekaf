@@ -1113,6 +1113,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     //
                     // Can pipeline: progress was made, no muted carry-over that could
                     // generate stale channel events, and in-flight capacity remains.
+                    // Note: when _muteOnSend is true (MaxInFlightRequestsPerConnection == 1),
+                    // waitPendingCount == _totalMaxInFlight after every send, so canPipeline
+                    // is always false — single-in-flight producers always take the response-wait path.
                     var canPipeline = sentThisIteration
                         && carryOver.Count == 0
                         && waitPendingCount < _totalMaxInFlight;
