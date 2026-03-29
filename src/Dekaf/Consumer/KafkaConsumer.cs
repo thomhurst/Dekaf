@@ -154,6 +154,23 @@ internal sealed class PendingFetchData : IDisposable
     public IReadOnlyList<RecordBatch> GetBatches() => _batches;
 
     /// <summary>
+    /// Eagerly parses all records in all batches at once.
+    /// Call before sequential consumption to avoid per-record lazy parse overhead
+    /// (disposed check + bounds check + EnsureParsedUpTo call per indexer access).
+    /// This is a per-batch cost amortized over all records in the batch.
+    /// </summary>
+    public void EagerParseAll()
+    {
+        for (var i = 0; i < _batches.Count; i++)
+        {
+            if (_batches[i].Records is Protocol.Records.LazyRecordList lazyList)
+            {
+                lazyList.EnsureAllParsed();
+            }
+        }
+    }
+
+    /// <summary>
     /// Advances to the next record across all batches.
     /// Returns false when no more records are available.
     /// </summary>
@@ -855,9 +872,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             System.Diagnostics.Activity? previousActivity = null;
             try
             {
+                // Hoist invariant boolean checks outside inner loops to avoid
+                // per-message overhead. These values are stable during a single
+                // ConsumeAsync iteration and are each a virtual/interface dispatch
+                // or volatile read that adds ~2-5ns per message at 100K+ msg/s.
+                var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
+                var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
+                                     || Diagnostics.DekafMetrics.BytesReceived.Enabled;
+                var hasInterceptors = _interceptors is not null;
+                var rawTrackingEnabled = _rawRecordTrackingEnabled;
+
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
+
+                    // Eagerly parse all records in this fetch's batches upfront.
+                    // This converts per-record lazy parse overhead (disposed check +
+                    // bounds check + EnsureParsedUpTo per indexer call) into a single
+                    // batch-level cost. Parsing is cache-friendly in a tight loop.
+                    pending.EagerParseAll();
+
                     // Compiler requires definite assignment; always assigned inside try before yield.
                     ConsumeResult<TKey, TValue> nextResult = default!;
 
@@ -882,7 +916,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                                 batch.BaseTimestamp + record.TimestampDelta);
 
-                            var headers = GetHeaders(record);
+                            // Inline header extraction: avoid method call overhead per message.
+                            // Most messages have no headers; this skips the CopyHeaders call entirely.
+                            var headers = record.Headers is not null && record.HeaderCount > 0
+                                ? Record.CopyHeaders(record.Headers, record.HeaderCount)
+                                : null;
+
                             var timestampType = ((int)batch.Attributes & 0x08) != 0
                                 ? TimestampType.LogAppendTime
                                 : TimestampType.CreateTime;
@@ -892,8 +931,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                             // Start consumer tracing activity — skip all tracing work when no listener
                             // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
+                            // Uses hoisted hasTraceListeners to avoid per-message virtual dispatch
                             System.Diagnostics.Activity? activity = null;
-                            if (Diagnostics.DekafDiagnostics.Source.HasListeners())
+                            if (hasTraceListeners)
                             {
                                 activity = StartConsumeActivity(pending, headers, offset, messageBytes);
                                 if (activity is not null)
@@ -918,9 +958,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                             pending.TrackConsumed(offset, messageBytes);
 
-                            // Record consumer metrics — skip TagList allocation when no meter listener.
-                            // Check both instruments independently since Enabled is per-instrument.
-                            if (Diagnostics.DekafMetrics.MessagesReceived.Enabled || Diagnostics.DekafMetrics.BytesReceived.Enabled)
+                            // Record consumer metrics — uses hoisted metricsEnabled flag to avoid
+                            // per-message Enabled property checks (virtual dispatch on Counter<T>).
+                            if (metricsEnabled)
                             {
                                 if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
                                 {
@@ -933,10 +973,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             }
 
                             // Apply OnConsume interceptors before yielding to user
-                            nextResult = ApplyOnConsumeInterceptors(nextResult);
+                            // Uses hoisted hasInterceptors to skip method call when no interceptors
+                            if (hasInterceptors)
+                                nextResult = ApplyOnConsumeInterceptors(nextResult);
 
                             // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
-                            if (_rawRecordTrackingEnabled)
+                            if (rawTrackingEnabled)
                             {
                                 _currentRawKey = record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key;
                                 _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
