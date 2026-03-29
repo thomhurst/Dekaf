@@ -31,7 +31,37 @@ internal struct GcStats
         Gen0 = GC.CollectionCount(0) - _gen0Before;
         Gen1 = GC.CollectionCount(1) - _gen1Before;
         Gen2 = GC.CollectionCount(2) - _gen2Before;
-        AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - _allocatedBefore;
+
+        var allocatedAfterPrecise = GC.GetTotalAllocatedBytes(precise: true);
+        var delta = allocatedAfterPrecise - _allocatedBefore;
+
+        if (delta >= 0)
+        {
+            AllocatedBytes = delta;
+            return;
+        }
+
+        // precise: true can return inconsistent values under heavy concurrent allocation.
+        // Fall back to non-precise measurement.
+        var allocatedAfterNonPrecise = GC.GetTotalAllocatedBytes(precise: false);
+        var fallbackDelta = allocatedAfterNonPrecise - _allocatedBefore;
+
+        if (fallbackDelta >= 0)
+        {
+            Console.WriteLine(
+                $"[GcStats] Warning: precise allocation delta was negative ({delta:N0} B). " +
+                $"Before={_allocatedBefore:N0}, AfterPrecise={allocatedAfterPrecise:N0}. " +
+                $"Using non-precise fallback ({fallbackDelta:N0} B).");
+            AllocatedBytes = fallbackDelta;
+            return;
+        }
+
+        Console.WriteLine(
+            $"[GcStats] Warning: allocation delta was negative for both precise ({delta:N0} B) " +
+            $"and non-precise ({fallbackDelta:N0} B). " +
+            $"Before={_allocatedBefore:N0}, AfterPrecise={allocatedAfterPrecise:N0}, " +
+            $"AfterNonPrecise={allocatedAfterNonPrecise:N0}. Reporting as unavailable.");
+        AllocatedBytes = -1;
     }
 
     public GcSnapshot ToSnapshot() => new()
@@ -54,6 +84,7 @@ internal sealed class GcSnapshot
     {
         return AllocatedBytes switch
         {
+            < 0 => "N/A (measurement error)",
             < 1024 => $"{AllocatedBytes} B",
             < 1024 * 1024 => $"{AllocatedBytes / 1024.0:F2} KB",
             < 1024 * 1024 * 1024 => $"{AllocatedBytes / (1024.0 * 1024):F2} MB",
