@@ -9,6 +9,14 @@ namespace Dekaf.Internal;
 internal static class PoolSizing
 {
     private const int EstimatedMessagesPerBatch = 1024;
+    private const int MinValueTaskSources = 256;
+    private const int MaxValueTaskSources = 65536;
+
+    /// <summary>
+    /// Approximate number of coalesced partitions per batch — used to scale
+    /// the inflight-entry pool relative to the number of estimated batches.
+    /// </summary>
+    private const int InflightEntriesPerBatch = 32;
 
     internal readonly record struct ProducerPoolSizes
     {
@@ -34,15 +42,15 @@ internal static class PoolSizing
         if (batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
 
-        const ulong maxUsefulBatches = 65536 / EstimatedMessagesPerBatch; // 64
+        const ulong maxUsefulBatches = MaxValueTaskSources / EstimatedMessagesPerBatch; // 64
         var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
         var estimatedMessages = (int)(maxBatches * EstimatedMessagesPerBatch);
 
         return new ProducerPoolSizes
         {
-            ValueTaskSources = Math.Clamp(estimatedMessages, 256, 65536),
+            ValueTaskSources = Math.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
-            InflightEntries = Math.Clamp((int)maxBatches * 32, 128, 2048),
+            InflightEntries = Math.Clamp((int)maxBatches * InflightEntriesPerBatch, 128, 2048),
         };
     }
 
