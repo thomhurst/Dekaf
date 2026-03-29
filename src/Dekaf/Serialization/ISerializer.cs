@@ -37,10 +37,14 @@ public interface IDeserializer<out T>
 /// hot path when the data is a contiguous memory span (the common case for single-segment fetch responses).
 /// </summary>
 /// <remarks>
-/// <para>All built-in Dekaf deserializers implement this interface. Custom deserializers can opt in
+/// <para>Most built-in Dekaf deserializers implement this interface. Custom deserializers can opt in
 /// for zero-overhead deserialization in the consumer hot path.</para>
 /// <para>When this interface is not implemented, the consumer falls back to the standard
 /// <see cref="IDeserializer{T}.Deserialize"/> method with <see cref="ReadOnlySequence{T}"/> wrapping.</para>
+/// <para><b>Design note:</b> This interface is intentionally separate from <see cref="ISerde{T}"/> rather
+/// than extending it. Making <see cref="ISerde{T}"/> extend <see cref="ISpanDeserializer{T}"/> would be a
+/// source-breaking change for existing custom implementations. The opt-in pattern avoids forcing
+/// third-party serdes to implement <see cref="DeserializeSpan"/>.</para>
 /// </remarks>
 /// <typeparam name="T">The type to deserialize.</typeparam>
 public interface ISpanDeserializer<out T> : IDeserializer<T>

@@ -244,8 +244,8 @@ public readonly struct ConsumeResult<TKey, TValue>
         : this(topic, partition, offset, keyData, isKeyNull, valueData, isValueNull,
                headers, timestamp, timestampType, leaderEpoch,
                keyDeserializer, valueDeserializer,
-               keyDeserializer as ISpanDeserializer<TKey>,
-               valueDeserializer as ISpanDeserializer<TValue>,
+               spanKeyDeserializer: null,  // Public constructor always uses IDeserializer<T> path
+               spanValueDeserializer: null,
                isPartitionEof)
     {
     }

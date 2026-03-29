@@ -460,7 +460,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
         // Cache ISpanDeserializer<T> references once at build time to avoid per-message type checks.
-        // All built-in Dekaf deserializers implement ISpanDeserializer<T> for zero-overhead deserialization.
+        // Most built-in Dekaf deserializers implement ISpanDeserializer<T> for zero-overhead deserialization.
+        // RawBytesSerde is excluded as it already provides zero-copy access via ReadOnlyMemory<byte>.
         _spanKeyDeserializer = keyDeserializer as ISpanDeserializer<TKey>;
         _spanValueDeserializer = valueDeserializer as ISpanDeserializer<TValue>;
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
