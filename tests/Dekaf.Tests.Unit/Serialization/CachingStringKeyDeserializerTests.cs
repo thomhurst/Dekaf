@@ -66,7 +66,7 @@ public class CachingStringKeyDeserializerTests
     }
 
     [Test]
-    public async Task HashCollision_BothKeysReturnCorrectValues()
+    public async Task TwoDistinctKeys_BothCachedCorrectly()
     {
         // We cannot easily force a real XxHash64 collision, so we test the behavior
         // by deserializing two distinct keys and verifying both return correct strings.

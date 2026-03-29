@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Hashing;
 using System.Runtime.CompilerServices;
-using System.Text;
+
 
 namespace Dekaf.Serialization;
 
@@ -61,6 +61,8 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
 
         var result = _inner.Deserialize(data, context);
 
+        // Soft cap: concurrent threads may each read count < max and add simultaneously,
+        // transiently overshooting by the number of racing threads. Bounded and acceptable.
         if (Volatile.Read(ref _cacheCount) < MaxCachedEntries)
         {
             var newEntry = new CacheEntry(span.ToArray(), result);
