@@ -581,7 +581,7 @@ public static class Program
             _gen0Before = GC.CollectionCount(0);
             _gen1Before = GC.CollectionCount(1);
             _gen2Before = GC.CollectionCount(2);
-            _allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+            _allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
             Gen0 = Gen1 = Gen2 = 0;
             AllocatedBytes = 0;
         }
@@ -591,7 +591,7 @@ public static class Program
             Gen0 = GC.CollectionCount(0) - _gen0Before;
             Gen1 = GC.CollectionCount(1) - _gen1Before;
             Gen2 = GC.CollectionCount(2) - _gen2Before;
-            AllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - _allocatedBefore;
+            AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - _allocatedBefore;
         }
     }
 
