@@ -86,7 +86,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
         ResponseBufferPool responseBufferPool,
-        int pipeMemoryBucketCapacity = 0)
+        int? pipeMemoryBucketCapacity = null)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
@@ -94,9 +94,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
-        var bucketCapacity = pipeMemoryBucketCapacity > 0
-            ? pipeMemoryBucketCapacity
-            : ScaledBucketCapacity(_connectionsPerBroker);
+        var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
     }
 

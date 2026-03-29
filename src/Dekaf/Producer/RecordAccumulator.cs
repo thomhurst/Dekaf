@@ -220,7 +220,7 @@ internal static class ProducerDataPool
     /// Bucket depth is scaled via <see cref="RatchetBucketCapacity"/> when multi-broker
     /// configurations are detected.
     /// </summary>
-    internal static ArrayPool<byte> BytePool => s_bytePool;
+    internal static ArrayPool<byte> BytePool => Volatile.Read(ref s_bytePool);
 
     /// <summary>
     /// Increases the per-bucket array capacity if <paramref name="arraysPerBucket"/> exceeds
