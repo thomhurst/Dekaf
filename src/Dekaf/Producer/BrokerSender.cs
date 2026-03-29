@@ -1099,11 +1099,41 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else if (waitPendingCount > 0)
                 {
-                    // Carry-over (possibly all muted) and/or pending responses — wait for
-                    // any response to complete. Cannot use eventReader.WaitToReadAsync here
-                    // because the channel may contain stale NewBatch events that cause
-                    // immediate return, creating a spin loop when all carry-over is muted.
-                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                    // When we just sent successfully with no carry-over (no muted partitions)
+                    // and have in-flight capacity, use the event channel as the unified wait
+                    // source. The channel receives both NewBatch events (from the sender loop)
+                    // and ResponseReady events (from _responseCompletionCallback).
+                    // This wakes the send loop on whichever arrives first, enabling pipelining:
+                    // new batches can be sent immediately using remaining in-flight slots
+                    // without waiting for the previous response to complete first.
+                    //
+                    // In multi-broker setups where each broker receives only 2 partitions per
+                    // linger cycle, this eliminates dead time where the BrokerSender waits for
+                    // a response while new batches sit unprocessed in the channel.
+                    //
+                    // Guards:
+                    // - sentThisIteration: ensures progress was made this iteration, preventing
+                    //   spin loops when carry-over is all muted (stale events cause immediate
+                    //   WaitToReadAsync return but nothing is sendable)
+                    // - carryOver.Count == 0: no muted partitions that could create stale
+                    //   channel events, making WaitToReadAsync safe to use
+                    // - waitPendingCount < _totalMaxInFlight: in-flight capacity available to
+                    //   actually send new batches if they arrive
+                    if (sentThisIteration && carryOver.Count == 0
+                        && waitPendingCount < _totalMaxInFlight)
+                    {
+                        if (!await eventReader.WaitToReadAsync(cancellationToken)
+                            .ConfigureAwait(false))
+                            break;
+                    }
+                    else
+                    {
+                        // Carry-over exists (possibly muted) or at in-flight limit — wait
+                        // for a response only. Cannot use eventReader.WaitToReadAsync here
+                        // because the channel may contain stale NewBatch events from muted
+                        // carry-over, causing immediate return and a spin loop.
+                        await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 else if (carryOver.Count > 0)
                 {
