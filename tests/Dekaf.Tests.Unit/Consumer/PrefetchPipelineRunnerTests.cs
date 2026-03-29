@@ -825,7 +825,8 @@ public class PrefetchPipelineRunnerTests
         Action<Exception>? logError = null,
         Action<long, long>? logMemoryLimitPaused = null,
         ChannelWriter<PendingFetchData>? channelWriter = null,
-        int pipelineDepth = 2)
+        int pipelineDepth = 2,
+        Action<int, int>? onIterationComplete = null)
     {
         return new PrefetchPipelineRunner(
             ensureAssignment: ensureAssignment ?? (ct => ValueTask.CompletedTask),
@@ -841,7 +842,8 @@ public class PrefetchPipelineRunnerTests
             logError: logError ?? (_ => { }),
             logMemoryLimitPaused: logMemoryLimitPaused ?? ((_, _) => { }),
             channelWriter: channelWriter,
-            pipelineDepth: pipelineDepth);
+            pipelineDepth: pipelineDepth,
+            onIterationComplete: onIterationComplete);
     }
 
     #endregion
@@ -962,6 +964,227 @@ public class PrefetchPipelineRunnerTests
             fetchMaxBytes: 104_857_600, pipelineDepth: 2);
 
         await Assert.That(result).IsEqualTo(65536L * 1024);
+    }
+
+    #endregion
+
+    #region Scenario: Fast-drain pipeline fill acceleration
+
+    [Test]
+    public async Task RunAsync_FastCompletingFetches_DrainAndRefillWithinIteration()
+    {
+        // When eager fetches complete synchronously (e.g., empty responses when caught up),
+        // the pipeline should detect this and immediately drain+refill within the same
+        // iteration, accelerating warm-up without waiting for the next loop cycle.
+        var fetchCount = 0;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id >= 10)
+                {
+                    cts.Cancel();
+                    ct.ThrowIfCancellationRequested();
+                }
+                // Completes synchronously — simulating empty/fast fetch response
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: 4);
+
+        await runner.RunAsync(cts.Token);
+
+        // With fast-drain, synchronously-completing fetches should be processed rapidly
+        // without waiting for loop overhead between each one
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(10);
+    }
+
+    [Test]
+    public async Task RunAsync_FastDrain_StillRespectsMemoryLimit()
+    {
+        // Fast-drain must stop filling when memory limit is reached, even for
+        // synchronously-completing fetches.
+        var fetchCount = 0;
+        long prefetchedBytes = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                    return ValueTask.CompletedTask; // Synchronous fetch ok
+
+                if (id == 2)
+                {
+                    // First eager fetch completes synchronously but fills memory
+                    Interlocked.Exchange(ref prefetchedBytes, 2048);
+                    return ValueTask.CompletedTask;
+                }
+
+                Assert.Fail("prefetchRecords should not be called again — memory limit should stop fast-drain refill");
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: 1024,
+            getPrefetchedBytes: () => Interlocked.Read(ref prefetchedBytes),
+            waitForMemoryAvailable: ct =>
+            {
+                ct.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            },
+            pipelineDepth: 4);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // Only 2 fetches: the synchronous one and the first eager one
+        // Fast-drain detected memory limit after the first eager fetch and stopped
+        await Assert.That(fetchCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RunAsync_FastDrain_PreservesPositionSafety()
+    {
+        // Even with fast-drain acceleration, each fetch must read unique positions.
+        // Fast-drain only processes COMPLETED tasks whose positions are already updated.
+        var fetchPosition = 0L;
+        var positionsReadByFetch = new ConcurrentDictionary<int, long>();
+        var fetchCount = 0;
+        var targetFetchCount = 12;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+
+                // Read position
+                var pos = Volatile.Read(ref fetchPosition);
+                positionsReadByFetch[id] = pos;
+
+                // Advance position (synchronous completion — fast-drain will kick in)
+                Interlocked.Add(ref fetchPosition, 10);
+
+                if (id >= targetFetchCount)
+                    ct.ThrowIfCancellationRequested();
+
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: 4);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await runner.RunAsync(cts.Token);
+
+        // Verify all positions are unique
+        var positions = positionsReadByFetch.Values.ToList();
+        await Assert.That(positions.Count).IsGreaterThanOrEqualTo(targetFetchCount);
+        await Assert.That(positions.Distinct().Count())
+            .IsEqualTo(positions.Count)
+            .Because("fast-drain must preserve position safety — no duplicate fetches");
+    }
+
+    [Test]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    [Arguments(8)]
+    public async Task RunAsync_FastDrain_RespectsPipelineDepthLimit(int pipelineDepth)
+    {
+        // Fast-drain must not exceed pipelineDepth - 1 in-flight tasks at any time.
+        var fetchCount = 0;
+        var maxInFlight = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id >= 8)
+                    ct.ThrowIfCancellationRequested();
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: pipelineDepth,
+            onIterationComplete: (inFlight, _) =>
+            {
+                var current = inFlight;
+                if (current > Volatile.Read(ref maxInFlight))
+                    Interlocked.Exchange(ref maxInFlight, current);
+            });
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await runner.RunAsync(cts.Token);
+
+        // Max in-flight should never exceed pipelineDepth - 1
+        await Assert.That(maxInFlight).IsLessThanOrEqualTo(pipelineDepth - 1);
+    }
+
+    #endregion
+
+    #region Scenario: Fetch overlap with record processing
+
+    [Test]
+    public async Task RunAsync_EagerFetchOverlapsWithProcessing()
+    {
+        // Validates the core pipelining behavior from issue #731:
+        // After a synchronous fetch completes, an eager fetch starts immediately.
+        // The eager fetch runs concurrently (overlapping with downstream processing).
+        var fetchLog = new List<(int Id, string Event, long TimestampMs)>();
+        var fetchCount = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var eagerFetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var runner = CreateRunner(
+            prefetchRecords: async ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                lock (fetchLog) { fetchLog.Add((id, "start", sw.ElapsedMilliseconds)); }
+
+                await Task.Delay(50, ct); // Simulate network latency
+
+                lock (fetchLog) { fetchLog.Add((id, "end", sw.ElapsedMilliseconds)); }
+
+                if (id == 2)
+                    eagerFetchStarted.TrySetResult();
+                if (id >= 3)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            pipelineDepth: 3);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = runner.RunAsync(cts.Token);
+
+        // Wait for the eager fetch to start
+        await eagerFetchStarted.Task;
+
+        // Cancel after the eager fetch started
+        await cts.CancelAsync();
+        await runTask;
+
+        // Verify: fetch 2 (eager) started before fetch 1 ended or very close after.
+        // This proves the eager fetch overlaps with the synchronous fetch's processing.
+        var fetch1End = fetchLog.FirstOrDefault(f => f is { Id: 1, Event: "end" });
+        var fetch2Start = fetchLog.FirstOrDefault(f => f is { Id: 2, Event: "start" });
+
+        await Assert.That(fetch2Start.TimestampMs).IsNotEqualTo(0)
+            .Because("eager fetch 2 must have started");
+        // The eager fetch should start very close to when the sync fetch ends
+        // (within a few ms of loop overhead, not another full FetchMaxWaitMs delay)
+        await Assert.That(fetch2Start.TimestampMs - fetch1End.TimestampMs)
+            .IsLessThan(500)
+            .Because("eager fetch must start promptly after synchronous fetch, not after a full wait cycle");
     }
 
     #endregion
