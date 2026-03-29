@@ -146,6 +146,38 @@ public class PendingRequestPoolTests
     }
 
     [Test]
+    public async Task Pool_RespectsCustomMaxPoolSize()
+    {
+        var pool = new PendingRequestPool(maxPoolSize: 2);
+
+        var r1 = pool.Rent();
+        var r2 = pool.Rent();
+        var r3 = pool.Rent();
+
+        // Complete all requests before returning
+        r1.Initialize(0, CancellationToken.None);
+        var d1 = new byte[] { 0, 0, 0, 1, 10 };
+        r1.TryComplete(new PooledResponseBuffer(d1, d1.Length, isPooled: false));
+        await r1.AsValueTask().ConfigureAwait(false);
+
+        r2.Initialize(0, CancellationToken.None);
+        var d2 = new byte[] { 0, 0, 0, 1, 10 };
+        r2.TryComplete(new PooledResponseBuffer(d2, d2.Length, isPooled: false));
+        await r2.AsValueTask().ConfigureAwait(false);
+
+        r3.Initialize(0, CancellationToken.None);
+        var d3 = new byte[] { 0, 0, 0, 1, 10 };
+        r3.TryComplete(new PooledResponseBuffer(d3, d3.Length, isPooled: false));
+        await r3.AsValueTask().ConfigureAwait(false);
+
+        pool.Return(r1);
+        pool.Return(r2);
+        pool.Return(r3); // Should be discarded (pool full at 2)
+
+        await Assert.That(pool.ApproximateCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Return_ResetsRequestState()
     {
         var pool = new PendingRequestPool();

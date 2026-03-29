@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Dekaf.Internal;
 
 namespace Dekaf.Producer;
 
@@ -24,38 +25,14 @@ public static class ValueTaskSourcePool
     internal const int FallbackMaxPoolSize = 4096;
 
     /// <summary>
-    /// Conservative estimate of the number of messages per batch, used as a multiplier
-    /// when calculating pool size. Each in-flight message holds a rented pool source,
-    /// so the pool must be sized per message, not per batch.
-    /// </summary>
-    /// <remarks>
-    /// With the default 1 MB batch size and typical ~1 KB messages, a batch holds ~1024 messages.
-    /// This matches the estimate documented in CLAUDE.md ("Batch = 1MB default = ~1000 messages at 1KB each").
-    /// </remarks>
-    internal const int EstimatedMessagesPerBatch = 1024;
-
-    /// <summary>
     /// Calculates an appropriate pool size based on the estimated number of concurrent in-flight messages.
-    /// The pool is rented per <c>ProduceAsync</c> call (per message), so the formula accounts for
-    /// both the number of in-flight batches and the estimated messages per batch:
-    /// <c>(BufferMemory / BatchSize) * EstimatedMessagesPerBatch</c>, clamped to
-    /// [<see cref="MinAutoPoolSize"/>, <see cref="MaxAutoPoolSize"/>].
+    /// Delegates to <see cref="PoolSizing.ForProducer"/> which centralizes all pool size derivation.
     /// </summary>
     /// <param name="bufferMemory">Total producer buffer memory in bytes.</param>
     /// <param name="batchSize">Maximum batch size in bytes.</param>
     /// <returns>A pool size scaled to the expected concurrency level.</returns>
     public static int CalculatePoolSize(ulong bufferMemory, int batchSize)
-    {
-        if (batchSize <= 0)
-            throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
-
-        // Clamp maxBatches before multiplying to prevent overflow for large bufferMemory values.
-        const ulong maxUsefulBatches = MaxAutoPoolSize / EstimatedMessagesPerBatch; // 64
-        var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
-        var estimatedSources = (int)(maxBatches * EstimatedMessagesPerBatch);
-
-        return Math.Clamp(estimatedSources, MinAutoPoolSize, MaxAutoPoolSize);
-    }
+        => PoolSizing.ForProducer(bufferMemory, batchSize).ValueTaskSources;
 }
 
 /// <summary>

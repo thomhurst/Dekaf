@@ -173,11 +173,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         _retryPolicy = options.RetryPolicy;
 
-        // Initialize ValueTaskSource pool: auto-calculate from BufferMemory/BatchSize when 0
+        var producerPoolSizes = PoolSizing.ForProducer(options.BufferMemory, options.BatchSize);
+
         var poolSize = options.ValueTaskSourcePoolSize > 0
             ? options.ValueTaskSourcePoolSize
-            : ValueTaskSourcePool.CalculatePoolSize(options.BufferMemory, options.BatchSize);
+            : producerPoolSizes.ValueTaskSources;
         _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(poolSize);
+
+        RecordBatch.RatchetMaxRetainedBufferSize(producerPoolSizes.MaxRetainedBufferSize);
 
         _partitioner = options.CustomPartitioner ?? options.Partitioner switch
         {
@@ -200,7 +203,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 SendBufferSize = options.SocketSendBufferBytes,
-                ReceiveBufferSize = options.SocketReceiveBufferBytes
+                ReceiveBufferSize = options.SocketReceiveBufferBytes,
+                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
             },
             loggerFactory,
             options.ConnectionsPerBroker);
@@ -214,15 +218,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _compressionCodecs = CreateCompressionCodecRegistry(options);
         _accumulator = new RecordAccumulator(options, _compressionCodecs, loggerFactory?.CreateLogger<RecordAccumulator>());
 
-        // Initialize inflight tracker for coordinated retry with multiple in-flight batches
-        // per partition. The broker uses sequence numbers to guarantee ordering, so multiple
-        // batches can be in-flight simultaneously. The tracker enables coordinated retry on
+        // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
+        // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
+        // in-flight simultaneously. The tracker enables coordinated retry on
         // OutOfOrderSequenceNumber instead of blind backoff.
-        // Pre-warm pool to prevent allocation burst during ramp-up: with MaxInFlight=5 and
-        // typical coalesced batch sizes, steady-state needs ~50-250 entries in flight.
-        var inflightPool = new InflightEntryPool();
-        // 32 ≈ approximate median number of coalesced partitions per batch (one inflight entry per partition).
-        inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * 32, inflightPool.MaxPoolSize));
+        // Pre-warm to prevent allocation burst during ramp-up.
+        var inflightPool = new InflightEntryPool(producerPoolSizes.InflightEntries);
+        inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
         _inflightTracker = new PartitionInflightTracker(inflightPool);
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);

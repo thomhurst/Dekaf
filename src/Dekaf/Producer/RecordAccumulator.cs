@@ -396,16 +396,8 @@ internal sealed class BatchArena
     /// ratchets the cap to 512, then a 1MB-batch producer can retain up to
     /// 512 × ~1.1MB ≈ ~560MB of POH memory instead of the normal 128 × ~1.1MB ≈ ~140MB.
     /// </summary>
-    internal static void RatchetPoolSize(int newSize)
-    {
-        int current;
-        do
-        {
-            current = Volatile.Read(ref s_maxPoolSize);
-            if (newSize <= current) return;
-        }
-        while (Interlocked.CompareExchange(ref s_maxPoolSize, newSize, current) != current);
-    }
+    internal static void RatchetPoolSize(int newSize) =>
+        InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
 
     /// <summary>
     /// Number of times <see cref="RentOrCreate"/> found the pool empty and had to allocate a new arena.

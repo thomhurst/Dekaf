@@ -164,8 +164,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
-    private readonly PendingRequestPool _pendingRequestPool = new();
-    private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
+    private readonly PendingRequestPool _pendingRequestPool;
+    private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
@@ -228,6 +228,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _port = port;
         _clientId = clientId;
         _options = options ?? new ConnectionOptions();
+        var connectionSizes = PoolSizing.ForConnection(_options.MaxInFlightRequestsPerConnection);
+        _pendingRequestPool = new PendingRequestPool(connectionSizes.PendingRequests);
+        _timeoutCtsPool = new CancellationTokenSourcePool(connectionSizes.CancellationTokenSources);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _bufferMemory = bufferMemory;
         _connectionsPerBroker = connectionsPerBroker;
@@ -2124,6 +2127,11 @@ public sealed class ConnectionOptions
     /// Request timeout.
     /// </summary>
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Maximum in-flight requests per connection. Used internally to derive pool sizes.
+    /// </summary>
+    internal int MaxInFlightRequestsPerConnection { get; init; } = 5;
 }
 
 /// <summary>
@@ -2273,9 +2281,16 @@ internal sealed class PooledResponseMemory : IPooledMemory
 /// </summary>
 internal sealed class PendingRequestPool
 {
-    private const int MaxPoolSize = 256;
+    private const int DefaultMaxPoolSize = 256;
+    private readonly int _maxPoolSize;
     private readonly ConcurrentStack<PooledPendingRequest> _pool = new();
     private int _poolCount;
+
+    public PendingRequestPool() : this(DefaultMaxPoolSize) { }
+
+    public PendingRequestPool(int maxPoolSize) { _maxPoolSize = maxPoolSize; }
+
+    public int ApproximateCount => Volatile.Read(ref _poolCount);
 
     /// <summary>
     /// Gets a <see cref="PooledPendingRequest"/> from the pool, or creates a new one if empty.
@@ -2304,7 +2319,7 @@ internal sealed class PendingRequestPool
 
         // Check if pool is full
         var count = Interlocked.Increment(ref _poolCount);
-        if (count <= MaxPoolSize)
+        if (count <= _maxPoolSize)
         {
             _pool.Push(request);
         }

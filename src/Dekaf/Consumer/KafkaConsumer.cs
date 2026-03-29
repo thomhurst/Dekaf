@@ -34,7 +34,13 @@ internal sealed class PendingFetchData : IDisposable
     // Typically 1-6 instances per fetch cycle. Soft limit avoids ConcurrentStack.Count overhead.
     private static readonly ConcurrentStack<PendingFetchData> s_pool = new();
     private static int s_poolCount;
-    private const int MaxPoolSize = 128;
+    private const int DefaultMaxPoolSize = 128;
+    private static int s_maxPoolSize = DefaultMaxPoolSize;
+
+    internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
+
+    internal static void RatchetPoolSize(int newSize) =>
+        InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
 
     private IReadOnlyList<RecordBatch> _batches = null!;
     private Dictionary<long, Queue<long>>? _abortedProducers;
@@ -348,9 +354,9 @@ internal sealed class PendingFetchData : IDisposable
         _abortedProducers?.Clear();
 
         // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
+        // Under high concurrency, the pool may briefly exceed the max by a few items.
         // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        if (Volatile.Read(ref s_poolCount) < Volatile.Read(ref s_maxPoolSize))
         {
             s_pool.Push(this);
             Interlocked.Increment(ref s_poolCount);
@@ -482,7 +488,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
-    private readonly CancellationTokenSourcePool _ctsPool = new();
+    private readonly CancellationTokenSourcePool _ctsPool;
 
     // Cached metric tags per topic to avoid per-message TagList allocation
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
@@ -518,6 +524,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _options = options;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
+
+        // Derive consumer pool sizes from configuration
+        // Use 64 as default partition count estimate — covers most workloads.
+        // PendingFetchData uses a ratchet, so this only increases over time.
+        var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
+        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
+        _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
@@ -536,6 +549,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _interceptors = interceptors;
         }
 
+        // Consumer connections use the default MaxInFlightRequestsPerConnection (5).
+        // Unlike the producer, consumers don't expose this setting — fetch requests are
+        // inherently sequential per partition, so the default is appropriate.
         _connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
@@ -2186,6 +2202,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 InvalidatePartitionCache();
                 InvalidateFetchRequestCache();
 
+                // Ratchet pool sizes based on actual partition count
+                RatchetConsumerPoolSizes(_assignment.Count);
+
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
@@ -2214,6 +2233,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             else if (_assignment.Count > 0)
             {
+                // Ratchet pool sizes based on actual partition count (manual assignment)
+                RatchetConsumerPoolSizes(_assignment.Count);
+
                 // Manual assignment - initialize positions for partitions that don't have positions yet
                 List<TopicPartition>? uninitializedPartitions = null;
                 foreach (var p in _assignment)
@@ -3109,6 +3131,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _cachedTopicPartitions = null;
             _cachedPartitionsList = null;
         }
+    }
+
+    /// <summary>
+    /// Ratchets process-global consumer pool sizes based on actual partition count.
+    /// Only <see cref="PendingFetchData"/> is ratcheted — the per-instance CTS pool
+    /// is fixed at construction and cannot be resized after creation.
+    /// </summary>
+    private static void RatchetConsumerPoolSizes(int partitionCount)
+    {
+        var sizes = PoolSizing.ForConsumer(partitionCount);
+        PendingFetchData.RatchetPoolSize(sizes.FetchDataPool);
     }
 
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)

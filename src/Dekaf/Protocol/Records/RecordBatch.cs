@@ -5,13 +5,14 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
+using Dekaf.Internal;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
 
 /// <summary>
 /// Reusable buffer writer backed by ArrayPool. Two memory management mechanisms:
-/// 1. Hard cap: buffers exceeding MaxRetainedBufferSize (1MB) are returned to the pool
+/// 1. Hard cap: buffers exceeding the configured max retained size are returned to the pool
 ///    and replaced with a fresh initial-size buffer on every Clear().
 /// 2. Adaptive shrink: every ShrinkCheckInterval (64) clears, if peak usage was below
 ///    half the buffer size, the buffer is downsized to 2x peak (minimum _initialCapacity).
@@ -19,11 +20,9 @@ namespace Dekaf.Protocol.Records;
 internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposable
 {
     /// <summary>
-    /// Maximum buffer size to retain across reuses (1MB). Buffers that grow beyond this
-    /// threshold are replaced with a fresh initial-size buffer on Clear() to prevent
-    /// thread-local memory from growing unbounded in long-running producers.
+    /// Default maximum buffer size to retain across reuses (1MB).
     /// </summary>
-    private const int MaxRetainedBufferSize = 1 * 1024 * 1024;
+    private const int DefaultMaxRetainedBufferSize = 1 * 1024 * 1024;
 
     /// <summary>
     /// Number of Clear() calls between shrink checks. Must be a power of two for fast modulo.
@@ -33,12 +32,14 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     private byte[] _buffer;
     private int _written;
     private readonly int _initialCapacity;
+    private readonly int _maxRetainedBufferSize;
     private int _highWaterMark;
     private int _clearCount;
 
-    public PooledReusableBufferWriter(int initialCapacity)
+    public PooledReusableBufferWriter(int initialCapacity, int maxRetainedBufferSize = DefaultMaxRetainedBufferSize)
     {
         _initialCapacity = initialCapacity;
+        _maxRetainedBufferSize = maxRetainedBufferSize;
         _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
         _written = 0;
     }
@@ -53,7 +54,7 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 
     /// <summary>
     /// Resets the write position without zeroing the buffer.
-    /// If the buffer has grown beyond <see cref="MaxRetainedBufferSize"/>, it is returned
+    /// If the buffer has grown beyond the configured max retained size, it is returned
     /// to the pool and replaced with a fresh initial-size buffer to prevent unbounded growth.
     /// Additionally, every <see cref="ShrinkCheckInterval"/> clears, if the high-water mark
     /// is less than half the buffer size, the buffer is shrunk to 2x the high-water mark
@@ -67,7 +68,7 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 
         _written = 0;
 
-        if (_buffer.Length > MaxRetainedBufferSize)
+        if (_buffer.Length > _maxRetainedBufferSize)
         {
             ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
             _buffer = ArrayPool<byte>.Shared.Rent(_initialCapacity);
@@ -189,6 +190,21 @@ public sealed class RecordBatch : IDisposable
     /// crc(4) + attributes(2) + lastOffsetDelta(4) + baseTimestamp(8) + maxTimestamp(8) +
     /// producerId(8) + producerEpoch(2) + baseSequence(4) + recordCount(4) = 49 bytes.
     /// </summary>
+    private static int s_maxRetainedBufferSize = 1 * 1024 * 1024; // default 1MB
+
+    /// <summary>
+    /// Ratchets up the max retained buffer size for thread-local buffers.
+    /// Called by producer initialization when BatchSize exceeds the current value.
+    /// Thread-local buffers created before this call retain their original (smaller) limit,
+    /// which is acceptable since the ratchet only increases — existing buffers are more
+    /// conservative, not less. New buffers on any thread pick up the updated value.
+    /// Note: this is process-global — if multiple producers coexist with different batch sizes,
+    /// the largest wins. Over-retention wastes some memory but under-retention would cause
+    /// frequent ArrayPool churn on the large-batch producer.
+    /// </summary>
+    internal static void RatchetMaxRetainedBufferSize(int newSize) =>
+        InterlockedHelper.RatchetUp(ref s_maxRetainedBufferSize, newSize);
+
     internal const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
 
     /// <summary>
@@ -220,7 +236,7 @@ public sealed class RecordBatch : IDisposable
         var buffer = cache.RecordsBuffer;
         if (buffer is null)
         {
-            buffer = new PooledReusableBufferWriter(4096);
+            buffer = new PooledReusableBufferWriter(4096, Volatile.Read(ref s_maxRetainedBufferSize));
             cache.RecordsBuffer = buffer;
         }
         else
@@ -236,7 +252,7 @@ public sealed class RecordBatch : IDisposable
         var buffer = cache.CompressedBuffer;
         if (buffer is null)
         {
-            buffer = new PooledReusableBufferWriter(4096);
+            buffer = new PooledReusableBufferWriter(4096, Volatile.Read(ref s_maxRetainedBufferSize));
             cache.CompressedBuffer = buffer;
         }
         else
@@ -252,7 +268,7 @@ public sealed class RecordBatch : IDisposable
         var buffer = cache.DecompressedBuffer;
         if (buffer is null)
         {
-            buffer = new PooledReusableBufferWriter(Math.Max(4096, estimatedSize));
+            buffer = new PooledReusableBufferWriter(Math.Max(4096, estimatedSize), Volatile.Read(ref s_maxRetainedBufferSize));
             cache.DecompressedBuffer = buffer;
         }
         else
