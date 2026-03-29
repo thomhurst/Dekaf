@@ -277,4 +277,62 @@ public sealed class ConnectionPoolConcurrencyTests
             await Assert.That(createdConnections.Count).IsEqualTo(connectionsPerBroker);
         }
     }
+
+    /// <summary>
+    /// Regression test: When ReplaceConnectionInGroupAsync replaces a dead connection,
+    /// it must dispose the old connection to prevent leaking Pipe buffers, StreamPipeWriter
+    /// memory, and socket resources.
+    /// </summary>
+    [Test]
+    public async Task ReplaceConnectionInGroup_DisposesOldConnection()
+    {
+        const int connectionsPerBroker = 2;
+        const int deadIndex = 0;
+        IKafkaConnection? oldConnection = null;
+        var disposedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var pool = new ConnectionPool(
+            clientId: "test",
+            connectionOptions: new ConnectionOptions { ConnectionTimeout = TimeSpan.FromSeconds(10) },
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, index, ct) =>
+            {
+                var conn = Substitute.For<IKafkaConnection>();
+                conn.IsConnected.Returns(true);
+                conn.BrokerId.Returns(brokerId);
+                conn.Host.Returns(host);
+                conn.Port.Returns(port);
+                return ValueTask.FromResult(conn);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            // Create the initial connection group
+            await pool.GetConnectionAsync(1);
+
+            // Get the connection at deadIndex and mark it as disconnected
+            oldConnection = await pool.GetConnectionByIndexAsync(1, deadIndex);
+            oldConnection.IsConnected.Returns(false);
+
+            // Signal when DisposeAsync is called on the old connection
+            oldConnection.DisposeAsync().Returns(_ =>
+            {
+                disposedTcs.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+
+            // Request the same index — this triggers ReplaceConnectionInGroupAsync
+            var newConnection = await pool.GetConnectionByIndexAsync(1, deadIndex);
+
+            // The replacement should be a different (new) connection
+            await Assert.That(newConnection).IsNotEqualTo(oldConnection);
+            await Assert.That(newConnection.IsConnected).IsTrue();
+
+            // Wait deterministically for the old connection to be disposed
+            await disposedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await oldConnection.Received(1).DisposeAsync();
+        }
+    }
 }

@@ -869,6 +869,7 @@ public class PrefetchPipelineRunnerTests
         // (PR #648's "one eager per iteration" rule caps in-flight queue at 1).
         // Scaling with pipelineDepth caused timeouts on slow CI runners for high depths.
         var targetFetchCount = 8;
+        var targetReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         CancellationTokenSource? testCts = null;
 
         var runner = CreateRunner(
@@ -887,6 +888,7 @@ public class PrefetchPipelineRunnerTests
 
                 if (id >= targetFetchCount)
                 {
+                    targetReached.TrySetResult();
                     testCts!.Cancel();
                     ct.ThrowIfCancellationRequested();
                 }
@@ -896,8 +898,13 @@ public class PrefetchPipelineRunnerTests
             prefetchedBytes: 0,
             pipelineDepth: pipelineDepth);
 
-        testCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // No fixed timeout — wait deterministically for the target fetch count.
+        // A generous safety timeout prevents infinite hangs if the runner stalls.
+        testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await runner.RunAsync(testCts.Token);
+
+        // Wait for the target to be reached (should already be complete since RunAsync returned)
+        await targetReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Every fetch must have read a unique position — no duplicates
         var positions = positionsReadByFetch.Values.ToList();
