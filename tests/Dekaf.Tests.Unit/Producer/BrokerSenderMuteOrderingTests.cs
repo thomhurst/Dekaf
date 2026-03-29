@@ -86,11 +86,13 @@ public sealed class BrokerSenderMuteOrderingTests
     private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
         new()
         {
+            TopicCount = 1,
             Responses =
             [
                 new ProduceResponseTopicData
                 {
                     Name = topic,
+                    PartitionCount = 1,
                     PartitionResponses =
                     [
                         new ProduceResponsePartitionData
@@ -107,11 +109,13 @@ public sealed class BrokerSenderMuteOrderingTests
     private static ProduceResponse CreateRetriableErrorResponse(string topic, int partition) =>
         new()
         {
+            TopicCount = 1,
             Responses =
             [
                 new ProduceResponseTopicData
                 {
                     Name = topic,
+                    PartitionCount = 1,
                     PartitionResponses =
                     [
                         new ProduceResponsePartitionData
@@ -129,11 +133,13 @@ public sealed class BrokerSenderMuteOrderingTests
         string topic, params (int partition, ErrorCode errorCode, long baseOffset)[] partitions) =>
         new()
         {
+            TopicCount = 1,
             Responses =
             [
                 new ProduceResponseTopicData
                 {
                     Name = topic,
+                    PartitionCount = partitions.Length,
                     PartitionResponses = partitions
                         .Select(p => new ProduceResponsePartitionData
                         {
