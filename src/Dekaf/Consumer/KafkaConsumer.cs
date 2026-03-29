@@ -404,7 +404,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     // Per-fetch reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
     // Keyed by (brokerId, connectionIndex) since PrefetchFromBrokerAsync runs concurrently
-    // for multiple brokers AND multiple connections to the same broker
+    // for multiple brokers AND multiple connections to the same broker.
+    // Entries for scaled-down connections persist but are bounded: brokers × MaxFetchConnectionsPerBroker.
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
@@ -423,7 +424,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
-    private int _fetchRoundRobinCounter;
     private readonly ConsumerConnectionScaler? _connectionScaler;
 
     // Dead letter queue raw byte tracking (zero overhead when not enabled)
@@ -1117,14 +1117,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
 
             // Upper bound: each broker can produce up to fetchConnectionCount tasks
-            var maxTasks = brokerCount * Math.Max(fetchConnectionCount, 1);
+            var maxTasks = brokerCount * fetchConnectionCount;
             var fetchTasks = ArrayPool<Task>.Shared.Rent(maxTasks);
             try
             {
                 var taskCount = 0;
 
-                // Stack-allocate group ranges (max 8 connections per broker is generous)
-                Span<(int StartIndex, int Count)> groups = stackalloc (int, int)[Math.Min(fetchConnectionCount, 8)];
+                // Stack-allocate group ranges — bounded by MaxFetchConnectionsPerBroker
+                Span<(int StartIndex, int Count)> groups = stackalloc (int, int)[Math.Min(fetchConnectionCount, ConsumerConnectionScaler.MaxFetchConnectionsPerBroker)];
 
                 foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
@@ -1134,8 +1134,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     for (var g = 0; g < groupCount; g++)
                     {
                         var (startIndex, count) = groups[g];
-                        var connectionIndex = ConsumerConnectionScaler.GetNextFetchConnectionIndex(
-                            ref _fetchRoundRobinCounter, fetchConnectionCount);
+                        // Deterministic: group g always maps to connection g, ensuring stable
+                        // (brokerId, connectionIndex) keys across cycles for pendingItems lists
+                        var connectionIndex = g % fetchConnectionCount;
 
                         fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
                             brokerId, partitions, startIndex, count, connectionIndex,
@@ -1239,12 +1240,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
 
-        // When splitting across connections, extract the partition subset.
-        // This is a per-fetch (per-batch) allocation, not per-message.
-        var effectivePartitions = (partitionStartIndex == 0 && partitionCount == partitions.Count)
-            ? partitions
-            : partitions.GetRange(partitionStartIndex, partitionCount);
-
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
         if (apiVersion < 0)
@@ -1257,11 +1252,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             apiVersion = _fetchApiVersion;
         }
 
-        // Resolve any special offset values
-        await ResolveSpecialOffsetsAsync(effectivePartitions, cancellationToken).ConfigureAwait(false);
+        // Resolve any special offset values — pass index range to avoid GetRange allocation
+        await ResolveSpecialOffsetsAsync(partitions, partitionStartIndex, partitionCount, cancellationToken).ConfigureAwait(false);
 
-        // Build fetch request
-        var topicData = BuildFetchRequestTopics(effectivePartitions);
+        // Build fetch request — pass index range to avoid GetRange allocation
+        var topicData = BuildFetchRequestTopics(partitions, partitionStartIndex, partitionCount);
 
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
@@ -2242,12 +2237,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return partitionResponse?.Offset ?? 0;
     }
 
-    private async ValueTask ResolveSpecialOffsetsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
+    private async ValueTask ResolveSpecialOffsetsAsync(
+        List<TopicPartition> partitions, int startIndex, int count, CancellationToken cancellationToken)
     {
         // Check for partitions with special offset values (-1 for end, -2 for beginning)
         // and resolve them to actual offsets using ListOffsets
-        foreach (var partition in partitions)
+        var endIndex = startIndex + count;
+        for (var i = startIndex; i < endIndex; i++)
         {
+            var partition = partitions[i];
             var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
             if (fetchPosition == -1 || fetchPosition == -2)
             {
@@ -2569,10 +2567,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Resolve any special offset values (-1 for end, -2 for beginning) before fetching
-        await ResolveSpecialOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
+        await ResolveSpecialOffsetsAsync(partitions, 0, partitions.Count, cancellationToken).ConfigureAwait(false);
 
         // Build fetch request - use imperative code to avoid LINQ allocations
-        var topicData = BuildFetchRequestTopics(partitions);
+        var topicData = BuildFetchRequestTopics(partitions, 0, partitions.Count);
 
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
@@ -2831,10 +2829,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    private List<FetchRequestTopic> BuildFetchRequestTopics(List<TopicPartition> partitions)
+    private List<FetchRequestTopic> BuildFetchRequestTopics(
+        List<TopicPartition> partitions, int startIndex, int count)
     {
-        if (partitions.Count == 0)
+        if (count == 0)
             return [];
+
+        var isFullList = startIndex == 0 && count == partitions.Count;
 
         // Take snapshots of current state under lock
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? cachedDict;
@@ -2846,8 +2847,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             cachedList = _cachedPartitionsList;
         }
 
-        // Check if cache is valid (same partition list as before)
-        if (cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
+        // Check if cache is valid (same partition list as before) — only for full-list case
+        if (isFullList && cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
         {
             // Cache hit: build a fresh result list with snapshot offsets under lock.
             // Each broker task gets its own FetchRequestPartition objects so that
@@ -2856,11 +2857,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             return BuildFetchResult(cachedDict, _fetchPositions);
         }
 
-        // Cache miss: build fresh structure with TopicPartition stored alongside
+        // Cache miss (or subrange): build fresh structure with TopicPartition stored alongside
         var topicPartitions = new Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>();
 
-        foreach (var p in partitions)
+        var endIndex = startIndex + count;
+        for (var i = startIndex; i < endIndex; i++)
         {
+            var p = partitions[i];
             if (!topicPartitions.TryGetValue(p.Topic, out var list))
             {
                 list = [];
@@ -2883,13 +2886,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
         var result = BuildFetchResult(topicPartitions, _fetchPositions);
 
-        // Update cache (first writer wins to avoid overwriting fresher data)
-        lock (_fetchCacheLock)
+        // Update cache (first writer wins to avoid overwriting fresher data) — only for full-list case
+        if (isFullList)
         {
-            if (_cachedTopicPartitions is null)
+            lock (_fetchCacheLock)
             {
-                _cachedTopicPartitions = topicPartitions;
-                _cachedPartitionsList = new List<TopicPartition>(partitions);
+                if (_cachedTopicPartitions is null)
+                {
+                    _cachedTopicPartitions = topicPartitions;
+                    _cachedPartitionsList = new List<TopicPartition>(partitions);
+                }
             }
         }
 

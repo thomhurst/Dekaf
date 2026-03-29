@@ -10,6 +10,12 @@ namespace Dekaf.Consumer;
 /// </summary>
 internal sealed class ConsumerConnectionScaler
 {
+    /// <summary>
+    /// Maximum number of fetch connections per broker. Used for stackalloc sizing
+    /// and as an upper bound for connection scaling.
+    /// </summary>
+    internal const int MaxFetchConnectionsPerBroker = 8;
+
     private static readonly TimeSpan ScaleUpSustained = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ScaleDownSustained = TimeSpan.FromSeconds(120);
     private static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(5);
@@ -151,6 +157,9 @@ internal sealed class ConsumerConnectionScaler
         int fetchConnectionCount,
         Span<(int StartIndex, int Count)> groups)
     {
+        Debug.Assert(groups.Length >= Math.Min(fetchConnectionCount, partitionCount),
+            $"groups span too small: {groups.Length} < Min({fetchConnectionCount}, {partitionCount})");
+
         if (fetchConnectionCount <= 1 || partitionCount <= 1)
         {
             groups[0] = (0, partitionCount);
