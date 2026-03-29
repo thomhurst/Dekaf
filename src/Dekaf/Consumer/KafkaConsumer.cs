@@ -34,7 +34,21 @@ internal sealed class PendingFetchData : IDisposable
     // Typically 1-6 instances per fetch cycle. Soft limit avoids ConcurrentStack.Count overhead.
     private static readonly ConcurrentStack<PendingFetchData> s_pool = new();
     private static int s_poolCount;
-    private const int MaxPoolSize = 128;
+    private const int DefaultMaxPoolSize = 128;
+    private static int s_maxPoolSize = DefaultMaxPoolSize;
+
+    internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
+
+    internal static void RatchetPoolSize(int newSize)
+    {
+        int current;
+        do
+        {
+            current = Volatile.Read(ref s_maxPoolSize);
+            if (newSize <= current) return;
+        }
+        while (Interlocked.CompareExchange(ref s_maxPoolSize, newSize, current) != current);
+    }
 
     private IReadOnlyList<RecordBatch> _batches = null!;
     private Dictionary<long, Queue<long>>? _abortedProducers;
@@ -348,9 +362,9 @@ internal sealed class PendingFetchData : IDisposable
         _abortedProducers?.Clear();
 
         // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
+        // Under high concurrency, the pool may briefly exceed the max by a few items.
         // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        if (Volatile.Read(ref s_poolCount) < Volatile.Read(ref s_maxPoolSize))
         {
             s_pool.Push(this);
             Interlocked.Increment(ref s_poolCount);

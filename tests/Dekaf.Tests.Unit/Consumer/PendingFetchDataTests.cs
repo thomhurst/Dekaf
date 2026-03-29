@@ -85,6 +85,27 @@ public class PendingFetchDataTests
     }
 
     [Test]
+    public async Task RatchetPoolSize_IncreasesMaxPoolSize()
+    {
+        // Get the initial value
+        var initial = PendingFetchData.MaxPoolSizeValue;
+
+        // Ratchet up
+        PendingFetchData.RatchetPoolSize(initial + 100);
+        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsEqualTo(initial + 100);
+    }
+
+    [Test]
+    public async Task RatchetPoolSize_DoesNotDecrease()
+    {
+        var current = PendingFetchData.MaxPoolSizeValue;
+
+        // Try to ratchet down — should be no-op
+        PendingFetchData.RatchetPoolSize(1);
+        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsEqualTo(current);
+    }
+
+    [Test]
     public async Task Create_WithAbortedTransactions_ReusesClearedDictionary()
     {
         // Arrange: first instance has aborted transactions, dispose returns to pool
