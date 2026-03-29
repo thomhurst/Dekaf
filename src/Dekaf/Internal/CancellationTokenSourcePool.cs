@@ -7,10 +7,18 @@ namespace Dekaf.Internal;
 
 internal sealed class CancellationTokenSourcePool
 {
-    private const int MaxQueueSize = 1024;
+    private const int DefaultMaxQueueSize = 1024;
 
+    private readonly int _maxQueueSize;
     private readonly ConcurrentQueue<PooledCancellationTokenSource> _queue = new();
     private int _count;
+
+    public CancellationTokenSourcePool() : this(DefaultMaxQueueSize) { }
+
+    public CancellationTokenSourcePool(int maxQueueSize)
+    {
+        _maxQueueSize = maxQueueSize;
+    }
 
     public PooledCancellationTokenSource Rent()
     {
@@ -24,7 +32,7 @@ internal sealed class CancellationTokenSourcePool
 
     private bool Return(PooledCancellationTokenSource cts)
     {
-        if (Interlocked.Increment(ref _count) > MaxQueueSize || !cts.TryReset())
+        if (Interlocked.Increment(ref _count) > _maxQueueSize || !cts.TryReset())
         {
             Interlocked.Decrement(ref _count);
             return false;

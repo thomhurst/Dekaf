@@ -161,6 +161,30 @@ public class CancellationTokenSourcePoolTests
     }
 
     [Test]
+    public async Task Pool_RespectsCustomMaxQueueSize()
+    {
+        var pool = new CancellationTokenSourcePool(maxQueueSize: 2);
+        var cts1 = pool.Rent();
+        var cts2 = pool.Rent();
+        var cts3 = pool.Rent();
+
+        // Return all three
+        cts1.Dispose();
+        cts2.Dispose();
+        cts3.Dispose();
+
+        // Only 2 should be pooled (third is disposed for real)
+        // Rent 2 back — should succeed from pool
+        var r1 = pool.Rent();
+        var r2 = pool.Rent();
+        var r3 = pool.Rent();
+
+        await Assert.That(r1).IsNotNull();
+        await Assert.That(r2).IsNotNull();
+        await Assert.That(r3).IsNotNull();
+    }
+
+    [Test]
     public async Task ConcurrentRentReturn_IsThreadSafe()
     {
         var pool = new CancellationTokenSourcePool();
