@@ -120,8 +120,14 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Scales the per-bucket array capacity for the shared <see cref="PipeMemoryPool"/>
     /// based on the number of connections that will share it. A single connection needs ~32
     /// cached arrays to avoid pool overflow under pipelined load; with N connections sharing
-    /// the same pool, total concurrent demand scales linearly. Capped at 256 to bound memory.
+    /// the same pool, total concurrent demand scales linearly.
     /// </summary>
+    /// <remarks>
+    /// Uses <paramref name="connectionsPerBroker"/> (not total connections across all brokers)
+    /// because adaptive scaling keeps per-broker connection counts low in practice.
+    /// The 256 cap bounds memory retention regardless of connection count, preventing
+    /// pathological configurations from accumulating unbounded pooled arrays.
+    /// </remarks>
     private static int ScaledBucketCapacity(int connectionsPerBroker)
         => Math.Min(connectionsPerBroker * 32, 256);
 
