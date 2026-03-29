@@ -12,6 +12,7 @@ public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
     private static readonly MessageParser<TestMessage> _parser = new(() => new TestMessage());
     private static readonly MessageDescriptor _descriptor;
     private static readonly FileDescriptor _fileDescriptor;
+    private UnknownFieldSet? _unknownFields;
 
     static TestMessage()
     {
@@ -176,7 +177,7 @@ public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
                     Value = input.ReadDouble();
                     break;
                 default:
-                    // For unknown fields in test code, just continue reading
+                    _unknownFields = UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
                     break;
             }
         }

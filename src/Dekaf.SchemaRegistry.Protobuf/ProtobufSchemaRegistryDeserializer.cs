@@ -109,14 +109,14 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
             bytesRead++;
             value |= (b & 0x7F) << shift;
             if ((b & 0x80) == 0)
-                break;
+                return (value, bytesRead);
             shift += 7;
 
             if (shift >= 35)
                 throw new InvalidOperationException("Varint is too long");
         }
 
-        return (value, bytesRead);
+        throw new InvalidOperationException("Varint is truncated");
     }
 
     /// <inheritdoc />
