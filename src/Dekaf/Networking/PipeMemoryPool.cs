@@ -33,15 +33,22 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     /// </summary>
     /// <param name="maxArrayLength">Maximum size of arrays that the pool will cache.
     /// Larger requests fall through to new allocations. Defaults to 4 MB to cover
-    /// ProduceRequests with 1 MB batches plus header/framing overhead, and coalesced
-    /// multi-batch requests.</param>
+    /// ProduceRequests with the default 1 MB batch size (see <c>ProducerOptions.BatchSize</c>)
+    /// plus header/framing overhead, and coalesced multi-batch requests. If BatchSize is
+    /// increased beyond ~3.5 MB, this value should be increased accordingly.</param>
     /// <param name="maxArraysPerBucket">Maximum number of arrays to retain per size bucket.
     /// Must be large enough to cover the concurrent segment demand from both the input
     /// pipe (read pump creating ~64 KB segments that stay alive until AdvanceTo) and the
     /// output PipeWriter (large GetMemory calls for serialized requests). With pipelined
     /// ProduceResponses (idempotent producers), the input pipe can hold 16-32 active
     /// segments simultaneously. Defaults to 32 to prevent pool overflow allocations under
-    /// high-throughput pipelining.</param>
+    /// high-throughput pipelining.
+    /// <para/>
+    /// <b>Memory tradeoff:</b> <c>ArrayPool.Create()</c> applies the same bucket count to all
+    /// size classes. In practice, only the small buckets (64 KB) fill to capacity; the large
+    /// buckets (4 MB) rarely retain more than 1-2 arrays because there are far fewer concurrent
+    /// large allocations. Peak per-connection retention is bounded by connection lifetime — when
+    /// the connection is disposed, all retained arrays become GC-eligible.</param>
     public PipeMemoryPool(int maxArrayLength = 4 * 1024 * 1024, int maxArraysPerBucket = 32)
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
