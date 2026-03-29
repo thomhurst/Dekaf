@@ -136,8 +136,9 @@ public sealed class HeartbeatTimerResilienceTests : IAsyncDisposable
         // Act - join group (starts heartbeat loop)
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
-        // Wait for at least 3 heartbeats using deterministic signaling instead of polling
-        await _heartbeatThresholdTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Wait for at least 3 heartbeats using deterministic signaling instead of polling.
+        // Use a generous timeout — CI runners under thread pool starvation can delay PeriodicTimer ticks.
+        await _heartbeatThresholdTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         // Assert - at least 3 heartbeats sent, confirming periodic timer works
         var count = Volatile.Read(ref _heartbeatCount);
