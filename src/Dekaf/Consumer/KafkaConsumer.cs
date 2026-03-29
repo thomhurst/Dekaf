@@ -2199,6 +2199,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 InvalidatePartitionCache();
                 InvalidateFetchRequestCache();
 
+                // Ratchet pool sizes based on actual partition count
+                var actualSizes = PoolSizing.ForConsumer(_assignment.Count);
+                PendingFetchData.RatchetPoolSize(actualSizes.FetchDataPool);
+
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
@@ -2227,6 +2231,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             else if (_assignment.Count > 0)
             {
+                // Ratchet pool sizes based on actual partition count (manual assignment)
+                var manualSizes = PoolSizing.ForConsumer(_assignment.Count);
+                PendingFetchData.RatchetPoolSize(manualSizes.FetchDataPool);
+
                 // Manual assignment - initialize positions for partitions that don't have positions yet
                 List<TopicPartition>? uninitializedPartitions = null;
                 foreach (var p in _assignment)

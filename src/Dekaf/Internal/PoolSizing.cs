@@ -13,8 +13,8 @@ internal static class PoolSizing
     internal readonly record struct ProducerPoolSizes
     {
         public required int ValueTaskSources { get; init; }
-        public required int CancellationTokenSources { get; init; }
         public required int MaxRetainedBufferSize { get; init; }
+        public required int InflightEntries { get; init; }
     }
 
     internal readonly record struct ConnectionPoolSizes
@@ -41,8 +41,8 @@ internal static class PoolSizing
         return new ProducerPoolSizes
         {
             ValueTaskSources = Math.Clamp(estimatedMessages, 256, 65536),
-            CancellationTokenSources = Math.Clamp(estimatedMessages, 256, 8192),
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
+            InflightEntries = Math.Clamp((int)maxBatches * 32, 128, 2048),
         };
     }
 

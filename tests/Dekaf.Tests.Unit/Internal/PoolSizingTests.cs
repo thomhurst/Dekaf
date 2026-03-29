@@ -12,9 +12,8 @@ public class PoolSizingTests
         // Default: 256MB buffer, 1MB batch
         var sizes = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 1024 * 1024);
 
-        await Assert.That(sizes.CancellationTokenSources).IsGreaterThanOrEqualTo(256)
-            .And.IsLessThanOrEqualTo(8192);
         await Assert.That(sizes.MaxRetainedBufferSize).IsEqualTo(1024 * 1024);
+        await Assert.That(sizes.InflightEntries).IsGreaterThanOrEqualTo(128);
     }
 
     [Test]
@@ -22,8 +21,9 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForProducer(bufferMemory: 1UL * 1024 * 1024, batchSize: 1024 * 1024);
 
-        await Assert.That(sizes.CancellationTokenSources).IsGreaterThanOrEqualTo(256);
         await Assert.That(sizes.MaxRetainedBufferSize).IsEqualTo(1024 * 1024);
+        // 1 batch * 32 = 32, clamped to min 128
+        await Assert.That(sizes.InflightEntries).IsEqualTo(128);
     }
 
     [Test]
@@ -56,6 +56,18 @@ public class PoolSizingTests
 
         // Original: (256MB / 1MB) * 1024 = 262144, clamped to [256, 65536] = 65536
         await Assert.That(sizes.ValueTaskSources).IsEqualTo(65536);
+    }
+
+    [Test]
+    public async Task ForProducer_InflightEntries_ScalesWithBatches()
+    {
+        // 256MB / 16KB batch = 16384 batches * 32 = 524288, clamped to max 2048
+        var smallBatch = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 16 * 1024);
+        await Assert.That(smallBatch.InflightEntries).IsEqualTo(2048);
+
+        // 256MB / 1MB batch = 256 batches, capped at 64 * 32 = 2048, clamped to 2048
+        var largeBatch = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 1024 * 1024);
+        await Assert.That(largeBatch.InflightEntries).IsGreaterThanOrEqualTo(128);
     }
 
     // --- ForConnection tests ---
