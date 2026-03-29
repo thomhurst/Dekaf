@@ -218,6 +218,64 @@ internal static class ProducerDataPool
 }
 
 /// <summary>
+/// Dedicated <see cref="ArrayPool{T}"/> instances for producer batch container arrays.
+/// <para/>
+/// <b>Why not <see cref="ArrayPool{T}.Shared"/>?</b>
+/// Batch container arrays (<c>Record[]</c>, <c>PooledValueTaskSource[]</c>, <c>byte[][]</c>,
+/// <c>Header[][]</c>, <c>Header[]</c>, <c>Action[]</c>) are rented on the producer/accumulator
+/// thread during batch creation but returned on BrokerSender LongRunning threads during
+/// <see cref="ReadyBatch.Cleanup"/>. <c>ArrayPool&lt;T&gt;.Shared</c> uses TLS-based caching
+/// (<c>TlsOverPerCoreLockedStacksArrayPool</c>) that retains returned arrays in per-thread slots
+/// that grow but never shrink. With N brokers, N BrokerSender threads each accumulate returned
+/// arrays in their TLS slots while the producer thread allocates fresh arrays — causing linear
+/// working set growth proportional to message throughput (~10-14 MB per million messages).
+/// <para/>
+/// The <see cref="BatchArrayReuseQueue"/> mitigates this by recycling arrays directly between
+/// PartitionBatch and ReadyBatch, but when the queue overflows (transient batch churn spikes),
+/// the fallback path must use <c>ArrayPool</c>. Using <c>ArrayPool&lt;T&gt;.Create()</c> for the
+/// fallback ensures cross-thread rent/return does not cause TLS accumulation.
+/// <para/>
+/// Each pool uses <c>maxArraysPerBucket: 16</c> — sufficient for concurrent access from
+/// producer threads and BrokerSender threads, while bounding total retention.
+/// <c>maxArrayLength</c> values are set to accommodate both the initial capacity and
+/// one round of doubling via <c>GrowArray</c>. Arrays that grow beyond this (extremely
+/// rare — requires more records per batch than <c>_initialRecordCapacity × 2</c>) fall
+/// through to unpooled allocations, which is acceptable.
+/// </summary>
+internal static class ProducerContainerPools
+{
+    // Max initial record capacity is 16384 (from ComputeInitialRecordCapacity).
+    // GrowArray doubles, so allow up to 32768 to cover one growth step.
+    private const int MaxRecordArrayLength = 32768;
+
+    /// <summary>Pool for Record[] container arrays used by PartitionBatch/ReadyBatch.</summary>
+    internal static readonly ArrayPool<Record> Records = ArrayPool<Record>.Create(
+        maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
+
+    /// <summary>Pool for PooledValueTaskSource[] container arrays.</summary>
+    internal static readonly ArrayPool<PooledValueTaskSource<RecordMetadata>> CompletionSources =
+        ArrayPool<PooledValueTaskSource<RecordMetadata>>.Create(
+            maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
+
+    /// <summary>Pool for byte[][] container arrays (pooled data array references).</summary>
+    internal static readonly ArrayPool<byte[]> DataArrayRefs = ArrayPool<byte[]>.Create(
+        maxArrayLength: MaxRecordArrayLength * 2, maxArraysPerBucket: 16);
+
+    /// <summary>Pool for Header[][] container arrays (pooled header array references).</summary>
+    internal static readonly ArrayPool<Header[]> HeaderArrayRefs = ArrayPool<Header[]>.Create(
+        maxArrayLength: 1024, maxArraysPerBucket: 16);
+
+    /// <summary>Pool for Header[] arrays (per-message headers).</summary>
+    internal static readonly ArrayPool<Header> Headers = ArrayPool<Header>.Create(
+        maxArrayLength: 1024, maxArraysPerBucket: 16);
+
+    /// <summary>Pool for callback arrays (Send with callback pattern).</summary>
+    internal static readonly ArrayPool<Action<RecordMetadata, Exception?>?> Callbacks =
+        ArrayPool<Action<RecordMetadata, Exception?>?>.Create(
+            maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
+}
+
+/// <summary>
 /// Represents memory rented from <see cref="ProducerDataPool.BytePool"/> that must be returned
 /// when no longer needed.
 /// </summary>
@@ -1594,7 +1652,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static void ReturnPooledHeaders(Header[]? headers)
     {
         if (headers is not null)
-            ArrayPool<Header>.Shared.Return(headers);
+            ProducerContainerPools.Headers.Return(headers);
     }
 
     /// <summary>
@@ -3315,16 +3373,16 @@ internal sealed class PartitionBatch
         _arena = new BatchArena(GetEffectiveArenaCapacity(options));
 
         // Rent arrays from pool - eliminates List allocations
-        _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
+        _records = ProducerContainerPools.Records.Rent(_initialRecordCapacity);
         _recordCount = 0;
 
-        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
+        _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
         _completionSourceCount = 0;
 
-        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
+        _pooledArrays = ProducerContainerPools.DataArrayRefs.Rent(_initialRecordCapacity * 2);
         _pooledArrayCount = 0;
 
-        _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8); // Headers less common
+        _pooledHeaderArrays = ProducerContainerPools.HeaderArrayRefs.Rent(8); // Headers less common
         _pooledHeaderArrayCount = 0;
     }
 
@@ -3420,11 +3478,12 @@ internal sealed class PartitionBatch
         }
         else
         {
-            // Fallback: rent fresh arrays from ArrayPool
-            _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
-            _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
-            _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
-            _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8);
+            // Fallback: rent fresh arrays from dedicated pools (not ArrayPool<T>.Shared)
+            // to prevent TLS accumulation from cross-thread rent/return patterns
+            _records = ProducerContainerPools.Records.Rent(_initialRecordCapacity);
+            _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
+            _pooledArrays = ProducerContainerPools.DataArrayRefs.Rent(_initialRecordCapacity * 2);
+            _pooledHeaderArrays = ProducerContainerPools.HeaderArrayRefs.Rent(8);
         }
 
         // Reset counters and state for reuse.
@@ -3500,26 +3559,26 @@ internal sealed class PartitionBatch
         // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
         if (_recordCount >= _records.Length)
         {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+            GrowArray(ref _records, ref _recordCount, ProducerContainerPools.Records);
         }
         if (completionSource is not null && _completionSourceCount >= _completionSources.Length)
         {
-            GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared);
+            GrowArray(ref _completionSources, ref _completionSourceCount, ProducerContainerPools.CompletionSources);
         }
         if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
         {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ProducerContainerPools.DataArrayRefs);
         }
         if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ProducerContainerPools.HeaderArrayRefs);
         }
         if (callback is not null)
         {
-            _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+            _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
             if (_callbackCount >= _callbacks.Length)
             {
-                GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
+                GrowArray(ref _callbacks!, ref _callbackCount, ProducerContainerPools.Callbacks);
             }
         }
 
@@ -3613,25 +3672,25 @@ internal sealed class PartitionBatch
         // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
         if (_recordCount >= _records.Length)
         {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+            GrowArray(ref _records, ref _recordCount, ProducerContainerPools.Records);
         }
         if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ProducerContainerPools.HeaderArrayRefs);
         }
         if (callback is not null)
         {
-            _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+            _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
             if (_callbackCount >= _callbacks.Length)
             {
-                GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
+                GrowArray(ref _callbacks!, ref _callbackCount, ProducerContainerPools.Callbacks);
             }
         }
 
         // Pre-grow _pooledArrays for worst case (key + value fallback to ArrayPool)
         if (_pooledArrayCount + 2 >= _pooledArrays.Length)
         {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ProducerContainerPools.DataArrayRefs);
         }
 
         // Try to use arena for zero-copy serialization
@@ -3839,16 +3898,16 @@ internal sealed class PartitionBatch
 
     private void ReturnBatchArraysToPool()
     {
-        // Return all working arrays to pool (with null checks since they may have been transferred)
+        // Return all working arrays to dedicated pools (with null checks since they may have been transferred)
         // clearArray: false for internal tracking arrays - they will be overwritten on next use
         if (_records is not null)
-            ArrayPool<Record>.Shared.Return(_records, clearArray: false);
+            ProducerContainerPools.Records.Return(_records, clearArray: false);
         if (_completionSources is not null)
-            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: false);
+            ProducerContainerPools.CompletionSources.Return(_completionSources, clearArray: false);
         if (_pooledArrays is not null)
-            ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: false);
+            ProducerContainerPools.DataArrayRefs.Return(_pooledArrays, clearArray: false);
         if (_pooledHeaderArrays is not null)
-            ArrayPool<Header[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+            ProducerContainerPools.HeaderArrayRefs.Return(_pooledHeaderArrays, clearArray: false);
 
         // Return arena buffer if present
         _arena?.Return();
@@ -3969,11 +4028,12 @@ internal sealed class BatchArrayReuseQueue
         }
         else
         {
-            // Queue is full - fall back to returning arrays to ArrayPool
-            ArrayPool<Record>.Shared.Return(records, clearArray: false);
-            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(completionSources, clearArray: false);
-            ArrayPool<byte[]>.Shared.Return(pooledDataArrays, clearArray: false);
-            ArrayPool<Header[]>.Shared.Return(pooledHeaderArrays, clearArray: false);
+            // Queue is full - fall back to returning arrays to dedicated pools
+            // (not ArrayPool<T>.Shared to prevent TLS accumulation from cross-thread return)
+            ProducerContainerPools.Records.Return(records, clearArray: false);
+            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
+            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
         }
     }
 
@@ -4519,12 +4579,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         }
 
         // Return pooled header arrays (large header counts)
+        // Uses dedicated pool to prevent TLS accumulation from cross-thread return.
         // clearArray: false - header data is not sensitive
         if (_pooledHeaderArrays is not null)
         {
             for (var i = 0; i < _pooledHeaderArraysCount; i++)
             {
-                ArrayPool<Header>.Shared.Return(_pooledHeaderArrays[i], clearArray: false);
+                ProducerContainerPools.Headers.Return(_pooledHeaderArrays[i], clearArray: false);
             }
         }
 
@@ -4546,15 +4607,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         }
         else
         {
-            // Fallback: return individually to ArrayPool (partial batch or no reuse queue)
+            // Fallback: return individually to dedicated pools (not ArrayPool<T>.Shared)
+            // to prevent TLS accumulation from cross-thread return on BrokerSender threads
             if (_completionSourcesArray is not null)
-                ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
+                ProducerContainerPools.CompletionSources.Return(_completionSourcesArray, clearArray: false);
             if (_pooledDataArrays is not null)
-                ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
+                ProducerContainerPools.DataArrayRefs.Return(_pooledDataArrays, clearArray: false);
             if (_pooledHeaderArrays is not null)
-                ArrayPool<Header[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+                ProducerContainerPools.HeaderArrayRefs.Return(_pooledHeaderArrays, clearArray: false);
             if (_pooledRecordsArray is not null)
-                ArrayPool<Record>.Shared.Return(_pooledRecordsArray, clearArray: false);
+                ProducerContainerPools.Records.Return(_pooledRecordsArray, clearArray: false);
         }
 
         // Return arena to pool for reuse (arena-based path)
@@ -4564,10 +4626,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             BatchArena.ReturnToPool(_arena);
         }
 
-        // Return callback array to pool if present
+        // Return callback array to dedicated pool if present
         if (_callbacks is not null)
         {
-            ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Return(_callbacks, clearArray: true);
+            ProducerContainerPools.Callbacks.Return(_callbacks, clearArray: true);
         }
 
         // Return pre-compressed buffer and RecordBatch to pool.

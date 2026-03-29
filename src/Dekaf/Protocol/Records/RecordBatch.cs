@@ -370,9 +370,12 @@ public sealed class RecordBatch : IDisposable
         var compressedBuffer = GetCompressedBuffer();
         codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
 
-        // Copy to a pooled array for storage (thread-local buffer will be reused)
+        // Copy to a pooled array for storage (thread-local buffer will be reused).
+        // Uses ProducerDataPool (not ArrayPool<byte>.Shared) because PreCompress runs on
+        // the producer/accumulator thread but ReturnPreCompressedBuffer runs on the
+        // BrokerSender thread — cross-thread ArrayPool<byte>.Shared causes TLS accumulation.
         var compressedLength = compressedBuffer.WrittenCount;
-        var pooledArray = ArrayPool<byte>.Shared.Rent(compressedLength);
+        var pooledArray = Producer.ProducerDataPool.BytePool.Rent(compressedLength);
         compressedBuffer.WrittenSpan.CopyTo(pooledArray);
 
         PreCompressedRecords = pooledArray;
@@ -381,7 +384,7 @@ public sealed class RecordBatch : IDisposable
     }
 
     /// <summary>
-    /// Returns the pre-compressed pooled array to ArrayPool.
+    /// Returns the pre-compressed pooled array to the dedicated producer pool.
     /// Must be called after the batch has been written to the network.
     /// </summary>
     internal void ReturnPreCompressedBuffer()
@@ -391,7 +394,7 @@ public sealed class RecordBatch : IDisposable
         {
             PreCompressedRecords = null;
             PreCompressedLength = 0;
-            ArrayPool<byte>.Shared.Return(array, clearArray: false);
+            Producer.ProducerDataPool.BytePool.Return(array, clearArray: false);
         }
     }
 
