@@ -56,7 +56,6 @@ internal sealed class LatencyTracker
         RecordTicks(ticks);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateMinMax(long ticks)
     {
         long currentMin;

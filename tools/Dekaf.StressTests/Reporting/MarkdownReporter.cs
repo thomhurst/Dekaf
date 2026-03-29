@@ -156,7 +156,7 @@ internal static class MarkdownReporter
             _ => $"{us / 1_000_000.0:F1}s"
         };
 
-        return formatted.PadRight(8);
+        return formatted.PadRight(9);
     }
 
     public static async Task WriteToFileAsync(StressTestResults results, string filePath)
