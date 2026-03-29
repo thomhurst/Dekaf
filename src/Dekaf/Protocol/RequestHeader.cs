@@ -2,8 +2,12 @@ namespace Dekaf.Protocol;
 
 /// <summary>
 /// Kafka request header (v0-v2).
+/// Readonly struct to eliminate per-request heap allocation.
+/// RequestHeader is constructed, written to the wire, and immediately discarded —
+/// it is never stored in collections or passed by reference, making it ideal for
+/// stack allocation via struct.
 /// </summary>
-public sealed class RequestHeader
+public readonly struct RequestHeader
 {
     public required ApiKey ApiKey { get; init; }
     public required short ApiVersion { get; init; }
