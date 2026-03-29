@@ -13,7 +13,7 @@ public sealed class ProduceResponse : IKafkaResponse
     /// <summary>
     /// Response for each topic.
     /// </summary>
-    public required IReadOnlyList<ProduceResponseTopicData> Responses { get; init; }
+    public required ProduceResponseTopicData[] Responses { get; init; }
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -45,8 +45,10 @@ public sealed class ProduceResponse : IKafkaResponse
 
 /// <summary>
 /// Topic response in a produce response.
+/// Struct to eliminate per-response heap allocation — these are short-lived parse results
+/// consumed immediately by BrokerSender.ProcessCompletedResponses and then discarded.
 /// </summary>
-public sealed class ProduceResponseTopicData
+public readonly struct ProduceResponseTopicData
 {
     /// <summary>
     /// Topic name.
@@ -56,7 +58,7 @@ public sealed class ProduceResponseTopicData
     /// <summary>
     /// Partition responses.
     /// </summary>
-    public required IReadOnlyList<ProduceResponsePartitionData> PartitionResponses { get; init; }
+    public required ProduceResponsePartitionData[] PartitionResponses { get; init; }
 
     public static ProduceResponseTopicData Read(ref KafkaProtocolReader reader, short version)
     {
@@ -83,9 +85,13 @@ public sealed class ProduceResponseTopicData
 
 /// <summary>
 /// Partition response in a produce response.
+/// Struct to eliminate per-partition heap allocation — these are short-lived parse results
+/// consumed immediately by BrokerSender.ProcessResponseBatches and then discarded.
 /// </summary>
-public sealed class ProduceResponsePartitionData
+public readonly struct ProduceResponsePartitionData
 {
+    public ProduceResponsePartitionData() { }
+
     /// <summary>
     /// Partition index.
     /// </summary>
@@ -114,7 +120,7 @@ public sealed class ProduceResponsePartitionData
     /// <summary>
     /// Record-level errors (v8+).
     /// </summary>
-    public IReadOnlyList<BatchIndexAndErrorMessage>? RecordErrors { get; init; }
+    public BatchIndexAndErrorMessage[]? RecordErrors { get; init; }
 
     /// <summary>
     /// Error message for the entire batch.
@@ -132,7 +138,7 @@ public sealed class ProduceResponsePartitionData
         var logAppendTimeMs = version >= 2 ? reader.ReadInt64() : -1;
         var logStartOffset = version >= 5 ? reader.ReadInt64() : -1;
 
-        IReadOnlyList<BatchIndexAndErrorMessage>? recordErrors = null;
+        BatchIndexAndErrorMessage[]? recordErrors = null;
         string? errorMessage = null;
 
         if (version >= 8)
@@ -164,8 +170,9 @@ public sealed class ProduceResponsePartitionData
 
 /// <summary>
 /// Record-level error in a produce response.
+/// Struct to eliminate per-record-error heap allocation — parsed and discarded immediately.
 /// </summary>
-public sealed class BatchIndexAndErrorMessage
+public readonly struct BatchIndexAndErrorMessage
 {
     /// <summary>
     /// Index of the record in the batch.
