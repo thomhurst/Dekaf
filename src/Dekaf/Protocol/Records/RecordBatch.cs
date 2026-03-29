@@ -823,6 +823,21 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
     public int Count => _count;
 
+    /// <summary>
+    /// Eagerly parses all records in the batch at once.
+    /// Call this before sequential access to avoid per-record lazy parse overhead
+    /// (disposed check + bounds check + EnsureParsedUpTo per indexer access).
+    /// After this call, indexer access is a simple array lookup.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void EnsureAllParsed()
+    {
+        if (_count > 0 && (_parsedRecords is null || _parsedCount < _count))
+        {
+            EnsureParsedUpTo(_count - 1);
+        }
+    }
+
     public Record this[int index]
     {
         get

@@ -211,6 +211,69 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_EnsureAllParsed_TruncatedData_ReducesCountWithoutThrowing()
+    {
+        // Arrange: serialize 3 records, truncate partway through record 3
+        var buffer = new ArrayBufferWriter<byte>();
+        var records = new[]
+        {
+            new Record
+            {
+                OffsetDelta = 0,
+                TimestampDelta = 0,
+                Key = "key0"u8.ToArray(),
+                Value = "value0"u8.ToArray()
+            },
+            new Record
+            {
+                OffsetDelta = 1,
+                TimestampDelta = 1,
+                Key = "key1"u8.ToArray(),
+                Value = "value1"u8.ToArray()
+            },
+            new Record
+            {
+                OffsetDelta = 2,
+                TimestampDelta = 2,
+                Key = "key2"u8.ToArray(),
+                Value = "value2-with-extra-data-to-make-it-longer"u8.ToArray()
+            }
+        };
+
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+        {
+            record.Write(ref writer);
+        }
+
+        // Find boundary after record 1 to truncate partway through the third record (index 2)
+        var twoRecordBuffer = new ArrayBufferWriter<byte>();
+        var twoWriter = new KafkaProtocolWriter(twoRecordBuffer);
+        records[0].Write(ref twoWriter);
+        records[1].Write(ref twoWriter);
+        var twoRecordLength = twoRecordBuffer.WrittenCount;
+
+        // Truncate: keep all of records 0 and 1, plus only 2 bytes of record 2
+        var truncatedData = buffer.WrittenMemory[..(twoRecordLength + 2)];
+
+        // Act: create with claimed count of 3, then call EnsureAllParsed directly
+        using var lazyList = LazyRecordList.Create(truncatedData, count: 3);
+        lazyList.EnsureAllParsed();
+
+        // Assert: Count reduced to 2 (only fully parseable records)
+        await Assert.That(lazyList.Count).IsEqualTo(2);
+
+        // Indexer access to records 0 and 1 still works
+        var r0 = lazyList[0];
+        await Assert.That(r0.Key.ToArray()).IsEquivalentTo("key0"u8.ToArray());
+        await Assert.That(r0.Value.ToArray()).IsEquivalentTo("value0"u8.ToArray());
+
+        var r1 = lazyList[1];
+        await Assert.That(r1.Key.ToArray()).IsEquivalentTo("key1"u8.ToArray());
+        await Assert.That(r1.Value.ToArray()).IsEquivalentTo("value1"u8.ToArray());
+    }
+
+    [Test]
     public async Task LazyRecordList_PooledInstance_ReusesCorrectlyAfterDispose()
     {
         // Arrange: create a LazyRecordList with valid data, dispose it (returns to pool),
