@@ -47,8 +47,18 @@ internal static class ConnectionHelper
         // Incomplete data (ran out of bytes) or malformed (exceeded 5-byte VarInt limit)
         return (result, bytesRead, false);
     }
-    // Minimum pause threshold for pipeline backpressure (16 MB)
-    private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
+    // Minimum pause threshold for pipeline backpressure (1 MB)
+    // Lowered from 16 MB: the input pipe only needs to buffer enough for the read pump
+    // to stay ahead of response parsing. Producer responses are small (< 1 KB) and consumer
+    // fetch responses are copied into PooledResponseBuffer immediately in TryReadResponse.
+    private const long MinimumPauseThresholdBytes = 1L * 1024 * 1024;
+
+    // Maximum pause threshold per connection (4 MB)
+    // Caps per-connection buffering to prevent a single connection from retaining excessive
+    // memory in the MemoryPool. Without this cap, a single-broker/single-connection setup
+    // with 256 MB BufferMemory would allow 64 MB per pipe — far more than needed for
+    // transient network buffering.
+    private const long MaximumPauseThresholdBytes = 4L * 1024 * 1024;
 
     // Divisor for per-connection pipeline budget allocation (25% = 1/4)
     //
@@ -60,25 +70,29 @@ internal static class ConnectionHelper
     // - Prevents pipeline from consuming producer's batch memory pool
     //
     // Example with 256 MB BufferMemory, 2 connections per broker, 3 brokers:
-    // - Per-connection budget: 256 MB / (2 * 3) = 42.7 MB
-    // - Pipeline allocation: 42.7 MB / 4 = 10.7 MB per connection
-    // - Total pipeline memory: 10.7 MB * 6 connections = 64 MB (25% of total)
-    // - Producer batch memory: 192 MB (75% of total)
+    // - Total connections: 2 * 3 = 6
+    // - Per-connection budget: 256 MB / 6 / 4 = 10.7 MB (capped to 4 MB)
+    // - Total pipeline memory: 4 MB * 6 connections = 24 MB
+    // - Producer batch memory: ~232 MB
     private const int BufferMemoryDivisor = 4;
 
     /// <summary>
     /// Calculates pipeline backpressure thresholds based on BufferMemory configuration.
-    /// Uses 16 MB floor for modern RAM environments, scales up proportionally with BufferMemory.
+    /// Divides the pipeline budget across ALL connections (brokers * connectionsPerBroker)
+    /// and caps per-connection thresholds to prevent unbounded memory retention in the
+    /// shared MemoryPool. Uses 1 MB floor for low-memory configurations.
     /// </summary>
     /// <param name="bufferMemory">Total producer BufferMemory in bytes</param>
     /// <param name="connectionsPerBroker">Number of connections per broker (must be positive)</param>
+    /// <param name="brokerCount">Number of brokers (must be positive, defaults to 1 for backward compatibility)</param>
     /// <returns>Tuple of (pauseThreshold, resumeThreshold) in bytes</returns>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when connectionsPerBroker is less than or equal to zero.
+    /// Thrown when connectionsPerBroker or brokerCount is less than or equal to zero.
     /// </exception>
     public static (long PauseThreshold, long ResumeThreshold) CalculatePipelineThresholds(
         ulong bufferMemory,
-        int connectionsPerBroker)
+        int connectionsPerBroker,
+        int brokerCount = 1)
     {
         if (connectionsPerBroker <= 0)
         {
@@ -88,15 +102,21 @@ internal static class ConnectionHelper
                 "Connections per broker must be positive");
         }
 
-        // Calculate per-pipe budget: BufferMemory / ConnectionsPerBroker / BufferMemoryDivisor
-        // Division by BufferMemoryDivisor reserves 1/4 of per-connection memory for pipeline buffering
-        // Use 16 MB floor for high-throughput modern environments
-        var perPipeBudget = bufferMemory / (ulong)connectionsPerBroker / BufferMemoryDivisor;
+        if (brokerCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(brokerCount),
+                brokerCount,
+                "Broker count must be positive");
+        }
 
-        // Ensure we don't overflow long when casting
-        var pauseThreshold = perPipeBudget > (ulong)long.MaxValue
-            ? long.MaxValue
-            : Math.Max(MinimumPauseThresholdBytes, (long)perPipeBudget);
+        // Calculate per-pipe budget: BufferMemory / TotalConnections / BufferMemoryDivisor
+        // TotalConnections = connectionsPerBroker * brokerCount
+        // Division by BufferMemoryDivisor reserves 1/4 of per-connection memory for pipeline buffering
+        var totalConnections = (ulong)connectionsPerBroker * (ulong)brokerCount;
+        var perPipeBudget = bufferMemory / totalConnections / BufferMemoryDivisor;
+
+        var pauseThreshold = Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
 
         var resumeThreshold = pauseThreshold / 2;
 
@@ -116,6 +136,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private readonly ConnectionOptions _options;
     private readonly ulong _bufferMemory;
     private readonly int _connectionsPerBroker;
+    private readonly int _brokerCount;
     private readonly ResponseBufferPool _responseBufferPool;
 
     private Socket? _socket;
@@ -176,8 +197,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ConnectionOptions? options = null,
         ILogger<KafkaConnection>? logger = null,
         ulong bufferMemory = 33554432,
-        int connectionsPerBroker = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, ResponseBufferPool.Default)
+        int connectionsPerBroker = 1,
+        int brokerCount = 1)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default)
     {
     }
 
@@ -189,6 +211,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ILogger<KafkaConnection>? logger,
         ulong bufferMemory,
         int connectionsPerBroker,
+        int brokerCount,
         ResponseBufferPool responseBufferPool)
     {
         _host = host;
@@ -198,6 +221,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _bufferMemory = bufferMemory;
         _connectionsPerBroker = connectionsPerBroker;
+        _brokerCount = Math.Max(1, brokerCount);
         _responseBufferPool = responseBufferPool;
     }
 
@@ -209,8 +233,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ConnectionOptions? options = null,
         ILogger<KafkaConnection>? logger = null,
         ulong bufferMemory = 33554432,
-        int connectionsPerBroker = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, ResponseBufferPool.Default)
+        int connectionsPerBroker = 1,
+        int brokerCount = 1)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default)
     {
         BrokerId = brokerId;
     }
@@ -224,8 +249,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ILogger<KafkaConnection>? logger,
         ulong bufferMemory,
         int connectionsPerBroker,
+        int brokerCount,
         ResponseBufferPool responseBufferPool)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, responseBufferPool)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool)
     {
         BrokerId = brokerId;
     }
@@ -291,10 +317,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
             await PerformSaslAuthenticationAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        // Calculate pipeline backpressure thresholds based on BufferMemory
+        // Calculate pipeline backpressure thresholds based on BufferMemory,
+        // dividing across all connections (brokers * connectionsPerBroker)
         var (pauseThreshold, resumeThreshold) = ConnectionHelper.CalculatePipelineThresholds(
             _bufferMemory,
-            _connectionsPerBroker);
+            _connectionsPerBroker,
+            _brokerCount);
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 

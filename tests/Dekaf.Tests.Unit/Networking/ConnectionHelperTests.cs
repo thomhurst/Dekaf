@@ -155,4 +155,57 @@ public class ConnectionHelperTests
     }
 
     #endregion
+
+    #region CalculatePipelineThresholds Tests
+
+    [Test]
+    public async Task CalculatePipelineThresholds_ThreeBrokersTwoConnections_CapsAtMaximum()
+    {
+        // 256 MB BufferMemory, 2 connections/broker, 3 brokers
+        // Per-pipe budget = 256 MB / (2 * 3) / 4 = ~10.7 MB, capped to 4 MB
+        const ulong bufferMemory = 268435456; // 256 MB
+        const long expectedPause = 4L * 1024 * 1024; // 4 MB cap
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(bufferMemory, connectionsPerBroker: 2, brokerCount: 3);
+
+        await Assert.That(pause).IsEqualTo(expectedPause);
+        await Assert.That(resume).IsEqualTo(expectedPause / 2);
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_OneBrokerLowBufferMemory_FloorsAtMinimum()
+    {
+        // 1 MB BufferMemory, 1 connection, 1 broker
+        // Per-pipe budget = 1 MB / 1 / 4 = 256 KB, floored to 1 MB
+        const ulong bufferMemory = 1L * 1024 * 1024; // 1 MB
+        const long expectedPause = 1L * 1024 * 1024; // 1 MB floor
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(bufferMemory, connectionsPerBroker: 1, brokerCount: 1);
+
+        await Assert.That(pause).IsEqualTo(expectedPause);
+        await Assert.That(resume).IsEqualTo(expectedPause / 2);
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_BrokerCountZero_ThrowsArgumentOutOfRangeException()
+    {
+        var action = () => ConnectionHelper.CalculatePipelineThresholds(268435456, connectionsPerBroker: 1, brokerCount: 0);
+
+        await Assert.That(action).ThrowsExactly<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_VeryLargeBufferMemory_ClampsToMaximum()
+    {
+        // Very large BufferMemory still clamps to MaximumPauseThresholdBytes (4 MB)
+        const ulong bufferMemory = ulong.MaxValue;
+        const long expectedPause = 4L * 1024 * 1024; // 4 MB cap
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(bufferMemory, connectionsPerBroker: 1, brokerCount: 1);
+
+        await Assert.That(pause).IsEqualTo(expectedPause);
+        await Assert.That(resume).IsEqualTo(expectedPause / 2);
+    }
+
+    #endregion
 }
