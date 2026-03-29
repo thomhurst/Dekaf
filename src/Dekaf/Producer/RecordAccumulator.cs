@@ -365,8 +365,8 @@ internal sealed class BatchArena
     /// cap in place. This is acceptable because re-creating POH buffers on demand is costlier
     /// than retaining the pool headroom, and most applications use a single producer config.
     /// Worst-case amplification: if a transient small-batch producer (e.g., 256KB batches)
-    /// ratchets the cap to 2048, then a 1MB-batch producer can retain up to
-    /// 2048 × ~1.1MB ≈ 2.2GB of POH memory instead of the normal 1024 × ~1.1MB ≈ ~1.1GB.
+    /// ratchets the cap to 512, then a 1MB-batch producer can retain up to
+    /// 512 × ~1.1MB ≈ ~560MB of POH memory instead of the normal 128 × ~1.1MB ≈ ~140MB.
     /// </summary>
     internal static void RatchetPoolSize(int newSize)
     {
@@ -1410,7 +1410,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Divide by 4: most batches are either filling or in-flight, not all in the pool
         // simultaneously. The pool grows lazily on miss, so undersizing causes a few extra
         // allocations during ramp-up but avoids excessive steady-state POH retention.
-        // With default 256MB/1MB = 256 batches, pool = 64, which holds ~72MB of arenas.
+        // With default 256MB/1MB = 256 batches, pool = max(64, 128) = 128 (DefaultPoolSize floor), ~140MB of arenas.
         var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
         return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
     }
