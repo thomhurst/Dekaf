@@ -374,8 +374,9 @@ public readonly record struct Header
 /// The <see cref="HeaderSlice"/> is valid only for the lifetime of the current
 /// consume iteration (same as <c>RawBytes</c> deserializer semantics).
 /// This is a class (not struct) because it must implement <see cref="IReadOnlyList{Header}"/>
-/// without boxing on every access. A fresh instance is allocated per message with headers
-/// (tiny: two fields), while the expensive per-message <c>Header[]</c> copy is eliminated.
+/// avoiding the per-message <c>Header[]</c> copy. A fresh instance is allocated per message
+/// with headers (tiny: two fields). The struct enumerator avoids boxing when iterated
+/// over the concrete type; iteration through <c>IReadOnlyList{Header}</c> will still box.
 /// </remarks>
 internal sealed class HeaderSlice : IReadOnlyList<Header>
 {
