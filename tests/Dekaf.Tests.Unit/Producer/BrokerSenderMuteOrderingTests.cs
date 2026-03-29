@@ -223,7 +223,7 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             // Enqueue batch A (p0)
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
+            sender.Enqueue(batchA);
 
             // Wait for send 1
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -240,7 +240,7 @@ public sealed class BrokerSenderMuteOrderingTests
 
             // Now enqueue batch B (p0) — retry already in flight, p0 is muted by _muteOnSend
             var batchB = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchB);
 
             // Complete retry → FinalizeCoalescedRetries unmutes p0
             tcs2.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
@@ -321,8 +321,8 @@ public sealed class BrokerSenderMuteOrderingTests
             // Enqueue batch A (p0) and batch B (p1) — they'll coalesce
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchA);
+            sender.Enqueue(batchB);
 
             // Wait for send 1 (coalesced A+B)
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -334,7 +334,7 @@ public sealed class BrokerSenderMuteOrderingTests
 
             // Enqueue batch C (p1) — should NOT be blocked (p1 is not muted)
             var batchC = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchC, CancellationToken.None);
+            sender.Enqueue(batchC);
 
             // Wait for send 2 (batch A retry + batch C coalesced — both partitions)
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -414,9 +414,9 @@ public sealed class BrokerSenderMuteOrderingTests
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
             var batchC = CreateTestBatch(vtPool, "test-topic", 2);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
-            await sender.EnqueueAsync(batchC, CancellationToken.None);
+            sender.Enqueue(batchA);
+            sender.Enqueue(batchB);
+            sender.Enqueue(batchC);
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -499,7 +499,7 @@ public sealed class BrokerSenderMuteOrderingTests
         try
         {
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
+            sender.Enqueue(batchA);
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Connection fault → HandleRetriableBatch with NetworkException → mutes p0
@@ -507,7 +507,7 @@ public sealed class BrokerSenderMuteOrderingTests
 
             // Enqueue B (p0) — should be blocked
             var batchB = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchB);
 
             // Retry of A
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -584,7 +584,7 @@ public sealed class BrokerSenderMuteOrderingTests
         try
         {
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
+            sender.Enqueue(batchA);
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // First error
@@ -592,7 +592,7 @@ public sealed class BrokerSenderMuteOrderingTests
 
             // Enqueue B while A is retrying
             var batchB = CreateTestBatch(vtPool, "test-topic", 0);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchB);
 
             // Retry 1 → error again
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -673,8 +673,8 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchA);
+            sender.Enqueue(batchB);
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -685,7 +685,7 @@ public sealed class BrokerSenderMuteOrderingTests
 
             // Enqueue C (p1) — p1 is NOT muted, should proceed
             var batchC = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchC, CancellationToken.None);
+            sender.Enqueue(batchC);
 
             // Send 2: A retry (p0) + C (p1) coalesced
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -776,8 +776,8 @@ public sealed class BrokerSenderMuteOrderingTests
             // Phase 1: enqueue A(p0) and B(p1) — coalesced into send 1
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchA, CancellationToken.None);
-            await sender.EnqueueAsync(batchB, CancellationToken.None);
+            sender.Enqueue(batchA);
+            sender.Enqueue(batchB);
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -785,8 +785,8 @@ public sealed class BrokerSenderMuteOrderingTests
             // (maxInFlight=1, so the send loop is waiting for the response)
             var batchC = CreateTestBatch(vtPool, "test-topic", 0);
             var batchD = CreateTestBatch(vtPool, "test-topic", 1);
-            await sender.EnqueueAsync(batchC, CancellationToken.None);
-            await sender.EnqueueAsync(batchD, CancellationToken.None);
+            sender.Enqueue(batchC);
+            sender.Enqueue(batchD);
 
             // Complete send 1: p0 fails, p1 succeeds
             // This triggers the muted partition filter on already-coalesced batches

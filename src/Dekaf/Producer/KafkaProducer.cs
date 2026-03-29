@@ -1766,17 +1766,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                                 var brokerSender = GetOrCreateBrokerSender(brokerId);
                                 brokerSender.EnqueueBulk(batchList);
                             }
-                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                            {
-                                // Fail remaining batches
-                                for (var i = 0; i < batchList.Count; i++)
-                                    FailAndCleanupBatch(batchList[i],
-                                        new OperationCanceledException(cancellationToken));
-                                throw;
-                            }
                             catch (Exception ex)
                             {
-                                // Fail all batches in this batch list
+                                // Fail all batches in this batch list.
+                                // Note: if EnqueueBulk hit a completed channel, it already failed
+                                // remaining batches via FailEnqueuedBatch — but batch.Fail() is
+                                // idempotent (guarded by Interlocked.Exchange), so double-fail is safe.
                                 for (var i = 0; i < batchList.Count; i++)
                                     FailAndCleanupBatch(batchList[i], ex);
                             }

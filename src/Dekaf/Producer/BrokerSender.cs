@@ -578,20 +578,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Enqueues a batch for sending to this broker.
-    /// TryWrite on the unbounded event channel always succeeds unless the channel is completed
-    /// (send loop exited). BufferMemory provides the backpressure — the channel does not need bounding.
-    /// </summary>
-    public ValueTask EnqueueAsync(ReadyBatch batch, CancellationToken cancellationToken)
-    {
-        if (_eventChannel.Writer.TryWrite(SendLoopEvent.NewBatch(batch)))
-            return ValueTask.CompletedTask;
-
-        FailEnqueuedBatch(batch);
-        return ValueTask.CompletedTask;
-    }
-
-    /// <summary>
     /// Bulk enqueue for the sender loop: writes all batches to the event channel before the
     /// send loop can wake and read them, ensuring all batches are available for coalescing
     /// into a single ProduceRequest. This reduces per-request overhead in multi-broker setups
@@ -609,7 +595,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             if (!writer.TryWrite(SendLoopEvent.NewBatch(batches[i])))
             {
-                // Channel completed (disposal) — fail remaining batches
+                // Channel completed (disposal) — fail remaining batches.
+                // The caller's outer catch may also call FailAndCleanupBatch on these batches,
+                // but batch.Fail() is idempotent (guarded by Interlocked.Exchange on _sendCompleted)
+                // and TrySetMemoryReleased() is likewise atomic, so double-fail is safe.
                 for (var j = i; j < batches.Count; j++)
                     FailEnqueuedBatch(batches[j]);
                 return;
