@@ -77,9 +77,14 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
         Console.WriteLine($"  Running Confluent consumer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
+        StressTestHelpers.LogResourceUsage("Initial");
+
         throughput.Start();
+        var progress = new PeriodicProgressReporter(throughput);
 
         var samplerTask = RunSamplerAsync(throughput, cts.Token);
+        var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(cts.Token);
 
         try
         {
@@ -91,6 +96,7 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
                     if (result is not null)
                     {
                         throughput.RecordMessage(result.Message.Value?.Length ?? 0);
+                        progress.RecordMessage();
                     }
                 }
                 catch (ConfluentKafka.ConsumeException)
@@ -112,9 +118,11 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
         try { await producerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
+        try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+        StressTestHelpers.LogResourceUsage("Final");
 
         return new StressTestResult
         {
