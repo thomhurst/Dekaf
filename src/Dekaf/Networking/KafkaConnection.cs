@@ -145,12 +145,17 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private PipeWriter? _writer;
     private SocketPipe? _socketPipe;
     private DuplexPipe? _duplexPipe;
+    private PipeMemoryPool? _pipeMemoryPool;
 
     // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
     // When connections are rapidly closed and reopened, the OS may reuse local TCP ports.
     // If a late packet from an old connection arrives on a new connection with matching
     // correlation ID, it could be incorrectly matched to the wrong pending request.
     // Using globally unique correlation IDs prevents this issue.
+
+    // Cap on _cancelledCorrelationIds to prevent unbounded growth when brokers
+    // silently drop responses for timed-out requests.
+    private const int MaxCancelledCorrelationIds = 10_000;
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
@@ -326,12 +331,17 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
+        // Per-connection pool prevents WorkingSet growth from ArrayPool<byte>.Shared's
+        // TLS caches that grow per-thread but never shrink. See PipeMemoryPool for details.
+        _pipeMemoryPool?.Dispose();
+        _pipeMemoryPool = new PipeMemoryPool();
+
         // minimumBufferSize controls the buffer the writer retains between writes. Keep it
         // modest (64 KB) — larger values cause each connection to permanently hold a large
         // ArrayPool buffer, which accumulates across many connections (3 brokers * adaptive
         // scaling). The writer allocates larger buffers on demand via GetMemory when needed.
         _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(
-            pool: MemoryPool<byte>.Shared,
+            pool: _pipeMemoryPool,
             minimumBufferSize: 65536,
             leaveOpen: true));
 
@@ -342,7 +352,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         // PipeScheduler.Inline eliminates thread pool context switches — the reader continuation
         // runs directly on the pump thread (like Kestrel's SocketConnection).
         var inputPipeOptions = new PipeOptions(
-            pool: MemoryPool<byte>.Shared,
+            pool: _pipeMemoryPool,
             readerScheduler: PipeScheduler.Inline,
             writerScheduler: PipeScheduler.Inline,
             minimumSegmentSize: _options.MinimumSegmentSize,
@@ -645,7 +655,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 // Record it so the receive loop discards silently instead of warning.
                 // If the receive loop already called TryComplete (and lost the CAS),
                 // this entry becomes a harmless no-op cleaned up by DisposeAsync.
-                if (!responseReceived)
+                // Count check + TryAdd is not atomic, so the cap is approximate (soft cap).
+                // This is fine — the goal is preventing unbounded growth, not enforcing an exact limit.
+                if (!responseReceived && _cancelledCorrelationIds.Count < MaxCancelledCorrelationIds)
                 {
                     _cancelledCorrelationIds.TryAdd(correlationId, 0);
                 }
@@ -1828,6 +1840,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
             _stream?.Dispose();
             _socket?.Dispose();
         }
+
+        // Placed after pipe completion so all outstanding IMemoryOwner<byte> objects are
+        // returned before the pool is released for GC.
+        _pipeMemoryPool?.Dispose();
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
