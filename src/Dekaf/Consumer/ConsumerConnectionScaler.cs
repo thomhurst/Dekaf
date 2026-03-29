@@ -123,16 +123,6 @@ internal sealed class ConsumerConnectionScaler
     internal static int GetFetchConnectionCount(int connectionsPerBroker)
         => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
 
-    /// <summary>
-    /// Returns the next fetch connection index using round-robin.
-    /// </summary>
-    internal static int GetNextFetchConnectionIndex(ref int counter, int fetchConnectionCount)
-    {
-        if (fetchConnectionCount == 1) return 0;
-        var next = Interlocked.Increment(ref counter) - 1;
-        return next % fetchConnectionCount;
-    }
-
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
     {
         var task = action(CancellationToken.None);
