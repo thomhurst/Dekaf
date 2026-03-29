@@ -1241,7 +1241,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         FetchResponse response;
         try
         {
-            response = await connection.SendAsync<FetchRequest, FetchResponse>(
+            response = await connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
@@ -2551,7 +2551,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         FetchResponse response;
         try
         {
-            response = await connection.SendAsync<FetchRequest, FetchResponse>(
+            response = await connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);

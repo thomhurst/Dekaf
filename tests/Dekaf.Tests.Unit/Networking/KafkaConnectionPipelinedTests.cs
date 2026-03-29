@@ -88,4 +88,30 @@ public sealed class KafkaConnectionPipelinedTests
 
         await Assert.That(act).Throws<InvalidOperationException>();
     }
+
+    [Test]
+    public async Task SendPipelinedAsync_FetchRequest_NotConnected_ThrowsInvalidOperationException()
+    {
+        // Verify SendPipelinedAsync works with FetchRequest/FetchResponse (consumer fetch path)
+        var connection = new KafkaConnection("localhost", 9092);
+
+        var act = async () => await connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            FetchRequest.Rent(),
+            12);
+
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task SendPipelinedAsync_FetchRequest_Disposed_ThrowsObjectDisposedException()
+    {
+        var connection = new KafkaConnection("localhost", 9092);
+        await connection.DisposeAsync();
+
+        var act = async () => await connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            FetchRequest.Rent(),
+            12);
+
+        await Assert.That(act).Throws<ObjectDisposedException>();
+    }
 }
