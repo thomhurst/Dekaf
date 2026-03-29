@@ -88,10 +88,10 @@ internal sealed class GcSnapshot
         return AllocatedBytes switch
         {
             null => "N/A (measurement error)",
-            < 1024 => $"{AllocatedBytes} B",
-            < 1024 * 1024 => $"{AllocatedBytes / 1024.0:F2} KB",
-            < 1024 * 1024 * 1024 => $"{AllocatedBytes / (1024.0 * 1024):F2} MB",
-            _ => $"{AllocatedBytes / (1024.0 * 1024 * 1024):F2} GB"
+            < 1024 => $"{AllocatedBytes.Value} B",
+            < 1024 * 1024 => $"{AllocatedBytes.Value / 1024.0:F2} KB",
+            < 1024 * 1024 * 1024 => $"{AllocatedBytes.Value / (1024.0 * 1024):F2} MB",
+            _ => $"{AllocatedBytes.Value / (1024.0 * 1024 * 1024):F2} GB"
         };
     }
 }
