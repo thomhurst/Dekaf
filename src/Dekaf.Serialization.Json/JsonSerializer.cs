@@ -45,9 +45,9 @@ public sealed class JsonSerializer<T> : ISerde<T>
         destination.Advance(written.Length);
     }
 
-    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return System.Text.Json.JsonSerializer.Deserialize<T>(data, _options)!;
+        return System.Text.Json.JsonSerializer.Deserialize<T>(data.Span, _options)!;
     }
 }
 

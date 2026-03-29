@@ -28,7 +28,7 @@ public interface IDeserializer<out T>
     /// <summary>
     /// Deserializes a value from the input data.
     /// </summary>
-    T Deserialize(ReadOnlySpan<byte> data, SerializationContext context);
+    T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context);
 }
 
 /// <summary>

@@ -21,7 +21,7 @@ public class JsonSerializerTests
         var person = new TestPerson { Name = "Alice", Age = 30 };
 
         serializer.Serialize(person, ref buffer, context);
-        var result = serializer.Deserialize(buffer.WrittenSpan, context);
+        var result = serializer.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result.Name).IsEqualTo("Alice");
         await Assert.That(result.Age).IsEqualTo(30);
@@ -80,7 +80,7 @@ public class JsonSerializerTests
         var context = CreateContext();
         var invalidJson = "not valid json"u8.ToArray();
 
-        var act = () => serializer.Deserialize(invalidJson.AsSpan(), context);
+        var act = () => serializer.Deserialize((ReadOnlyMemory<byte>)invalidJson, context);
 
         await Assert.That(act).Throws<JsonException>();
     }
@@ -98,7 +98,7 @@ public class JsonSerializerTests
         var person = new TestPerson { Name = null!, Age = 0 };
 
         serializer.Serialize(person, ref buffer, context);
-        var result = serializer.Deserialize(buffer.WrittenSpan, context);
+        var result = serializer.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result.Name).IsNull();
     }
@@ -120,7 +120,7 @@ public class JsonSerializerTests
         };
 
         serializer.Serialize(order, ref buffer, context);
-        var result = serializer.Deserialize(buffer.WrittenSpan, context);
+        var result = serializer.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result.OrderId).IsEqualTo("ORD-001");
         await Assert.That(result.Items.Count).IsEqualTo(3);

@@ -87,21 +87,23 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     /// for the same schema ID will use the cached value without blocking.
     /// For best performance, use <see cref="WarmupAsync"/> before starting consumption.
     /// </remarks>
-    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.Length < 5)
+        var span = data.Span;
+
+        if (span.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        if (data[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {data[0]}. Expected Schema Registry format (0x00).");
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format (0x00).");
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Get writer schema from registry (cached with lazy initialization)
         var writerSchema = GetWriterSchemaCached(schemaId);
 
         // Extract Avro payload using pooled buffer to avoid allocation
-        var payload = data.Slice(5);
+        var payload = span.Slice(5);
         var rentedBuffer = ArrayPool<byte>.Shared.Rent(payload.Length);
         try
         {

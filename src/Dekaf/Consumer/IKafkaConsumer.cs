@@ -268,7 +268,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Headers = null;
             t_serializationContext.IsNull = false;
 
-            Key = keyDeserializer.Deserialize(keyData.Span, t_serializationContext);
+            Key = keyDeserializer.Deserialize(keyData, t_serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
@@ -283,8 +283,8 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.IsNull = isValueNull;
 
             Value = isValueNull
-                ? valueDeserializer.Deserialize(ReadOnlySpan<byte>.Empty, t_serializationContext)
-                : valueDeserializer.Deserialize(valueData.Span, t_serializationContext);
+                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, t_serializationContext)
+                : valueDeserializer.Deserialize(valueData, t_serializationContext);
         }
     }
 

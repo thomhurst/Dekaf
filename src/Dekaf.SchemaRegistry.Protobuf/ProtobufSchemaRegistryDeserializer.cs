@@ -49,17 +49,19 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     }
 
     /// <inheritdoc />
-    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.Length < 5)
+        var span = data.Span;
+
+        if (span.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
         // Verify magic byte
-        if (data[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {data[0]}. Expected Schema Registry format (0x00).");
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format (0x00).");
 
         // Read schema ID (big-endian)
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         if (!_config.SkipSchemaValidation)
@@ -74,7 +76,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         }
 
         // Read the message indexes (varints)
-        var payload = data.Slice(5);
+        var payload = span.Slice(5);
         var (indexCount, bytesRead) = ReadVarint(payload);
 
         // Skip past the index array

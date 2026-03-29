@@ -67,7 +67,7 @@ public class SerializerBenchmarks
     [Benchmark(Description = "Deserialize String")]
     public string DeserializeString()
     {
-        return Serializers.String.Deserialize(_stringBytes.AsSpan(), _context);
+        return Serializers.String.Deserialize((ReadOnlyMemory<byte>)_stringBytes, _context);
     }
 
     // ===== Int32 Serialization =====

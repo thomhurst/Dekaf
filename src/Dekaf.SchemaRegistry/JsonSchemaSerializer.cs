@@ -207,15 +207,17 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         _ownsClient = ownsClient;
     }
 
-    public T Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.Length < 5)
+        var span = data.Span;
+
+        if (span.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        if (data[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {data[0]}. Expected Schema Registry format.");
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Optionally fetch schema for validation (schema is cached)
         // For JSON, we typically just deserialize without validation
@@ -228,7 +230,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
             .GetResult();
 
         // Extract JSON payload and deserialize
-        return JsonSerializer.Deserialize<T>(data.Slice(5), _jsonOptions)!;
+        return JsonSerializer.Deserialize<T>(span.Slice(5), _jsonOptions)!;
     }
 
     public ValueTask DisposeAsync()

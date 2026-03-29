@@ -4,7 +4,7 @@ using Dekaf.Serialization;
 namespace Dekaf.Tests.Unit.Serialization;
 
 /// <summary>
-/// Verifies that IDeserializer&lt;T&gt;.Deserialize works correctly with ReadOnlySpan&lt;byte&gt;
+/// Verifies that IDeserializer&lt;T&gt;.Deserialize works correctly with ReadOnlyMemory&lt;byte&gt;
 /// across all built-in serdes.
 /// </summary>
 public class SpanDeserializerTests
@@ -21,7 +21,7 @@ public class SpanDeserializerTests
 
         serde.Serialize("hello world", ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo("hello world");
     }
@@ -35,7 +35,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(42, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(42);
     }
@@ -49,7 +49,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(9876543210L, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(9876543210L);
     }
@@ -64,7 +64,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(guid, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(guid);
     }
@@ -78,7 +78,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(3.14159, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(3.14159);
     }
@@ -92,7 +92,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(1.5f, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(1.5f);
     }
@@ -107,7 +107,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(input, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEquivalentTo(input);
     }
@@ -122,7 +122,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(value, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(value);
     }
@@ -137,7 +137,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(value, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(value);
     }
@@ -152,7 +152,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(value, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo(value);
     }
@@ -166,7 +166,7 @@ public class SpanDeserializerTests
 
         serde.Serialize("test value", ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo("test value");
     }
@@ -182,7 +182,7 @@ public class SpanDeserializerTests
             IsNull = true
         };
 
-        var result = serde.Deserialize(ReadOnlySpan<byte>.Empty, context);
+        var result = serde.Deserialize(ReadOnlyMemory<byte>.Empty, context);
 
         await Assert.That(result).IsNull();
     }
@@ -197,7 +197,7 @@ public class SpanDeserializerTests
 
         serde.Serialize(input, ref buffer, context);
 
-        var result = serde.Deserialize(buffer.WrittenSpan, context);
+        var result = serde.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result.ToArray()).IsEquivalentTo(input.ToArray());
     }

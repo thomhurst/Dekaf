@@ -40,7 +40,7 @@ public class ProtobufSchemaRegistryDeserializerTests
         protoBytes.CopyTo(wireBytes.AsSpan(7));
 
         // Act
-        var result = deserializer.Deserialize(wireBytes.AsSpan(), CreateContext());
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
 
         // Assert
         await Assert.That(result.Id).IsEqualTo(42);
@@ -59,7 +59,7 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(invalidBytes.AsSpan(), CreateContext())));
+            Task.FromResult(deserializer.Deserialize(invalidBytes, CreateContext())));
 
         await Assert.That(exception!.Message).Contains("Unknown magic byte");
     }
@@ -75,7 +75,7 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(shortBytes.AsSpan(), CreateContext())));
+            Task.FromResult(deserializer.Deserialize(shortBytes, CreateContext())));
 
         await Assert.That(exception!.Message).Contains("too short");
     }
@@ -98,7 +98,7 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(wireBytes.AsSpan(), CreateContext())));
+            Task.FromResult(deserializer.Deserialize(wireBytes, CreateContext())));
 
         await Assert.That(exception!.Message).Contains("not a Protobuf schema");
     }
@@ -123,7 +123,7 @@ public class ProtobufSchemaRegistryDeserializerTests
         protoBytes.CopyTo(wireBytes.AsSpan(7));
 
         // Act
-        var result = deserializer.Deserialize(wireBytes.AsSpan(), CreateContext());
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
 
         // Assert - schema registry should not be called
         await schemaRegistry.DidNotReceive().GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());

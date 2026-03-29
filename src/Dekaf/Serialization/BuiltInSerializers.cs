@@ -115,9 +115,9 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
         destination.Advance(value.Length);
     }
 
-    public byte[] Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public byte[] Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return data.ToArray();
+        return data.Span.ToArray();
     }
 }
 
@@ -132,9 +132,9 @@ internal sealed class StringSerde : ISerde<string>
         destination.Advance(byteCount);
     }
 
-    public string Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return Encoding.UTF8.GetString(data);
+        return Encoding.UTF8.GetString(data.Span);
     }
 }
 
@@ -152,7 +152,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
         destination.Advance(byteCount);
     }
 
-    public string? Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public string? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (context.IsNull)
             return null;
@@ -160,7 +160,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
         if (data.Length == 0)
             return string.Empty;
 
-        return Encoding.UTF8.GetString(data);
+        return Encoding.UTF8.GetString(data.Span);
     }
 }
 
@@ -174,9 +174,9 @@ internal sealed class Int32Serde : ISerde<int>
         destination.Advance(4);
     }
 
-    public int Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public int Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return BinaryPrimitives.ReadInt32BigEndian(data);
+        return BinaryPrimitives.ReadInt32BigEndian(data.Span);
     }
 }
 
@@ -190,9 +190,9 @@ internal sealed class Int64Serde : ISerde<long>
         destination.Advance(8);
     }
 
-    public long Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public long Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return BinaryPrimitives.ReadInt64BigEndian(data);
+        return BinaryPrimitives.ReadInt64BigEndian(data.Span);
     }
 }
 
@@ -206,9 +206,9 @@ internal sealed class GuidSerde : ISerde<Guid>
         destination.Advance(16);
     }
 
-    public Guid Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public Guid Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return new Guid(data, bigEndian: true);
+        return new Guid(data.Span, bigEndian: true);
     }
 }
 
@@ -222,9 +222,9 @@ internal sealed class DoubleSerde : ISerde<double>
         destination.Advance(8);
     }
 
-    public double Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public double Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return BinaryPrimitives.ReadDoubleBigEndian(data);
+        return BinaryPrimitives.ReadDoubleBigEndian(data.Span);
     }
 }
 
@@ -238,9 +238,9 @@ internal sealed class FloatSerde : ISerde<float>
         destination.Advance(4);
     }
 
-    public float Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public float Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return BinaryPrimitives.ReadSingleBigEndian(data);
+        return BinaryPrimitives.ReadSingleBigEndian(data.Span);
     }
 }
 
@@ -254,9 +254,9 @@ internal sealed class DateTimeSerde : ISerde<DateTime>
         destination.Advance(8);
     }
 
-    public DateTime Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public DateTime Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        var ticks = BinaryPrimitives.ReadInt64BigEndian(data);
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(data.Span);
         return new DateTime(ticks, DateTimeKind.Utc);
     }
 }
@@ -272,10 +272,11 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
         destination.Advance(10);
     }
 
-    public DateTimeOffset Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public DateTimeOffset Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(data);
-        var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(data.Slice(8));
+        var span = data.Span;
+        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(span);
+        var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(span.Slice(8));
         var offset = TimeSpan.FromMinutes(offsetMinutes);
         return new DateTimeOffset(utcTicks + offset.Ticks, offset);
     }
@@ -291,9 +292,9 @@ internal sealed class TimeSpanSerde : ISerde<TimeSpan>
         destination.Advance(8);
     }
 
-    public TimeSpan Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public TimeSpan Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        var ticks = BinaryPrimitives.ReadInt64BigEndian(data);
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(data.Span);
         return new TimeSpan(ticks);
     }
 }
@@ -306,7 +307,7 @@ internal sealed class NullSerde<T> : ISerde<T?> where T : class
         // No-op
     }
 
-    public T? Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public T? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         return null;
     }
@@ -320,7 +321,7 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
         // No-op
     }
 
-    public Ignore Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public Ignore Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         return default;
     }
@@ -330,9 +331,9 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
 /// Serde that works with ReadOnlyMemory for raw byte access.
 /// </summary>
 /// <remarks>
-/// Since <see cref="IDeserializer{T}.Deserialize"/> takes <see cref="ReadOnlySpan{T}"/>,
-/// deserialization requires a copy to produce <see cref="ReadOnlyMemory{T}"/>.
-/// For true zero-copy access, use <see cref="Serializers.ByteArray"/> or work with spans directly.
+/// Since <see cref="IDeserializer{T}.Deserialize"/> takes <see cref="ReadOnlyMemory{T}"/>,
+/// deserialization returns the input directly — true zero-copy with no allocation.
+/// The returned memory is only valid while consuming the current message batch.
 /// </remarks>
 internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
 {
@@ -344,8 +345,8 @@ internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
         destination.Advance(value.Length);
     }
 
-    public ReadOnlyMemory<byte> Deserialize(ReadOnlySpan<byte> data, SerializationContext context)
+    public ReadOnlyMemory<byte> Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return data.ToArray();
+        return data;
     }
 }

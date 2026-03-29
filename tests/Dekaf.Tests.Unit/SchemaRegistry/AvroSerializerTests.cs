@@ -108,7 +108,7 @@ public sealed class AvroSerializerTests
         var context = CreateContext();
 
         // Act
-        var result = deserializer.Deserialize(wireFormat.AsSpan(), context);
+        var result = deserializer.Deserialize(wireFormat, context);
 
         // Assert
         await Assert.That(result).IsNotNull();
@@ -134,7 +134,7 @@ public sealed class AvroSerializerTests
 
         // Act
         serializer.Serialize(record, ref buffer, context);
-        var result = deserializer.Deserialize(buffer.WrittenSpan, context);
+        var result = deserializer.Deserialize(buffer.WrittenMemory, context);
 
         // Assert
         await Assert.That((int)result["id"]!).IsEqualTo(123);
@@ -228,7 +228,7 @@ public sealed class AvroSerializerTests
         var context = CreateContext();
 
         // Act & Assert
-        await Assert.That(() => deserializer.Deserialize(invalidData.AsSpan(), context))
+        await Assert.That(() => deserializer.Deserialize(invalidData, context))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("magic byte");
     }
@@ -244,7 +244,7 @@ public sealed class AvroSerializerTests
         var context = CreateContext();
 
         // Act & Assert
-        await Assert.That(() => deserializer.Deserialize(shortData.AsSpan(), context))
+        await Assert.That(() => deserializer.Deserialize(shortData, context))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("too short");
     }
@@ -333,7 +333,7 @@ public sealed class AvroSerializerTests
 
         // Deserialize using the warmed-up cache
         var desContext = CreateContext();
-        var result = deserializer.Deserialize(wireFormat.AsSpan(), desContext);
+        var result = deserializer.Deserialize(wireFormat, desContext);
 
         // Verify deserialization worked correctly
         await Assert.That((int)result["id"]!).IsEqualTo(42);
