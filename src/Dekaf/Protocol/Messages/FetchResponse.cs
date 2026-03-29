@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
@@ -13,6 +14,10 @@ public sealed class FetchResponse : IKafkaResponse
     // Pool to reuse FetchResponse instances across fetch cycles.
     // One instance per fetch cycle, so a small pool suffices.
     private static readonly FetchResponsePool s_pool = new();
+
+    // Pools for the lists used as backing storage for Responses.
+    // Avoids allocating new List/array per fetch cycle.
+    private static readonly FetchResponseTopicListPool s_topicListPool = new();
 
     private int _pooled; // 0 = active, 1 = returned to pool; used with Interlocked for atomic guard
     private IReadOnlyList<FetchResponseTopic> _responses = Array.Empty<FetchResponseTopic>();
@@ -70,6 +75,12 @@ public sealed class FetchResponse : IKafkaResponse
             topic.ReturnToPool();
         }
 
+        // Return the topic list to the pool if it's a pooled list
+        if (_responses is List<FetchResponseTopic> topicList)
+        {
+            s_topicListPool.Return(topicList);
+        }
+
         s_pool.Return(this);
     }
 
@@ -88,9 +99,12 @@ public sealed class FetchResponse : IKafkaResponse
         var errorCode = version >= 7 ? (ErrorCode)reader.ReadInt16() : ErrorCode.None;
         var sessionId = version >= 7 ? reader.ReadInt32() : 0;
 
-        var responses = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
+        // Use pooled list to avoid per-fetch array allocation
+        var responses = s_topicListPool.Rent();
+        if (isFlexible)
+            reader.ReadCompactArrayInto(responses, static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
+        else
+            reader.ReadArrayInto(responses, static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -118,6 +132,13 @@ public sealed class FetchResponse : IKafkaResponse
             item.PooledMemoryOwner = null;
         }
     }
+
+    private sealed class FetchResponseTopicListPool() : ObjectPool<List<FetchResponseTopic>>(maxPoolSize: 32)
+    {
+        protected override List<FetchResponseTopic> Create() => [];
+
+        protected override void Reset(List<FetchResponseTopic> item) => item.Clear();
+    }
 }
 
 /// <summary>
@@ -127,6 +148,15 @@ public sealed class FetchResponseTopic
 {
     // Pool to reuse FetchResponseTopic instances. Typically 1-3 per fetch cycle.
     private static readonly FetchResponseTopicPool s_pool = new();
+
+    // Pool for the partition lists to avoid per-topic-per-fetch array allocation.
+    private static readonly FetchResponsePartitionListPool s_partitionListPool = new();
+
+    // Cache of topic name strings to avoid per-fetch string allocation.
+    // Topic names repeat every fetch cycle; caching them eliminates ~50-100 byte alloc per fetch per topic.
+    private static readonly ConcurrentDictionary<string, string> s_topicNameCache = new();
+    private static int s_topicNameCacheCount;
+    private const int MaxCachedTopicNames = 256;
 
     private int _pooled; // 0 = active, 1 = returned to pool
     private IReadOnlyList<FetchResponsePartition> _partitions = Array.Empty<FetchResponsePartition>();
@@ -167,6 +197,12 @@ public sealed class FetchResponseTopic
             partition.ReturnToPool();
         }
 
+        // Return the partition list to the pool if it's a pooled list
+        if (_partitions is List<FetchResponsePartition> partitionList)
+        {
+            s_partitionListPool.Return(partitionList);
+        }
+
         s_pool.Return(this);
     }
 
@@ -175,6 +211,31 @@ public sealed class FetchResponseTopic
         var item = s_pool.Rent();
         Volatile.Write(ref item._pooled, 0);
         return item;
+    }
+
+    /// <summary>
+    /// Interns a topic name string to avoid per-fetch allocations.
+    /// Topic names are stable identifiers that repeat every fetch cycle.
+    /// </summary>
+    private static string InternTopicName(string topic)
+    {
+        if (s_topicNameCache.TryGetValue(topic, out var cached))
+            return cached;
+
+        // Avoid unbounded cache growth with dynamic topic names
+        if (Volatile.Read(ref s_topicNameCacheCount) < MaxCachedTopicNames)
+        {
+            if (s_topicNameCache.TryAdd(topic, topic))
+            {
+                Interlocked.Increment(ref s_topicNameCacheCount);
+            }
+            else if (s_topicNameCache.TryGetValue(topic, out cached))
+            {
+                return cached;
+            }
+        }
+
+        return topic;
     }
 
     public static FetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
@@ -191,11 +252,17 @@ public sealed class FetchResponseTopic
         else
         {
             topic = isFlexible ? reader.ReadCompactString() : reader.ReadString();
+            // Intern topic names to reuse string instances across fetch cycles
+            if (topic is not null)
+                topic = InternTopicName(topic);
         }
 
-        var partitions = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
+        // Use pooled list to avoid per-topic array allocation
+        var partitions = s_partitionListPool.Rent();
+        if (isFlexible)
+            reader.ReadCompactArrayInto(partitions, static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
+        else
+            reader.ReadArrayInto(partitions, static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -220,6 +287,13 @@ public sealed class FetchResponseTopic
             item._partitions = Array.Empty<FetchResponsePartition>();
         }
     }
+
+    private sealed class FetchResponsePartitionListPool() : ObjectPool<List<FetchResponsePartition>>(maxPoolSize: 64)
+    {
+        protected override List<FetchResponsePartition> Create() => [];
+
+        protected override void Reset(List<FetchResponsePartition> item) => item.Clear();
+    }
 }
 
 /// <summary>
@@ -229,6 +303,9 @@ public sealed class FetchResponsePartition
 {
     // Pool for reusing List<RecordBatch> instances to reduce GC pressure.
     private static readonly RecordBatchListPool s_recordBatchListPool = new();
+
+    // Pool for reusing List<AbortedTransaction> instances to avoid per-partition array allocation.
+    private static readonly AbortedTransactionListPool s_abortedTxListPool = new();
 
     // Pool to reuse FetchResponsePartition instances. Typically 1-6+ per fetch cycle.
     private static readonly FetchResponsePartitionPool s_pool = new();
@@ -321,6 +398,15 @@ public sealed class FetchResponsePartition
         if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
             return;
 
+        // Return the aborted transaction list to the pool.
+        // AbortedTransactions is consumed during PendingFetchData.Create and not transferred,
+        // so it is safe to return the list here.
+        if (_abortedTransactions is List<AbortedTransaction> abortedList)
+        {
+            s_abortedTxListPool.Return(abortedList);
+            _abortedTransactions = null;
+        }
+
         s_pool.Return(this);
     }
 
@@ -354,9 +440,23 @@ public sealed class FetchResponsePartition
         IReadOnlyList<AbortedTransaction>? abortedTransactions = null;
         if (version >= 4)
         {
-            abortedTransactions = isFlexible
-                ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version)
-                : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version);
+            // Use pooled list to avoid per-partition array allocation for aborted transactions
+            var abortedList = s_abortedTxListPool.Rent();
+            int abortedCount;
+            if (isFlexible)
+                abortedCount = reader.ReadCompactArrayInto(abortedList, static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version);
+            else
+                abortedCount = reader.ReadArrayInto(abortedList, static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version);
+
+            if (abortedCount > 0)
+            {
+                abortedTransactions = abortedList;
+            }
+            else
+            {
+                // No aborted transactions — return the empty list to the pool immediately
+                s_abortedTxListPool.Return(abortedList);
+            }
         }
 
         var preferredReadReplica = version >= 11 ? reader.ReadInt32() : -1;
@@ -449,6 +549,13 @@ public sealed class FetchResponsePartition
         protected override List<RecordBatch> Create() => [];
 
         protected override void Reset(List<RecordBatch> item) => item.Clear();
+    }
+
+    private sealed class AbortedTransactionListPool() : ObjectPool<List<AbortedTransaction>>(maxPoolSize: 64)
+    {
+        protected override List<AbortedTransaction> Create() => [];
+
+        protected override void Reset(List<AbortedTransaction> item) => item.Clear();
     }
 }
 

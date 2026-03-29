@@ -346,7 +346,6 @@ internal sealed class PendingFetchData : IDisposable
         Topic = null!;
         ActivityName = null!;
         _abortedProducers?.Clear();
-        _abortedProducers = null;
 
         // Soft limit: the check-then-act is intentionally non-atomic.
         // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
@@ -1518,14 +1517,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (batches.Count == 0) return;
 
         var lastBatch = batches[^1];
-        var lastOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta;
+        var nextOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta + 1;
         var tp = pending.TopicPartition;
 
-        // Thread-safe update using ConcurrentDictionary
-        _fetchPositions.AddOrUpdate(
-            tp,
-            lastOffset + 1,
-            (_, currentPos) => Math.Max(currentPos, lastOffset + 1));
+        // Thread-safe update: only advance forward, never backwards.
+        // Uses simple read-then-write instead of AddOrUpdate to avoid closure allocation
+        // from the lambda capturing nextOffset. This is safe because prefetch calls for
+        // the same partition are serialized (one fetch per partition at a time).
+        if (!_fetchPositions.TryGetValue(tp, out var currentPos) || nextOffset > currentPos)
+        {
+            _fetchPositions[tp] = nextOffset;
+        }
     }
 
     /// <summary>
