@@ -2224,12 +2224,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
+    private const int ListOffsetsMaxRetries = 5;
+    private const int ListOffsetsRetryBaseDelayMs = 200;
+
     private async ValueTask<long> ResolveOffsetAsync(TopicPartition partition, long timestamp, CancellationToken cancellationToken)
     {
-        var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
-        if (connection is null)
-            return 0;
-
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
             ListOffsetsRequest.LowestSupportedVersion,
@@ -2257,29 +2256,45 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             ]
         };
 
-        var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            request,
-            listOffsetsVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        ListOffsetsResponsePartition? partitionResponse = null;
-        foreach (var topic in response.Topics)
+        for (var attempt = 0; ; attempt++)
         {
-            if (topic.Name == partition.Topic)
-            {
-                foreach (var p in topic.Partitions)
-                {
-                    if (p.PartitionIndex == partition.Partition)
-                    {
-                        partitionResponse = p;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
+            var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
+            if (connection is null)
+                return 0;
 
-        return partitionResponse?.Offset ?? 0;
+            var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                request,
+                listOffsetsVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            ListOffsetsResponsePartition? partitionResponse = null;
+            foreach (var topic in response.Topics)
+            {
+                if (topic.Name == partition.Topic)
+                {
+                    foreach (var p in topic.Partitions)
+                    {
+                        if (p.PartitionIndex == partition.Partition)
+                        {
+                            partitionResponse = p;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (partitionResponse is not null && partitionResponse.ErrorCode.IsRetriable() && attempt < ListOffsetsMaxRetries)
+            {
+                // Retriable error (e.g. NotLeaderOrFollower) — refresh metadata to discover
+                // the new leader, then retry with linear backoff
+                await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(ListOffsetsRetryBaseDelayMs * (attempt + 1), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            return partitionResponse?.Offset ?? 0;
+        }
     }
 
     private async ValueTask<IKafkaConnection?> GetPartitionLeaderConnectionAsync(TopicPartition partition, CancellationToken cancellationToken)
