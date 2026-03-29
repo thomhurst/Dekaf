@@ -2102,9 +2102,10 @@ internal sealed class ResponseBufferPool
     internal ResponseBufferPool(int maxArrayLength)
     {
         MaxArrayLength = maxArrayLength;
-        // Limit bucket count for large arrays to cap worst-case memory retention.
-        // Default pool: 32 × 16 MB = ~512 MB. Consumer pool: 8 × 51 MB = ~408 MB.
-        var maxArraysPerBucket = maxArrayLength > DefaultMaxArrayLength ? 8 : 32;
+        // Limit bucket count to cap worst-case memory retention.
+        // 4 arrays per bucket: default pool = 4 × 16 MB = ~64 MB, consumer pool = 4 × 51 MB = ~204 MB.
+        // Previous values (32/8) caused up to 512 MB retention for the default pool alone.
+        const int maxArraysPerBucket = 4;
         Pool = ArrayPool<byte>.Create(
             maxArrayLength: maxArrayLength,
             maxArraysPerBucket: maxArraysPerBucket);
