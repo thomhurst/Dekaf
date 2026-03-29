@@ -1,5 +1,6 @@
 using System.Buffers;
 using Dekaf.Producer;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -442,6 +443,24 @@ public class PooledBufferWriterTests
         writer.Dispose();
 
         await Assert.That(length).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Clear_CustomMaxRetainedBufferSize_ShrinksBeyondThreshold()
+    {
+        // Set max retained to 256KB instead of default 1MB
+        var writer = new PooledReusableBufferWriter(initialCapacity: 4096, maxRetainedBufferSize: 256 * 1024);
+
+        // Write enough to grow beyond 256KB
+        var data = new byte[300 * 1024];
+        var span = writer.GetSpan(data.Length);
+        data.CopyTo(span);
+        writer.Advance(data.Length);
+        await Assert.That(writer.Capacity).IsGreaterThanOrEqualTo(300 * 1024);
+
+        // Clear should shrink because buffer > 256KB max retained
+        writer.Clear();
+        await Assert.That(writer.Capacity).IsLessThanOrEqualTo(256 * 1024);
     }
 
     [Test]
