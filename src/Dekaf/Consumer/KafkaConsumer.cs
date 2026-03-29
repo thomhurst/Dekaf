@@ -1524,10 +1524,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // + indexer) because seek/reset operations on other threads can write to _fetchPositions
         // concurrently, and AddOrUpdate's CAS loop prevents TOCTOU races from overwriting a
         // concurrent seek-forward with a stale prefetch offset.
+        // Uses the factoryArgument overload with static lambdas to avoid closure allocation.
+        var nextOffset = lastOffset + 1;
         _fetchPositions.AddOrUpdate(
             tp,
-            lastOffset + 1,
-            (_, currentPos) => Math.Max(currentPos, lastOffset + 1));
+            static (_, nextOffset) => nextOffset,
+            static (_, currentPos, nextOffset) => Math.Max(currentPos, nextOffset),
+            nextOffset);
     }
 
     /// <summary>
