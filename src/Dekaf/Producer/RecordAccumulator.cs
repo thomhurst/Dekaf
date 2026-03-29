@@ -729,10 +729,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
     private TaskCompletionSource<bool>? _flushTcs;
 
-    // Reference-tracking for in-flight batches. Enables forceful cleanup of orphaned batches
-    // during disposal — catches batches whose references were lost from BrokerSender data structures.
-    // Per-batch cost (not per-message): one TryAdd/TryRemove per batch, amortized over ~1000 messages.
-    private readonly ConcurrentDictionary<ReadyBatch, byte> _inFlightBatches = new(concurrencyLevel: Environment.ProcessorCount, capacity: 16);
+    // Reference-tracking for in-flight batches using an intrusive doubly-linked list.
+    // Eliminates ConcurrentDictionary.Node allocations that caused pathological Gen2 GC
+    // promotion: each TryAdd created a ~48-byte Node that survived Gen0 during the batch's
+    // network round-trip, got promoted to Gen2, then died after TryRemove — creating a
+    // near 1:1 Gen0:Gen2 collection ratio in idempotent producer workloads.
+    // The intrusive list embeds prev/next pointers directly in ReadyBatch, so tracking
+    // is zero-allocation. SpinLock critical sections are ~5-10 instructions (pointer ops).
+    private SpinLock _inFlightBatchLock = new(enableThreadOwnerTracking: false);
+    private ReadyBatch? _inFlightBatchHead;
+    private ReadyBatch? _inFlightBatchTail;
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
@@ -2548,12 +2554,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void OnBatchEntersPipeline(ReadyBatch batch)
     {
-        // Counter first, dictionary second. If the orphan sweep runs between these two
+        // Counter first, list second. If the orphan sweep runs between these two
         // operations, the counter is already incremented so the sweep's Exchange(0) resets it.
-        // Reversed order could leave a permanently positive counter (dictionary swept but
-        // counter not yet incremented → orphan sweep misses it → counter incremented after).
         Interlocked.Increment(ref _inFlightBatchCount);
-        _inFlightBatches.TryAdd(batch, 0);
+        InFlightBatchListAdd(batch);
         batch.AppendDiag('E');
     }
 
@@ -2565,10 +2569,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <returns>true if the batch was successfully removed from tracking; false if it was already removed by another thread.</returns>
     internal bool OnBatchExitsPipeline(ReadyBatch batch)
     {
-        // TryRemove acts as a natural atomic guard: only the first thread to remove the batch
-        // proceeds with the decrement. This prevents double-decrement from concurrent cleanup
-        // paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
-        if (!_inFlightBatches.TryRemove(batch, out _))
+        // InFlightBatchListRemove acts as a natural atomic guard: only the first thread to
+        // remove the batch proceeds with the decrement. This prevents double-decrement from
+        // concurrent cleanup paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
+        if (!InFlightBatchListRemove(batch))
             return false;
 
         batch.AppendDiag('X');
@@ -2590,7 +2594,97 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sweeps <see cref="_inFlightBatches"/> for batches whose delivery timeout has expired
+    /// Adds a batch to the in-flight tracking list (intrusive doubly-linked list).
+    /// Zero-allocation: uses embedded prev/next pointers in ReadyBatch.
+    /// </summary>
+    private void InFlightBatchListAdd(ReadyBatch batch)
+    {
+        var lockTaken = false;
+        try
+        {
+            _inFlightBatchLock.Enter(ref lockTaken);
+
+            batch.InFlightLinked = true;
+            batch.InFlightPrev = _inFlightBatchTail;
+            batch.InFlightNext = null;
+
+            if (_inFlightBatchTail is not null)
+                _inFlightBatchTail.InFlightNext = batch;
+            else
+                _inFlightBatchHead = batch;
+
+            _inFlightBatchTail = batch;
+        }
+        finally
+        {
+            if (lockTaken) _inFlightBatchLock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Removes a batch from the in-flight tracking list.
+    /// Returns true if the batch was successfully removed (first caller wins).
+    /// Returns false if the batch was already removed by another thread.
+    /// </summary>
+    private bool InFlightBatchListRemove(ReadyBatch batch)
+    {
+        var lockTaken = false;
+        try
+        {
+            _inFlightBatchLock.Enter(ref lockTaken);
+
+            if (!batch.InFlightLinked)
+                return false;
+
+            batch.InFlightLinked = false;
+
+            if (batch.InFlightPrev is not null)
+                batch.InFlightPrev.InFlightNext = batch.InFlightNext;
+            else
+                _inFlightBatchHead = batch.InFlightNext;
+
+            if (batch.InFlightNext is not null)
+                batch.InFlightNext.InFlightPrev = batch.InFlightPrev;
+            else
+                _inFlightBatchTail = batch.InFlightPrev;
+
+            batch.InFlightPrev = null;
+            batch.InFlightNext = null;
+
+            return true;
+        }
+        finally
+        {
+            if (lockTaken) _inFlightBatchLock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Snapshots the in-flight batch list into the provided list for iteration outside the lock.
+    /// Used by sweep and disposal to avoid holding the lock during expensive per-batch operations.
+    /// </summary>
+    private void InFlightBatchListSnapshot(List<ReadyBatch> target)
+    {
+        var lockTaken = false;
+        try
+        {
+            _inFlightBatchLock.Enter(ref lockTaken);
+
+            var current = _inFlightBatchHead;
+            while (current is not null)
+            {
+                target.Add(current);
+                current = current.InFlightNext;
+            }
+        }
+        finally
+        {
+            if (lockTaken) _inFlightBatchLock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Sweeps the in-flight batch list for batches whose delivery timeout has expired
     /// and fails them. Called periodically from the linger loop as defense-in-depth against
     /// batches whose references are lost from BrokerSender data structures (orphans).
     /// Without this sweep, orphaned batches cause ProduceAsync to hang indefinitely because
@@ -2602,7 +2696,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <returns>The number of expired batches that were failed.</returns>
     internal int SweepExpiredInFlightBatches()
     {
-        if (_inFlightBatches.IsEmpty)
+        if (Volatile.Read(ref _inFlightBatchCount) <= 0)
             return 0;
 
         var now = Stopwatch.GetTimestamp();
@@ -2613,7 +2707,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs * 3);
         var expiredCount = 0;
 
-        foreach (var (batch, _) in _inFlightBatches)
+        // Snapshot the list to avoid holding the lock during per-batch operations.
+        // One List<ReadyBatch> allocation per sweep is acceptable — sweeps run at linger
+        // interval (1-100ms), not per-message.
+        var snapshot = new List<ReadyBatch>();
+        InFlightBatchListSnapshot(snapshot);
+
+        foreach (var batch in snapshot)
         {
             var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
             if (now < deadlineTicks)
@@ -2660,10 +2760,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Fails all remaining in-flight batches tracked in <see cref="_inFlightBatches"/>.
+    /// Fails all remaining in-flight batches tracked in the in-flight batch list.
     /// Used as a defense-in-depth sweep after BrokerSender disposal to catch batches
     /// whose references were lost from BrokerSender data structures.
-    /// Safe to call multiple times — idempotent due to dictionary removal and IsEmpty check.
+    /// Safe to call multiple times — idempotent due to InFlightLinked guard.
     /// </summary>
     /// <param name="returnToPool">
     /// When true, batches are returned to the pool after failing (calls Reset which nulls fields).
@@ -2674,15 +2774,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </param>
     internal void ForceFailAllInFlightBatches(bool returnToPool = true)
     {
-        if (_inFlightBatches.IsEmpty)
+        // Snapshot the list to iterate outside the lock
+        var snapshot = new List<ReadyBatch>();
+        InFlightBatchListSnapshot(snapshot);
+
+        if (snapshot.Count == 0)
             return;
 
-        LogOrphanedBatchesDuringDisposal(_inFlightBatches.Count);
+        LogOrphanedBatchesDuringDisposal(snapshot.Count);
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
-        foreach (var (orphanedBatch, _) in _inFlightBatches)
+        foreach (var orphanedBatch in snapshot)
         {
-            // OnBatchExitsPipeline uses TryRemove as atomic guard and decrements counter.
+            // OnBatchExitsPipeline uses InFlightBatchListRemove as atomic guard and decrements counter.
             if (!OnBatchExitsPipeline(orphanedBatch))
                 continue; // Another thread already handled this batch
 
@@ -3915,6 +4019,15 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
 
+    // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.
+    // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations
+    // that caused pathological Gen2 GC promotion (nodes survived Gen0 during network
+    // round-trip, got promoted to Gen2, then died — creating near 1:1 Gen0:Gen2 ratio).
+    // Protected by RecordAccumulator._inFlightBatchLock.
+    internal ReadyBatch? InFlightPrev;
+    internal ReadyBatch? InFlightNext;
+    internal bool InFlightLinked; // Guards against double-remove races
+
     /// <summary>
     /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
     /// Tracks the last few transitions as single-char codes to keep overhead minimal.
@@ -4131,6 +4244,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbackCount = 0;
         _arrayReuseQueue = null;
         InflightEntry = null;
+        InFlightPrev = null;
+        InFlightNext = null;
+        InFlightLinked = false;
         // NOTE: _memoryReleased is NOT reset here — it stays armed (=1) while in pool,
         // so stale references calling TrySetMemoryReleased() return false (safe no-op).
         // Cleared in Initialize() at the start of the next lifecycle.
