@@ -998,7 +998,7 @@ public class RecordBatchTests
     #region Header Copy Correctness Tests
 
     [Test]
-    public async Task GetHeaders_CopiedHeaders_RemainValidAfterLazyRecordListDispose()
+    public async Task RecordBatch_Dispose_DoesNotCorruptPreviouslyCopiedHeaders()
     {
         // Arrange: create a batch with records that have headers
         var buffer = new ArrayBufferWriter<byte>();
@@ -1034,21 +1034,15 @@ public class RecordBatchTests
 
         var record = parsedBatch.Records[0];
 
-        // Simulate what KafkaConsumer.GetHeaders() does: copy into an owned array
-        // so headers survive after the pooled arrays are returned on dispose.
-        Header[]? copiedHeaders = null;
-        if (record.Headers is not null && record.HeaderCount > 0)
-        {
-            copiedHeaders = new Header[record.HeaderCount];
-            record.Headers.AsSpan(0, record.HeaderCount).CopyTo(copiedHeaders);
-        }
+        // Copy headers using the same helper that KafkaConsumer.GetHeaders() delegates to
+        var copiedHeaders = Record.CopyHeaders(record.Headers, record.HeaderCount);
 
         // Dispose the batch — this returns pooled Header[] arrays to ArrayPool
         parsedBatch.Dispose();
 
         // Assert: copied headers are still valid after dispose
         await Assert.That(copiedHeaders).IsNotNull();
-        await Assert.That(copiedHeaders!.Length).IsEqualTo(2);
+        await Assert.That(copiedHeaders!.Count).IsEqualTo(2);
         await Assert.That(copiedHeaders[0].Key).IsEqualTo("h1");
         await Assert.That(copiedHeaders[0].GetValueAsString()).IsEqualTo("header-value-1");
         await Assert.That(copiedHeaders[1].Key).IsEqualTo("h2");

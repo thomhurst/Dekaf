@@ -2632,14 +2632,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// </summary>
     private static IReadOnlyList<Header>? GetHeaders(Record record)
     {
-        if (record.Headers is null || record.HeaderCount == 0)
-            return null;
-
-        // Copy into a correctly-sized owned array that safely outlives the record batch.
-        // The pooled Header[] in record.Headers is returned to ArrayPool on batch dispose.
-        var result = new Header[record.HeaderCount];
-        record.Headers.AsSpan(0, record.HeaderCount).CopyTo(result);
-        return result;
+        return Record.CopyHeaders(record.Headers, record.HeaderCount);
     }
 
     /// <summary>

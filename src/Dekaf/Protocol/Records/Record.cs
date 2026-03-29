@@ -157,6 +157,20 @@ public readonly record struct Record
         };
     }
 
+    /// <summary>
+    /// Copies headers from a (potentially pooled/oversized) array into an owned array
+    /// that safely outlives the record batch. Returns null if no headers.
+    /// </summary>
+    internal static IReadOnlyList<Header>? CopyHeaders(Header[]? headers, int headerCount)
+    {
+        if (headers is null || headerCount == 0)
+            return null;
+
+        var result = new Header[headerCount];
+        headers.AsSpan(0, headerCount).CopyTo(result);
+        return result;
+    }
+
     internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, Header[]? headers, int headerCount)
     {
         var size = 1; // attributes
