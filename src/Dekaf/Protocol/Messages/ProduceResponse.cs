@@ -1,8 +1,13 @@
+using System.Collections.Concurrent;
+
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>
 /// Produce response (API key 0).
 /// Contains acknowledgment for produced records.
+/// Pooled to eliminate per-response heap allocation — high batch churn rates (e.g., 25K batches/sec
+/// with 16 KB batch size) create mid-lived ProduceResponse objects that survive Gen0 and get
+/// promoted to Gen2 before dying, contributing to pathological GC pressure.
 /// </summary>
 public sealed class ProduceResponse : IKafkaResponse
 {
@@ -10,55 +15,106 @@ public sealed class ProduceResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 11;
 
+    // Pool for reusing ProduceResponse instances to eliminate per-response class allocation.
+    // Max 64 entries covers MaxInFlightRequestsPerConnection=5 × multiple connections with headroom.
+    private static readonly ConcurrentStack<ProduceResponse> s_pool = new();
+    private static int s_poolCount;
+    private const int MaxPoolSize = 64;
+
     /// <summary>
-    /// Response for each topic.
+    /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
+    /// When created via <see cref="Read"/>, the array is recycled across pool returns.
+    /// When created directly (e.g., tests), <see cref="TopicCount"/> equals the array length.
     /// </summary>
-    public required ProduceResponseTopicData[] Responses { get; init; }
+    public ProduceResponseTopicData[] Responses { get; internal set; } = [];
+
+    /// <summary>
+    /// Number of valid entries in <see cref="Responses"/>.
+    /// When set via init (tests), auto-computed from <see cref="Responses"/> length.
+    /// </summary>
+    public int TopicCount { get; internal set; }
 
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs { get; internal set; }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var isFlexible = version >= 9;
 
-        var responses = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => ProduceResponseTopicData.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => ProduceResponseTopicData.Read(ref r, v), version);
+        var topicCount = isFlexible
+            ? reader.ReadUnsignedVarInt() - 1
+            : reader.ReadInt32();
 
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        var response = Rent();
+
+        if (topicCount > 0)
+        {
+            if (response.Responses.Length < topicCount)
+                response.Responses = new ProduceResponseTopicData[topicCount];
+
+            for (var i = 0; i < topicCount; i++)
+                response.Responses[i].ReadInto(ref reader, version);
+        }
+
+        response.TopicCount = Math.Max(topicCount, 0);
+        response.ThrottleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
 
         if (isFlexible)
         {
             reader.SkipTaggedFields();
         }
 
-        return new ProduceResponse
+        return response;
+    }
+
+    private static ProduceResponse Rent()
+    {
+        if (s_pool.TryPop(out var response))
         {
-            Responses = responses,
-            ThrottleTimeMs = throttleTimeMs
-        };
+            Interlocked.Decrement(ref s_poolCount);
+            return response;
+        }
+        return new ProduceResponse();
+    }
+
+    /// <summary>
+    /// Returns this response to the pool for reuse. Must be called after processing is complete.
+    /// </summary>
+    public void Return()
+    {
+        TopicCount = 0;
+        ThrottleTimeMs = 0;
+        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        {
+            Interlocked.Increment(ref s_poolCount);
+            s_pool.Push(this);
+        }
     }
 }
 
 /// <summary>
 /// Topic response in a produce response.
-/// Struct to eliminate per-response heap allocation — these are short-lived parse results
-/// consumed immediately by BrokerSender.ProcessCompletedResponses and then discarded.
+/// Mutable struct to enable reuse of the partition array across responses — the same
+/// ProduceResponseTopicData is recycled via the owning ProduceResponse's pooled Responses array.
 /// </summary>
-public readonly struct ProduceResponseTopicData
+public struct ProduceResponseTopicData
 {
     /// <summary>
     /// Topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public string Name { get; internal set; }
 
     /// <summary>
-    /// Partition responses.
+    /// Partition responses. Reusable array — <see cref="PartitionCount"/> indicates valid elements.
     /// </summary>
-    public required ProduceResponsePartitionData[] PartitionResponses { get; init; }
+    public ProduceResponsePartitionData[] PartitionResponses { get; internal set; }
+
+    /// <summary>
+    /// Number of valid entries in <see cref="PartitionResponses"/>.
+    /// </summary>
+    public int PartitionCount { get; internal set; }
 
     public static ProduceResponseTopicData Read(ref KafkaProtocolReader reader, short version)
     {
@@ -66,20 +122,57 @@ public readonly struct ProduceResponseTopicData
 
         var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
 
-        var partitionResponses = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => ProduceResponsePartitionData.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => ProduceResponsePartitionData.Read(ref r, v), version);
+        var partitionCount = isFlexible
+            ? reader.ReadUnsignedVarInt() - 1
+            : reader.ReadInt32();
+
+        var result = new ProduceResponseTopicData
+        {
+            Name = name,
+            PartitionResponses = partitionCount > 0 ? new ProduceResponsePartitionData[partitionCount] : [],
+            PartitionCount = Math.Max(partitionCount, 0)
+        };
+
+        for (var i = 0; i < result.PartitionCount; i++)
+            result.PartitionResponses[i] = ProduceResponsePartitionData.Read(ref reader, version);
 
         if (isFlexible)
         {
             reader.SkipTaggedFields();
         }
 
-        return new ProduceResponseTopicData
+        return result;
+    }
+
+    /// <summary>
+    /// Reads into this existing struct, reusing the PartitionResponses array if large enough.
+    /// Called from <see cref="ProduceResponse.Read"/> to avoid per-response array allocations.
+    /// </summary>
+    internal void ReadInto(ref KafkaProtocolReader reader, short version)
+    {
+        var isFlexible = version >= 9;
+
+        Name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
+
+        var partitionCount = isFlexible
+            ? reader.ReadUnsignedVarInt() - 1
+            : reader.ReadInt32();
+
+        PartitionCount = Math.Max(partitionCount, 0);
+
+        if (PartitionCount > 0)
         {
-            Name = name,
-            PartitionResponses = partitionResponses
-        };
+            if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
+                PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
+
+            for (var i = 0; i < PartitionCount; i++)
+                PartitionResponses[i] = ProduceResponsePartitionData.Read(ref reader, version);
+        }
+
+        if (isFlexible)
+        {
+            reader.SkipTaggedFields();
+        }
     }
 }
 

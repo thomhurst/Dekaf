@@ -104,11 +104,13 @@ public sealed class BrokerSenderSendLoopTests
     private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
         new()
         {
+            TopicCount = 1,
             Responses =
             [
                 new ProduceResponseTopicData
                 {
                     Name = topic,
+                    PartitionCount = 1,
                     PartitionResponses =
                     [
                         new ProduceResponsePartitionData
@@ -249,11 +251,13 @@ public sealed class BrokerSenderSendLoopTests
             // they were coalesced into one request
             tcs1.SetResult(new ProduceResponse
             {
+                TopicCount = 1,
                 Responses =
                 [
                     new ProduceResponseTopicData
                     {
                         Name = "test-topic",
+                        PartitionCount = 2,
                         PartitionResponses =
                         [
                             new ProduceResponsePartitionData
@@ -490,11 +494,13 @@ public sealed class BrokerSenderSendLoopTests
             // verify order-independent processing.
             var combinedResponse = new ProduceResponse
             {
+                TopicCount = 1,
                 Responses =
                 [
                     new ProduceResponseTopicData
                     {
                         Name = "test-topic",
+                        PartitionCount = batchCount,
                         PartitionResponses = Enumerable.Range(0, batchCount)
                             .Select(i => new ProduceResponsePartitionData
                             {

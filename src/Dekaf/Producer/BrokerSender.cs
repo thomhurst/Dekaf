@@ -1425,12 +1425,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Reuse caller-provided dictionary to avoid per-response allocation.
                 // The dictionary is cleared after use in ProcessResponseBatches.
                 var responseLookup = reusableResponseLookup;
-                foreach (var topicResp in response.Responses)
+                for (var t = 0; t < response.TopicCount; t++)
                 {
-                    foreach (var partResp in topicResp.PartitionResponses)
+                    ref var topicResp = ref response.Responses[t];
+                    for (var p = 0; p < topicResp.PartitionCount; p++)
                     {
                         responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
-                        responseLookup[(topicResp.Name, partResp.Index)] = partResp;
+                        responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] = topicResp.PartitionResponses[p];
                     }
                 }
 
@@ -1452,6 +1453,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // Clear for reuse on next response (avoids per-response dictionary allocation)
                 responseLookup?.Clear();
+
+                // Return pooled ProduceResponse for reuse
+                if (response is ProduceResponse poolableResponse)
+                    poolableResponse.Return();
 
                 pending.ReturnBatchesArray();
             }
