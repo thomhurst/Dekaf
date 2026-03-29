@@ -251,53 +251,40 @@ public readonly struct ConsumeResult<TKey, TValue>
         LeaderEpoch = leaderEpoch;
         IsPartitionEof = isPartitionEof;
 
-        // Eagerly deserialize key and value to avoid storing deserializer references
-        // This eliminates 16 bytes per ConsumeResult (two interface references on 64-bit)
-        // and prevents potential closure allocations
+        // Eagerly deserialize to avoid storing deserializer references (saves 16 bytes per struct)
         if (isPartitionEof || keyDeserializer is null)
         {
-            // Partition EOF or test scenario without deserializer
             Key = default;
         }
         else if (isKeyNull)
         {
-            // Null keys return default (null for reference types, 0 for value types).
-            // Unlike values (where TValue is non-nullable and requires calling the deserializer),
-            // TKey? is nullable so we can return default directly without risking exceptions
-            // from deserializers that don't handle empty data (e.g., Int32Serde, GuidSerde).
+            // Null keys return default directly — TKey? is nullable so no deserializer call needed
             Key = default;
         }
         else
         {
-            // Reuse thread-local context by updating fields (zero-allocation)
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Key;
             t_serializationContext.Headers = null;
             t_serializationContext.IsNull = false;
-            Key = keyDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(keyData), t_serializationContext);
+
+            Key = keyDeserializer.Deserialize(keyData, t_serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
         {
-            // Partition EOF or test scenario without deserializer
             Value = default!;
         }
         else
         {
-            // Reuse thread-local context by updating fields (zero-allocation)
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Value;
             t_serializationContext.Headers = null;
             t_serializationContext.IsNull = isValueNull;
 
-            if (isValueNull)
-            {
-                Value = valueDeserializer.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, t_serializationContext);
-            }
-            else
-            {
-                Value = valueDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(valueData), t_serializationContext);
-            }
+            Value = isValueNull
+                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, t_serializationContext)
+                : valueDeserializer.Deserialize(valueData, t_serializationContext);
         }
     }
 

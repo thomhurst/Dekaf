@@ -212,19 +212,17 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         _ownsClient = ownsClient;
     }
 
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.Length < 5)
+        var span = data.Span;
+
+        if (span.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        // Read wire format header
-        Span<byte> header = stackalloc byte[5];
-        data.Slice(0, 5).CopyTo(header);
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
 
-        if (header[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {header[0]}. Expected Schema Registry format.");
-
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Get schema from registry (cached, with timeout to prevent indefinite hang)
         var schema = _schemaRegistry.GetSchemaAsync(schemaId)
@@ -234,7 +232,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
             .GetResult();
 
         // Extract payload
-        var payload = data.Slice(5).ToArray();
+        var payload = span.Slice(5).ToArray();
 
         return _deserialize(payload, schema);
     }

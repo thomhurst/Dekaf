@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Buffers.Binary;
 using Dekaf.Serialization;
 using Google.Protobuf;
@@ -20,7 +19,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// </remarks>
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
 public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
-    where T : IMessage<T>, new()
+    where T : IMessage<T>, IBufferMessage, new()
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
@@ -44,27 +43,23 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufDeserializerConfig();
         _ownsClient = ownsClient;
-
-        // Create the parser for the message type
         _parser = new MessageParser<T>(() => new T());
     }
 
     /// <inheritdoc />
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.Length < 5)
+        var span = data.Span;
+
+        if (span.Length < 5)
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
 
-        // Read the header into a contiguous span
-        Span<byte> header = stackalloc byte[5];
-        data.Slice(0, 5).CopyTo(header);
-
         // Verify magic byte
-        if (header[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {header[0]}. Expected Schema Registry format (0x00).");
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format (0x00).");
 
         // Read schema ID (big-endian)
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         if (!_config.SkipSchemaValidation)
@@ -79,7 +74,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         }
 
         // Read the message indexes (varints)
-        var payload = data.Slice(5);
+        var payload = span.Slice(5);
         var (indexCount, bytesRead) = ReadVarint(payload);
 
         // Skip past the index array
@@ -92,32 +87,30 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         // The rest is the protobuf message
         var protobufData = payload.Slice(bytesRead);
 
-        // Parse the message using byte array for maximum compatibility
-        // with both generated and hand-coded messages
-        return _parser.ParseFrom(protobufData.ToArray());
+        // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
+        // IBufferMessage constraint is enforced at compile time.
+        return _parser.ParseFrom(protobufData);
     }
 
-    private static (int value, int bytesRead) ReadVarint(ReadOnlySequence<byte> data)
+    private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data)
     {
         var value = 0;
         var shift = 0;
         var bytesRead = 0;
 
-        var reader = new SequenceReader<byte>(data);
-
-        while (reader.TryRead(out var b))
+        foreach (var b in data)
         {
             bytesRead++;
             value |= (b & 0x7F) << shift;
             if ((b & 0x80) == 0)
-                break;
+                return (value, bytesRead);
             shift += 7;
 
             if (shift >= 35)
                 throw new InvalidOperationException("Varint is too long");
         }
 
-        return (value, bytesRead);
+        throw new InvalidOperationException("Varint is truncated");
     }
 
     /// <inheritdoc />

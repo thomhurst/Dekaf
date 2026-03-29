@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Buffers.Binary;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
@@ -41,7 +40,7 @@ public class ProtobufSchemaRegistryDeserializerTests
         protoBytes.CopyTo(wireBytes.AsSpan(7));
 
         // Act
-        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(wireBytes), CreateContext());
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
 
         // Assert
         await Assert.That(result.Id).IsEqualTo(42);
@@ -60,7 +59,7 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(new ReadOnlySequence<byte>(invalidBytes), CreateContext())));
+            Task.FromResult(deserializer.Deserialize(invalidBytes, CreateContext())));
 
         await Assert.That(exception!.Message).Contains("Unknown magic byte");
     }
@@ -76,7 +75,7 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(new ReadOnlySequence<byte>(shortBytes), CreateContext())));
+            Task.FromResult(deserializer.Deserialize(shortBytes, CreateContext())));
 
         await Assert.That(exception!.Message).Contains("too short");
     }
@@ -99,7 +98,7 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(new ReadOnlySequence<byte>(wireBytes), CreateContext())));
+            Task.FromResult(deserializer.Deserialize(wireBytes, CreateContext())));
 
         await Assert.That(exception!.Message).Contains("not a Protobuf schema");
     }
@@ -124,51 +123,11 @@ public class ProtobufSchemaRegistryDeserializerTests
         protoBytes.CopyTo(wireBytes.AsSpan(7));
 
         // Act
-        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(wireBytes), CreateContext());
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
 
         // Assert - schema registry should not be called
         await schemaRegistry.DidNotReceive().GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());
         await Assert.That(result.Id).IsEqualTo(42);
-    }
-
-    [Test]
-    public async Task Deserialize_HandlesMultiSegmentSequence()
-    {
-        // Arrange
-        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
-        schemaRegistry.GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(new Schema
-            {
-                SchemaType = SchemaType.Protobuf,
-                SchemaString = "syntax = \"proto3\";"
-            }));
-
-        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(schemaRegistry);
-
-        // Create a message
-        var originalMessage = new TestMessage { Id = 42, Name = "Test", Value = 1.5 };
-        var protoBytes = originalMessage.ToByteArray();
-        var wireBytes = new byte[1 + 4 + 2 + protoBytes.Length];
-
-        wireBytes[0] = 0x00;
-        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 123);
-        wireBytes[5] = 1;
-        wireBytes[6] = 0;
-        protoBytes.CopyTo(wireBytes.AsSpan(7));
-
-        // Split into multiple segments
-        var firstSegment = new TestSegment(wireBytes.AsMemory(0, 5));
-        var secondSegment = new TestSegment(wireBytes.AsMemory(5));
-        firstSegment.SetNext(secondSegment);
-
-        var sequence = new ReadOnlySequence<byte>(firstSegment, 0, secondSegment, secondSegment.Memory.Length);
-
-        // Act
-        var result = deserializer.Deserialize(sequence, CreateContext());
-
-        // Assert
-        await Assert.That(result.Id).IsEqualTo(42);
-        await Assert.That(result.Name).IsEqualTo("Test");
     }
 
     [Test]
@@ -199,20 +158,4 @@ public class ProtobufSchemaRegistryDeserializerTests
         schemaRegistry.DidNotReceive().Dispose();
     }
 
-    /// <summary>
-    /// Helper class to create multi-segment sequences for testing.
-    /// </summary>
-    private sealed class TestSegment : ReadOnlySequenceSegment<byte>
-    {
-        public TestSegment(ReadOnlyMemory<byte> memory)
-        {
-            Memory = memory;
-        }
-
-        public void SetNext(TestSegment next)
-        {
-            Next = next;
-            next.RunningIndex = RunningIndex + Memory.Length;
-        }
-    }
 }

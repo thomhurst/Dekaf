@@ -68,7 +68,7 @@ public static class ProtobufSchemaRegistryExtensions
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufDeserializerConfig? config = null)
-        where TValue : IMessage<TValue>, new()
+        where TValue : IMessage<TValue>, IBufferMessage, new()
     {
         var deserializer = new ProtobufSchemaRegistryDeserializer<TValue>(
             schemaRegistry,
@@ -92,8 +92,8 @@ public static class ProtobufSchemaRegistryExtensions
         ISchemaRegistryClient schemaRegistry,
         ProtobufDeserializerConfig? keyConfig = null,
         ProtobufDeserializerConfig? valueConfig = null)
-        where TKey : IMessage<TKey>, new()
-        where TValue : IMessage<TValue>, new()
+        where TKey : IMessage<TKey>, IBufferMessage, new()
+        where TValue : IMessage<TValue>, IBufferMessage, new()
     {
         var keyDeserializer = new ProtobufSchemaRegistryDeserializer<TKey>(schemaRegistry, keyConfig);
         var valueDeserializer = new ProtobufSchemaRegistryDeserializer<TValue>(schemaRegistry, valueConfig);

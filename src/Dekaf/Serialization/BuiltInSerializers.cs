@@ -115,7 +115,7 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
         destination.Advance(value.Length);
     }
 
-    public byte[] Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public byte[] Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         return data.ToArray();
     }
@@ -132,25 +132,9 @@ internal sealed class StringSerde : ISerde<string>
         destination.Advance(byteCount);
     }
 
-    public string Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.IsSingleSegment)
-        {
-            return Encoding.UTF8.GetString(data.FirstSpan);
-        }
-
-        // Use ArrayPool for multi-segment case to avoid allocation
-        var length = (int)data.Length;
-        var buffer = ArrayPool<byte>.Shared.Rent(length);
-        try
-        {
-            data.CopyTo(buffer);
-            return Encoding.UTF8.GetString(buffer.AsSpan(0, length));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
+        return Encoding.UTF8.GetString(data.Span);
     }
 }
 
@@ -168,7 +152,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
         destination.Advance(byteCount);
     }
 
-    public string? Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public string? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (context.IsNull)
             return null;
@@ -176,23 +160,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
         if (data.Length == 0)
             return string.Empty;
 
-        if (data.IsSingleSegment)
-        {
-            return Encoding.UTF8.GetString(data.FirstSpan);
-        }
-
-        // Use ArrayPool for multi-segment case to avoid allocation
-        var length = (int)data.Length;
-        var buffer = ArrayPool<byte>.Shared.Rent(length);
-        try
-        {
-            data.CopyTo(buffer);
-            return Encoding.UTF8.GetString(buffer.AsSpan(0, length));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
+        return Encoding.UTF8.GetString(data.Span);
     }
 }
 
@@ -206,11 +174,9 @@ internal sealed class Int32Serde : ISerde<int>
         destination.Advance(4);
     }
 
-    public int Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public int Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[4];
-        data.Slice(0, 4).CopyTo(buffer);
-        return BinaryPrimitives.ReadInt32BigEndian(buffer);
+        return BinaryPrimitives.ReadInt32BigEndian(data.Span);
     }
 }
 
@@ -224,11 +190,9 @@ internal sealed class Int64Serde : ISerde<long>
         destination.Advance(8);
     }
 
-    public long Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public long Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[8];
-        data.Slice(0, 8).CopyTo(buffer);
-        return BinaryPrimitives.ReadInt64BigEndian(buffer);
+        return BinaryPrimitives.ReadInt64BigEndian(data.Span);
     }
 }
 
@@ -242,11 +206,9 @@ internal sealed class GuidSerde : ISerde<Guid>
         destination.Advance(16);
     }
 
-    public Guid Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public Guid Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[16];
-        data.Slice(0, 16).CopyTo(buffer);
-        return new Guid(buffer, bigEndian: true);
+        return new Guid(data.Span, bigEndian: true);
     }
 }
 
@@ -260,11 +222,9 @@ internal sealed class DoubleSerde : ISerde<double>
         destination.Advance(8);
     }
 
-    public double Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public double Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[8];
-        data.Slice(0, 8).CopyTo(buffer);
-        return BinaryPrimitives.ReadDoubleBigEndian(buffer);
+        return BinaryPrimitives.ReadDoubleBigEndian(data.Span);
     }
 }
 
@@ -278,11 +238,9 @@ internal sealed class FloatSerde : ISerde<float>
         destination.Advance(4);
     }
 
-    public float Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public float Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[4];
-        data.Slice(0, 4).CopyTo(buffer);
-        return BinaryPrimitives.ReadSingleBigEndian(buffer);
+        return BinaryPrimitives.ReadSingleBigEndian(data.Span);
     }
 }
 
@@ -296,11 +254,9 @@ internal sealed class DateTimeSerde : ISerde<DateTime>
         destination.Advance(8);
     }
 
-    public DateTime Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public DateTime Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[8];
-        data.Slice(0, 8).CopyTo(buffer);
-        var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(data.Span);
         return new DateTime(ticks, DateTimeKind.Utc);
     }
 }
@@ -316,12 +272,11 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
         destination.Advance(10);
     }
 
-    public DateTimeOffset Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public DateTimeOffset Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[10];
-        data.Slice(0, 10).CopyTo(buffer);
-        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(buffer);
-        var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(buffer.Slice(8));
+        var span = data.Span;
+        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(span);
+        var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(span.Slice(8));
         var offset = TimeSpan.FromMinutes(offsetMinutes);
         return new DateTimeOffset(utcTicks + offset.Ticks, offset);
     }
@@ -337,11 +292,9 @@ internal sealed class TimeSpanSerde : ISerde<TimeSpan>
         destination.Advance(8);
     }
 
-    public TimeSpan Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public TimeSpan Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[8];
-        data.Slice(0, 8).CopyTo(buffer);
-        var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(data.Span);
         return new TimeSpan(ticks);
     }
 }
@@ -354,7 +307,7 @@ internal sealed class NullSerde<T> : ISerde<T?> where T : class
         // No-op
     }
 
-    public T? Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         return null;
     }
@@ -368,15 +321,20 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
         // No-op
     }
 
-    public Ignore Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public Ignore Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         return default;
     }
 }
 
 /// <summary>
-/// Zero-copy serde that works directly with ReadOnlyMemory without allocations.
+/// Serde that works with ReadOnlyMemory for raw byte access.
 /// </summary>
+/// <remarks>
+/// Since <see cref="IDeserializer{T}.Deserialize"/> takes <see cref="ReadOnlyMemory{T}"/>,
+/// deserialization returns the input directly — true zero-copy with no allocation.
+/// The returned memory is only valid while consuming the current message batch.
+/// </remarks>
 internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
 {
     public void Serialize<TWriter>(ReadOnlyMemory<byte> value, ref TWriter destination, SerializationContext context)
@@ -387,16 +345,8 @@ internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
         destination.Advance(value.Length);
     }
 
-    public ReadOnlyMemory<byte> Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public ReadOnlyMemory<byte> Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        // Fast path: single segment - return memory slice directly (zero-copy)
-        if (data.IsSingleSegment)
-        {
-            return data.First;
-        }
-
-        // Slow path: multi-segment - must copy to contiguous memory
-        // This is rare in practice since consumer data is typically single-segment
-        return data.ToArray();
+        return data;
     }
 }
