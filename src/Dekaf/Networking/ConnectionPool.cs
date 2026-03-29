@@ -20,8 +20,10 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Shared memory pool for all connections. Bounds total retained memory to one set of
     /// array buckets regardless of connection count, preventing multi-GB WorkingSet growth
     /// in multi-broker scenarios with adaptive scaling. See <see cref="PipeMemoryPool"/>.
+    /// Bucket capacity is scaled by <c>_connectionsPerBroker</c> to prevent pool saturation
+    /// under high concurrent load (capped at 256 to bound memory).
     /// </summary>
-    private readonly PipeMemoryPool _sharedPipeMemoryPool = new();
+    private readonly PipeMemoryPool _sharedPipeMemoryPool;
 
     /// <summary>
     /// Optional factory for creating connections, used by tests to inject fakes.
@@ -91,6 +93,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
+        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: ScaledBucketCapacity(_connectionsPerBroker));
     }
 
     /// <summary>
@@ -110,7 +113,17 @@ public sealed partial class ConnectionPool : IConnectionPool
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = ResponseBufferPool.Default;
         _connectionFactory = connectionFactory;
+        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: ScaledBucketCapacity(_connectionsPerBroker));
     }
+
+    /// <summary>
+    /// Scales the per-bucket array capacity for the shared <see cref="PipeMemoryPool"/>
+    /// based on the number of connections that will share it. A single connection needs ~32
+    /// cached arrays to avoid pool overflow under pipelined load; with N connections sharing
+    /// the same pool, total concurrent demand scales linearly. Capped at 256 to bound memory.
+    /// </summary>
+    private static int ScaledBucketCapacity(int connectionsPerBroker)
+        => Math.Min(connectionsPerBroker * 32, 256);
 
     public void RegisterBroker(int brokerId, string host, int port)
     {

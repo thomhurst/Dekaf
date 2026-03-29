@@ -353,6 +353,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_sharedPipeMemoryPool is not null)
         {
             // Shared pool — don't dispose the previous reference (it's the same shared instance).
+            // On reconnect, _pipeMemoryPool already equals _sharedPipeMemoryPool; this is a
+            // harmless no-op reassignment that keeps the code path uniform.
             _pipeMemoryPool = _sharedPipeMemoryPool;
         }
         else
