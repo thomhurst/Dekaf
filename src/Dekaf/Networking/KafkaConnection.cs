@@ -2273,9 +2273,16 @@ internal sealed class PooledResponseMemory : IPooledMemory
 /// </summary>
 internal sealed class PendingRequestPool
 {
-    private const int MaxPoolSize = 256;
+    private const int DefaultMaxPoolSize = 256;
+    private readonly int _maxPoolSize;
     private readonly ConcurrentStack<PooledPendingRequest> _pool = new();
     private int _poolCount;
+
+    public PendingRequestPool() : this(DefaultMaxPoolSize) { }
+
+    public PendingRequestPool(int maxPoolSize) { _maxPoolSize = maxPoolSize; }
+
+    public int ApproximateCount => Volatile.Read(ref _poolCount);
 
     /// <summary>
     /// Gets a <see cref="PooledPendingRequest"/> from the pool, or creates a new one if empty.
@@ -2304,7 +2311,7 @@ internal sealed class PendingRequestPool
 
         // Check if pool is full
         var count = Interlocked.Increment(ref _poolCount);
-        if (count <= MaxPoolSize)
+        if (count <= _maxPoolSize)
         {
             _pool.Push(request);
         }
