@@ -458,9 +458,10 @@ public class PooledBufferWriterTests
         writer.Advance(data.Length);
         await Assert.That(writer.Capacity).IsGreaterThanOrEqualTo(300 * 1024);
 
-        // Clear should shrink because buffer > 256KB max retained
+        // Clear should shrink because buffer > 256KB max retained.
+        // After shrink, ArrayPool.Shared.Rent(4096) returns at most 8192 (next power of two).
         writer.Clear();
-        await Assert.That(writer.Capacity).IsLessThanOrEqualTo(256 * 1024);
+        await Assert.That(writer.Capacity).IsLessThanOrEqualTo(8192);
     }
 
     [Test]

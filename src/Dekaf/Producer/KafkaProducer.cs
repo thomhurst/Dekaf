@@ -218,8 +218,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _compressionCodecs = CreateCompressionCodecRegistry(options);
         _accumulator = new RecordAccumulator(options, _compressionCodecs, loggerFactory?.CreateLogger<RecordAccumulator>());
 
+        // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
+        // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
+        // in-flight simultaneously. The tracker enables coordinated retry on
+        // OutOfOrderSequenceNumber instead of blind backoff.
+        // Pre-warm to prevent allocation burst during ramp-up.
         var inflightPool = new InflightEntryPool(producerPoolSizes.InflightEntries);
-        inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * 32, inflightPool.MaxPoolSize));
+        inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
         _inflightTracker = new PartitionInflightTracker(inflightPool);
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);

@@ -549,6 +549,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _interceptors = interceptors;
         }
 
+        // Consumer connections use the default MaxInFlightRequestsPerConnection (5).
+        // Unlike the producer, consumers don't expose this setting — fetch requests are
+        // inherently sequential per partition, so the default is appropriate.
         _connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
@@ -3130,6 +3133,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
+    /// <summary>
+    /// Ratchets process-global consumer pool sizes based on actual partition count.
+    /// Only <see cref="PendingFetchData"/> is ratcheted — the per-instance CTS pool
+    /// is fixed at construction and cannot be resized after creation.
+    /// </summary>
     private static void RatchetConsumerPoolSizes(int partitionCount)
     {
         var sizes = PoolSizing.ForConsumer(partitionCount);

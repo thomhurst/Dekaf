@@ -15,8 +15,9 @@ internal static class PoolSizing
     /// <summary>
     /// Approximate number of coalesced partitions per batch — used to scale
     /// the inflight-entry pool relative to the number of estimated batches.
+    /// Also used by the producer to calculate pre-warm counts.
     /// </summary>
-    private const int InflightEntriesPerBatch = 32;
+    internal const int InflightEntriesPerBatch = 32;
 
     internal readonly record struct ProducerPoolSizes
     {
@@ -49,6 +50,7 @@ internal static class PoolSizing
         return new ProducerPoolSizes
         {
             ValueTaskSources = Math.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
+            // Floor at 256KB to avoid ArrayPool thrash from frequent grow/shrink on modest workloads.
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
             InflightEntries = Math.Clamp((int)maxBatches * InflightEntriesPerBatch, 128, 2048),
         };
