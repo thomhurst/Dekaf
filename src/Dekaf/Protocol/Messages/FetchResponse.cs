@@ -454,8 +454,9 @@ public sealed class FetchResponsePartition
 
 /// <summary>
 /// Aborted transaction information.
+/// Struct to avoid per-transaction heap allocation in the consumer hot path.
 /// </summary>
-public sealed class AbortedTransaction
+public readonly record struct AbortedTransaction
 {
     public required long ProducerId { get; init; }
     public required long FirstOffset { get; init; }

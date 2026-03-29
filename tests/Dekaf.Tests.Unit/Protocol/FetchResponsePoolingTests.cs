@@ -322,3 +322,27 @@ public class FetchResponsePoolingTests
         reused.ReturnToPool();
     }
 }
+
+public class AbortedTransactionTests
+{
+    [Test]
+    public async Task AbortedTransaction_SameValues_AreEqual()
+    {
+        var a = new AbortedTransaction { ProducerId = 42, FirstOffset = 100 };
+        var b = new AbortedTransaction { ProducerId = 42, FirstOffset = 100 };
+
+        await Assert.That(a).IsEqualTo(b);
+        await Assert.That(a == b).IsTrue();
+        await Assert.That(a.GetHashCode()).IsEqualTo(b.GetHashCode());
+    }
+
+    [Test]
+    public async Task AbortedTransaction_DifferentValues_AreNotEqual()
+    {
+        var a = new AbortedTransaction { ProducerId = 42, FirstOffset = 100 };
+        var b = new AbortedTransaction { ProducerId = 42, FirstOffset = 200 };
+
+        await Assert.That(a).IsNotEqualTo(b);
+        await Assert.That(a == b).IsFalse();
+    }
+}

@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
@@ -21,7 +22,6 @@ public readonly record struct Record
     /// <summary>
     /// The number of valid headers in the Headers array.
     /// Required because the array may be rented from ArrayPool and oversized.
-    /// When 0 and Headers is not null, defaults to Headers.Length.
     /// </summary>
     public int HeaderCount { get; init; }
 
@@ -44,7 +44,12 @@ public readonly record struct Record
     /// <summary>
     /// Gets the effective header count, handling both exact-sized and pooled arrays.
     /// </summary>
-    private int EffectiveHeaderCount => Headers is null ? 0 : (HeaderCount > 0 ? HeaderCount : Headers.Length);
+    /// <remarks>
+    /// Invariant: HeaderCount always equals the actual number of valid headers.
+    /// When Headers is a pooled array (from Record.Read), HeaderCount &lt; Headers.Length is expected.
+    /// When Headers is an exact-sized array (from producer path), HeaderCount == Headers.Length.
+    /// </remarks>
+    private int EffectiveHeaderCount => Headers is null ? 0 : HeaderCount;
 
     /// <summary>
     /// Writes the record to the protocol writer.
@@ -127,7 +132,10 @@ public readonly record struct Record
 
         if (headerCount > 0)
         {
-            headers = new Header[headerCount];
+            // Rent from ArrayPool to avoid per-record allocation.
+            // The rented array may be oversized; HeaderCount tracks the valid count.
+            // The array is returned to the pool when the owning LazyRecordList is disposed.
+            headers = ArrayPool<Header>.Shared.Rent(headerCount);
             for (var i = 0; i < headerCount; i++)
             {
                 headers[i] = Header.Read(ref reader);
@@ -147,6 +155,20 @@ public readonly record struct Record
             Headers = headers,
             HeaderCount = headerCount
         };
+    }
+
+    /// <summary>
+    /// Copies headers from a (potentially pooled/oversized) array into an owned array
+    /// that safely outlives the record batch. Returns null if no headers.
+    /// </summary>
+    internal static IReadOnlyList<Header>? CopyHeaders(Header[]? headers, int headerCount)
+    {
+        if (headers is null || headerCount == 0)
+            return null;
+
+        var result = new Header[headerCount];
+        headers.AsSpan(0, headerCount).CopyTo(result);
+        return result;
     }
 
     internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, Header[]? headers, int headerCount)
