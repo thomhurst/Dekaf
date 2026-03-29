@@ -362,3 +362,66 @@ public readonly record struct Header
         return size;
     }
 }
+
+/// <summary>
+/// A zero-copy read-only view over a slice of a <see cref="Header"/> array.
+/// Implements <see cref="IReadOnlyList{Header}"/> without allocating a new array,
+/// avoiding per-message header copying in the consumer hot path.
+/// </summary>
+/// <remarks>
+/// The backing array may be rented from <see cref="System.Buffers.ArrayPool{T}"/> and
+/// will be returned when the owning <c>LazyRecordList</c> is disposed.
+/// The <see cref="HeaderSlice"/> is valid only for the lifetime of the current
+/// consume iteration (same as <c>RawBytes</c> deserializer semantics).
+/// This is a class (not struct) because it must implement <see cref="IReadOnlyList{Header}"/>
+/// avoiding the per-message <c>Header[]</c> copy. A fresh instance is allocated per message
+/// with headers (tiny: two fields). The struct enumerator avoids boxing when iterated
+/// over the concrete type; iteration through <c>IReadOnlyList{Header}</c> will still box.
+/// </remarks>
+internal sealed class HeaderSlice : IReadOnlyList<Header>
+{
+    private readonly Header[] _array;
+    private readonly int _count;
+
+    internal HeaderSlice(Header[] array, int count)
+    {
+        _array = array;
+        _count = count;
+    }
+
+    public int Count => _count;
+
+    public Header this[int index]
+    {
+        get
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _count);
+            return _array[index];
+        }
+    }
+
+    public Enumerator GetEnumerator() => new Enumerator(_array, _count);
+    IEnumerator<Header> IEnumerable<Header>.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public struct Enumerator : IEnumerator<Header>
+    {
+        private readonly Header[] _array;
+        private readonly int _count;
+        private int _index;
+
+        internal Enumerator(Header[] array, int count)
+        {
+            _array = array;
+            _count = count;
+            _index = -1;
+        }
+
+        public Header Current => _array[_index];
+        object IEnumerator.Current => Current;
+        public bool MoveNext() => ++_index < _count;
+        public void Reset() => _index = -1;
+        public void Dispose() { }
+    }
+}
