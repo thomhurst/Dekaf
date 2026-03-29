@@ -496,7 +496,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
-    private readonly CancellationTokenSourcePool _ctsPool = new();
+    private readonly CancellationTokenSourcePool _ctsPool;
 
     // Cached metric tags per topic to avoid per-message TagList allocation
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
@@ -532,6 +532,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _options = options;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
+
+        // Derive consumer pool sizes from configuration
+        // Use 64 as default partition count estimate — covers most workloads.
+        // PendingFetchData uses a ratchet, so this only increases over time.
+        var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
+        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
+        _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
