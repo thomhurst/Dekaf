@@ -220,7 +220,6 @@ public sealed class RecordBatch : IDisposable
     // A bounded ConcurrentStack pool ensures at most MaxPooledCaches buffers are retained,
     // regardless of how many threads participate in serialization.
     private static readonly ConcurrentStack<SerializationCache> s_cachePool = new();
-    private static int s_cachePoolCount;
     private const int MaxPooledCaches = 16;
 
     /// <summary>
@@ -229,7 +228,7 @@ public sealed class RecordBatch : IDisposable
     /// Uses PooledReusableBufferWriter (ArrayPool-backed) instead of ArrayBufferWriter
     /// to avoid Buffer.ZeroMemoryInternal overhead from new byte[] allocations on growth.
     /// </summary>
-    private sealed class SerializationCache
+    private sealed class SerializationCache : IDisposable
     {
         public PooledReusableBufferWriter? RecordsBuffer;
         public PooledReusableBufferWriter? CompressedBuffer;
@@ -253,23 +252,19 @@ public sealed class RecordBatch : IDisposable
     private static SerializationCache RentSerializationCache()
     {
         if (s_cachePool.TryPop(out var cache))
-        {
-            Interlocked.Decrement(ref s_cachePoolCount);
             return cache;
-        }
+
         return new SerializationCache();
     }
 
     private static void ReturnSerializationCache(SerializationCache cache)
     {
-        if (Interlocked.Increment(ref s_cachePoolCount) <= MaxPooledCaches)
+        if (s_cachePool.Count < MaxPooledCaches)
         {
             s_cachePool.Push(cache);
         }
         else
         {
-            Interlocked.Decrement(ref s_cachePoolCount);
-            // Pool full — dispose buffers to return arrays to DekafPools.SerializationBuffers
             cache.Dispose();
         }
     }
