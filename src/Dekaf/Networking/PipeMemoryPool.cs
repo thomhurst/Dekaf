@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 
 namespace Dekaf.Networking;
 
@@ -32,7 +33,17 @@ namespace Dekaf.Networking;
 internal sealed class PipeMemoryPool : MemoryPool<byte>
 {
     private readonly ArrayPool<byte> _pool;
+    private readonly ConcurrentStack<PooledMemoryOwner> _ownerPool = new();
+    private int _ownerPoolCount;
     private int _disposed;
+
+    /// <summary>
+    /// Maximum number of <see cref="PooledMemoryOwner"/> wrapper objects to retain.
+    /// With pipelined sends, the input pipe can hold 16-32 active segments and the output
+    /// PipeWriter uses 1-2 segments per write. 64 covers peak concurrent demand with headroom
+    /// for burst scenarios, while bounding retained wrapper objects to ~2 KB total.
+    /// </summary>
+    private const int MaxOwnerPoolSize = 64;
 
     /// <summary>
     /// Creates a new pool with a dedicated <see cref="ArrayPool{T}"/> instance.
@@ -75,7 +86,36 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         if (minBufferSize < 0)
             minBufferSize = 4096;
 
-        return new PooledMemoryOwner(_pool, minBufferSize);
+        if (_ownerPool.TryPop(out var owner))
+        {
+            Interlocked.Decrement(ref _ownerPoolCount);
+            owner.Initialize(_pool, minBufferSize);
+            return owner;
+        }
+
+        return new PooledMemoryOwner(this, _pool, minBufferSize);
+    }
+
+    /// <summary>
+    /// Returns a <see cref="PooledMemoryOwner"/> wrapper to the pool for reuse.
+    /// Called from <see cref="PooledMemoryOwner.Dispose"/> after the byte array has been
+    /// returned to the <see cref="ArrayPool{T}"/>. Eliminates per-Rent() heap allocation
+    /// of the wrapper object, which was a significant source of GC pressure with pipelined
+    /// sends (hundreds of Rent/Dispose cycles per second per connection).
+    /// </summary>
+    private void ReturnOwner(PooledMemoryOwner owner)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        if (Interlocked.Increment(ref _ownerPoolCount) <= MaxOwnerPoolSize)
+        {
+            _ownerPool.Push(owner);
+        }
+        else
+        {
+            Interlocked.Decrement(ref _ownerPoolCount);
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -84,18 +124,36 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         // has no Dispose method — it will be collected by the GC along with all
         // its retained arrays once no more IMemoryOwner references are alive.
         Volatile.Write(ref _disposed, 1);
+
+        // Drain the owner pool to allow GC of wrapper objects
+        while (_ownerPool.TryPop(out _))
+        {
+            // Discard
+        }
     }
 
     /// <summary>
     /// Lightweight <see cref="IMemoryOwner{T}"/> that rents from and returns to
-    /// the parent pool's dedicated <see cref="ArrayPool{T}"/>.
+    /// the parent pool's dedicated <see cref="ArrayPool{T}"/>. The wrapper object itself
+    /// is pooled by <see cref="PipeMemoryPool"/> to eliminate per-Rent() heap allocation.
     /// </summary>
     private sealed class PooledMemoryOwner : IMemoryOwner<byte>
     {
-        private readonly ArrayPool<byte> _pool;
+        private readonly PipeMemoryPool _parentPool;
+        private ArrayPool<byte> _pool;
         private byte[]? _array;
 
-        public PooledMemoryOwner(ArrayPool<byte> pool, int minBufferSize)
+        public PooledMemoryOwner(PipeMemoryPool parentPool, ArrayPool<byte> pool, int minBufferSize)
+        {
+            _parentPool = parentPool;
+            _pool = pool;
+            _array = pool.Rent(minBufferSize);
+        }
+
+        /// <summary>
+        /// Re-initializes the owner for reuse after being returned to the wrapper pool.
+        /// </summary>
+        public void Initialize(ArrayPool<byte> pool, int minBufferSize)
         {
             _pool = pool;
             _array = pool.Rent(minBufferSize);
@@ -117,6 +175,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
             if (array is not null)
             {
                 _pool.Return(array);
+                _parentPool.ReturnOwner(this);
             }
         }
     }
