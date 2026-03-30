@@ -264,17 +264,15 @@ public class PoolSizingTests
     [NotInParallel("DekafPools")]
     public async Task SerializationBuffers_RatchetUp_ReplacesPool()
     {
-        var before = DekafPools.SerializationBuffers;
-
-        // Ratchet to a high value
-        DekafPools.RatchetSerializationBucketCapacity(256);
+        // Ratchet to a known high value — always triggers a replacement regardless
+        // of what previous tests set (ratchet is monotonically increasing).
+        DekafPools.RatchetSerializationBucketCapacity(512);
         var after = DekafPools.SerializationBuffers;
 
-        // Should have created a new pool instance
         await Assert.That(after).IsNotNull();
 
-        // Same value — should be a no-op
-        DekafPools.RatchetSerializationBucketCapacity(256);
+        // Same value — should be a no-op (pool reference unchanged)
+        DekafPools.RatchetSerializationBucketCapacity(512);
         var afterSame = DekafPools.SerializationBuffers;
         await Assert.That(afterSame).IsSameReferenceAs(after);
     }
@@ -283,12 +281,16 @@ public class PoolSizingTests
     [NotInParallel("DekafPools")]
     public async Task SerializationBuffers_RatchetDown_DoesNotShrink()
     {
-        DekafPools.RatchetSerializationBucketCapacity(128);
-        var after128 = DekafPools.SerializationBuffers;
+        // First ratchet to a known high value to establish a baseline,
+        // then verify a smaller value does NOT replace the pool.
+        // This is order-independent: even if previous tests ratcheted higher,
+        // the "up" call ensures we capture the current pool reference.
+        DekafPools.RatchetSerializationBucketCapacity(1024);
+        var afterHigh = DekafPools.SerializationBuffers;
 
         DekafPools.RatchetSerializationBucketCapacity(16);
         var afterSmaller = DekafPools.SerializationBuffers;
 
-        await Assert.That(afterSmaller).IsSameReferenceAs(after128);
+        await Assert.That(afterSmaller).IsSameReferenceAs(afterHigh);
     }
 }
