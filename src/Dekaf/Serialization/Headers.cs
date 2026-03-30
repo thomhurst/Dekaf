@@ -418,8 +418,12 @@ internal sealed class HeaderSlice : IReadOnlyList<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void Return(HeaderSlice instance)
     {
-        instance._array = null!;
-        instance._count = 0;
+        // Do NOT zero _array/_count here. The ConsumeResult the user holds still references
+        // this HeaderSlice (via IReadOnlyList<Header>), and the user may access Headers.Count
+        // or iterate headers after the async enumerator is disposed (e.g., ConsumeOneAsync
+        // disposes the enumerator in its finally block before the caller inspects the result).
+        // Rent() always sets both _array and _count before handing out an instance, so stale
+        // data is never observable by the next renter.
         if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
         {
             s_pool.Push(instance);

@@ -150,7 +150,7 @@ public class ConsumeResultTests
     }
 
     [Test]
-    public async Task HeaderSlice_Return_ClearsCountToZero()
+    public async Task HeaderSlice_Return_PreservesDataForExistingReferences()
     {
         var headers = new Header[]
         {
@@ -163,9 +163,10 @@ public class ConsumeResultTests
 
         HeaderSlice.Return(slice);
 
-        // After return, the instance's count is cleared to document the lifetime contract:
-        // accessing a returned HeaderSlice is invalid (the data is gone).
-        await Assert.That(slice.Count).IsEqualTo(0);
+        // After return, data remains accessible because ConsumeResult may still hold
+        // a reference (e.g., ConsumeOneAsync disposes the enumerator before the caller
+        // inspects headers). Rent() always overwrites both fields before reuse.
+        await Assert.That(slice.Count).IsEqualTo(2);
     }
 
     [Test]
