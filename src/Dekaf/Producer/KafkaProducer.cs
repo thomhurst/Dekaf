@@ -804,7 +804,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         value.Return();
         if (pooledHeaderArray is not null)
         {
-            ArrayPool<Header>.Shared.Return(pooledHeaderArray);
+            ProducerContainerPools.Headers.Return(pooledHeaderArray);
         }
     }
 
@@ -2623,8 +2623,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var count = headers.Count;
         headerCount = count;
 
-        // Always pool to eliminate per-message allocations
-        var result = ArrayPool<Header>.Shared.Rent(count);
+        // Use dedicated pool to prevent TLS accumulation from cross-thread return
+        // (rented on producer thread, returned on BrokerSender thread in ReadyBatch.Cleanup)
+        var result = ProducerContainerPools.Headers.Rent(count);
         pooledArray = result;
 
         // Use index-based iteration to avoid enumerator boxing allocation
