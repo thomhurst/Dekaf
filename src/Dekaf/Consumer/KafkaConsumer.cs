@@ -973,7 +973,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Yield records lazily from pending fetches
             System.Diagnostics.Activity? previousActivity = null;
-            List<HeaderSlice>? headerSlicesForFetch = null;
             try
             {
                 // Hoist invariant boolean checks outside inner loops to avoid
@@ -1016,11 +1015,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             previousActivity?.Dispose();
                             previousActivity = null;
 
-                            // NOTE: HeaderSlice instances are NOT returned to the pool here.
-                            // They are accumulated per-fetch and returned at the fetch boundary
-                            // so that all ConsumeResult instances from the same fetch retain valid
-                            // header references even if the caller stores them in a collection.
-
                             var record = pending.CurrentRecord;
 
                             // Use cached batch properties (updated once per batch transition
@@ -1029,18 +1023,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var offset = pending.CurrentBaseOffset + record.OffsetDelta;
                             var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
 
-                            // Zero-copy header access: wrap the existing header array in a
-                            // pooled HeaderSlice instead of copying. The slice is valid until
-                            // the fetch boundary — all slices from a single fetch are collected
-                            // and returned to the pool when the fetch is fully consumed, so
-                            // callers can safely store ConsumeResult objects in collections.
+                            // Create a standalone header array snapshot. Previous attempts used
+                            // pooled HeaderSlice instances to avoid per-message allocation, but
+                            // this created a use-after-free hazard: callers who store ConsumeResult
+                            // objects in a collection and access headers after the await foreach
+                            // loop exits would find zeroed-out headers because the pool reclaims
+                            // slices when the enumerator is disposed. A small per-message Header[]
+                            // copy (typically 1-3 headers = ~48-144 bytes) is the correct trade-off
+                            // for correctness. The Header struct itself is cheap to copy (string ref
+                            // + ReadOnlyMemory<byte> ref + bool).
                             IReadOnlyList<Header>? headers = null;
                             if (record.Headers is not null && record.HeaderCount > 0)
                             {
-                                var slice = HeaderSlice.Rent(record.Headers, record.HeaderCount);
-                                headers = slice;
-                                headerSlicesForFetch ??= new List<HeaderSlice>();
-                                headerSlicesForFetch.Add(slice);
+                                headers = record.Headers[..record.HeaderCount];
                             }
 
                             var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
@@ -1127,18 +1122,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         yield return nextResult;
                     }
 
-                    // Dispose last activity and return all HeaderSlices from this pending fetch.
-                    // All slices are returned together at the fetch boundary so that ConsumeResult
-                    // objects from this fetch retain valid header references throughout the
-                    // caller's iteration of this fetch's records.
+                    // Dispose last activity from this pending fetch
                     previousActivity?.Dispose();
                     previousActivity = null;
-                    if (headerSlicesForFetch is not null)
-                    {
-                        foreach (var slice in headerSlicesForFetch)
-                            HeaderSlice.Return(slice);
-                        headerSlicesForFetch.Clear();
-                    }
 
                     // Batch-level fetch position update (once per partition-fetch, not per message).
                     // _fetchPositions controls where the next fetch request starts from.
@@ -1163,13 +1149,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             finally
             {
-                // Ensure activity is disposed and all HeaderSlices are returned if caller breaks out early
+                // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
-                if (headerSlicesForFetch is not null)
-                {
-                    foreach (var slice in headerSlicesForFetch)
-                        HeaderSlice.Return(slice);
-                }
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
@@ -1673,10 +1654,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
                 {
-                    // Materialize headers before returning: breaking out of await foreach
-                    // disposes the enumerator, which returns pooled HeaderSlices to the pool.
-                    // Without this, the caller would hold a reference to a zeroed-out slice.
-                    return result.WithMaterializedHeaders();
+                    return result;
                 }
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
@@ -1697,8 +1675,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
             {
-                // Materialize headers before returning (see fast path comment above)
-                return result.WithMaterializedHeaders();
+                return result;
             }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)

@@ -1,5 +1,7 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Integration.RealWorld;
 
@@ -240,7 +242,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
                 watermarks = await consumer.QueryWatermarkOffsetsAsync(tp);
                 break;
             }
-            catch (InvalidOperationException) when (attempt < 4)
+            catch (KafkaException ex) when (attempt < 4 && ex.ErrorCode == ErrorCode.NotLeaderOrFollower)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(500 * (attempt + 1)));
             }

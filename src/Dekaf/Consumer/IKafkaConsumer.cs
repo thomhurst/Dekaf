@@ -387,38 +387,6 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// </summary>
     public TopicPartitionOffset TopicPartitionOffset => new(Topic, Partition, Offset);
 
-    /// <summary>
-    /// Returns a copy of this result with headers materialized into a plain array.
-    /// If headers are backed by a pooled <see cref="HeaderSlice"/>, this snapshots them
-    /// so the result remains valid after the pooled slice is returned.
-    /// Used by <c>ConsumeOneAsync</c> which disposes the async enumerator (returning pooled
-    /// slices) before the caller can inspect the result.
-    /// </summary>
-    internal ConsumeResult<TKey, TValue> WithMaterializedHeaders()
-    {
-        if (Headers is not HeaderSlice slice)
-            return this;
-
-        return new ConsumeResult<TKey, TValue>(this, slice.MaterializeHeaders());
-    }
-
-    /// <summary>
-    /// Internal copy constructor that replaces headers with a materialized snapshot.
-    /// Avoids re-deserialization by copying already-deserialized Key and Value.
-    /// </summary>
-    private ConsumeResult(ConsumeResult<TKey, TValue> source, Header[] materializedHeaders)
-    {
-        Topic = source.Topic;
-        Partition = source.Partition;
-        Offset = source.Offset;
-        Key = source.Key;
-        Value = source.Value;
-        Headers = materializedHeaders;
-        _timestampMs = source._timestampMs;
-        TimestampType = source.TimestampType;
-        LeaderEpoch = source.LeaderEpoch;
-        IsPartitionEof = source.IsPartitionEof;
-    }
 }
 
 /// <summary>
