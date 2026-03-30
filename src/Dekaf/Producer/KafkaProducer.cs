@@ -66,6 +66,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
+    internal RecordAccumulator.BufferPressureDiagnostics GetBufferPressureDiagnostics()
+        => _accumulator.GetBufferPressureDiagnostics();
+
     // Idempotent / transaction state
     // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
     // InitIdempotentProducerAsync sets _producerId, _producerEpoch, _accumulator.ProducerId/Epoch

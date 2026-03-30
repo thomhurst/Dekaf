@@ -946,6 +946,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // When pressure accumulates beyond the threshold, the ProducerDataPool bucket
     // capacity is ratcheted up to match the workload's actual cold-path depth.
     private long _lastPoolRatchetPressure;
+
+    // Buffer pressure diagnostics (Release-mode, for stress test analysis)
+    private long _hotPathHits;
+    private long _coldPathHits;
+    private long _coldPathBufferedBytesSum; // sum of _bufferedBytes at cold path entry, for average calculation
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1790,10 +1795,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
+        {
+            Interlocked.Increment(ref _hotPathHits);
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize));
+        }
 
         // Cold path: buffer full, await async reservation (backpressure)
+        Interlocked.Increment(ref _coldPathHits);
+        Interlocked.Add(ref _coldPathBufferedBytesSum, Volatile.Read(ref _bufferedBytes));
         return AppendSlowPath(topic, partition, timestamp, key, value,
             headers, headerCount, completionSource, callback, recordSize, cancellationToken);
     }
@@ -2077,11 +2087,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
+        {
+            Interlocked.Increment(ref _hotPathHits);
             return new ValueTask<bool>(AppendFromSpansAfterReservation(topic, partition, timestamp,
                 keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize));
+        }
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
+        Interlocked.Increment(ref _coldPathHits);
+        Interlocked.Add(ref _coldPathBufferedBytesSum, Volatile.Read(ref _bufferedBytes));
         var keyPooled = keyIsNull ? PooledMemory.Null : CopySpanToPooledMemory(keyData);
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
@@ -2325,6 +2340,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Used by adaptive connection scaling to detect sustained backpressure.
     /// </summary>
     internal long BufferPressureEvents => Volatile.Read(ref _bufferPressureEvents);
+
+    /// <summary>
+    /// Gets a snapshot of buffer pressure diagnostics for performance analysis.
+    /// Counters are cumulative from producer construction.
+    /// </summary>
+    internal BufferPressureDiagnostics GetBufferPressureDiagnostics() => new(
+        HotPathHits: Volatile.Read(ref _hotPathHits),
+        ColdPathHits: Volatile.Read(ref _coldPathHits),
+        ColdPathBufferedBytesSum: Volatile.Read(ref _coldPathBufferedBytesSum),
+        CurrentBufferedBytes: Volatile.Read(ref _bufferedBytes),
+        MaxBufferMemory: _maxBufferMemory,
+        BufferPressureEvents: Volatile.Read(ref _bufferPressureEvents),
+        PoolCurrentArraysPerBucket: ProducerDataPool.CurrentArraysPerBucket);
+
+    internal readonly record struct BufferPressureDiagnostics(
+        long HotPathHits,
+        long ColdPathHits,
+        long ColdPathBufferedBytesSum,
+        long CurrentBufferedBytes,
+        ulong MaxBufferMemory,
+        long BufferPressureEvents,
+        int PoolCurrentArraysPerBucket)
+    {
+        public double ColdPathRatio => HotPathHits + ColdPathHits > 0
+            ? (double)ColdPathHits / (HotPathHits + ColdPathHits)
+            : 0;
+
+        public double AvgColdPathBufferUtilization => ColdPathHits > 0 && MaxBufferMemory > 0
+            ? (double)ColdPathBufferedBytesSum / ColdPathHits / (double)MaxBufferMemory
+            : 0;
+    }
 
     /// <summary>
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).

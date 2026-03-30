@@ -112,6 +112,21 @@ internal sealed class ProducerStressTest : IStressTestScenario
         throughput.Stop();
         gcStats.Capture();
 
+        // Dump buffer pressure diagnostics before disposal
+        if (producer is KafkaProducer<string, string> concreteProducer)
+        {
+            var diag = concreteProducer.GetBufferPressureDiagnostics();
+            Console.WriteLine($"  === Buffer Pressure Diagnostics ===");
+            Console.WriteLine($"  Hot path hits:       {diag.HotPathHits:N0}");
+            Console.WriteLine($"  Cold path hits:      {diag.ColdPathHits:N0}");
+            Console.WriteLine($"  Cold path ratio:     {diag.ColdPathRatio:P2}");
+            Console.WriteLine($"  Avg cold-path buffer utilization: {diag.AvgColdPathBufferUtilization:P2}");
+            Console.WriteLine($"  Current buffered bytes: {diag.CurrentBufferedBytes:N0} / {diag.MaxBufferMemory:N0}");
+            Console.WriteLine($"  Buffer pressure events: {diag.BufferPressureEvents:N0}");
+            Console.WriteLine($"  Pool arrays/bucket:  {diag.PoolCurrentArraysPerBucket}");
+            Console.WriteLine($"  =====================================");
+        }
+
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
 
