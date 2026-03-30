@@ -226,6 +226,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
+        // Re-ratchet shared pool sizes after metadata refresh discovers the real broker count.
+        // Bootstrap servers are seed nodes — the actual cluster may have more brokers.
+        // The ratchet pattern ensures pools only grow, never shrink.
+        var connectionsPerBroker = options.ConnectionsPerBroker;
+        var maxInFlight = options.MaxInFlightRequestsPerConnection;
+        _metadataManager.OnBrokerCountDiscovered = brokerCount =>
+        {
+            var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight);
+            ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
+            ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
+        };
+
         _compressionCodecs = CreateCompressionCodecRegistry(options);
         _accumulator = new RecordAccumulator(options, _compressionCodecs, loggerFactory?.CreateLogger<RecordAccumulator>());
 

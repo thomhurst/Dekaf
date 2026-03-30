@@ -1,4 +1,5 @@
 using Dekaf.Internal;
+using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Internal;
 
@@ -194,5 +195,25 @@ public class PoolSizingTests
 
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(16);
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+    }
+
+    [Test]
+    public async Task RatchetBucketCapacity_SameOrSmallerSize_DoesNotReplacePool()
+    {
+        // Ratchet up to 48 (3 brokers)
+        ProducerDataPool.RatchetBucketCapacity(48);
+        var poolAfterFirst = ProducerDataPool.BytePool;
+
+        // Same size — should be a no-op
+        ProducerDataPool.RatchetBucketCapacity(48);
+        var poolAfterSame = ProducerDataPool.BytePool;
+
+        await Assert.That(poolAfterSame).IsSameReferenceAs(poolAfterFirst);
+
+        // Smaller size — should also be a no-op (ratchet only goes up)
+        ProducerDataPool.RatchetBucketCapacity(16);
+        var poolAfterSmaller = ProducerDataPool.BytePool;
+
+        await Assert.That(poolAfterSmaller).IsSameReferenceAs(poolAfterFirst);
     }
 }

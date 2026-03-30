@@ -38,6 +38,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly List<string> _originalBootstrapHostnames;
     private long _allBrokersUnavailableSince;
 
+    /// <summary>
+    /// Optional callback invoked after each successful metadata refresh with the discovered broker count.
+    /// Used by the producer to re-ratchet shared pool sizes once the real cluster size is known.
+    /// </summary>
+    internal Action<int>? OnBrokerCountDiscovered { get; set; }
+
     public MetadataManager(
         IConnectionPool connectionPool,
         IEnumerable<string> bootstrapServers,
@@ -434,6 +440,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
+                OnBrokerCountDiscovered?.Invoke(response.Brokers.Count);
+
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
 
@@ -522,6 +530,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 }
 
                 LogRebootstrapSuccessful(response.Brokers.Count, host, port);
+
+                OnBrokerCountDiscovered?.Invoke(response.Brokers.Count);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
