@@ -264,30 +264,29 @@ public class PoolSizingTests
     [NotInParallel("DekafPools")]
     public async Task SerializationBuffers_RatchetUp_ReplacesPool()
     {
-        // Establish a known baseline, then ratchet above it to verify replacement.
-        DekafPools.RatchetSerializationBucketCapacity(512);
-        var poolAt512 = DekafPools.SerializationBuffers;
+        // This test must use the HIGHEST values across all DekafPools tests
+        // to guarantee replacement regardless of execution order (ratchet is monotonic).
+        DekafPools.RatchetSerializationBucketCapacity(8192);
+        var poolBefore = DekafPools.SerializationBuffers;
 
-        // Ratchet higher — must create a new pool instance
-        DekafPools.RatchetSerializationBucketCapacity(1024);
-        var poolAt1024 = DekafPools.SerializationBuffers;
-        await Assert.That(poolAt1024).IsNotSameReferenceAs(poolAt512);
+        DekafPools.RatchetSerializationBucketCapacity(16384);
+        var poolAfter = DekafPools.SerializationBuffers;
+        await Assert.That(poolAfter).IsNotSameReferenceAs(poolBefore);
 
         // Same value — should be a no-op (pool reference unchanged)
-        DekafPools.RatchetSerializationBucketCapacity(1024);
+        DekafPools.RatchetSerializationBucketCapacity(16384);
         var afterSame = DekafPools.SerializationBuffers;
-        await Assert.That(afterSame).IsSameReferenceAs(poolAt1024);
+        await Assert.That(afterSame).IsSameReferenceAs(poolAfter);
     }
 
     [Test]
     [NotInParallel("DekafPools")]
     public async Task SerializationBuffers_RatchetDown_DoesNotShrink()
     {
-        // First ratchet to a known high value to establish a baseline,
-        // then verify a smaller value does NOT replace the pool.
-        // This is order-independent: even if previous tests ratcheted higher,
-        // the "up" call ensures we capture the current pool reference.
-        DekafPools.RatchetSerializationBucketCapacity(1024);
+        // Uses values BELOW RatchetUp's range so this test works in any order.
+        // If RatchetUp already ran (pool at 16384), ratchet(4096) is a no-op — fine,
+        // we capture the current pool and verify ratchet(16) doesn't change it.
+        DekafPools.RatchetSerializationBucketCapacity(4096);
         var afterHigh = DekafPools.SerializationBuffers;
 
         DekafPools.RatchetSerializationBucketCapacity(16);
