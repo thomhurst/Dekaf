@@ -973,7 +973,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Yield records lazily from pending fetches
             System.Diagnostics.Activity? previousActivity = null;
-            HeaderSlice? previousHeaderSlice = null;
+            List<HeaderSlice>? headerSlicesForFetch = null;
             try
             {
                 // Hoist invariant boolean checks outside inner loops to avoid
@@ -1016,13 +1016,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             previousActivity?.Dispose();
                             previousActivity = null;
 
-                            // Return previous message's HeaderSlice to pool (safe: user code
-                            // has finished processing the previous message by the time we get here)
-                            if (previousHeaderSlice is not null)
-                            {
-                                HeaderSlice.Return(previousHeaderSlice);
-                                previousHeaderSlice = null;
-                            }
+                            // NOTE: HeaderSlice instances are NOT returned to the pool here.
+                            // They are accumulated per-fetch and returned at the fetch boundary
+                            // so that all ConsumeResult instances from the same fetch retain valid
+                            // header references even if the caller stores them in a collection.
 
                             var record = pending.CurrentRecord;
 
@@ -1033,16 +1030,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
 
                             // Zero-copy header access: wrap the existing header array in a
-                            // pooled HeaderSlice instead of copying. The slice is valid for this
-                            // consume iteration (the backing array lives until PendingFetchData
-                            // is disposed after all records are yielded). HeaderSlice instances
-                            // are pooled to eliminate per-message class allocation.
+                            // pooled HeaderSlice instead of copying. The slice is valid until
+                            // the fetch boundary — all slices from a single fetch are collected
+                            // and returned to the pool when the fetch is fully consumed, so
+                            // callers can safely store ConsumeResult objects in collections.
                             IReadOnlyList<Header>? headers = null;
                             if (record.Headers is not null && record.HeaderCount > 0)
                             {
                                 var slice = HeaderSlice.Rent(record.Headers, record.HeaderCount);
                                 headers = slice;
-                                previousHeaderSlice = slice;
+                                headerSlicesForFetch ??= new List<HeaderSlice>();
+                                headerSlicesForFetch.Add(slice);
                             }
 
                             var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
@@ -1118,11 +1116,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // propagate normally to the caller.
                             previousActivity?.Dispose();
                             previousActivity = null;
-                            if (previousHeaderSlice is not null)
-                            {
-                                HeaderSlice.Return(previousHeaderSlice);
-                                previousHeaderSlice = null;
-                            }
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                             break;
                         }
@@ -1134,13 +1127,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         yield return nextResult;
                     }
 
-                    // Dispose last activity and return last HeaderSlice from this pending fetch
+                    // Dispose last activity and return all HeaderSlices from this pending fetch.
+                    // All slices are returned together at the fetch boundary so that ConsumeResult
+                    // objects from this fetch retain valid header references throughout the
+                    // caller's iteration of this fetch's records.
                     previousActivity?.Dispose();
                     previousActivity = null;
-                    if (previousHeaderSlice is not null)
+                    if (headerSlicesForFetch is not null)
                     {
-                        HeaderSlice.Return(previousHeaderSlice);
-                        previousHeaderSlice = null;
+                        foreach (var slice in headerSlicesForFetch)
+                            HeaderSlice.Return(slice);
+                        headerSlicesForFetch.Clear();
                     }
 
                     // Batch-level fetch position update (once per partition-fetch, not per message).
@@ -1166,10 +1163,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             finally
             {
-                // Ensure activity is disposed and HeaderSlice is returned if caller breaks out early
+                // Ensure activity is disposed and all HeaderSlices are returned if caller breaks out early
                 previousActivity?.Dispose();
-                if (previousHeaderSlice is not null)
-                    HeaderSlice.Return(previousHeaderSlice);
+                if (headerSlicesForFetch is not null)
+                {
+                    foreach (var slice in headerSlicesForFetch)
+                        HeaderSlice.Return(slice);
+                }
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)

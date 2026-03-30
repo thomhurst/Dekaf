@@ -175,6 +175,19 @@ public class ConsumeResultTests
     {
         // This test documents why Return() must zero the slice and why ConsumeOneAsync
         // must materialize headers before breaking out of await foreach.
+
+        // Drain the pool first to ensure our Return+Rent cycle gets the same instance.
+        // The pool is static and shared across parallel tests, so other tests may have
+        // returned instances that would be popped before ours.
+        var drained = new List<HeaderSlice>();
+        var dummyHeaders = new Header[] { new("drain", Array.Empty<byte>()) };
+        for (var i = 0; i < 300; i++)
+        {
+            var drainSlice = HeaderSlice.Rent(dummyHeaders, 1);
+            drained.Add(drainSlice);
+        }
+        // Don't return drained instances — they are intentionally discarded to empty the pool.
+
         var headers1 = new Header[]
         {
             new("original-key", System.Text.Encoding.UTF8.GetBytes("original-value"))

@@ -230,7 +230,22 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
 
-        var watermarks = await consumer.QueryWatermarkOffsetsAsync(tp);
+        // Retry watermark query — NotLeaderOrFollower is transient after topic creation
+        // while partition leader election completes on the broker.
+        WatermarkOffsets watermarks = default;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                watermarks = await consumer.QueryWatermarkOffsetsAsync(tp);
+                break;
+            }
+            catch (InvalidOperationException) when (attempt < 4)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * (attempt + 1)));
+            }
+        }
+
         await Assert.That(watermarks.Low).IsEqualTo(0);
         await Assert.That(watermarks.High).IsEqualTo(0);
 
