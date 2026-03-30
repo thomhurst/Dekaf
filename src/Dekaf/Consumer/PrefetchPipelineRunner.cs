@@ -64,6 +64,23 @@ internal sealed class PrefetchPipelineRunner
     /// </summary>
     internal const int MaxConsecutiveErrors = 50;
 
+    /// <param name="ensureAssignment">Ensures a valid partition assignment before fetching.</param>
+    /// <param name="getAssignmentCount">Returns the current number of assigned partitions.</param>
+    /// <param name="getMaxBytes">Returns the maximum prefetch buffer size in bytes.</param>
+    /// <param name="getPrefetchedBytes">Returns the current prefetched byte count.</param>
+    /// <param name="prefetchRecords">
+    /// Executes a single prefetch round-trip. <b>Precondition:</b> this delegate must update
+    /// <c>_fetchPositions</c> synchronously (before yielding or returning) so that any
+    /// subsequent fetch reads fresh positions. The fast-drain loop and the one-eager-per-iteration
+    /// rule both depend on this contract — if positions are updated asynchronously after the
+    /// delegate completes, concurrent fetches will read stale positions and produce duplicate records.
+    /// </param>
+    /// <param name="waitForMemoryAvailable">Blocks until prefetch memory drops below the limit.</param>
+    /// <param name="logError">Logs a non-fatal fetch error.</param>
+    /// <param name="logMemoryLimitPaused">Logs when prefetch is paused due to memory pressure.</param>
+    /// <param name="channelWriter">Optional channel to complete on shutdown.</param>
+    /// <param name="pipelineDepth">Maximum number of concurrent fetches (1 synchronous + N-1 eager).</param>
+    /// <param name="onIterationComplete">Optional callback invoked with (inFlightCount, pipelineDepth) for testing.</param>
     public PrefetchPipelineRunner(
         Func<CancellationToken, ValueTask> ensureAssignment,
         Func<int> getAssignmentCount,
@@ -155,7 +172,8 @@ internal sealed class PrefetchPipelineRunner
                     // This accelerates pipeline warm-up and handles fast-completing fetches
                     // (e.g., empty responses when caught up to topic end).
                     currentPrefetchedBytes = _getPrefetchedBytes();
-                    if (_inFlightQueue.Count < _pipelineDepth - 1
+                    var maxInFlight = _pipelineDepth - 1;
+                    if (_inFlightQueue.Count < maxInFlight
                         && currentPrefetchedBytes < maxBytes
                         && !cancellationToken.IsCancellationRequested)
                     {
@@ -166,10 +184,11 @@ internal sealed class PrefetchPipelineRunner
                         // and start another. This keeps the pipeline full without waiting for
                         // the next iteration's loop overhead.
                         while (_inFlightQueue.Count > 0
-                               && _inFlightQueue.Count < _pipelineDepth - 1
+                               && _inFlightQueue.Count < maxInFlight
                                && _inFlightQueue.Peek().IsCompleted
                                && !cancellationToken.IsCancellationRequested)
                         {
+                            _onIterationComplete?.Invoke(_inFlightQueue.Count, _pipelineDepth);
                             await DrainOldestInFlightAsync().ConfigureAwait(false);
 
                             currentPrefetchedBytes = _getPrefetchedBytes();
