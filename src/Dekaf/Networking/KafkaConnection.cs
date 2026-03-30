@@ -792,7 +792,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 // so cross-thread returns are safe — but returning early keeps the buffer available
                 // for reuse sooner.
                 CopyPreSerializedToPipeWriter(serializedArray, serializedLength);
-                RentedBufferWriter.Pool.Return(serializedArray);
+                DekafPools.SerializationBuffers.Return(serializedArray);
                 arrayToReturn = null; // Already returned — prevent double-return in finally
 
                 await FlushPipeWriterAsync(correlationId, cancellationToken, callerOwnsTimeout)
@@ -806,7 +806,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             if (arrayToReturn is not null)
-                RentedBufferWriter.Pool.Return(arrayToReturn);
+                DekafPools.SerializationBuffers.Return(arrayToReturn);
         }
     }
 

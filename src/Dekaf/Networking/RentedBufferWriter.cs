@@ -21,14 +21,9 @@ namespace Dekaf.Networking;
 internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
 {
     /// <summary>
-    /// Dedicated pool for request serialization buffers. Shared across all connections.
-    /// <c>maxArrayLength: 4MB</c> covers ProduceRequests with default 1MB batch size plus
-    /// header overhead and multi-batch coalescing. <c>maxArraysPerBucket: 16</c> provides
-    /// sufficient depth for concurrent BrokerSender threads without excessive retention.
+    /// Dedicated pool for request serialization buffers. Delegates to <see cref="DekafPools.SerializationBuffers"/>.
     /// </summary>
-    internal static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(
-        maxArrayLength: 4 * 1024 * 1024,
-        maxArraysPerBucket: 16);
+    internal static ArrayPool<byte> Pool => DekafPools.SerializationBuffers;
 
     private byte[] _buffer;
     private int _written;

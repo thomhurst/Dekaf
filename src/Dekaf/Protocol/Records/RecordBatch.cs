@@ -32,10 +32,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     /// <summary>
     /// Shared dedicated pool for serialization buffers. Uses lock-based pooling (not TLS-based)
     /// to prevent WorkingSet growth when BrokerSender threads hop between thread pool threads.
-    /// Shared with <see cref="Dekaf.Networking.RentedBufferWriter"/> — both are used in the
-    /// producer serialization path on thread-hopping BrokerSender continuations.
     /// </summary>
-    internal static ArrayPool<byte> Pool => Networking.RentedBufferWriter.Pool;
+    internal static ArrayPool<byte> Pool => DekafPools.SerializationBuffers;
 
     private byte[] _buffer;
     private int _written;
