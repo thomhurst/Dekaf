@@ -88,8 +88,11 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
 
         if (_ownerPool.TryPop(out var owner))
         {
+            // Note: the decrement happens after the pop, so _ownerPoolCount can transiently
+            // overstate the actual number of pooled items. This is an acceptable approximation —
+            // the count is only used to bound pool growth, not for correctness.
             Interlocked.Decrement(ref _ownerPoolCount);
-            owner.Initialize(_pool, minBufferSize);
+            owner.Initialize(minBufferSize);
             return owner;
         }
 
@@ -111,6 +114,14 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         if (Interlocked.Increment(ref _ownerPoolCount) <= MaxOwnerPoolSize)
         {
             _ownerPool.Push(owner);
+
+            // Guard against dispose racing between the check above and the push.
+            // If Dispose() ran between our initial check and the Push, the drain loop
+            // in Dispose may have already completed — re-drain to avoid leaking the owner.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                while (_ownerPool.TryPop(out _)) { }
+            }
         }
         else
         {
@@ -140,23 +151,20 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     private sealed class PooledMemoryOwner : IMemoryOwner<byte>
     {
         private readonly PipeMemoryPool _parentPool;
-        private ArrayPool<byte> _pool;
         private byte[]? _array;
 
         public PooledMemoryOwner(PipeMemoryPool parentPool, ArrayPool<byte> pool, int minBufferSize)
         {
             _parentPool = parentPool;
-            _pool = pool;
             _array = pool.Rent(minBufferSize);
         }
 
         /// <summary>
         /// Re-initializes the owner for reuse after being returned to the wrapper pool.
         /// </summary>
-        public void Initialize(ArrayPool<byte> pool, int minBufferSize)
+        public void Initialize(int minBufferSize)
         {
-            _pool = pool;
-            _array = pool.Rent(minBufferSize);
+            _array = _parentPool._pool.Rent(minBufferSize);
         }
 
         public Memory<byte> Memory
@@ -174,7 +182,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
             var array = Interlocked.Exchange(ref _array, null);
             if (array is not null)
             {
-                _pool.Return(array);
+                _parentPool._pool.Return(array);
                 _parentPool.ReturnOwner(this);
             }
         }
