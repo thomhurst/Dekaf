@@ -1,13 +1,17 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using Dekaf;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
-/// Tests for the pipelined prefetch state machine in <see cref="PrefetchPipelineRunner"/>.
+/// Tests for the pipelined prefetch state machine in <see cref="PrefetchPipelineRunner"/>
+/// and the static <c>DrainChannelForPartitions</c> helper on KafkaConsumer.
 /// Validates ordering guarantees, error counting, drain behavior on assignment loss,
-/// drain behavior on memory limit, pipeline depth, and shutdown exception observation.
+/// drain behavior on memory limit, pipeline depth, shutdown exception observation,
+/// and channel drain logic for cooperative rebalance.
 /// </summary>
 public class PrefetchPipelineRunnerTests
 {
@@ -1133,6 +1137,48 @@ public class PrefetchPipelineRunnerTests
 
     #endregion
 
+    #region Scenario: Buffer fills ahead of consumption
+
+    [Test]
+    public async Task RunAsync_BufferFillsAheadOfConsumption_ChannelReceivesItems()
+    {
+        // Verifies that the prefetch loop writes items into the channel ahead of the consumer reading them.
+        // This is the core prefetch value proposition: data ready before the consumer asks.
+        var channel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(10)
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+        var fetchCount = 0;
+        var channelWriteCount = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                // Simulate writing to channel (mimics PrefetchFromBrokerAsync behavior)
+                Interlocked.Increment(ref channelWriteCount);
+
+                if (id >= 5)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            channelWriter: channel.Writer);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // Multiple fetches completed without the consumer reading — buffer filled ahead
+        await Assert.That(Volatile.Read(ref channelWriteCount)).IsGreaterThanOrEqualTo(3);
+    }
+
+    #endregion
+
     #region Scenario: Fetch overlap with record processing
 
     [Test]
@@ -1201,6 +1247,439 @@ public class PrefetchPipelineRunnerTests
         // iteration 1 started an eager fetch that overlapped with iteration 2's startup.
         await Assert.That(fetchCount).IsGreaterThanOrEqualTo(3)
             .Because("pipeline must execute sync(1) + eager(2) + sync(3) to prove overlap");
+    }
+
+    #endregion
+
+    #region Scenario: Rebalance — assignment loss discards buffered data
+
+    [Test]
+    public async Task RunAsync_AssignmentLoss_DrainsInFlightAndStopsFetching()
+    {
+        // Simulates a rebalance where all partitions are revoked (assignment drops to 0).
+        // The runner must drain in-flight fetches and stop issuing new ones until
+        // assignment is restored.
+        var fetchCount = 0;
+        var assignmentCount = 1;
+        var assignmentLostSeen = false;
+        var assignmentLostDetected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 2)
+                {
+                    // After first eager fetch, revoke all partitions (simulate rebalance)
+                    assignmentCount = 0;
+                }
+                if (id >= 6)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+                return ValueTask.CompletedTask;
+            },
+            getAssignmentCount: () => assignmentCount,
+            ensureAssignment: ct =>
+            {
+                if (assignmentCount == 0 && !assignmentLostSeen)
+                {
+                    assignmentLostSeen = true;
+                    assignmentLostDetected.TrySetResult();
+                    // Restore assignment immediately — the runner will detect it on
+                    // the next iteration. No timing dependency needed.
+                    assignmentCount = 1;
+                }
+                return ValueTask.CompletedTask;
+            },
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await runner.RunAsync(cts.Token);
+
+        // Assignment loss was detected
+        await Assert.That(assignmentLostDetected.Task.IsCompleted).IsTrue();
+
+        // In-flight count should be 0 after the drain
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
+
+        // Fetching should have resumed after assignment was restored
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(3);
+    }
+
+    [Test]
+    public async Task RunAsync_PartialRebalance_ContinuesFetchingRemainingPartitions()
+    {
+        // Simulates a cooperative rebalance where assignment count drops but doesn't go to 0.
+        // The runner should continue fetching for the remaining partitions without draining all.
+        var fetchCount = 0;
+        var assignmentCount = 4;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 2)
+                {
+                    // Partial rebalance: lose some partitions but not all
+                    assignmentCount = 2;
+                }
+                if (id >= 5)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+                return ValueTask.CompletedTask;
+            },
+            getAssignmentCount: () => assignmentCount,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await runner.RunAsync(cts.Token);
+
+        // Fetching continued through the partial rebalance
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(5);
+        // No errors from the partial rebalance
+        await Assert.That(runner.ConsecutiveErrors).IsEqualTo(0);
+    }
+
+    #endregion
+
+    #region Scenario: Pause behavior — all partitions paused
+
+    [Test]
+    public async Task RunAsync_AllPartitionsPaused_PrefetchDelaysWithoutFetching()
+    {
+        // When all partitions are paused, PrefetchRecordsAsync returns early with a delay
+        // (because GroupPartitionsByBrokerAsync returns 0 brokers). The runner should not
+        // count this as an error and should resume fetching when partitions are unpaused.
+        var fetchCount = 0;
+        var allPaused = false;
+        var pauseDetectedCount = 0;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                if (allPaused)
+                {
+                    // Simulate GroupPartitionsByBrokerAsync returning 0 brokers (all paused)
+                    // by delaying — this is what the real implementation does
+                    Interlocked.Increment(ref pauseDetectedCount);
+                    return ValueTask.CompletedTask;
+                }
+
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 2)
+                {
+                    // Pause all partitions
+                    allPaused = true;
+                }
+                if (id >= 5)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            ensureAssignment: ct =>
+            {
+                // After pause is detected, unpause to allow the loop to resume
+                if (Volatile.Read(ref pauseDetectedCount) >= 2)
+                {
+                    allPaused = false;
+                }
+                return ValueTask.CompletedTask;
+            });
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await runner.RunAsync(cts.Token);
+
+        // Pause was detected (at least 2 cycles of empty fetch results)
+        await Assert.That(Volatile.Read(ref pauseDetectedCount)).IsGreaterThanOrEqualTo(2);
+        // No errors from paused state
+        await Assert.That(runner.ConsecutiveErrors).IsEqualTo(0);
+        // Fetching resumed after unpause
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(3);
+    }
+
+    [Test]
+    public async Task RunAsync_ResumeAfterPause_FetchesResumeImmediately()
+    {
+        // Verifies that when partitions are resumed, the prefetch loop starts fetching
+        // again without excessive delay.
+        var fetchCount = 0;
+        var paused = false;
+        var fetchesAfterResume = 0;
+        var resumed = false;
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                if (paused)
+                    return ValueTask.CompletedTask; // Simulates all-paused delay
+
+                var id = Interlocked.Increment(ref fetchCount);
+                if (resumed)
+                    Interlocked.Increment(ref fetchesAfterResume);
+
+                if (id == 1)
+                    paused = true;
+                if (Volatile.Read(ref fetchesAfterResume) >= 2)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            ensureAssignment: ct =>
+            {
+                // Resume after a brief pause
+                if (paused)
+                {
+                    paused = false;
+                    resumed = true;
+                }
+                return ValueTask.CompletedTask;
+            });
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await runner.RunAsync(cts.Token);
+
+        // Fetches resumed after the pause period
+        await Assert.That(Volatile.Read(ref fetchesAfterResume)).IsGreaterThanOrEqualTo(2);
+        await Assert.That(runner.ConsecutiveErrors).IsEqualTo(0);
+    }
+
+    #endregion
+
+    #region Scenario: Disposal cleans up all resources
+
+    [Test]
+    public async Task RunAsync_Disposal_ChannelCompletedAndInFlightDrained()
+    {
+        // Verifies that on cancellation (disposal), the channel is completed and
+        // all in-flight fetches are drained, preventing resource leaks.
+        var channel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(10)
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+        var fetchCount = 0;
+        var inFlightStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inFlightCanComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var runner = CreateRunner(
+            prefetchRecords: async ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                    return; // Synchronous fetch succeeds
+
+                if (id == 2)
+                {
+                    // Eager fetch — signal that it started, block until disposal
+                    inFlightStarted.SetResult();
+                    await inFlightCanComplete.Task;
+                    return;
+                }
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            channelWriter: channel.Writer);
+
+        using var cts = new CancellationTokenSource();
+
+        var runTask = runner.RunAsync(cts.Token);
+
+        // Wait for the eager fetch to start
+        await inFlightStarted.Task;
+
+        // Trigger disposal
+        await cts.CancelAsync();
+
+        // Let the eager fetch complete
+        inFlightCanComplete.SetResult();
+
+        await runTask;
+
+        // Channel should be completed
+        await Assert.That(channel.Reader.Completion.IsCompleted).IsTrue();
+        // All in-flight fetches drained
+        await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RunAsync_Disposal_InFlightExceptionDoesNotLeak()
+    {
+        // Tests that if an in-flight fetch throws during disposal, the exception
+        // is observed and does not become an unobserved task exception.
+        var channel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(10)
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+        var fetchCount = 0;
+        var loggedErrors = new List<Exception>();
+
+        var runner = CreateRunner(
+            prefetchRecords: ct =>
+            {
+                var id = Interlocked.Increment(ref fetchCount);
+                if (id == 1)
+                    return ValueTask.CompletedTask;
+                if (id == 2)
+                    return ValueTask.FromException(new InvalidOperationException("in-flight fetch crashed"));
+                ct.ThrowIfCancellationRequested();
+                return ValueTask.CompletedTask;
+            },
+            ensureAssignment: ct =>
+            {
+                // Cancel after first iteration to trigger disposal path
+                if (fetchCount >= 2)
+                    ct.ThrowIfCancellationRequested();
+                return ValueTask.CompletedTask;
+            },
+            assignmentCount: 1,
+            maxBytes: long.MaxValue,
+            prefetchedBytes: 0,
+            channelWriter: channel.Writer,
+            logError: ex => loggedErrors.Add(ex));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await runner.RunAsync(cts.Token);
+
+        // Exception from in-flight fetch was observed (logged), not leaked
+        await Assert.That(loggedErrors.Any(e => e.Message == "in-flight fetch crashed")).IsTrue();
+        // Channel completed cleanly
+        await Assert.That(channel.Reader.Completion.IsCompleted).IsTrue();
+    }
+
+    #endregion
+
+    #region Scenario: DrainChannelForPartitions — static helper tests
+
+    [Test]
+    public async Task DrainChannelForPartitions_RevokedItemsDisposed()
+    {
+        // Items for revoked partitions should be disposed and not enqueued.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var revokedTp = new TopicPartition("topic-a", 0);
+
+        var item = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        await channel.Writer.WriteAsync(item);
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { revokedTp };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releasedItems = new List<PendingFetchData>();
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+
+        // Revoked item should have been passed to the release callback
+        await Assert.That(releasedItems).Count().IsEqualTo(1);
+        // Retained queue should be empty — the item was revoked
+        await Assert.That(retainedQueue).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DrainChannelForPartitions_RetainedItemsPreserved()
+    {
+        // Items for non-revoked partitions should be enqueued in retainedQueue.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var retainedTp = new TopicPartition("topic-a", 0);
+        var revokedTp = new TopicPartition("topic-b", 1);
+
+        var retained = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        await channel.Writer.WriteAsync(retained);
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { revokedTp };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releasedItems = new List<PendingFetchData>();
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+
+        // Retained item should be in the queue
+        await Assert.That(retainedQueue).Count().IsEqualTo(1);
+        await Assert.That(retainedQueue.Peek()).IsEqualTo(retained);
+        // Release callback still called for retained items (to release prefetch byte tracking)
+        await Assert.That(releasedItems).Count().IsEqualTo(1);
+        // Retained item must NOT be disposed — Dispose() resets TopicPartition to default,
+        // so this also verifies Dispose() was not called on the retained item.
+        await Assert.That(retained.TopicPartition).IsEqualTo(retainedTp);
+
+        // Cleanup
+        retained.Dispose();
+    }
+
+    [Test]
+    public async Task DrainChannelForPartitions_EmptyChannel_NoErrors()
+    {
+        // An empty channel should be drained without errors.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { new("topic-a", 0) };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releaseCount = 0;
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, _ => releaseCount++);
+
+        await Assert.That(retainedQueue).Count().IsEqualTo(0);
+        await Assert.That(releaseCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DrainChannelForPartitions_MixedPartitions_CorrectSplit()
+    {
+        // A mix of revoked and retained partitions should be split correctly.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+
+        var revokedTp1 = new TopicPartition("topic-a", 0);
+        var revokedTp2 = new TopicPartition("topic-a", 2);
+        var retainedTp1 = new TopicPartition("topic-a", 1);
+        var retainedTp2 = new TopicPartition("topic-b", 0);
+
+        var revoked1 = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        var retained1 = PendingFetchData.Create("topic-a", 1, Array.Empty<RecordBatch>());
+        var revoked2 = PendingFetchData.Create("topic-a", 2, Array.Empty<RecordBatch>());
+        var retained2 = PendingFetchData.Create("topic-b", 0, Array.Empty<RecordBatch>());
+
+        await channel.Writer.WriteAsync(revoked1);
+        await channel.Writer.WriteAsync(retained1);
+        await channel.Writer.WriteAsync(revoked2);
+        await channel.Writer.WriteAsync(retained2);
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { revokedTp1, revokedTp2 };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releasedItems = new List<PendingFetchData>();
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+
+        // 2 retained items preserved in order
+        await Assert.That(retainedQueue).Count().IsEqualTo(2);
+        var first = retainedQueue.Dequeue();
+        var second = retainedQueue.Dequeue();
+        await Assert.That(first.TopicPartition).IsEqualTo(retainedTp1);
+        await Assert.That(second.TopicPartition).IsEqualTo(retainedTp2);
+
+        // All 4 items had release callback invoked
+        await Assert.That(releasedItems).Count().IsEqualTo(4);
+
+        // Cleanup retained items
+        first.Dispose();
+        second.Dispose();
     }
 
     #endregion

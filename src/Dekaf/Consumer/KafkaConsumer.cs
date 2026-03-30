@@ -1850,6 +1850,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Without this, stale data from old partitions would surface after reassignment.
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
+            TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
         // Clear pending EOF events as they are stale after buffer clear
@@ -1885,6 +1886,56 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Dispose removed items to release pooled memory
                 pending.Dispose();
+            }
+        }
+
+        // Also drain prefetch channel items for revoked partitions.
+        // Without this, stale data from revoked partitions sitting in the prefetch
+        // channel would be consumed after an incremental unassign (cooperative rebalance),
+        // causing data for partitions no longer owned by this consumer to be yielded.
+        DrainPrefetchChannelForPartitions(removeSet);
+    }
+
+    private void DrainPrefetchChannelForPartitions(HashSet<TopicPartition> partitionsToRemove)
+    {
+        DrainChannelForPartitions(
+            _prefetchChannel.Reader,
+            partitionsToRemove,
+            _pendingFetches,
+            pending => TrackPrefetchedBytes(pending, release: true));
+    }
+
+    /// <summary>
+    /// Drains a prefetch channel, disposing items whose partition is in <paramref name="partitionsToRemove"/>
+    /// and enqueuing retained items into <paramref name="retainedQueue"/>.
+    /// </summary>
+    /// <remarks>
+    /// O(n) over prefetch channel items — acceptable because rebalance is infrequent (not hot path).
+    /// Items for retained partitions move to <paramref name="retainedQueue"/>; revoked items are disposed.
+    /// Retained items are appended after existing queue items. This is acceptable
+    /// because Kafka consumption is sequential per partition and cross-partition ordering is
+    /// not guaranteed — so the relative order between partitions does not matter.
+    /// </remarks>
+    internal static void DrainChannelForPartitions(
+        ChannelReader<PendingFetchData> channelReader,
+        HashSet<TopicPartition> partitionsToRemove,
+        Queue<PendingFetchData> retainedQueue,
+        Action<PendingFetchData> onItemRemoved)
+    {
+        while (channelReader.TryRead(out var prefetched))
+        {
+            if (partitionsToRemove.Contains(prefetched.TopicPartition))
+            {
+                onItemRemoved(prefetched);
+                prefetched.Dispose();
+            }
+            else
+            {
+                // Retained items are appended after existing queue items. This is safe because
+                // fetch positions are tracked independently (_fetchPositions), not inferred from
+                // queue order — so interleaving with existing _pendingFetches items is harmless.
+                retainedQueue.Enqueue(prefetched);
+                onItemRemoved(prefetched);
             }
         }
     }
@@ -3340,6 +3391,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
+            TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
 
@@ -3546,6 +3598,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Drain and dispose prefetch channel items
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
+            TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
 
