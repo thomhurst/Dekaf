@@ -140,12 +140,13 @@ def format_gc_table(results, title="GC Statistics"):
     lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
     lines.append("|--------|----------|------|------|------|-----------------|")
 
-    for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
+    for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''), x.get('brokerCount', 1))):
         client = r.get('client', 'Unknown')
-        scenario = r.get('scenario', 'Unknown')
+        scenario_key = (r.get('scenario', 'Unknown'), r.get('brokerCount', 1))
+        label = scenario_title(scenario_key)
         gc = r.get('gcStats', {})
         alloc_str = format_bytes(gc.get('allocatedBytes', 0))
-        lines.append(f"| {client} | {scenario} | {gc.get('gen0Collections', 0)} | {gc.get('gen1Collections', 0)} | {gc.get('gen2Collections', 0)} | {alloc_str} |")
+        lines.append(f"| {client} | {label} | {gc.get('gen0Collections', 0)} | {gc.get('gen1Collections', 0)} | {gc.get('gen2Collections', 0)} | {alloc_str} |")
 
     lines.append("")
     return lines
