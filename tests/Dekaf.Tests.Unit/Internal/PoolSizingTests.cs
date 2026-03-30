@@ -198,6 +198,7 @@ public class PoolSizingTests
     }
 
     [Test]
+    [NotInParallel("ProducerDataPool")]
     public async Task RatchetBucketCapacity_SameOrSmallerSize_DoesNotReplacePool()
     {
         // Ratchet up to 48 (3 brokers)

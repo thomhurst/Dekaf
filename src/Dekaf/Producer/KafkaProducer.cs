@@ -40,7 +40,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
     private readonly IPartitioner _partitioner;
-    private readonly IConnectionPool _connectionPool;
+    private readonly ConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly CompressionCodecRegistry _compressionCodecs;
@@ -231,13 +231,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // The ratchet pattern ensures pools only grow, never shrink.
         var connectionsPerBroker = options.ConnectionsPerBroker;
         var maxInFlight = options.MaxInFlightRequestsPerConnection;
-        var connectionPool = (ConnectionPool)_connectionPool;
         _metadataManager.OnBrokerCountDiscovered = brokerCount =>
         {
             var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight);
             ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
-            connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
+            _connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
         };
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);
