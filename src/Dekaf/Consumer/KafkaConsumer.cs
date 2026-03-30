@@ -1898,22 +1898,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private void DrainPrefetchChannelForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
-        // O(n) over prefetch channel items — acceptable because rebalance is infrequent (not hot path).
-        // Items for retained partitions move to _pendingFetches; revoked items are disposed.
-        // Retained items are appended after existing _pendingFetches items. This is acceptable
-        // because Kafka consumption is sequential per partition and cross-partition ordering is
-        // not guaranteed — so the relative order between partitions does not matter.
-        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        DrainChannelForPartitions(
+            _prefetchChannel.Reader,
+            partitionsToRemove,
+            _pendingFetches,
+            pending => TrackPrefetchedBytes(pending, release: true));
+    }
+
+    /// <summary>
+    /// Drains a prefetch channel, disposing items whose partition is in <paramref name="partitionsToRemove"/>
+    /// and enqueuing retained items into <paramref name="retainedQueue"/>.
+    /// </summary>
+    /// <remarks>
+    /// O(n) over prefetch channel items — acceptable because rebalance is infrequent (not hot path).
+    /// Items for retained partitions move to <paramref name="retainedQueue"/>; revoked items are disposed.
+    /// Retained items are appended after existing queue items. This is acceptable
+    /// because Kafka consumption is sequential per partition and cross-partition ordering is
+    /// not guaranteed — so the relative order between partitions does not matter.
+    /// </remarks>
+    internal static void DrainChannelForPartitions(
+        ChannelReader<PendingFetchData> channelReader,
+        HashSet<TopicPartition> partitionsToRemove,
+        Queue<PendingFetchData> retainedQueue,
+        Action<PendingFetchData> onReleasePrefetchBytes)
+    {
+        while (channelReader.TryRead(out var prefetched))
         {
             if (partitionsToRemove.Contains(prefetched.TopicPartition))
             {
-                TrackPrefetchedBytes(prefetched, release: true);
+                onReleasePrefetchBytes(prefetched);
                 prefetched.Dispose();
             }
             else
             {
-                _pendingFetches.Enqueue(prefetched);
-                TrackPrefetchedBytes(prefetched, release: true);
+                retainedQueue.Enqueue(prefetched);
+                onReleasePrefetchBytes(prefetched);
             }
         }
     }

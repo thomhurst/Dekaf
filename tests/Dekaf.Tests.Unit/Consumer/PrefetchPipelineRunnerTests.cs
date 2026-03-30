@@ -1,22 +1,18 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using Dekaf;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
-/// Tests for the pipelined prefetch state machine in <see cref="PrefetchPipelineRunner"/>.
+/// Tests for the pipelined prefetch state machine in <see cref="PrefetchPipelineRunner"/>
+/// and the static <c>DrainChannelForPartitions</c> helper on KafkaConsumer.
 /// Validates ordering guarantees, error counting, drain behavior on assignment loss,
-/// drain behavior on memory limit, pipeline depth, and shutdown exception observation.
+/// drain behavior on memory limit, pipeline depth, shutdown exception observation,
+/// and channel drain logic for cooperative rebalance.
 /// </summary>
-/// <remarks>
-/// NOTE: These tests cover PrefetchPipelineRunner behavior only. The
-/// <c>DrainPrefetchChannelForPartitions</c> method on KafkaConsumer (which drains
-/// the prefetch channel during incremental unassign / cooperative rebalance) is not
-/// covered here because it is a private method on KafkaConsumer and constructing a
-/// KafkaConsumer in a unit test is impractical. Integration tests with a real Kafka
-/// broker are needed to verify the drain-on-rebalance behavior end-to-end.
-/// </remarks>
 public class PrefetchPipelineRunnerTests
 {
     #region Scenario 1: Eager fetch is awaited before the next synchronous fetch (ordering guarantee)
@@ -1266,8 +1262,7 @@ public class PrefetchPipelineRunnerTests
         var fetchCount = 0;
         var assignmentCount = 1;
         var assignmentLostSeen = false;
-        var fetchAfterLoss = 0;
-        var assignmentRestoredReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var assignmentLostDetected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -1277,10 +1272,6 @@ public class PrefetchPipelineRunnerTests
                 {
                     // After first eager fetch, revoke all partitions (simulate rebalance)
                     assignmentCount = 0;
-                }
-                if (assignmentLostSeen)
-                {
-                    Interlocked.Increment(ref fetchAfterLoss);
                 }
                 if (id >= 6)
                 {
@@ -1294,13 +1285,10 @@ public class PrefetchPipelineRunnerTests
                 if (assignmentCount == 0 && !assignmentLostSeen)
                 {
                     assignmentLostSeen = true;
-                    // Restore assignment after a cycle to verify fetching resumes
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(200, CancellationToken.None);
-                        assignmentCount = 1;
-                        assignmentRestoredReady.TrySetResult();
-                    }, CancellationToken.None);
+                    assignmentLostDetected.TrySetResult();
+                    // Restore assignment immediately — the runner will detect it on
+                    // the next iteration. No timing dependency needed.
+                    assignmentCount = 1;
                 }
                 return ValueTask.CompletedTask;
             },
@@ -1309,6 +1297,9 @@ public class PrefetchPipelineRunnerTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await runner.RunAsync(cts.Token);
+
+        // Assignment loss was detected
+        await Assert.That(assignmentLostDetected.Task.IsCompleted).IsTrue();
 
         // In-flight count should be 0 after the drain
         await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
@@ -1567,6 +1558,125 @@ public class PrefetchPipelineRunnerTests
         await Assert.That(loggedErrors.Any(e => e.Message == "in-flight fetch crashed")).IsTrue();
         // Channel completed cleanly
         await Assert.That(channel.Reader.Completion.IsCompleted).IsTrue();
+    }
+
+    #endregion
+
+    #region Scenario: DrainChannelForPartitions — static helper tests
+
+    [Test]
+    public async Task DrainChannelForPartitions_RevokedItemsDisposed()
+    {
+        // Items for revoked partitions should be disposed and not enqueued.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var revokedTp = new TopicPartition("topic-a", 0);
+
+        var item = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        await channel.Writer.WriteAsync(item);
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { revokedTp };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releasedItems = new List<PendingFetchData>();
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+
+        // Revoked item should have been passed to the release callback
+        await Assert.That(releasedItems).Count().IsEqualTo(1);
+        // Retained queue should be empty — the item was revoked
+        await Assert.That(retainedQueue).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DrainChannelForPartitions_RetainedItemsPreserved()
+    {
+        // Items for non-revoked partitions should be enqueued in retainedQueue.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var retainedTp = new TopicPartition("topic-a", 0);
+        var revokedTp = new TopicPartition("topic-b", 1);
+
+        var retained = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        await channel.Writer.WriteAsync(retained);
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { revokedTp };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releasedItems = new List<PendingFetchData>();
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+
+        // Retained item should be in the queue
+        await Assert.That(retainedQueue).Count().IsEqualTo(1);
+        await Assert.That(retainedQueue.Peek()).IsEqualTo(retained);
+        // Release callback still called for retained items (to release prefetch byte tracking)
+        await Assert.That(releasedItems).Count().IsEqualTo(1);
+
+        // Cleanup
+        retained.Dispose();
+    }
+
+    [Test]
+    public async Task DrainChannelForPartitions_EmptyChannel_NoErrors()
+    {
+        // An empty channel should be drained without errors.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { new("topic-a", 0) };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releaseCount = 0;
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, _ => releaseCount++);
+
+        await Assert.That(retainedQueue).Count().IsEqualTo(0);
+        await Assert.That(releaseCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DrainChannelForPartitions_MixedPartitions_CorrectSplit()
+    {
+        // A mix of revoked and retained partitions should be split correctly.
+        var channel = Channel.CreateUnbounded<PendingFetchData>();
+
+        var revokedTp1 = new TopicPartition("topic-a", 0);
+        var revokedTp2 = new TopicPartition("topic-a", 2);
+        var retainedTp1 = new TopicPartition("topic-a", 1);
+        var retainedTp2 = new TopicPartition("topic-b", 0);
+
+        var revoked1 = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        var retained1 = PendingFetchData.Create("topic-a", 1, Array.Empty<RecordBatch>());
+        var revoked2 = PendingFetchData.Create("topic-a", 2, Array.Empty<RecordBatch>());
+        var retained2 = PendingFetchData.Create("topic-b", 0, Array.Empty<RecordBatch>());
+
+        await channel.Writer.WriteAsync(revoked1);
+        await channel.Writer.WriteAsync(retained1);
+        await channel.Writer.WriteAsync(revoked2);
+        await channel.Writer.WriteAsync(retained2);
+        channel.Writer.Complete();
+
+        var removeSet = new HashSet<TopicPartition> { revokedTp1, revokedTp2 };
+        var retainedQueue = new Queue<PendingFetchData>();
+        var releasedItems = new List<PendingFetchData>();
+
+        KafkaConsumer<string, string>.DrainChannelForPartitions(
+            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+
+        // 2 retained items preserved in order
+        await Assert.That(retainedQueue).Count().IsEqualTo(2);
+        var first = retainedQueue.Dequeue();
+        var second = retainedQueue.Dequeue();
+        await Assert.That(first.TopicPartition).IsEqualTo(retainedTp1);
+        await Assert.That(second.TopicPartition).IsEqualTo(retainedTp2);
+
+        // All 4 items had release callback invoked
+        await Assert.That(releasedItems).Count().IsEqualTo(4);
+
+        // Cleanup retained items
+        first.Dispose();
+        second.Dispose();
     }
 
     #endregion
