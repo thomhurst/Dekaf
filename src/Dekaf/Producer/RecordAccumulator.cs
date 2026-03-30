@@ -241,7 +241,7 @@ internal static class ProducerDataPool
             Volatile.Write(ref s_bytePool, ArrayPool<byte>.Create(
                 maxArrayLength: 4 * 1024 * 1024,
                 maxArraysPerBucket: arraysPerBucket));
-            s_currentArraysPerBucket = arraysPerBucket;
+            Volatile.Write(ref s_currentArraysPerBucket, arraysPerBucket);
         }
     }
 }

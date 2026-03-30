@@ -146,7 +146,7 @@ public sealed partial class ConnectionPool : IConnectionPool
                 return;
 
             Volatile.Write(ref _sharedPipeMemoryPool, new PipeMemoryPool(maxArraysPerBucket: bucketCapacity));
-            _currentPipeMemoryBucketCapacity = bucketCapacity;
+            Volatile.Write(ref _currentPipeMemoryBucketCapacity, bucketCapacity);
         }
     }
 
