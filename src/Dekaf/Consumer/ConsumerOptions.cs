@@ -324,6 +324,20 @@ public sealed class ConsumerOptions
     private readonly int _maxConnectionsPerBroker = 4;
 
     /// <summary>
+    /// Whether to enable adaptive fetch sizing based on consumer throughput.
+    /// When enabled, the consumer automatically adjusts <see cref="MaxPartitionFetchBytes"/>
+    /// and <see cref="FetchMaxBytes"/> based on the ratio of processing time to fetch latency.
+    /// Default is false.
+    /// </summary>
+    public bool EnableAdaptiveFetchSizing { get; init; }
+
+    /// <summary>
+    /// Configuration for adaptive fetch sizing. Only used when <see cref="EnableAdaptiveFetchSizing"/>
+    /// is true. When null and adaptive sizing is enabled, sensible defaults are used.
+    /// </summary>
+    public AdaptiveFetchSizingOptions? AdaptiveFetchSizingOptions { get; init; }
+
+    /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
     /// Interceptors are called on consume (OnConsume) and on commit (OnCommit).
     /// Interceptor exceptions are caught and logged, not propagated.
