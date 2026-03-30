@@ -23,7 +23,9 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Bucket capacity is scaled by <c>_connectionsPerBroker</c> to prevent pool saturation
     /// under high concurrent load (capped at 256 to bound memory).
     /// </summary>
-    private readonly PipeMemoryPool? _sharedPipeMemoryPool;
+    private PipeMemoryPool? _sharedPipeMemoryPool;
+    private int _currentPipeMemoryBucketCapacity;
+    private readonly Lock _pipeMemoryRatchetLock = new();
 
     /// <summary>
     /// Optional factory for creating connections, used by tests to inject fakes.
@@ -96,6 +98,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _responseBufferPool = responseBufferPool;
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
+        _currentPipeMemoryBucketCapacity = bucketCapacity;
     }
 
     /// <summary>
@@ -126,6 +129,26 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// </summary>
     private static int ScaledBucketCapacity(int connectionsPerBroker)
         => Math.Min(connectionsPerBroker * 32, 256);
+
+    /// <summary>
+    /// Increases the shared PipeMemoryPool bucket capacity if <paramref name="bucketCapacity"/>
+    /// exceeds the current value. New connections will use the larger pool; existing connections
+    /// continue using the previous pool until they are recycled.
+    /// </summary>
+    internal void RatchetPipeMemoryBucketCapacity(int bucketCapacity)
+    {
+        if (bucketCapacity <= Volatile.Read(ref _currentPipeMemoryBucketCapacity))
+            return;
+
+        lock (_pipeMemoryRatchetLock)
+        {
+            if (bucketCapacity <= _currentPipeMemoryBucketCapacity)
+                return;
+
+            Volatile.Write(ref _sharedPipeMemoryPool, new PipeMemoryPool(maxArraysPerBucket: bucketCapacity));
+            _currentPipeMemoryBucketCapacity = bucketCapacity;
+        }
+    }
 
     public void RegisterBroker(int brokerId, string host, int port)
     {
