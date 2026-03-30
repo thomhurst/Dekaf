@@ -324,7 +324,7 @@ public sealed class ConsumerExtensionsTests
                 valueData: default,
                 isValueNull: true,
                 headers: null,
-                timestamp: default,
+                timestampMs: 0,
                 timestampType: TimestampType.NotAvailable,
                 leaderEpoch: null,
                 keyDeserializer: null,

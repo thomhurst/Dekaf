@@ -148,7 +148,7 @@ public class KafkaConsumerServiceDlqTests
             valueData: default,
             isValueNull: true,
             headers: headers,
-            timestamp: DateTimeOffset.UtcNow,
+            timestampMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             timestampType: TimestampType.CreateTime,
             leaderEpoch: null,
             keyDeserializer: null,

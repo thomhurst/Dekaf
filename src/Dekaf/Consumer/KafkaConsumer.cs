@@ -1021,19 +1021,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // in MoveNext) to avoid per-message property access overhead on
                             // RecordBatch (Volatile.Read + disposed check per access).
                             var offset = pending.CurrentBaseOffset + record.OffsetDelta;
-                            var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                                pending.CurrentBaseTimestamp + record.TimestampDelta);
+                            var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
 
-                            // Zero-copy header access: wrap the existing header array in a
-                            // HeaderSlice instead of copying. The slice is valid for this
-                            // consume iteration (the backing array lives until PendingFetchData
-                            // is disposed after all records are yielded). A fresh HeaderSlice
-                            // is allocated per message with headers (tiny: two fields) while
-                            // the expensive per-message Header[] copy is eliminated.
+                            // Create a standalone header array snapshot. Previous attempts used
+                            // pooled HeaderSlice instances to avoid per-message allocation, but
+                            // this created a use-after-free hazard: callers who store ConsumeResult
+                            // objects in a collection and access headers after the await foreach
+                            // loop exits would find zeroed-out headers because the pool reclaims
+                            // slices when the enumerator is disposed. A small per-message Header[]
+                            // copy (typically 1-3 headers = ~48-144 bytes) is the correct trade-off
+                            // for correctness. The Header struct itself is cheap to copy (string ref
+                            // + ReadOnlyMemory<byte> ref + bool).
                             IReadOnlyList<Header>? headers = null;
                             if (record.Headers is not null && record.HeaderCount > 0)
                             {
-                                headers = new HeaderSlice(record.Headers, record.HeaderCount);
+                                headers = record.Headers[..record.HeaderCount];
                             }
 
                             var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
@@ -1064,7 +1066,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 valueData: record.Value,
                                 isValueNull: record.IsValueNull,
                                 headers: headers,
-                                timestamp: timestamp,
+                                timestampMs: timestampMs,
                                 timestampType: timestampType,
                                 leaderEpoch: null,
                                 keyDeserializer: _keyDeserializer,

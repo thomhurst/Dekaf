@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -16,7 +17,7 @@ public class ConsumeResultTests
             valueData: default,
             isValueNull: true,
             headers: null,
-            timestamp: default,
+            timestampMs: 0,
             timestampType: TimestampType.NotAvailable,
             leaderEpoch: null,
             keyDeserializer: null,
@@ -37,7 +38,7 @@ public class ConsumeResultTests
             valueData: default,
             isValueNull: true,
             headers: null,
-            timestamp: default,
+            timestampMs: 0,
             timestampType: TimestampType.NotAvailable,
             leaderEpoch: null,
             keyDeserializer: null,
@@ -80,4 +81,54 @@ public class ConsumeResultTests
         // but for the string deserializer returning null for empty is expected
         await Assert.That(result.IsPartitionEof).IsTrue();
     }
+
+    [Test]
+    public async Task Timestamp_ComputedLazilyFromTimestampMs()
+    {
+        // Specific Unix timestamp: 2024-01-15T12:30:00Z = 1705318200000 ms
+        const long timestampMs = 1705318200000;
+        var expected = DateTimeOffset.FromUnixTimeMilliseconds(timestampMs);
+
+        var result = new ConsumeResult<string, string>(
+            topic: "test-topic",
+            partition: 0,
+            offset: 0,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            timestampMs: timestampMs,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null);
+
+        await Assert.That(result.TimestampMs).IsEqualTo(timestampMs);
+        await Assert.That(result.Timestamp).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task TimestampMs_ReturnsRawUnixMilliseconds()
+    {
+        const long timestampMs = 1705318200000;
+
+        var result = new ConsumeResult<string, string>(
+            topic: "test-topic",
+            partition: 0,
+            offset: 0,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            timestampMs: timestampMs,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null);
+
+        await Assert.That(result.TimestampMs).IsEqualTo(timestampMs);
+    }
+
 }
