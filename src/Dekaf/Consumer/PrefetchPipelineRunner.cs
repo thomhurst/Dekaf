@@ -9,15 +9,30 @@ namespace Dekaf.Consumer;
 /// The runner manages in-flight prefetch tasks and the interaction between
 /// assignment checks, memory limits, fetch execution, and error handling.
 ///
-/// <para>The pipeline depth controls how many concurrent in-flight fetch requests
-/// are allowed. With depth 1, no eager fetches are started (same as synchronous-only).
-/// With depth 2, one eager fetch overlaps with loop overhead and the next synchronous
-/// fetch. With depth 3 (the default), two eager fetches overlap with processing, keeping
+/// <para>The pipeline uses a drain-fetch-fill pattern per iteration:
+/// <list type="number">
+///   <item>Drain the oldest in-flight fetch (its network round-trip overlapped with the
+///   previous iteration's fetch and the loop overhead).</item>
+///   <item>Execute a synchronous fetch that delivers data and updates positions.</item>
+///   <item>Start one eager fetch in the background, up to <c>pipelineDepth - 1</c> in-flight.</item>
+/// </list>
+/// This keeps the network saturated: while the synchronous fetch blocks, the eager fetch
+/// from the previous iteration's step 3 is completing in the background. When the sync
+/// fetch finishes, a new eager fetch starts immediately, overlapping with the consume
+/// loop's record processing.</para>
+///
+/// <para>With depth 1, fetches are purely sequential (no eager pipelining).
+/// With depth 2, one eager fetch overlaps with the synchronous fetch.
+/// With depth 3 (the default), two eager fetches can overlap with processing, keeping
 /// the network saturated even when individual fetches stall briefly.
 /// Higher depths (up to 8) allow more overlapping fetches for improved throughput.
 /// Each in-flight fetch registers its own <c>CancellationTokenSource</c> in
 /// <c>KafkaConsumer._activeWakeupSources</c>, so <c>Wakeup()</c> correctly cancels
 /// all concurrent fetches regardless of pipeline depth.</para>
+///
+/// <para><b>Position safety:</b> Only one eager fetch is started per iteration to prevent
+/// reading stale <c>_fetchPositions</c>. Each fetch updates positions inside its task
+/// before completing, so the next iteration's drain reads fresh positions. See PR #648.</para>
 /// </summary>
 internal sealed class PrefetchPipelineRunner
 {
@@ -49,6 +64,23 @@ internal sealed class PrefetchPipelineRunner
     /// </summary>
     internal const int MaxConsecutiveErrors = 50;
 
+    /// <param name="ensureAssignment">Ensures a valid partition assignment before fetching.</param>
+    /// <param name="getAssignmentCount">Returns the current number of assigned partitions.</param>
+    /// <param name="getMaxBytes">Returns the maximum prefetch buffer size in bytes.</param>
+    /// <param name="getPrefetchedBytes">Returns the current prefetched byte count.</param>
+    /// <param name="prefetchRecords">
+    /// Executes a single prefetch round-trip. <b>Precondition:</b> this delegate must update
+    /// <c>_fetchPositions</c> synchronously (before yielding or returning) so that any
+    /// subsequent fetch reads fresh positions. The fast-drain loop and the one-eager-per-iteration
+    /// rule both depend on this contract — if positions are updated asynchronously after the
+    /// delegate completes, concurrent fetches will read stale positions and produce duplicate records.
+    /// </param>
+    /// <param name="waitForMemoryAvailable">Blocks until prefetch memory drops below the limit.</param>
+    /// <param name="logError">Logs a non-fatal fetch error.</param>
+    /// <param name="logMemoryLimitPaused">Logs when prefetch is paused due to memory pressure.</param>
+    /// <param name="channelWriter">Optional channel to complete on shutdown.</param>
+    /// <param name="pipelineDepth">Maximum number of concurrent fetches (1 synchronous + N-1 eager).</param>
+    /// <param name="onIterationComplete">Optional callback invoked with (inFlightCount, pipelineDepth) for testing.</param>
     public PrefetchPipelineRunner(
         Func<CancellationToken, ValueTask> ensureAssignment,
         Func<int> getAssignmentCount,
@@ -114,8 +146,10 @@ internal sealed class PrefetchPipelineRunner
                         continue;
                     }
 
-                    // If we have in-flight fetches from the previous iteration, await the oldest one.
-                    // Its network round-trip overlapped with the loop overhead above.
+                    // If we have in-flight fetches from a previous iteration, drain the oldest.
+                    // Its network round-trip overlapped with the loop overhead above
+                    // (ensureAssignment, memory check) and the synchronous fetch of the
+                    // previous iteration.
                     if (_inFlightQueue.Count > 0)
                     {
                         await DrainOldestInFlightAsync().ConfigureAwait(false);
@@ -126,18 +160,43 @@ internal sealed class PrefetchPipelineRunner
                             continue;
                     }
 
-                    // Fetch records into prefetch channel (synchronous call)
+                    // Fetch records into prefetch channel (synchronous call).
+                    // This is the primary fetch that delivers data immediately.
                     await _prefetchRecords(cancellationToken).ConfigureAwait(false);
                     ConsecutiveErrors = 0; // Reset on success
 
-                    // Pipeline: eagerly start ONE more fetch if memory allows and pipeline has capacity.
-                    // Only one per iteration to avoid reading stale _fetchPositions (see PR #648).
+                    // Pipeline: eagerly start fetches to fill the pipeline, respecting position safety.
+                    // Only one NEW fetch per iteration to avoid reading stale _fetchPositions.
+                    // However, if a previously queued fetch has already completed (its task is done),
+                    // it has already updated positions, so we can safely drain it and start another.
+                    // This accelerates pipeline warm-up and handles fast-completing fetches
+                    // (e.g., empty responses when caught up to topic end).
                     currentPrefetchedBytes = _getPrefetchedBytes();
-                    if (_inFlightQueue.Count < _pipelineDepth - 1
+                    var maxInFlight = _pipelineDepth - 1;
+                    if (_inFlightQueue.Count < maxInFlight
                         && currentPrefetchedBytes < maxBytes
                         && !cancellationToken.IsCancellationRequested)
                     {
                         _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
+
+                        // Fast-drain completed fetches and refill: if the oldest in-flight fetch
+                        // already completed (e.g., fast empty response), drain it immediately
+                        // and start another. This keeps the pipeline full without waiting for
+                        // the next iteration's loop overhead.
+                        while (_inFlightQueue.Count > 0
+                               && _inFlightQueue.Count < maxInFlight
+                               && _inFlightQueue.Peek().IsCompleted
+                               && !cancellationToken.IsCancellationRequested)
+                        {
+                            _onIterationComplete?.Invoke(_inFlightQueue.Count, _pipelineDepth);
+                            await DrainOldestInFlightAsync().ConfigureAwait(false);
+
+                            currentPrefetchedBytes = _getPrefetchedBytes();
+                            if (currentPrefetchedBytes >= maxBytes)
+                                break;
+
+                            _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
+                        }
                     }
 
                     _onIterationComplete?.Invoke(_inFlightQueue.Count, _pipelineDepth);
