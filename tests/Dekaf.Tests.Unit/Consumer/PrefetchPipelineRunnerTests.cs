@@ -1199,8 +1199,8 @@ public class PrefetchPipelineRunnerTests
         // At least 3 fetches: sync(1) + eager(2) + sync(3, cancelled).
         // This proves the pipeline executed the drain-fetch-fill pattern:
         // iteration 1 started an eager fetch that overlapped with iteration 2's startup.
-        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(2)
-            .Because("pipeline must start an eager fetch after the synchronous fetch");
+        await Assert.That(fetchCount).IsGreaterThanOrEqualTo(3)
+            .Because("pipeline must execute sync(1) + eager(2) + sync(3) to prove overlap");
     }
 
     #endregion
