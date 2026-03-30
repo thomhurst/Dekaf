@@ -787,15 +787,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
             try
             {
                 // Copy pre-serialized data into the PipeWriter (synchronous — no thread switch).
-                // Return the serialized array immediately BEFORE FlushAsync to ensure it is returned
-                // to ArrayPool<byte>.Shared on the same thread that rented it. Without this, the
-                // FlushAsync continuation can resume on a different thread, causing cross-thread
-                // returns that accumulate in TlsOverPerCoreLockedStacksArrayPool's per-thread and
-                // per-core locked stacks — growing WorkingSet proportionally to the number of broker
-                // connections (each BrokerSender's LongRunning thread rents, thread pool threads return).
+                // Return the serialized array to the dedicated RentedBufferWriter pool immediately
+                // BEFORE FlushAsync. The dedicated pool uses lock-based (not TLS-based) caching,
+                // so cross-thread returns are safe — but returning early keeps the buffer available
+                // for reuse sooner.
                 CopyPreSerializedToPipeWriter(serializedArray, serializedLength);
-                ArrayPool<byte>.Shared.Return(serializedArray);
-                arrayToReturn = null; // Returned on the correct thread — prevent double-return
+                DekafPools.SerializationBuffers.Return(serializedArray);
+                arrayToReturn = null; // Already returned — prevent double-return in finally
 
                 await FlushPipeWriterAsync(correlationId, cancellationToken, callerOwnsTimeout)
                     .ConfigureAwait(false);
@@ -808,7 +806,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             if (arrayToReturn is not null)
-                ArrayPool<byte>.Shared.Return(arrayToReturn);
+                DekafPools.SerializationBuffers.Return(arrayToReturn);
         }
     }
 

@@ -7,7 +7,16 @@ namespace Dekaf.Networking;
 /// A lightweight <see cref="IBufferWriter{T}"/> backed by a rented <see cref="ArrayPool{T}"/> buffer.
 /// Serialization writes directly into the rented array, avoiding an intermediate copy.
 /// The caller detaches the underlying array via <see cref="DetachBuffer"/> and is responsible
-/// for returning it to <see cref="ArrayPool{T}.Shared"/>.
+/// for returning it to <see cref="DekafPools.SerializationBuffers"/>.
+/// <para/>
+/// <b>Why a dedicated pool?</b> Request serialization buffers are rented on BrokerSender
+/// <c>LongRunning</c> threads but those threads hop to thread pool threads after each
+/// <c>await FlushAsync</c>. Using <c>ArrayPool&lt;byte&gt;.Shared</c> would cause each
+/// visited thread to accumulate arrays in its TLS cache (8 arrays per size bucket per thread).
+/// With multiple brokers exercising many size classes through the growth pattern (4KB → 1MB),
+/// the retained working set grows linearly with the number of unique threads visited —
+/// proportional to broker count and test duration. A dedicated <c>ConfigurableArrayPool</c>
+/// uses a single lock-based pool with bounded bucket depth, eliminating TLS accumulation.
 /// </summary>
 internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
 {
@@ -18,12 +27,12 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     public RentedBufferWriter(int initialCapacity, int offset)
     {
         _written = offset;
-        _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity + offset);
+        _buffer = DekafPools.SerializationBuffers.Rent(initialCapacity + offset);
     }
 
     /// <summary>
     /// Detaches the underlying rented array. The caller owns the array and must return it
-    /// to <see cref="ArrayPool{T}.Shared"/>. After this call, the writer must not be used.
+    /// to <see cref="DekafPools.SerializationBuffers"/>. After this call, the writer must not be used.
     /// </summary>
     public (byte[] Array, int Length) DetachBuffer()
     {
@@ -41,7 +50,7 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
             var buf = _buffer;
             _buffer = null!;
             _detached = true;
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+            DekafPools.SerializationBuffers.Return(buf, clearArray: false);
         }
     }
 
@@ -84,9 +93,9 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
         var required = checked(_written + sizeHint);
         var newSize = Math.Max(_buffer.Length * 2, required);
 
-        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+        var newBuffer = DekafPools.SerializationBuffers.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
-        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
         _buffer = newBuffer;
     }
 }

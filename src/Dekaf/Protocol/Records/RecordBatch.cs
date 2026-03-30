@@ -40,7 +40,7 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     {
         _initialCapacity = initialCapacity;
         _maxRetainedBufferSize = maxRetainedBufferSize;
-        _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+        _buffer = DekafPools.SerializationBuffers.Rent(initialCapacity);
         _written = 0;
     }
 
@@ -70,8 +70,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 
         if (_buffer.Length > _maxRetainedBufferSize)
         {
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
-            _buffer = ArrayPool<byte>.Shared.Rent(_initialCapacity);
+            DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
+            _buffer = DekafPools.SerializationBuffers.Rent(_initialCapacity);
             _highWaterMark = 0;
             _clearCount = 0;
             return;
@@ -86,8 +86,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
                 // Target size floors at _initialCapacity when _highWaterMark is 0
             // (buffer had no writes in the last ShrinkCheckInterval clears).
             var targetSize = Math.Max(_initialCapacity, _highWaterMark * 2);
-                ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
-                _buffer = ArrayPool<byte>.Shared.Rent(targetSize);
+                DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
+                _buffer = DekafPools.SerializationBuffers.Rent(targetSize);
             }
 
             // Always reset to start a fresh tracking window, regardless of whether shrink occurred.
@@ -134,12 +134,12 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
         var newSize = Math.Max(_buffer.Length * 2, required);
 
         // Rent from pool - not zero-initialized, avoiding Buffer.ZeroMemoryInternal overhead.
-        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+        var newBuffer = DekafPools.SerializationBuffers.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
 
         // Return old buffer without clearing - avoids zero-fill overhead.
         // No security requirement: buffer holds serialized Kafka protocol bytes, not credentials.
-        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
         _buffer = newBuffer;
     }
 
@@ -156,8 +156,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
             return;
 
         // Return the old buffer and rent a larger one
-        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
-        _buffer = ArrayPool<byte>.Shared.Rent(minimumCapacity);
+        DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
+        _buffer = DekafPools.SerializationBuffers.Rent(minimumCapacity);
     }
 
     /// <summary>
@@ -169,7 +169,7 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
         _buffer = [];
         _written = 0;
         if (buf.Length > 0)
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+            DekafPools.SerializationBuffers.Return(buf, clearArray: false);
     }
 }
 
