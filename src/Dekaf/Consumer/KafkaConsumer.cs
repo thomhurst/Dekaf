@@ -1673,7 +1673,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
                 {
-                    return result;
+                    // Materialize headers before returning: breaking out of await foreach
+                    // disposes the enumerator, which returns pooled HeaderSlices to the pool.
+                    // Without this, the caller would hold a reference to a zeroed-out slice.
+                    return result.WithMaterializedHeaders();
                 }
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
@@ -1694,7 +1697,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
             {
-                return result;
+                // Materialize headers before returning (see fast path comment above)
+                return result.WithMaterializedHeaders();
             }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)

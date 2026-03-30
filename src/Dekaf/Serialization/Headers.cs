@@ -414,16 +414,18 @@ internal sealed class HeaderSlice : IReadOnlyList<Header>
 
     /// <summary>
     /// Returns a HeaderSlice to the pool for reuse.
+    /// After return, the instance's data is cleared — callers must not access
+    /// a returned HeaderSlice. Use <see cref="MaterializeHeaders"/> to snapshot
+    /// headers before returning (e.g., in <c>ConsumeOneAsync</c>).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void Return(HeaderSlice instance)
     {
-        // Do NOT zero _array/_count here. The ConsumeResult the user holds still references
-        // this HeaderSlice (via IReadOnlyList<Header>), and the user may access Headers.Count
-        // or iterate headers after the async enumerator is disposed (e.g., ConsumeOneAsync
-        // disposes the enumerator in its finally block before the caller inspects the result).
-        // Rent() always sets both _array and _count before handing out an instance, so stale
-        // data is never observable by the next renter.
+        // Zero the fields to prevent data races: if a returned HeaderSlice is re-rented
+        // by another consumer, the previous holder would see the new consumer's header data.
+        instance._array = null!;
+        instance._count = 0;
+
         if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
         {
             s_pool.Push(instance);
@@ -445,6 +447,15 @@ internal sealed class HeaderSlice : IReadOnlyList<Header>
             return _array[index];
         }
     }
+
+    /// <summary>
+    /// Creates a standalone snapshot of the headers as a plain array.
+    /// The returned array is not pooled and is safe to hold indefinitely.
+    /// Used by <c>ConsumeOneAsync</c> to materialize headers before the pooled
+    /// HeaderSlice is returned during enumerator disposal.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Header[] MaterializeHeaders() => _array[.._count];
 
     public Enumerator GetEnumerator() => new Enumerator(_array, _count);
     IEnumerator<Header> IEnumerable<Header>.GetEnumerator() => GetEnumerator();
