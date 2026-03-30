@@ -104,12 +104,16 @@ internal static class StressTestHelpers
     internal static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
     {
         var process = Process.GetCurrentProcess();
+        var lastAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
-                LogResourceUsage("Monitor", process);
+                var currentAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
+                var allocRateMBps = (currentAllocatedBytes - lastAllocatedBytes) / 5.0 / (1024.0 * 1024.0);
+                lastAllocatedBytes = currentAllocatedBytes;
+                LogResourceUsage("Monitor", process, allocRateMBps);
             }
             catch (OperationCanceledException)
             {
@@ -118,7 +122,7 @@ internal static class StressTestHelpers
         }
     }
 
-    internal static void LogResourceUsage(string label, Process? process = null)
+    internal static void LogResourceUsage(string label, Process? process = null, double? allocRateMBps = null)
     {
         process ??= Process.GetCurrentProcess();
         // Refresh is essential: Process caches metrics at creation time, so without
@@ -133,8 +137,9 @@ internal static class StressTestHelpers
         var gen1 = GC.CollectionCount(1);
         var gen2 = GC.CollectionCount(2);
 
+        var allocSuffix = allocRateMBps.HasValue ? $", AllocRate={allocRateMBps.Value:F1}MB/s" : "";
         Console.WriteLine($"  [{DateTime.UtcNow:HH:mm:ss}] {label} Resources: " +
             $"WorkingSet={workingSet:F1}MB, Private={privateMemory:F1}MB, GCHeap={gcHeap:F1}MB, " +
-            $"Threads={threadCount}, GC=[{gen0}/{gen1}/{gen2}]");
+            $"Threads={threadCount}, GC=[{gen0}/{gen1}/{gen2}]{allocSuffix}");
     }
 }
