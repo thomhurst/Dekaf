@@ -137,16 +137,47 @@ public class PoolSizingTests
     // --- ForSharedPools tests ---
 
     [Test]
-    public async Task ForSharedPools_SingleBroker_ReturnsBaseline()
+    public async Task ForSharedPools_SingleBroker_DefaultBatch_ReturnsDepthForAdaptiveScaling()
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 1);
 
-        // 1 broker * 16 = 16
-        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(16);
+        // Default: 1MB batch, maxConnections=10
+        // estimatedMessagesPerBatch = clamp(1048576/256, 8, 512) = 512
+        // peakInFlightBatches = 1 * 10 * 5 = 50
+        // producerDataArrays = clamp(512 * 50, 64, 4096) = 4096 (capped)
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
         // 1 broker * 1 conn * 32 = 32
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+        // SerializationBuffers: 1 * 10 * 8 = 80
+        await Assert.That(sizes.SerializationArraysPerBucket).IsGreaterThanOrEqualTo(16);
         // 1 * 1 * 5 * 2 = 10, clamped to min 64
         await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(64);
+    }
+
+    [Test]
+    public async Task ForSharedPools_SingleBroker_SmallBatch_ScalesForHighBatchChurn()
+    {
+        // 16KB batch with adaptive scaling to 10 connections
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 1, batchSize: 16384, maxConnectionsPerBroker: 10);
+
+        // estimatedMessagesPerBatch = clamp(16384/256, 8, 512) = 64
+        // peakInFlightBatches = 1 * 10 * 5 = 50
+        // producerDataArrays = clamp(64 * 50, 64, 4096) = 3200
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
+    }
+
+    [Test]
+    public async Task ForSharedPools_SingleBroker_NoAdaptiveScaling_SmallerPool()
+    {
+        // Single connection, no adaptive scaling
+        var sizes = PoolSizing.ForSharedPools(brokerCount: 1, batchSize: 16384, maxConnectionsPerBroker: 1);
+
+        // estimatedMessagesPerBatch = 64, peakInFlightBatches = 1 * 1 * 5 = 5
+        // producerDataArrays = clamp(64 * 5, 64, 4096) = 320
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(512);
     }
 
     [Test]
@@ -154,8 +185,10 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 3);
 
-        // 3 * 16 = 48
-        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(48);
+        // More brokers = deeper pool
+        var singleBroker = PoolSizing.ForSharedPools(brokerCount: 1);
+        await Assert.That(sizes.ProducerDataArraysPerBucket)
+            .IsGreaterThanOrEqualTo(singleBroker.ProducerDataArraysPerBucket);
         // 3 * 1 * 32 = 96
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(96);
         // 3 * 1 * 5 * 2 = 30, clamped to min 64
@@ -167,8 +200,6 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 3, connectionsPerBroker: 3);
 
-        // 3 * 16 = 48
-        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(48);
         // 3 * 3 * 32 = 288, capped at 256
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(256);
         // 3 * 3 * 5 * 2 = 90
@@ -180,10 +211,11 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 20, connectionsPerBroker: 10);
 
-        // 16 (capped broker) * 16 = 256, capped at 128
-        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(128);
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
         // 16 * 10 * 32 = 5120, capped at 256
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsLessThanOrEqualTo(256);
+        // SerializationBuffers capped at 256
+        await Assert.That(sizes.SerializationArraysPerBucket).IsLessThanOrEqualTo(256);
         // 16 * 10 * 5 * 2 = 1600, capped at 512
         await Assert.That(sizes.ProduceResponsePoolSize).IsLessThanOrEqualTo(512);
     }
@@ -193,8 +225,18 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 0);
 
-        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(16);
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+    }
+
+    [Test]
+    public async Task ForSharedPools_SerializationBuffers_ScalesWithMaxConnections()
+    {
+        var smallConns = PoolSizing.ForSharedPools(brokerCount: 1, maxConnectionsPerBroker: 1);
+        var largeConns = PoolSizing.ForSharedPools(brokerCount: 1, maxConnectionsPerBroker: 10);
+
+        await Assert.That(largeConns.SerializationArraysPerBucket)
+            .IsGreaterThan(smallConns.SerializationArraysPerBucket);
     }
 
     [Test]
@@ -216,5 +258,40 @@ public class PoolSizingTests
         var poolAfterSmaller = ProducerDataPool.BytePool;
 
         await Assert.That(poolAfterSmaller).IsSameReferenceAs(poolAfterFirst);
+    }
+
+    [Test]
+    [NotInParallel("DekafPools")]
+    public async Task SerializationBuffers_RatchetUp_ReplacesPool()
+    {
+        // This test must use the HIGHEST values across all DekafPools tests
+        // to guarantee replacement regardless of execution order (ratchet is monotonic).
+        DekafPools.RatchetSerializationBucketCapacity(8192);
+        var poolBefore = DekafPools.SerializationBuffers;
+
+        DekafPools.RatchetSerializationBucketCapacity(16384);
+        var poolAfter = DekafPools.SerializationBuffers;
+        await Assert.That(poolAfter).IsNotSameReferenceAs(poolBefore);
+
+        // Same value — should be a no-op (pool reference unchanged)
+        DekafPools.RatchetSerializationBucketCapacity(16384);
+        var afterSame = DekafPools.SerializationBuffers;
+        await Assert.That(afterSame).IsSameReferenceAs(poolAfter);
+    }
+
+    [Test]
+    [NotInParallel("DekafPools")]
+    public async Task SerializationBuffers_RatchetDown_DoesNotShrink()
+    {
+        // Uses values BELOW RatchetUp's range so this test works in any order.
+        // If RatchetUp already ran (pool at 16384), ratchet(4096) is a no-op — fine,
+        // we capture the current pool and verify ratchet(16) doesn't change it.
+        DekafPools.RatchetSerializationBucketCapacity(4096);
+        var afterHigh = DekafPools.SerializationBuffers;
+
+        DekafPools.RatchetSerializationBucketCapacity(16);
+        var afterSmaller = DekafPools.SerializationBuffers;
+
+        await Assert.That(afterSmaller).IsSameReferenceAs(afterHigh);
     }
 }

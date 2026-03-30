@@ -1,4 +1,5 @@
 using System.Buffers;
+using Dekaf.Internal;
 
 namespace Dekaf;
 
@@ -9,16 +10,22 @@ namespace Dekaf;
 /// </summary>
 internal static class DekafPools
 {
+    private static readonly RatchetableArrayPool<byte> s_serializationPool = new(
+        maxArrayLength: 4 * 1024 * 1024,
+        initialArraysPerBucket: 16);
+
     /// <summary>
     /// Dedicated pool for serialization buffers. Shared by request serialization
     /// (<see cref="Networking.RentedBufferWriter"/>) and record batch building
     /// (<c>PooledReusableBufferWriter</c> in <c>RecordBatch.cs</c>).
     /// <para/>
     /// <c>maxArrayLength: 4MB</c> covers ProduceRequests with default 1MB batch size plus
-    /// header overhead and multi-batch coalescing. <c>maxArraysPerBucket: 16</c> provides
-    /// sufficient depth for concurrent BrokerSender threads without excessive retention.
+    /// header overhead and multi-batch coalescing. Bucket depth is scaled via
+    /// <see cref="RatchetSerializationBucketCapacity"/> when concurrent connection counts increase.
     /// </summary>
-    internal static readonly ArrayPool<byte> SerializationBuffers = ArrayPool<byte>.Create(
-        maxArrayLength: 4 * 1024 * 1024,
-        maxArraysPerBucket: 16);
+    internal static ArrayPool<byte> SerializationBuffers => s_serializationPool.Pool;
+
+    /// <inheritdoc cref="RatchetableArrayPool{T}.RatchetBucketCapacity"/>
+    internal static void RatchetSerializationBucketCapacity(int arraysPerBucket) =>
+        s_serializationPool.RatchetBucketCapacity(arraysPerBucket);
 }

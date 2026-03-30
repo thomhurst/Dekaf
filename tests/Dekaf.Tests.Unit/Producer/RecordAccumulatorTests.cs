@@ -1,4 +1,5 @@
 using System.Buffers;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 
@@ -1630,6 +1631,155 @@ public class RecordAccumulatorTests
         var poolSize = RecordAccumulator.ComputePoolSize(options);
 
         await Assert.That(poolSize).IsEqualTo(expectedPoolSize);
+    }
+
+    #endregion
+
+    #region AppendFromSpansAsync Slow Path Tests
+
+    /// <summary>
+    /// Fills the accumulator buffer via the hot path (TryReserveMemory) using tiny null-key/null-value
+    /// messages. Stops when the buffer is nearly full so the next real append hits the slow path.
+    /// </summary>
+    private static async Task FillBufferViaHotPath(RecordAccumulator accumulator, int messageCount)
+    {
+        for (var i = 0; i < messageCount; i++)
+        {
+            await accumulator.AppendFromSpansAsync(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, CancellationToken.None);
+        }
+    }
+
+    [Test]
+    public async Task AppendFromSpansAsync_SlowPath_Cancellation_ThrowsOperationCanceled()
+    {
+        // Buffer sized so a few null messages fit on the hot path, then a large message
+        // will exceed capacity and enter the slow path where cancellation is checked.
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 30000
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Fill most of the buffer with small messages (hot path)
+            await FillBufferViaHotPath(accumulator, 100);
+
+            // Now attempt an append with a pre-cancelled token and a large value
+            // that won't fit — this enters AppendFromSpansAsyncSlowPath, which
+            // checks cancellation before waiting on the semaphore.
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            var largeValue = new byte[4096];
+
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await accumulator.AppendFromSpansAsync(
+                    "test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                    largeValue, valueIsNull: false,
+                    null, 0, null, cts.Token));
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task AppendFromSpansAsync_SlowPath_Disposal_ThrowsObjectDisposed()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 30000
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        // Fill most of the buffer with small messages (hot path)
+        await FillBufferViaHotPath(accumulator, 100);
+
+        var largeValue = new byte[4096];
+
+        // Start an append that will block in the slow path (buffer too full for large message)
+        var appendTask = Task.Run(async () =>
+            await accumulator.AppendFromSpansAsync(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                largeValue, valueIsNull: false,
+                null, 0, null, CancellationToken.None));
+
+        // Yield enough times for the background task to reach WaitAsync.
+        // In practice it parks within the first few yields; 100 is generous headroom.
+        for (var i = 0; i < 100 && !appendTask.IsCompleted; i++)
+            await Task.Yield();
+
+        // Dispose should unblock the waiter
+        await accumulator.DisposeAsync();
+
+        // The blocked append should throw ObjectDisposedException (or return false)
+        try
+        {
+            var result = await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            // If it didn't throw, it should have returned false (disposed fast path)
+            await Assert.That(result).IsFalse();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Expected — disposal while waiting in the reservation loop
+        }
+    }
+
+    [Test]
+    public async Task AppendFromSpansAsync_SlowPath_Timeout_ThrowsKafkaTimeoutException()
+    {
+        // Very short MaxBlockMs to trigger timeout quickly
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 100 // 100ms timeout
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Fill most of the buffer with small messages (hot path)
+            await FillBufferViaHotPath(accumulator, 100);
+
+            var largeValue = new byte[4096];
+
+            // This should timeout after ~100ms since no one is draining
+            var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+                await accumulator.AppendFromSpansAsync(
+                    "test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                    largeValue, valueIsNull: false,
+                    null, 0, null, CancellationToken.None));
+
+            await Assert.That(ex!.Message).Contains("BufferMemory");
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
     }
 
     #endregion
