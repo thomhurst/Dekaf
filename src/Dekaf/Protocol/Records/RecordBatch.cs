@@ -221,7 +221,7 @@ public sealed class RecordBatch : IDisposable
     // regardless of how many threads participate in serialization.
     private static readonly ConcurrentStack<SerializationCache> s_cachePool = new();
     private static int s_cachePoolCount;
-    private const int MaxPooledCaches = 32;
+    private const int MaxPooledCaches = 16;
 
     /// <summary>
     /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.
@@ -229,7 +229,7 @@ public sealed class RecordBatch : IDisposable
     /// Uses PooledReusableBufferWriter (ArrayPool-backed) instead of ArrayBufferWriter
     /// to avoid Buffer.ZeroMemoryInternal overhead from new byte[] allocations on growth.
     /// </summary>
-    internal sealed class SerializationCache
+    private sealed class SerializationCache
     {
         public PooledReusableBufferWriter? RecordsBuffer;
         public PooledReusableBufferWriter? CompressedBuffer;
@@ -250,7 +250,7 @@ public sealed class RecordBatch : IDisposable
         }
     }
 
-    internal static SerializationCache RentSerializationCache()
+    private static SerializationCache RentSerializationCache()
     {
         if (s_cachePool.TryPop(out var cache))
         {
@@ -260,7 +260,7 @@ public sealed class RecordBatch : IDisposable
         return new SerializationCache();
     }
 
-    internal static void ReturnSerializationCache(SerializationCache cache)
+    private static void ReturnSerializationCache(SerializationCache cache)
     {
         if (Interlocked.Increment(ref s_cachePoolCount) <= MaxPooledCaches)
         {
@@ -638,14 +638,9 @@ public sealed class RecordBatch : IDisposable
             // 8 (producer id) + 2 (producer epoch) + 4 (base sequence) + 4 (records count) + records
             var batchLength = BatchHeaderSize + compressedRecords.Length;
 
-            // Write base offset and batch length
             writer.WriteInt64(BaseOffset);
             writer.WriteInt32(batchLength);
-
-            // Write partition leader epoch
             writer.WriteInt32(PartitionLeaderEpoch);
-
-            // Write magic byte
             writer.WriteUInt8(Magic);
 
             // CRC content size: 2 (attributes) + 4 (lastOffsetDelta) + 8 (baseTimestamp) +
@@ -665,7 +660,6 @@ public sealed class RecordBatch : IDisposable
                 attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
             }
 
-            // Write content directly using BinaryPrimitives
             var offset = 0;
             BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], attributes);
             offset += 2;
@@ -685,7 +679,6 @@ public sealed class RecordBatch : IDisposable
             offset += 4;
             compressedRecords.CopyTo(contentSpan[offset..]);
 
-            // Calculate CRC over the content we just wrote
             var crc = Crc32C.Compute(contentSpan[..crcContentSize]);
 
             // Backpatch CRC at the beginning
