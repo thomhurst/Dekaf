@@ -202,7 +202,7 @@ public sealed class ConsumerInterceptorTests
             valueData: System.Text.Encoding.UTF8.GetBytes(value),
             isValueNull: false,
             headers: null,
-            timestamp: DateTimeOffset.UtcNow,
+            timestampMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             timestampType: TimestampType.CreateTime,
             leaderEpoch: null,
             keyDeserializer: Serializers.String,

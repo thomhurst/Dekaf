@@ -973,6 +973,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Yield records lazily from pending fetches
             System.Diagnostics.Activity? previousActivity = null;
+            HeaderSlice? previousHeaderSlice = null;
             try
             {
                 // Hoist invariant boolean checks outside inner loops to avoid
@@ -1015,25 +1016,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             previousActivity?.Dispose();
                             previousActivity = null;
 
+                            // Return previous message's HeaderSlice to pool (safe: user code
+                            // has finished processing the previous message by the time we get here)
+                            if (previousHeaderSlice is not null)
+                            {
+                                HeaderSlice.Return(previousHeaderSlice);
+                                previousHeaderSlice = null;
+                            }
+
                             var record = pending.CurrentRecord;
 
                             // Use cached batch properties (updated once per batch transition
                             // in MoveNext) to avoid per-message property access overhead on
                             // RecordBatch (Volatile.Read + disposed check per access).
                             var offset = pending.CurrentBaseOffset + record.OffsetDelta;
-                            var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                                pending.CurrentBaseTimestamp + record.TimestampDelta);
+                            var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
 
                             // Zero-copy header access: wrap the existing header array in a
-                            // HeaderSlice instead of copying. The slice is valid for this
+                            // pooled HeaderSlice instead of copying. The slice is valid for this
                             // consume iteration (the backing array lives until PendingFetchData
-                            // is disposed after all records are yielded). A fresh HeaderSlice
-                            // is allocated per message with headers (tiny: two fields) while
-                            // the expensive per-message Header[] copy is eliminated.
+                            // is disposed after all records are yielded). HeaderSlice instances
+                            // are pooled to eliminate per-message class allocation.
                             IReadOnlyList<Header>? headers = null;
                             if (record.Headers is not null && record.HeaderCount > 0)
                             {
-                                headers = new HeaderSlice(record.Headers, record.HeaderCount);
+                                var slice = HeaderSlice.Rent(record.Headers, record.HeaderCount);
+                                headers = slice;
+                                previousHeaderSlice = slice;
                             }
 
                             var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
@@ -1064,7 +1073,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 valueData: record.Value,
                                 isValueNull: record.IsValueNull,
                                 headers: headers,
-                                timestamp: timestamp,
+                                timestampMs: timestampMs,
                                 timestampType: timestampType,
                                 leaderEpoch: null,
                                 keyDeserializer: _keyDeserializer,
@@ -1120,9 +1129,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         yield return nextResult;
                     }
 
-                    // Dispose last activity from this pending fetch
+                    // Dispose last activity and return last HeaderSlice from this pending fetch
                     previousActivity?.Dispose();
                     previousActivity = null;
+                    if (previousHeaderSlice is not null)
+                    {
+                        HeaderSlice.Return(previousHeaderSlice);
+                        previousHeaderSlice = null;
+                    }
 
                     // Batch-level fetch position update (once per partition-fetch, not per message).
                     // _fetchPositions controls where the next fetch request starts from.
@@ -1147,8 +1161,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
             finally
             {
-                // Ensure activity is disposed if caller breaks out of enumeration early
+                // Ensure activity is disposed and HeaderSlice is returned if caller breaks out early
                 previousActivity?.Dispose();
+                if (previousHeaderSlice is not null)
+                    HeaderSlice.Return(previousHeaderSlice);
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)

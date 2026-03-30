@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
@@ -374,19 +375,56 @@ public readonly record struct Header
 /// The <see cref="HeaderSlice"/> is valid only for the lifetime of the current
 /// consume iteration (same as <c>RawBytes</c> deserializer semantics).
 /// This is a class (not struct) because it must implement <see cref="IReadOnlyList{Header}"/>
-/// avoiding the per-message <c>Header[]</c> copy. A fresh instance is allocated per message
-/// with headers (tiny: two fields). The struct enumerator avoids boxing when iterated
-/// over the concrete type; iteration through <c>IReadOnlyList{Header}</c> will still box.
+/// avoiding the per-message <c>Header[]</c> copy. Instances are pooled via
+/// <see cref="Rent"/>/<see cref="Return"/> to eliminate per-message class allocation
+/// for messages with headers.
+/// The struct enumerator avoids boxing when iterated over the concrete type;
+/// iteration through <c>IReadOnlyList{Header}</c> will still box.
 /// </remarks>
 internal sealed class HeaderSlice : IReadOnlyList<Header>
 {
-    private readonly Header[] _array;
-    private readonly int _count;
+    // Pool for reusing HeaderSlice instances to avoid per-message class allocation.
+    // Most messages that have headers use a small number of them, so a modest pool suffices.
+    // Soft limit via Volatile.Read avoids ConcurrentStack.Count overhead.
+    private static readonly ConcurrentStack<HeaderSlice> s_pool = new();
+    private static int s_poolCount;
+    private const int MaxPoolSize = 256;
 
-    internal HeaderSlice(Header[] array, int count)
+    private Header[] _array = null!;
+    private int _count;
+
+    private HeaderSlice() { }
+
+    /// <summary>
+    /// Rents a HeaderSlice from the pool or creates a new one.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static HeaderSlice Rent(Header[] array, int count)
     {
-        _array = array;
-        _count = count;
+        if (s_pool.TryPop(out var instance))
+        {
+            Interlocked.Decrement(ref s_poolCount);
+            instance._array = array;
+            instance._count = count;
+            return instance;
+        }
+
+        return new HeaderSlice { _array = array, _count = count };
+    }
+
+    /// <summary>
+    /// Returns a HeaderSlice to the pool for reuse.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void Return(HeaderSlice instance)
+    {
+        instance._array = null!;
+        instance._count = 0;
+        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        {
+            s_pool.Push(instance);
+            Interlocked.Increment(ref s_poolCount);
+        }
     }
 
     public int Count => _count;

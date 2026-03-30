@@ -96,7 +96,7 @@ public class DefaultDeadLetterPolicyTests
             valueData: default,
             isValueNull: true,
             headers: null,
-            timestamp: DateTimeOffset.UtcNow,
+            timestampMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             timestampType: TimestampType.CreateTime,
             leaderEpoch: null,
             keyDeserializer: null,
