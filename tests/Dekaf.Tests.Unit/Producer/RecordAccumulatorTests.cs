@@ -1723,8 +1723,10 @@ public class RecordAccumulatorTests
                 largeValue, valueIsNull: false,
                 null, 0, null, CancellationToken.None));
 
-        // Give the append a moment to enter the wait loop
-        await Task.Delay(50);
+        // Wait deterministically until the task is actually blocked (not yet completed)
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!appendTask.IsCompleted && sw.ElapsedMilliseconds < 5000)
+            await Task.Yield();
 
         // Dispose should unblock the waiter
         await accumulator.DisposeAsync();
