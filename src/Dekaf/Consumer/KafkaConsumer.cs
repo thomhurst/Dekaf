@@ -989,8 +989,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
-                    var batchProcessingStarted = _adaptiveFetchSizer is not null
-                        ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    long? batchProcessingStarted = _adaptiveFetchSizer is not null
+                        ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
 
                     // Eagerly parse all records in this fetch's batches upfront.
                     // This converts per-record lazy parse overhead (disposed check +
@@ -1135,9 +1135,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     }
 
                     // Report batch processing time to the adaptive fetch sizer (per-batch, not per-message)
-                    if (batchProcessingStarted != 0)
+                    if (batchProcessingStarted.HasValue)
                     {
-                        var processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted);
+                        var processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
                         _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
                     }
 
@@ -3086,7 +3086,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     internal static List<FetchRequestTopic> BuildFetchResult(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
         ConcurrentDictionary<TopicPartition, long> fetchPositions,
-        int? partitionMaxBytesOverride = null)
+        int? adaptivePartitionMaxBytes = null)
     {
         var result = new List<FetchRequestTopic>(templateDict.Count);
 
@@ -3104,7 +3104,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     CurrentLeaderEpoch = template.CurrentLeaderEpoch,
                     LastFetchedEpoch = template.LastFetchedEpoch,
                     LogStartOffset = template.LogStartOffset,
-                    PartitionMaxBytes = partitionMaxBytesOverride ?? template.PartitionMaxBytes
+                    PartitionMaxBytes = adaptivePartitionMaxBytes ?? template.PartitionMaxBytes
                 });
             }
 

@@ -1373,7 +1373,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _maxPartitionFetchBytes = 4 * 1024 * 1024;
         _fetchMaxBytes = 100 * 1024 * 1024;
         _prefetchPipelineDepth = 5;
-        _enableAdaptiveFetchSizing = true;
+        _enableAdaptiveFetchSizing = true; // Intentional: ForHighThroughput always enables adaptive sizing
         _adaptiveFetchSizingOptions ??= new AdaptiveFetchSizingOptions
         {
             InitialPartitionFetchBytes = 4 * 1024 * 1024,
