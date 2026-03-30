@@ -177,11 +177,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Scale shared pools based on bootstrap server count (minimum broker estimate).
         // This prevents pool contention when multiple brokers concurrently rent/return arrays.
+        // Uses MaxConnectionsPerBroker (not ConnectionsPerBroker) so pools are pre-sized for
+        // adaptive scaling peak concurrency, avoiding pool misses when connections ramp up.
         var sharedPoolSizes = PoolSizing.ForSharedPools(
             brokerCount: options.BootstrapServers.Count,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection);
+            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection,
+            batchSize: options.BatchSize,
+            maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
         ProducerDataPool.RatchetBucketCapacity(sharedPoolSizes.ProducerDataArraysPerBucket);
+        DekafPools.RatchetSerializationBucketCapacity(sharedPoolSizes.SerializationArraysPerBucket);
         ProduceResponse.RatchetPoolSize(sharedPoolSizes.ProduceResponsePoolSize);
 
         var poolSize = options.ValueTaskSourcePoolSize > 0
@@ -231,10 +236,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // The ratchet pattern ensures pools only grow, never shrink.
         var connectionsPerBroker = options.ConnectionsPerBroker;
         var maxInFlight = options.MaxInFlightRequestsPerConnection;
+        var batchSize = options.BatchSize;
+        var maxConns = options.MaxConnectionsPerBroker;
         _metadataManager.OnBrokerCountDiscovered = brokerCount =>
         {
-            var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight);
+            var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight, batchSize, maxConns);
             ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
+            DekafPools.RatchetSerializationBucketCapacity(sizes.SerializationArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
             _connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
         };

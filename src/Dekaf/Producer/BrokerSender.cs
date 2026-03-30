@@ -2907,6 +2907,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Reset low utilization tracking — we just scaled up
         _lowUtilizationStartTicks = 0;
 
+        // Ratchet serialization buffer pool to cover concurrent request serialization
+        // across this broker's new connection count.
+        DekafPools.RatchetSerializationBucketCapacity(
+            actualCount * PoolSizing.SerializationArraysPerConnection);
+
         LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
         return actualCount;
     }

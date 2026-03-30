@@ -207,12 +207,9 @@ internal static class ProducerDebugCounters
 /// </summary>
 internal static class ProducerDataPool
 {
-    private static ArrayPool<byte> s_bytePool = ArrayPool<byte>.Create(
+    private static readonly RatchetableArrayPool<byte> s_pool = new(
         maxArrayLength: 4 * 1024 * 1024,
-        maxArraysPerBucket: 16);
-
-    private static int s_currentArraysPerBucket = 16;
-    private static readonly Lock s_ratchetLock = new();
+        initialArraysPerBucket: 16);
 
     /// <summary>
     /// Shared pool for producer key/value data arrays. Bounded to 4 MB max array size
@@ -220,30 +217,17 @@ internal static class ProducerDataPool
     /// Bucket depth is scaled via <see cref="RatchetBucketCapacity"/> when multi-broker
     /// configurations are detected.
     /// </summary>
-    internal static ArrayPool<byte> BytePool => Volatile.Read(ref s_bytePool);
+    internal static ArrayPool<byte> BytePool => s_pool.Pool;
 
     /// <summary>
-    /// Increases the per-bucket array capacity if <paramref name="arraysPerBucket"/> exceeds
-    /// the current value. Called during producer construction once the broker count is known.
-    /// Uses a ratchet (monotonically increasing) to avoid shrinking under concurrent access.
-    /// The old pool instance becomes GC-eligible once outstanding rentals are returned.
+    /// Gets the current per-bucket array capacity. Used by <see cref="RecordAccumulator"/>
+    /// to read the actual pool depth when deciding whether to ratchet further.
     /// </summary>
-    internal static void RatchetBucketCapacity(int arraysPerBucket)
-    {
-        if (arraysPerBucket <= Volatile.Read(ref s_currentArraysPerBucket))
-            return;
+    internal static int CurrentArraysPerBucket => s_pool.CurrentArraysPerBucket;
 
-        lock (s_ratchetLock)
-        {
-            if (arraysPerBucket <= s_currentArraysPerBucket)
-                return;
-
-            Volatile.Write(ref s_bytePool, ArrayPool<byte>.Create(
-                maxArrayLength: 4 * 1024 * 1024,
-                maxArraysPerBucket: arraysPerBucket));
-            Volatile.Write(ref s_currentArraysPerBucket, arraysPerBucket);
-        }
-    }
+    /// <inheritdoc cref="RatchetableArrayPool{T}.RatchetBucketCapacity"/>
+    internal static void RatchetBucketCapacity(int arraysPerBucket) =>
+        s_pool.RatchetBucketCapacity(arraysPerBucket);
 }
 
 /// <summary>
@@ -958,6 +942,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private long _bufferedBytes;
     // Adaptive connection scaling: counts slow-path entries in ReserveMemoryAsync
     private long _bufferPressureEvents;
+    // Dynamic pool ratchet: last pressure snapshot when pool was ratcheted.
+    // When pressure accumulates beyond the threshold, the ProducerDataPool bucket
+    // capacity is ratcheted up to match the workload's actual cold-path depth.
+    private long _lastPoolRatchetPressure;
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1893,9 +1881,42 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         CancellationToken cancellationToken)
     {
+        // Inlined reservation loop — avoids allocating a second async state machine
+        // for ReserveMemoryAsync. One state machine instead of two per cold-path message.
+        // KEEP IN SYNC with WaitForReservationAsync and the other inlined copy.
+        var (startTicks, deadline) = BeginReservationWait(recordSize);
+
         try
         {
-            await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+            while (!TryReserveMemory(recordSize))
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var remainingMs = deadline - Environment.TickCount64;
+                if (remainingMs <= 0)
+                    ThrowBufferMemoryTimeout(recordSize, startTicks);
+
+                try
+                {
+                    await _asyncBufferSpaceSignal.WaitAsync(
+                        (int)Math.Min(remainingMs, int.MaxValue),
+                        cancellationToken
+                    ).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
+                {
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+                }
+                catch (OperationCanceledException)
+                {
+                    if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                        TryReleaseSemaphore(_asyncBufferSpaceSignal);
+                    throw;
+                }
+            }
         }
         catch
         {
@@ -1904,6 +1925,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ReturnPooledHeaders(headers);
             throw;
         }
+
+        // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         return AppendAfterReservation(topic, partition, timestamp, key, value,
             headers, headerCount, completionSource, callback, recordSize);
@@ -2128,8 +2153,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Cold path for <see cref="AppendFromSpansAsync"/>: awaits memory reservation then appends
+    /// Cold path for <see cref="AppendFromSpansAsync"/>: waits for memory reservation then appends
     /// using the pre-copied <see cref="PooledMemory"/> data.
+    /// The reservation loop is inlined to avoid allocating a second async state machine.
     /// </summary>
     private async ValueTask<bool> AppendFromSpansAsyncSlowPath(
         string topic,
@@ -2143,9 +2169,42 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         CancellationToken cancellationToken)
     {
+        // Inlined reservation loop — avoids allocating a second async state machine
+        // for ReserveMemoryAsync. One state machine instead of two per cold-path message.
+        // KEEP IN SYNC with WaitForReservationAsync and the other inlined copy.
+        var (startTicks, deadline) = BeginReservationWait(recordSize);
+
         try
         {
-            await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+            while (!TryReserveMemory(recordSize))
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var remainingMs = deadline - Environment.TickCount64;
+                if (remainingMs <= 0)
+                    ThrowBufferMemoryTimeout(recordSize, startTicks);
+
+                try
+                {
+                    await _asyncBufferSpaceSignal.WaitAsync(
+                        (int)Math.Min(remainingMs, int.MaxValue),
+                        cancellationToken
+                    ).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
+                {
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+                }
+                catch (OperationCanceledException)
+                {
+                    if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                        TryReleaseSemaphore(_asyncBufferSpaceSignal);
+                    throw;
+                }
+            }
         }
         catch
         {
@@ -2154,6 +2213,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ReturnPooledHeaders(headers);
             throw;
         }
+
+        // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
             headers, headerCount, null, callback, recordSize);
@@ -2319,23 +2382,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until buffer space is available, then reserves memory for a record.
-    /// Throws KafkaTimeoutException if buffer space doesn't become available within MaxBlockMs.
+    /// Prepares for an async reservation wait: tracks pressure for adaptive connection scaling,
+    /// triggers pool ratcheting if needed, and computes the deadline for max.block.ms timeout.
+    /// Returns the start ticks and deadline for use in the reservation loop.
     /// </summary>
-    internal async ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
+    private (long StartTicks, long Deadline) BeginReservationWait(int recordSize)
     {
-        // Fast path: try to reserve immediately
-        if (TryReserveMemory(recordSize))
-        {
-            return;
-        }
-
         // Track for adaptive connection scaling
-        Interlocked.Increment(ref _bufferPressureEvents);
+        var pressureCount = Interlocked.Increment(ref _bufferPressureEvents);
 
-        // Slow path: wait for space to become available with timeout protection
-        // Use MaxBlockMs to limit how long we block waiting for buffer space (equivalent to Kafka's max.block.ms)
-        // Protect against overflow if MaxBlockMs is configured to a very large value
+        // Dynamic pool ratchet: when sustained cold-path pressure is detected, increase
+        // ProducerDataPool bucket capacity to reduce pool misses.
+        MaybeRatchetPoolCapacity(pressureCount);
+
         var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
         LogBufferMemoryWaiting(recordSize, currentBufferedBytes, _maxBufferMemory);
         var currentTicks = Environment.TickCount64;
@@ -2343,27 +2402,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
+        return (currentTicks, deadline);
+    }
+
+    /// <summary>
+    /// Executes the reservation wait loop: spins on <see cref="TryReserveMemory"/> with async
+    /// semaphore-based wake-ups from <see cref="ReleaseMemory"/>, respecting disposal, cancellation,
+    /// and the max.block.ms deadline. Must be called after <see cref="BeginReservationWait"/>.
+    /// </summary>
+    /// <remarks>
+    /// The two production slow paths (<see cref="AppendSlowPath"/> and
+    /// <see cref="AppendFromSpansAsyncSlowPath"/>) inline this loop body to avoid allocating
+    /// a second async state machine per cold-path message. This method is the canonical
+    /// version used by <see cref="ReserveMemoryAsync"/> (called from tests).
+    /// KEEP IN SYNC: any changes here must be mirrored in both inlined copies.
+    /// </remarks>
+    private async ValueTask WaitForReservationAsync(int recordSize, long startTicks, long deadline,
+        CancellationToken cancellationToken)
+    {
         // Avoid CreateLinkedTokenSource allocation by using the caller's token directly
-        // and checking disposal manually on each wake-up. The caller's token handles user
-        // cancellation; disposal is checked explicitly at the top of each iteration.
+        // and checking disposal manually on each wake-up.
         while (!TryReserveMemory(recordSize))
         {
-            // Check disposal first
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Check if we've exceeded max.block.ms
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
-                ThrowBufferMemoryTimeout(recordSize, currentTicks);
+                ThrowBufferMemoryTimeout(recordSize, startTicks);
 
-            // Wait for signal from ReleaseMemory, with timeout and caller's cancellation.
-            // SemaphoreSlim.WaitAsync provides true async signal-based wake-up — no polling needed.
-            // The semaphore acts as an async auto-reset event: ReleaseMemory releases, we acquire.
-            // Disposal responsiveness: DisposeAsync signals _asyncBufferSpaceSignal (via
-            // ReleaseMemory or direct Release) so waiters wake up and hit the _disposed check above.
             try
             {
                 await _asyncBufferSpaceSignal.WaitAsync(
@@ -2373,28 +2442,59 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
             {
-                // Caller's token was cancelled while _disposed is true — convert to
-                // ObjectDisposedException for a clearer signal. Without the linked CTS,
-                // this only fires on the narrow window of simultaneous user-cancel + disposal;
-                // the primary disposal path is the _disposed check at loop top.
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
             catch (OperationCanceledException)
             {
-                // Propagate wake chain so remaining waiters aren't stranded.
-                // This waiter consumed a semaphore signal but won't use the buffer space.
                 if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
                     TryReleaseSemaphore(_asyncBufferSpaceSignal);
                 throw;
             }
-            // WaitAsync returning false (timeout) just means we loop and check deadline above
         }
 
         // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        // Without this, a single ReleaseMemory (freeing ~1MB) would only wake one waiter
-        // even when space exists for many more.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             TryReleaseSemaphore(_asyncBufferSpaceSignal);
+    }
+
+    /// <summary>
+    /// Public-facing reservation method for direct callers (including tests).
+    /// Delegates to <see cref="BeginReservationWait"/> + <see cref="WaitForReservationAsync"/>.
+    /// Internal slow paths inline the loop body to avoid a nested async state machine.
+    /// </summary>
+    internal ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
+    {
+        if (TryReserveMemory(recordSize))
+            return default;
+
+        var (startTicks, deadline) = BeginReservationWait(recordSize);
+        return WaitForReservationAsync(recordSize, startTicks, deadline, cancellationToken);
+    }
+
+    /// <summary>
+    /// Ratchets the <see cref="ProducerDataPool.BytePool"/> bucket capacity when sustained
+    /// cold-path pressure is detected. Fires after every 1,000 pressure events, doubling
+    /// the capacity each time up to 4,096. This ensures the pool adapts to workloads where
+    /// Acks.All or slow brokers cause the buffer to stay full, forcing every message through
+    /// the cold path that rents PooledMemory arrays.
+    /// </summary>
+    private void MaybeRatchetPoolCapacity(long pressureCount)
+    {
+        const int RatchetThreshold = 1_000;
+        const int MaxRatchetCapacity = 4096;
+
+        var lastRatchet = Volatile.Read(ref _lastPoolRatchetPressure);
+        if (pressureCount - lastRatchet < RatchetThreshold)
+            return;
+
+        // CAS to claim this ratchet event (only one thread ratchets per threshold crossing)
+        if (Interlocked.CompareExchange(ref _lastPoolRatchetPressure, pressureCount, lastRatchet) != lastRatchet)
+            return;
+
+        var currentCapacity = ProducerDataPool.CurrentArraysPerBucket;
+        var newCapacity = Math.Min(currentCapacity * 2, MaxRatchetCapacity);
+        if (newCapacity > currentCapacity)
+            ProducerDataPool.RatchetBucketCapacity(newCapacity);
     }
 
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
