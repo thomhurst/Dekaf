@@ -91,6 +91,11 @@ internal sealed class AdaptiveFetchSizer
         if (options.ShrinkFactor is <= 0.0 or >= 1.0)
             throw new ArgumentException($"ShrinkFactor ({options.ShrinkFactor}) must be in the range (0.0, 1.0) exclusive.", nameof(options));
 
+        if (options.GrowThreshold >= options.ShrinkThreshold)
+            throw new ArgumentException(
+                $"GrowThreshold ({options.GrowThreshold}) must be less than ShrinkThreshold ({options.ShrinkThreshold}).",
+                nameof(options));
+
         if (options.StableWindowCount < 1)
             throw new ArgumentException($"StableWindowCount ({options.StableWindowCount}) must be >= 1.", nameof(options));
     }

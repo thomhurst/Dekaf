@@ -1271,8 +1271,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     }
                 }
 
+                // Timing wraps the entire parallel fetch cycle (all brokers via Task.WhenAll)
+                // rather than individual broker fetches. This avoids a data race on the timing
+                // fields from concurrent PrefetchFromBrokerAsync calls, and correctly measures
+                // the bottleneck (slowest broker) which is the right signal for adaptive sizing.
+                _adaptiveFetchSizer?.RecordFetchStart();
+
                 // ReadOnlySpan overload (.NET 9+) avoids internal array copy and ArraySegment boxing
                 await Task.WhenAll(new ReadOnlySpan<Task>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
+
+                _adaptiveFetchSizer?.RecordFetchEnd();
             }
             finally
             {
@@ -1392,7 +1400,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         request.IsolationLevel = _options.IsolationLevel;
         request.Topics = topicData;
 
-        _adaptiveFetchSizer?.RecordFetchStart();
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
         FetchResponse response;
@@ -1407,8 +1414,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             request.ReturnToPool();
         }
-
-        _adaptiveFetchSizer?.RecordFetchEnd();
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
@@ -2524,8 +2529,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
+                // Timing wraps the entire parallel fetch cycle (all brokers via Task.WhenAll)
+                // rather than individual broker fetches. This avoids a data race on the timing
+                // fields from concurrent FetchFromBrokerAsync calls, and correctly measures
+                // the bottleneck (slowest broker) which is the right signal for adaptive sizing.
+                _adaptiveFetchSizer?.RecordFetchStart();
+
                 // ReadOnlySpan overload: same zero-copy benefit as above
                 await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+
+                _adaptiveFetchSizer?.RecordFetchEnd();
 
                 // Enqueue results from all brokers (now on main thread, safe for Queue)
                 for (var j = 0; j < brokerCount; j++)
@@ -2736,7 +2749,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         request.IsolationLevel = _options.IsolationLevel;
         request.Topics = topicData;
 
-        _adaptiveFetchSizer?.RecordFetchStart();
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
         FetchResponse response;
@@ -2751,8 +2763,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             request.ReturnToPool();
         }
-
-        _adaptiveFetchSizer?.RecordFetchEnd();
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(

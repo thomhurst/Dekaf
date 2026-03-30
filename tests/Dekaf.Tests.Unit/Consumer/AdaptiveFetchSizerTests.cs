@@ -479,6 +479,34 @@ public class AdaptiveFetchSizerTests
     }
 
     [Test]
+    public async Task Constructor_ThrowsWhenGrowThresholdEqualsOrExceedsShrinkThreshold()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            GrowThreshold = 2.0,
+            ShrinkThreshold = 2.0
+        };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenGrowThresholdExceedsShrinkThreshold()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            GrowThreshold = 3.0,
+            ShrinkThreshold = 2.0
+        };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
     public async Task Constructor_ThrowsWhenStableWindowCountIsZero()
     {
         var options = new AdaptiveFetchSizingOptions { StableWindowCount = 0 };
