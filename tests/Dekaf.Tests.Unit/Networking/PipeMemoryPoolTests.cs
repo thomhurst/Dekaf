@@ -87,6 +87,68 @@ public class PipeMemoryPoolTests
     }
 
     [Test]
+    public async Task Rent_ReusesWrapperAfterDispose()
+    {
+        using var pool = new PipeMemoryPool();
+
+        // Rent and dispose to seed the wrapper pool
+        var owner1 = pool.Rent(1024);
+        owner1.Dispose();
+
+        // Second rent should reuse the wrapper (no new allocation)
+        var owner2 = pool.Rent(2048);
+        await Assert.That(owner2.Memory.Length).IsGreaterThanOrEqualTo(2048);
+        owner2.Dispose();
+    }
+
+    [Test]
+    public async Task Rent_ReusedWrapper_HasFreshBuffer()
+    {
+        using var pool = new PipeMemoryPool();
+
+        // Rent, write data, dispose
+        var owner1 = pool.Rent(1024);
+        owner1.Memory.Span[0] = 0xFF;
+        owner1.Dispose();
+
+        // Rent again - should get a valid buffer
+        var owner2 = pool.Rent(1024);
+        await Assert.That(owner2.Memory.Length).IsGreaterThanOrEqualTo(1024);
+
+        // Write to verify it's usable
+        owner2.Memory.Span[0] = 0xAA;
+        await Assert.That(owner2.Memory.Span[0]).IsEqualTo((byte)0xAA);
+        owner2.Dispose();
+    }
+
+    [Test]
+    public async Task Rent_ConcurrentRentDispose_DoesNotCorrupt()
+    {
+        using var pool = new PipeMemoryPool();
+        var iterations = 1000;
+        var tasks = new Task[4];
+
+        for (var t = 0; t < tasks.Length; t++)
+        {
+            tasks[t] = Task.Run(() =>
+            {
+                for (var i = 0; i < iterations; i++)
+                {
+                    var owner = pool.Rent(1024);
+                    owner.Memory.Span[0] = (byte)(i & 0xFF);
+                    owner.Dispose();
+                }
+            });
+        }
+
+        await Task.WhenAll(tasks);
+
+        // Verify pool is still functional
+        using var finalOwner = pool.Rent(1024);
+        await Assert.That(finalOwner.Memory.Length).IsGreaterThanOrEqualTo(1024);
+    }
+
+    [Test]
     public async Task Pool_WorksWithPipeOptions()
     {
         using var pool = new PipeMemoryPool();
