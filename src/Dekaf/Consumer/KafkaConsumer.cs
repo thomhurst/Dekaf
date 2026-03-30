@@ -1920,19 +1920,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         ChannelReader<PendingFetchData> channelReader,
         HashSet<TopicPartition> partitionsToRemove,
         Queue<PendingFetchData> retainedQueue,
-        Action<PendingFetchData> onReleasePrefetchBytes)
+        Action<PendingFetchData> onItemRemoved)
     {
         while (channelReader.TryRead(out var prefetched))
         {
             if (partitionsToRemove.Contains(prefetched.TopicPartition))
             {
-                onReleasePrefetchBytes(prefetched);
+                onItemRemoved(prefetched);
                 prefetched.Dispose();
             }
             else
             {
+                // Retained items are appended after existing queue items. This is safe because
+                // fetch positions are tracked independently (_fetchPositions), not inferred from
+                // queue order — so interleaving with existing _pendingFetches items is harmless.
                 retainedQueue.Enqueue(prefetched);
-                onReleasePrefetchBytes(prefetched);
+                onItemRemoved(prefetched);
             }
         }
     }

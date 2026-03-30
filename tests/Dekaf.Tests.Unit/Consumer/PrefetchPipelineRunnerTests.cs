@@ -1612,6 +1612,8 @@ public class PrefetchPipelineRunnerTests
         await Assert.That(retainedQueue.Peek()).IsEqualTo(retained);
         // Release callback still called for retained items (to release prefetch byte tracking)
         await Assert.That(releasedItems).Count().IsEqualTo(1);
+        // Retained item must NOT be disposed — it should still be usable
+        await Assert.That(retained.TopicPartition).IsEqualTo(retainedTp);
 
         // Cleanup
         retained.Dispose();
