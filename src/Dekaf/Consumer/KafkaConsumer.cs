@@ -1850,6 +1850,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Without this, stale data from old partitions would surface after reassignment.
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
+            TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
         // Clear pending EOF events as they are stale after buffer clear
@@ -1899,6 +1900,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         // O(n) over prefetch channel items — acceptable because rebalance is infrequent (not hot path).
         // Items for retained partitions move to _pendingFetches; revoked items are disposed.
+        // Retained items are appended after existing _pendingFetches items. This is acceptable
+        // because Kafka consumption is sequential per partition and cross-partition ordering is
+        // not guaranteed — so the relative order between partitions does not matter.
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
             if (partitionsToRemove.Contains(prefetched.TopicPartition))
@@ -3365,6 +3369,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
+            TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
 
@@ -3571,6 +3576,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Drain and dispose prefetch channel items
         while (_prefetchChannel.Reader.TryRead(out var prefetched))
         {
+            TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
 

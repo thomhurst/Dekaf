@@ -9,6 +9,14 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// Validates ordering guarantees, error counting, drain behavior on assignment loss,
 /// drain behavior on memory limit, pipeline depth, and shutdown exception observation.
 /// </summary>
+/// <remarks>
+/// NOTE: These tests cover PrefetchPipelineRunner behavior only. The
+/// <c>DrainPrefetchChannelForPartitions</c> method on KafkaConsumer (which drains
+/// the prefetch channel during incremental unassign / cooperative rebalance) is not
+/// covered here because it is a private method on KafkaConsumer and constructing a
+/// KafkaConsumer in a unit test is impractical. Integration tests with a real Kafka
+/// broker are needed to verify the drain-on-rebalance behavior end-to-end.
+/// </remarks>
 public class PrefetchPipelineRunnerTests
 {
     #region Scenario 1: Eager fetch is awaited before the next synchronous fetch (ordering guarantee)
