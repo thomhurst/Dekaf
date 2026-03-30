@@ -264,17 +264,19 @@ public class PoolSizingTests
     [NotInParallel("DekafPools")]
     public async Task SerializationBuffers_RatchetUp_ReplacesPool()
     {
-        // Ratchet to a known high value — always triggers a replacement regardless
-        // of what previous tests set (ratchet is monotonically increasing).
+        // Establish a known baseline, then ratchet above it to verify replacement.
         DekafPools.RatchetSerializationBucketCapacity(512);
-        var after = DekafPools.SerializationBuffers;
+        var poolAt512 = DekafPools.SerializationBuffers;
 
-        await Assert.That(after).IsNotNull();
+        // Ratchet higher — must create a new pool instance
+        DekafPools.RatchetSerializationBucketCapacity(1024);
+        var poolAt1024 = DekafPools.SerializationBuffers;
+        await Assert.That(poolAt1024).IsNotSameReferenceAs(poolAt512);
 
         // Same value — should be a no-op (pool reference unchanged)
-        DekafPools.RatchetSerializationBucketCapacity(512);
+        DekafPools.RatchetSerializationBucketCapacity(1024);
         var afterSame = DekafPools.SerializationBuffers;
-        await Assert.That(afterSame).IsSameReferenceAs(after);
+        await Assert.That(afterSame).IsSameReferenceAs(poolAt1024);
     }
 
     [Test]
