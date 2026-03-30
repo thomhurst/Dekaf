@@ -45,6 +45,7 @@ public class AdaptiveFetchSizerTests
     {
         var options = new AdaptiveFetchSizingOptions
         {
+            MinPartitionFetchBytes = 500_000,
             InitialPartitionFetchBytes = 1_000_000,
             InitialFetchMaxBytes = 50_000_000,
             GrowthFactor = 2.0,
@@ -63,8 +64,10 @@ public class AdaptiveFetchSizerTests
     {
         var options = new AdaptiveFetchSizingOptions
         {
+            MinPartitionFetchBytes = 500_000,
             InitialPartitionFetchBytes = 1_000_000,
             MaxPartitionFetchBytes = 100_000_000,
+            MinFetchMaxBytes = 5_000_000,
             InitialFetchMaxBytes = 10_000_000,
             MaxFetchMaxBytes = 1_000_000_000,
             GrowthFactor = 1.5,
@@ -331,6 +334,7 @@ public class AdaptiveFetchSizerTests
     {
         var options = new AdaptiveFetchSizingOptions
         {
+            MinPartitionFetchBytes = 500_000,
             InitialPartitionFetchBytes = 1_000_000,
             StableWindowCount = 5,
             GrowthFactor = 1.5
@@ -372,6 +376,116 @@ public class AdaptiveFetchSizerTests
 
         sizer.EvaluateAndAdjust(3.0); // Triggers shrink, resets counter
         await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(0);
+    }
+
+    #endregion
+
+    #region Input validation
+
+    [Test]
+    public async Task Constructor_ThrowsWhenMinPartitionFetchBytesExceedsInitial()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            MinPartitionFetchBytes = 2_000_000,
+            InitialPartitionFetchBytes = 1_000_000
+        };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenInitialPartitionFetchBytesExceedsMax()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            InitialPartitionFetchBytes = 20_000_000,
+            MaxPartitionFetchBytes = 16_000_000
+        };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenMinFetchMaxBytesExceedsInitial()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            MinFetchMaxBytes = 60_000_000,
+            InitialFetchMaxBytes = 50_000_000
+        };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenInitialFetchMaxBytesExceedsMax()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            InitialFetchMaxBytes = 200_000_000,
+            MaxFetchMaxBytes = 100_000_000
+        };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenGrowthFactorIsOne()
+    {
+        var options = new AdaptiveFetchSizingOptions { GrowthFactor = 1.0 };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenGrowthFactorIsLessThanOne()
+    {
+        var options = new AdaptiveFetchSizingOptions { GrowthFactor = 0.5 };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenShrinkFactorIsZero()
+    {
+        var options = new AdaptiveFetchSizingOptions { ShrinkFactor = 0.0 };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenShrinkFactorIsOne()
+    {
+        var options = new AdaptiveFetchSizingOptions { ShrinkFactor = 1.0 };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Constructor_ThrowsWhenStableWindowCountIsZero()
+    {
+        var options = new AdaptiveFetchSizingOptions { StableWindowCount = 0 };
+
+        var act = () => new AdaptiveFetchSizer(options);
+
+        await Assert.That(act).Throws<ArgumentException>();
     }
 
     #endregion

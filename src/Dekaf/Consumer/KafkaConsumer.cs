@@ -2736,6 +2736,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         request.IsolationLevel = _options.IsolationLevel;
         request.Topics = topicData;
 
+        _adaptiveFetchSizer?.RecordFetchStart();
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
         FetchResponse response;
@@ -2750,6 +2751,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             request.ReturnToPool();
         }
+
+        _adaptiveFetchSizer?.RecordFetchEnd();
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(

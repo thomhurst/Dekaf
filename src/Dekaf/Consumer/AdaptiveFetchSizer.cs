@@ -37,7 +37,6 @@ internal sealed class AdaptiveFetchSizer
     private int _consecutiveShrinkSignals;
     private long _lastFetchStartTimestamp;
     private long _lastFetchEndTimestamp;
-    private long _testTimeOffsetTicks;
 
     /// <summary>
     /// The current adaptive MaxPartitionFetchBytes value.
@@ -73,9 +72,28 @@ internal sealed class AdaptiveFetchSizer
 
         _currentPartitionFetchBytes = options.InitialPartitionFetchBytes;
         _currentFetchMaxBytes = options.InitialFetchMaxBytes;
-    }
 
-    private long GetTimestamp() => Stopwatch.GetTimestamp() + _testTimeOffsetTicks;
+        if (options.MinPartitionFetchBytes > options.InitialPartitionFetchBytes)
+            throw new ArgumentException($"MinPartitionFetchBytes ({options.MinPartitionFetchBytes}) must be <= InitialPartitionFetchBytes ({options.InitialPartitionFetchBytes}).", nameof(options));
+
+        if (options.InitialPartitionFetchBytes > options.MaxPartitionFetchBytes)
+            throw new ArgumentException($"InitialPartitionFetchBytes ({options.InitialPartitionFetchBytes}) must be <= MaxPartitionFetchBytes ({options.MaxPartitionFetchBytes}).", nameof(options));
+
+        if (options.MinFetchMaxBytes > options.InitialFetchMaxBytes)
+            throw new ArgumentException($"MinFetchMaxBytes ({options.MinFetchMaxBytes}) must be <= InitialFetchMaxBytes ({options.InitialFetchMaxBytes}).", nameof(options));
+
+        if (options.InitialFetchMaxBytes > options.MaxFetchMaxBytes)
+            throw new ArgumentException($"InitialFetchMaxBytes ({options.InitialFetchMaxBytes}) must be <= MaxFetchMaxBytes ({options.MaxFetchMaxBytes}).", nameof(options));
+
+        if (options.GrowthFactor <= 1.0)
+            throw new ArgumentException($"GrowthFactor ({options.GrowthFactor}) must be greater than 1.0.", nameof(options));
+
+        if (options.ShrinkFactor is <= 0.0 or >= 1.0)
+            throw new ArgumentException($"ShrinkFactor ({options.ShrinkFactor}) must be in the range (0.0, 1.0) exclusive.", nameof(options));
+
+        if (options.StableWindowCount < 1)
+            throw new ArgumentException($"StableWindowCount ({options.StableWindowCount}) must be >= 1.", nameof(options));
+    }
 
     /// <summary>
     /// Records the start of a fetch operation. Call before sending the fetch request.
@@ -83,7 +101,7 @@ internal sealed class AdaptiveFetchSizer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RecordFetchStart()
     {
-        _lastFetchStartTimestamp = GetTimestamp();
+        _lastFetchStartTimestamp = Stopwatch.GetTimestamp();
     }
 
     /// <summary>
@@ -92,7 +110,7 @@ internal sealed class AdaptiveFetchSizer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RecordFetchEnd()
     {
-        _lastFetchEndTimestamp = GetTimestamp();
+        _lastFetchEndTimestamp = Stopwatch.GetTimestamp();
     }
 
     /// <summary>
@@ -179,13 +197,6 @@ internal sealed class AdaptiveFetchSizer
             (int)(_currentFetchMaxBytes * _shrinkFactor),
             _minFetchMaxBytes);
     }
-
-    /// <summary>
-    /// Advances the internal test clock by the specified duration.
-    /// For testing only.
-    /// </summary>
-    internal void TestAdvanceTime(TimeSpan duration)
-        => _testTimeOffsetTicks += (long)(duration.TotalSeconds * Stopwatch.Frequency);
 }
 
 /// <summary>
