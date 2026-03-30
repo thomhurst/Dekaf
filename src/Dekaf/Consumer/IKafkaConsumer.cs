@@ -206,6 +206,7 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 /// Result of consuming a message.
 /// This is a struct to avoid heap allocations in the hot path.
 /// Key and Value are deserialized eagerly during construction to avoid storing deserializer references.
+/// Timestamp is computed on demand from stored Unix milliseconds to avoid per-message DateTimeOffset construction.
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
@@ -222,6 +223,11 @@ public readonly struct ConsumeResult<TKey, TValue>
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
+    // Store raw Unix milliseconds instead of DateTimeOffset to avoid per-message
+    // DateTimeOffset.FromUnixTimeMilliseconds() construction in the consume loop.
+    // The DateTimeOffset is computed on demand via the Timestamp property.
+    private readonly long _timestampMs;
+
     /// <summary>
     /// Creates a new ConsumeResult with eager deserialization.
     /// Deserializes key and value immediately to avoid storing deserializer references in the struct.
@@ -235,7 +241,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         ReadOnlyMemory<byte> valueData,
         bool isValueNull,
         IReadOnlyList<Header>? headers,
-        DateTimeOffset timestamp,
+        long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
         IDeserializer<TKey>? keyDeserializer,
@@ -246,7 +252,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         Partition = partition;
         Offset = offset;
         Headers = headers;
-        Timestamp = timestamp;
+        _timestampMs = timestampMs;
         TimestampType = timestampType;
         LeaderEpoch = leaderEpoch;
         IsPartitionEof = isPartitionEof;
@@ -309,7 +315,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             valueData: default,
             isValueNull: true,
             headers: null,
-            timestamp: default,
+            timestampMs: 0,
             timestampType: TimestampType.NotAvailable,
             leaderEpoch: null,
             keyDeserializer: null,
@@ -348,9 +354,16 @@ public readonly struct ConsumeResult<TKey, TValue>
     public IReadOnlyList<Header>? Headers { get; }
 
     /// <summary>
-    /// The message timestamp.
+    /// The message timestamp as a DateTimeOffset.
+    /// Computed on demand from the stored Unix milliseconds to avoid per-message construction overhead.
     /// </summary>
-    public DateTimeOffset Timestamp { get; }
+    public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(_timestampMs);
+
+    /// <summary>
+    /// The message timestamp as raw Unix milliseconds since epoch.
+    /// Prefer this over <see cref="Timestamp"/> in hot paths to avoid DateTimeOffset construction.
+    /// </summary>
+    public long TimestampMs => _timestampMs;
 
     /// <summary>
     /// The timestamp type.
