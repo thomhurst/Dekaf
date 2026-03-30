@@ -84,8 +84,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
             if (_highWaterMark < bufferLength / 2 && bufferLength > _initialCapacity)
             {
                 // Target size floors at _initialCapacity when _highWaterMark is 0
-            // (buffer had no writes in the last ShrinkCheckInterval clears).
-            var targetSize = Math.Max(_initialCapacity, _highWaterMark * 2);
+                // (buffer had no writes in the last ShrinkCheckInterval clears).
+                var targetSize = Math.Max(_initialCapacity, _highWaterMark * 2);
                 DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
                 _buffer = DekafPools.SerializationBuffers.Rent(targetSize);
             }
@@ -212,27 +212,70 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal const int TotalBatchHeaderSize = 8 + 4 + BatchHeaderSize;
 
-    // Single thread-local cache consolidating all per-thread buffer state.
-    // Reduces 3 separate [ThreadStatic] lookups to 1.
-    [ThreadStatic]
-    private static RecordBatchThreadCache? t_cache;
+    // Bounded pool of scratch buffer caches for RecordBatch serialization/deserialization.
+    // Previously [ThreadStatic], but ConfigureAwait(false) in BrokerSender send loops causes
+    // thread migration — each unique thread that handled serialization retained a permanent
+    // ~1MB buffer rented from DekafPools.SerializationBuffers. With 3+ brokers, dozens of
+    // threads accumulated caches over time, depleting the pool and driving Gen2 GC pressure.
+    // A bounded ConcurrentStack pool ensures at most MaxPooledCaches buffers are retained,
+    // regardless of how many threads participate in serialization.
+    private static readonly ConcurrentStack<SerializationCache> s_cachePool = new();
+    private static int s_cachePoolCount;
+    private const int MaxPooledCaches = 32;
 
     /// <summary>
-    /// Holds all per-thread cached buffer state for RecordBatch serialization/deserialization.
-    /// Consolidating into a single class reduces thread-static lookup overhead from 3 to 1.
+    /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.
+    /// Rented from <see cref="s_cachePool"/> at operation start, returned at operation end.
     /// Uses PooledReusableBufferWriter (ArrayPool-backed) instead of ArrayBufferWriter
     /// to avoid Buffer.ZeroMemoryInternal overhead from new byte[] allocations on growth.
     /// </summary>
-    private sealed class RecordBatchThreadCache
+    internal sealed class SerializationCache
     {
         public PooledReusableBufferWriter? RecordsBuffer;
         public PooledReusableBufferWriter? CompressedBuffer;
         public PooledReusableBufferWriter? DecompressedBuffer;
+
+        /// <summary>
+        /// Disposes all buffers, returning their arrays to DekafPools.SerializationBuffers.
+        /// Called when the cache is evicted from the pool (pool full) to prevent buffer leaks.
+        /// </summary>
+        public void Dispose()
+        {
+            RecordsBuffer?.Dispose();
+            RecordsBuffer = null;
+            CompressedBuffer?.Dispose();
+            CompressedBuffer = null;
+            DecompressedBuffer?.Dispose();
+            DecompressedBuffer = null;
+        }
     }
 
-    private static PooledReusableBufferWriter GetRecordsBuffer()
+    internal static SerializationCache RentSerializationCache()
     {
-        var cache = t_cache ??= new RecordBatchThreadCache();
+        if (s_cachePool.TryPop(out var cache))
+        {
+            Interlocked.Decrement(ref s_cachePoolCount);
+            return cache;
+        }
+        return new SerializationCache();
+    }
+
+    internal static void ReturnSerializationCache(SerializationCache cache)
+    {
+        if (Interlocked.Increment(ref s_cachePoolCount) <= MaxPooledCaches)
+        {
+            s_cachePool.Push(cache);
+        }
+        else
+        {
+            Interlocked.Decrement(ref s_cachePoolCount);
+            // Pool full — dispose buffers to return arrays to DekafPools.SerializationBuffers
+            cache.Dispose();
+        }
+    }
+
+    private static PooledReusableBufferWriter GetRecordsBuffer(SerializationCache cache)
+    {
         var buffer = cache.RecordsBuffer;
         if (buffer is null)
         {
@@ -246,9 +289,8 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    private static PooledReusableBufferWriter GetCompressedBuffer()
+    private static PooledReusableBufferWriter GetCompressedBuffer(SerializationCache cache)
     {
-        var cache = t_cache ??= new RecordBatchThreadCache();
         var buffer = cache.CompressedBuffer;
         if (buffer is null)
         {
@@ -262,9 +304,8 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    private static PooledReusableBufferWriter GetDecompressedBuffer(int estimatedSize)
+    private static PooledReusableBufferWriter GetDecompressedBuffer(SerializationCache cache, int estimatedSize)
     {
-        var cache = t_cache ??= new RecordBatchThreadCache();
         var buffer = cache.DecompressedBuffer;
         if (buffer is null)
         {
@@ -355,32 +396,40 @@ public sealed class RecordBatch : IDisposable
         if (compression == CompressionType.None)
             return;
 
-        // Serialize records to thread-local buffer
-        var recordsBuffer = GetRecordsBuffer();
-        var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
-
-        for (var i = 0; i < Records.Count; i++)
+        var cache = RentSerializationCache();
+        try
         {
-            Records[i].Write(ref recordsWriter);
+            // Serialize records to pooled scratch buffer
+            var recordsBuffer = GetRecordsBuffer(cache);
+            var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
+
+            for (var i = 0; i < Records.Count; i++)
+            {
+                Records[i].Write(ref recordsWriter);
+            }
+
+            // Compress to pooled scratch buffer
+            var registry = codecs ?? CompressionCodecRegistry.Default;
+            var codec = registry.GetCodec(compression);
+            var compressedBuffer = GetCompressedBuffer(cache);
+            codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
+
+            // Copy to a pooled array for storage (scratch buffer will be reused).
+            // Uses ProducerDataPool (not ArrayPool<byte>.Shared) because PreCompress runs on
+            // the producer/accumulator thread but ReturnPreCompressedBuffer runs on the
+            // BrokerSender thread — cross-thread ArrayPool<byte>.Shared causes TLS accumulation.
+            var compressedLength = compressedBuffer.WrittenCount;
+            var pooledArray = Producer.ProducerDataPool.BytePool.Rent(compressedLength);
+            compressedBuffer.WrittenSpan.CopyTo(pooledArray);
+
+            PreCompressedRecords = pooledArray;
+            PreCompressedLength = compressedLength;
+            PreCompressedType = compression;
         }
-
-        // Compress to thread-local buffer
-        var registry = codecs ?? CompressionCodecRegistry.Default;
-        var codec = registry.GetCodec(compression);
-        var compressedBuffer = GetCompressedBuffer();
-        codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
-
-        // Copy to a pooled array for storage (thread-local buffer will be reused).
-        // Uses ProducerDataPool (not ArrayPool<byte>.Shared) because PreCompress runs on
-        // the producer/accumulator thread but ReturnPreCompressedBuffer runs on the
-        // BrokerSender thread — cross-thread ArrayPool<byte>.Shared causes TLS accumulation.
-        var compressedLength = compressedBuffer.WrittenCount;
-        var pooledArray = Producer.ProducerDataPool.BytePool.Rent(compressedLength);
-        compressedBuffer.WrittenSpan.CopyTo(pooledArray);
-
-        PreCompressedRecords = pooledArray;
-        PreCompressedLength = compressedLength;
-        PreCompressedType = compression;
+        finally
+        {
+            ReturnSerializationCache(cache);
+        }
     }
 
     /// <summary>
@@ -538,105 +587,120 @@ public sealed class RecordBatch : IDisposable
 
         // Determine the effective compression and records data to write.
         // If pre-compressed at seal time, use that data directly (skip CPU-bound compression
-        // on the send loop thread). Otherwise, serialize and compress inline (legacy path).
+        // on the send loop thread). Otherwise, serialize and compress inline.
         ReadOnlySpan<byte> compressedRecords;
         CompressionType effectiveCompression;
 
-        if (PreCompressedRecords is not null)
+        // Rent a scratch cache only when needed (no pre-compressed data available).
+        // The cache is returned in the finally block to bound total retained buffers.
+        SerializationCache? cache = null;
+        try
         {
-            // Pre-compressed at seal time — use the stored data directly
-            compressedRecords = PreCompressedRecords.AsSpan(0, PreCompressedLength);
-            effectiveCompression = PreCompressedType;
-        }
-        else
-        {
-            // Serialize records to thread-local buffer
-            var recordsBuffer = GetRecordsBuffer();
-            var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
-
-            for (var i = 0; i < Records.Count; i++)
+            if (PreCompressedRecords is not null)
             {
-                Records[i].Write(ref recordsWriter);
-            }
-
-            // Apply compression if needed
-            if (compression != CompressionType.None)
-            {
-                var registry = codecs ?? CompressionCodecRegistry.Default;
-                var codec = registry.GetCodec(compression);
-                var compressedBuffer = GetCompressedBuffer();
-                codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
-                compressedRecords = compressedBuffer.WrittenSpan;
-                effectiveCompression = compression;
+                // Pre-compressed at seal time — use the stored data directly
+                compressedRecords = PreCompressedRecords.AsSpan(0, PreCompressedLength);
+                effectiveCompression = PreCompressedType;
             }
             else
             {
-                compressedRecords = recordsBuffer.WrittenSpan;
-                effectiveCompression = CompressionType.None;
+                cache = RentSerializationCache();
+
+                // Serialize records to pooled scratch buffer
+                var recordsBuffer = GetRecordsBuffer(cache);
+                var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
+
+                for (var i = 0; i < Records.Count; i++)
+                {
+                    Records[i].Write(ref recordsWriter);
+                }
+
+                // Apply compression if needed
+                if (compression != CompressionType.None)
+                {
+                    var registry = codecs ?? CompressionCodecRegistry.Default;
+                    var codec = registry.GetCodec(compression);
+                    var compressedBuffer = GetCompressedBuffer(cache);
+                    codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
+                    compressedRecords = compressedBuffer.WrittenSpan;
+                    effectiveCompression = compression;
+                }
+                else
+                {
+                    compressedRecords = recordsBuffer.WrittenSpan;
+                    effectiveCompression = CompressionType.None;
+                }
             }
+
+            // Calculate batch length: from partition leader epoch to end
+            // 4 (partition leader epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
+            // 4 (last offset delta) + 8 (base timestamp) + 8 (max timestamp) +
+            // 8 (producer id) + 2 (producer epoch) + 4 (base sequence) + 4 (records count) + records
+            var batchLength = BatchHeaderSize + compressedRecords.Length;
+
+            // Write base offset and batch length
+            writer.WriteInt64(BaseOffset);
+            writer.WriteInt32(batchLength);
+
+            // Write partition leader epoch
+            writer.WriteInt32(PartitionLeaderEpoch);
+
+            // Write magic byte
+            writer.WriteUInt8(Magic);
+
+            // CRC content size: 2 (attributes) + 4 (lastOffsetDelta) + 8 (baseTimestamp) +
+            // 8 (maxTimestamp) + 8 (producerId) + 2 (producerEpoch) + 4 (baseSequence) +
+            // 4 (recordsCount) + compressedRecords = 40 + records
+            const int crcContentFixedSize = 40;
+            var crcContentSize = crcContentFixedSize + compressedRecords.Length;
+
+            // Get a span for CRC (4 bytes) + content, write content directly, calculate CRC, backpatch
+            // This eliminates the need for crcBuffer intermediate copy
+            var crcAndContentSpan = output.GetSpan(4 + crcContentSize);
+            var contentSpan = crcAndContentSpan.Slice(4); // Content starts after CRC
+
+            var attributes = (short)Attributes;
+            if (effectiveCompression != CompressionType.None)
+            {
+                attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
+            }
+
+            // Write content directly using BinaryPrimitives
+            var offset = 0;
+            BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], attributes);
+            offset += 2;
+            BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], LastOffsetDelta);
+            offset += 4;
+            BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], BaseTimestamp);
+            offset += 8;
+            BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], MaxTimestamp);
+            offset += 8;
+            BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], ProducerId);
+            offset += 8;
+            BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], ProducerEpoch);
+            offset += 2;
+            BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], BaseSequence);
+            offset += 4;
+            BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], Records.Count);
+            offset += 4;
+            compressedRecords.CopyTo(contentSpan[offset..]);
+
+            // Calculate CRC over the content we just wrote
+            var crc = Crc32C.Compute(contentSpan[..crcContentSize]);
+
+            // Backpatch CRC at the beginning
+            BinaryPrimitives.WriteInt32BigEndian(crcAndContentSpan, (int)crc);
+
+            // Advance the output by the full amount written.
+            // Must happen before ReturnSerializationCache in the finally block,
+            // because compressedRecords may reference the cache's buffer writer.
+            output.Advance(4 + crcContentSize);
         }
-
-        // Calculate batch length: from partition leader epoch to end
-        // 4 (partition leader epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
-        // 4 (last offset delta) + 8 (base timestamp) + 8 (max timestamp) +
-        // 8 (producer id) + 2 (producer epoch) + 4 (base sequence) + 4 (records count) + records
-        var batchLength = BatchHeaderSize + compressedRecords.Length;
-
-        // Write base offset and batch length
-        writer.WriteInt64(BaseOffset);
-        writer.WriteInt32(batchLength);
-
-        // Write partition leader epoch
-        writer.WriteInt32(PartitionLeaderEpoch);
-
-        // Write magic byte
-        writer.WriteUInt8(Magic);
-
-        // CRC content size: 2 (attributes) + 4 (lastOffsetDelta) + 8 (baseTimestamp) +
-        // 8 (maxTimestamp) + 8 (producerId) + 2 (producerEpoch) + 4 (baseSequence) +
-        // 4 (recordsCount) + compressedRecords = 40 + records
-        const int crcContentFixedSize = 40;
-        var crcContentSize = crcContentFixedSize + compressedRecords.Length;
-
-        // Get a span for CRC (4 bytes) + content, write content directly, calculate CRC, backpatch
-        // This eliminates the need for crcBuffer intermediate copy
-        var crcAndContentSpan = output.GetSpan(4 + crcContentSize);
-        var contentSpan = crcAndContentSpan.Slice(4); // Content starts after CRC
-
-        var attributes = (short)Attributes;
-        if (effectiveCompression != CompressionType.None)
+        finally
         {
-            attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
+            if (cache is not null)
+                ReturnSerializationCache(cache);
         }
-
-        // Write content directly using BinaryPrimitives
-        var offset = 0;
-        BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], attributes);
-        offset += 2;
-        BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], LastOffsetDelta);
-        offset += 4;
-        BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], BaseTimestamp);
-        offset += 8;
-        BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], MaxTimestamp);
-        offset += 8;
-        BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], ProducerId);
-        offset += 8;
-        BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], ProducerEpoch);
-        offset += 2;
-        BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], BaseSequence);
-        offset += 4;
-        BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], Records.Count);
-        offset += 4;
-        compressedRecords.CopyTo(contentSpan[offset..]);
-
-        // Calculate CRC over the content we just wrote
-        var crc = Crc32C.Compute(contentSpan[..crcContentSize]);
-
-        // Backpatch CRC at the beginning
-        BinaryPrimitives.WriteInt32BigEndian(crcAndContentSpan, (int)crc);
-
-        // Advance the output by the full amount written
-        output.Advance(4 + crcContentSize);
     }
 
     /// <summary>
@@ -702,20 +766,28 @@ public sealed class RecordBatch : IDisposable
         if (compression != CompressionType.None)
         {
             // Compressed data must be decompressed to a new buffer.
-            // Use thread-local buffer for decompression, then copy to a pooled array.
+            // Use pooled scratch buffer for decompression, then copy to a pooled array.
             // The pooled array will be managed by LazyRecordList for proper cleanup.
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
             var estimatedSize = recordsLength * 4; // Estimate 4x expansion
-            var decompressedBuffer = GetDecompressedBuffer(estimatedSize);
-            codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
+            var cache = RentSerializationCache();
+            try
+            {
+                var decompressedBuffer = GetDecompressedBuffer(cache, estimatedSize);
+                codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
 
-            // Rent a pooled array and copy the decompressed data
-            var writtenLength = decompressedBuffer.WrittenCount;
-            var pooledArray = ArrayPool<byte>.Shared.Rent(writtenLength);
-            decompressedBuffer.WrittenSpan.CopyTo(pooledArray);
-            var pooledData = new PooledRecordData(pooledArray, writtenLength);
-            lazyRecords = LazyRecordList.Create(pooledData, recordCount);
+                // Rent a pooled array and copy the decompressed data
+                var writtenLength = decompressedBuffer.WrittenCount;
+                var pooledArray = ArrayPool<byte>.Shared.Rent(writtenLength);
+                decompressedBuffer.WrittenSpan.CopyTo(pooledArray);
+                var pooledData = new PooledRecordData(pooledArray, writtenLength);
+                lazyRecords = LazyRecordList.Create(pooledData, recordCount);
+            }
+            finally
+            {
+                ReturnSerializationCache(cache);
+            }
         }
         else if (ResponseParsingContext.HasPooledMemory)
         {
