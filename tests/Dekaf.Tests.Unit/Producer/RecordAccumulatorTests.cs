@@ -1723,9 +1723,9 @@ public class RecordAccumulatorTests
                 largeValue, valueIsNull: false,
                 null, 0, null, CancellationToken.None));
 
-        // Wait deterministically until the task is actually blocked (not yet completed)
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (!appendTask.IsCompleted && sw.ElapsedMilliseconds < 5000)
+        // Yield enough times for the background task to reach WaitAsync.
+        // In practice it parks within the first few yields; 100 is generous headroom.
+        for (var i = 0; i < 100 && !appendTask.IsCompleted; i++)
             await Task.Yield();
 
         // Dispose should unblock the waiter
