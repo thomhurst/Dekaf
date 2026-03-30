@@ -1118,6 +1118,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             // propagate normally to the caller.
                             previousActivity?.Dispose();
                             previousActivity = null;
+                            if (previousHeaderSlice is not null)
+                            {
+                                HeaderSlice.Return(previousHeaderSlice);
+                                previousHeaderSlice = null;
+                            }
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                             break;
                         }

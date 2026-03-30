@@ -150,6 +150,25 @@ public class ConsumeResultTests
     }
 
     [Test]
+    public async Task HeaderSlice_Return_ClearsCountToZero()
+    {
+        var headers = new Header[]
+        {
+            new("key1", System.Text.Encoding.UTF8.GetBytes("value1")),
+            new("key2", System.Text.Encoding.UTF8.GetBytes("value2"))
+        };
+
+        var slice = HeaderSlice.Rent(headers, 2);
+        await Assert.That(slice.Count).IsEqualTo(2);
+
+        HeaderSlice.Return(slice);
+
+        // After return, the instance's count is cleared to document the lifetime contract:
+        // accessing a returned HeaderSlice is invalid (the data is gone).
+        await Assert.That(slice.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task HeaderSlice_RentAfterReturn_ReusesInstance()
     {
         var headers1 = new Header[]
@@ -169,6 +188,7 @@ public class ConsumeResultTests
 
         // After return + rent, the pooled instance should be reused
         // with the new data
+        await Assert.That(ReferenceEquals(slice1, slice2)).IsTrue();
         await Assert.That(slice2.Count).IsEqualTo(2);
         await Assert.That(slice2[0].Key).IsEqualTo("key2");
         await Assert.That(slice2[1].Key).IsEqualTo("key3");

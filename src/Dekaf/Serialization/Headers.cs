@@ -420,10 +420,13 @@ internal sealed class HeaderSlice : IReadOnlyList<Header>
     {
         instance._array = null!;
         instance._count = 0;
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
         {
             s_pool.Push(instance);
-            Interlocked.Increment(ref s_poolCount);
+        }
+        else
+        {
+            Interlocked.Decrement(ref s_poolCount);
         }
     }
 
