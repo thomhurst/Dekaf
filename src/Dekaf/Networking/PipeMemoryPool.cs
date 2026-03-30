@@ -96,7 +96,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
             return owner;
         }
 
-        return new PooledMemoryOwner(this, _pool, minBufferSize);
+        return new PooledMemoryOwner(this, minBufferSize);
     }
 
     /// <summary>
@@ -153,10 +153,10 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         private readonly PipeMemoryPool _parentPool;
         private byte[]? _array;
 
-        public PooledMemoryOwner(PipeMemoryPool parentPool, ArrayPool<byte> pool, int minBufferSize)
+        public PooledMemoryOwner(PipeMemoryPool parentPool, int minBufferSize)
         {
             _parentPool = parentPool;
-            _array = pool.Rent(minBufferSize);
+            _array = parentPool._pool.Rent(minBufferSize);
         }
 
         /// <summary>
