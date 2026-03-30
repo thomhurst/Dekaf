@@ -207,14 +207,43 @@ internal static class ProducerDebugCounters
 /// </summary>
 internal static class ProducerDataPool
 {
-    /// <summary>
-    /// Shared pool for producer key/value data arrays. Bounded to 4 MB max array size
-    /// (covers the default 1 MB BatchSize with headroom for oversized messages)
-    /// with 16 arrays per bucket to handle concurrent producer threads.
-    /// </summary>
-    internal static readonly ArrayPool<byte> BytePool = ArrayPool<byte>.Create(
+    private static ArrayPool<byte> s_bytePool = ArrayPool<byte>.Create(
         maxArrayLength: 4 * 1024 * 1024,
         maxArraysPerBucket: 16);
+
+    private static int s_currentArraysPerBucket = 16;
+    private static readonly Lock s_ratchetLock = new();
+
+    /// <summary>
+    /// Shared pool for producer key/value data arrays. Bounded to 4 MB max array size
+    /// (covers the default 1 MB BatchSize with headroom for oversized messages).
+    /// Bucket depth is scaled via <see cref="RatchetBucketCapacity"/> when multi-broker
+    /// configurations are detected.
+    /// </summary>
+    internal static ArrayPool<byte> BytePool => Volatile.Read(ref s_bytePool);
+
+    /// <summary>
+    /// Increases the per-bucket array capacity if <paramref name="arraysPerBucket"/> exceeds
+    /// the current value. Called during producer construction once the broker count is known.
+    /// Uses a ratchet (monotonically increasing) to avoid shrinking under concurrent access.
+    /// The old pool instance becomes GC-eligible once outstanding rentals are returned.
+    /// </summary>
+    internal static void RatchetBucketCapacity(int arraysPerBucket)
+    {
+        if (arraysPerBucket <= Volatile.Read(ref s_currentArraysPerBucket))
+            return;
+
+        lock (s_ratchetLock)
+        {
+            if (arraysPerBucket <= s_currentArraysPerBucket)
+                return;
+
+            Volatile.Write(ref s_bytePool, ArrayPool<byte>.Create(
+                maxArrayLength: 4 * 1024 * 1024,
+                maxArraysPerBucket: arraysPerBucket));
+            Volatile.Write(ref s_currentArraysPerBucket, arraysPerBucket);
+        }
+    }
 }
 
 /// <summary>

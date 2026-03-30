@@ -23,7 +23,9 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Bucket capacity is scaled by <c>_connectionsPerBroker</c> to prevent pool saturation
     /// under high concurrent load (capped at 256 to bound memory).
     /// </summary>
-    private readonly PipeMemoryPool? _sharedPipeMemoryPool;
+    private PipeMemoryPool? _sharedPipeMemoryPool;
+    private int _currentPipeMemoryBucketCapacity;
+    private readonly Lock _pipeMemoryRatchetLock = new();
 
     /// <summary>
     /// Optional factory for creating connections, used by tests to inject fakes.
@@ -85,7 +87,8 @@ public sealed partial class ConnectionPool : IConnectionPool
         ConnectionOptions? connectionOptions,
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
-        ResponseBufferPool responseBufferPool)
+        ResponseBufferPool responseBufferPool,
+        int? pipeMemoryBucketCapacity = null)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
@@ -93,7 +96,9 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
-        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: ScaledBucketCapacity(_connectionsPerBroker));
+        var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
+        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
+        _currentPipeMemoryBucketCapacity = bucketCapacity;
     }
 
     /// <summary>
@@ -117,19 +122,33 @@ public sealed partial class ConnectionPool : IConnectionPool
     }
 
     /// <summary>
-    /// Scales the per-bucket array capacity for the shared <see cref="PipeMemoryPool"/>
-    /// based on the number of connections that will share it. A single connection needs ~32
-    /// cached arrays to avoid pool overflow under pipelined load; with N connections sharing
-    /// the same pool, total concurrent demand scales linearly.
+    /// Fallback bucket capacity when broker-aware sizing is not provided.
+    /// Scales by <paramref name="connectionsPerBroker"/> only — callers that know the broker
+    /// count should use <see cref="Internal.PoolSizing.ForSharedPools"/> instead and pass the
+    /// result via the <c>pipeMemoryBucketCapacity</c> constructor parameter.
     /// </summary>
-    /// <remarks>
-    /// Uses <paramref name="connectionsPerBroker"/> (not total connections across all brokers)
-    /// because adaptive scaling keeps per-broker connection counts low in practice.
-    /// The 256 cap bounds memory retention regardless of connection count, preventing
-    /// pathological configurations from accumulating unbounded pooled arrays.
-    /// </remarks>
     private static int ScaledBucketCapacity(int connectionsPerBroker)
         => Math.Min(connectionsPerBroker * 32, 256);
+
+    /// <summary>
+    /// Increases the shared PipeMemoryPool bucket capacity if <paramref name="bucketCapacity"/>
+    /// exceeds the current value. New connections will use the larger pool; existing connections
+    /// continue using the previous pool until they are recycled.
+    /// </summary>
+    internal void RatchetPipeMemoryBucketCapacity(int bucketCapacity)
+    {
+        if (bucketCapacity <= Volatile.Read(ref _currentPipeMemoryBucketCapacity))
+            return;
+
+        lock (_pipeMemoryRatchetLock)
+        {
+            if (bucketCapacity <= _currentPipeMemoryBucketCapacity)
+                return;
+
+            Volatile.Write(ref _sharedPipeMemoryPool, new PipeMemoryPool(maxArraysPerBucket: bucketCapacity));
+            Volatile.Write(ref _currentPipeMemoryBucketCapacity, bucketCapacity);
+        }
+    }
 
     public void RegisterBroker(int brokerId, string host, int port)
     {

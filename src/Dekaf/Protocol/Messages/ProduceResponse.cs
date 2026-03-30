@@ -13,7 +13,8 @@ public sealed class ProduceResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 11;
 
-    private static readonly ProduceResponsePool s_pool = new();
+    private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
+    private static readonly Lock s_ratchetLock = new();
 
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
@@ -41,7 +42,7 @@ public sealed class ProduceResponse : IKafkaResponse
             ? reader.ReadUnsignedVarInt() - 1
             : reader.ReadInt32();
 
-        var response = s_pool.Rent();
+        var response = Volatile.Read(ref s_pool).Rent();
 
         if (topicCount > 0)
         {
@@ -66,10 +67,29 @@ public sealed class ProduceResponse : IKafkaResponse
     /// <summary>
     /// Returns this response to the pool for reuse. Must be called after processing is complete.
     /// </summary>
-    internal void Return() => s_pool.Return(this);
+    internal void Return() => Volatile.Read(ref s_pool).Return(this);
 
-    private sealed class ProduceResponsePool()
-        : Producer.ObjectPool<ProduceResponse>(maxPoolSize: 64)
+    /// <summary>
+    /// Increases the response pool capacity if <paramref name="poolSize"/> exceeds the current size.
+    /// Called during producer construction once the broker count is known.
+    /// Uses a ratchet (monotonically increasing) — the old pool's items drain naturally.
+    /// </summary>
+    internal static void RatchetPoolSize(int poolSize)
+    {
+        if (poolSize <= Volatile.Read(ref s_pool).MaxPoolSize)
+            return;
+
+        lock (s_ratchetLock)
+        {
+            if (poolSize <= s_pool.MaxPoolSize)
+                return;
+
+            Volatile.Write(ref s_pool, new ProduceResponsePool(poolSize));
+        }
+    }
+
+    private sealed class ProduceResponsePool(int maxPoolSize)
+        : Producer.ObjectPool<ProduceResponse>(maxPoolSize)
     {
         protected override ProduceResponse Create() => new();
 

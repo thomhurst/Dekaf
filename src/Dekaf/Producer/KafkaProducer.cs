@@ -40,7 +40,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
     private readonly IPartitioner _partitioner;
-    private readonly IConnectionPool _connectionPool;
+    private readonly ConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly CompressionCodecRegistry _compressionCodecs;
@@ -175,6 +175,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var producerPoolSizes = PoolSizing.ForProducer(options.BufferMemory, options.BatchSize);
 
+        // Scale shared pools based on bootstrap server count (minimum broker estimate).
+        // This prevents pool contention when multiple brokers concurrently rent/return arrays.
+        var sharedPoolSizes = PoolSizing.ForSharedPools(
+            brokerCount: options.BootstrapServers.Count,
+            connectionsPerBroker: options.ConnectionsPerBroker,
+            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection);
+        ProducerDataPool.RatchetBucketCapacity(sharedPoolSizes.ProducerDataArraysPerBucket);
+        ProduceResponse.RatchetPoolSize(sharedPoolSizes.ProduceResponsePoolSize);
+
         var poolSize = options.ValueTaskSourcePoolSize > 0
             ? options.ValueTaskSourcePoolSize
             : producerPoolSizes.ValueTaskSources;
@@ -207,13 +216,28 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
             },
             loggerFactory,
-            options.ConnectionsPerBroker);
+            options.ConnectionsPerBroker,
+            ResponseBufferPool.Default,
+            pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket);
 
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
+
+        // Re-ratchet shared pool sizes after metadata refresh discovers the real broker count.
+        // Bootstrap servers are seed nodes — the actual cluster may have more brokers.
+        // The ratchet pattern ensures pools only grow, never shrink.
+        var connectionsPerBroker = options.ConnectionsPerBroker;
+        var maxInFlight = options.MaxInFlightRequestsPerConnection;
+        _metadataManager.OnBrokerCountDiscovered = brokerCount =>
+        {
+            var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight);
+            ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
+            ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
+            _connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
+        };
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);
         _accumulator = new RecordAccumulator(options, _compressionCodecs, loggerFactory?.CreateLogger<RecordAccumulator>());
