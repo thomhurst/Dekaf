@@ -45,33 +45,14 @@ public class AccumulatorAppendBenchmarks
         // Each batch holds ~BatchSize/EstimatedRecordSize messages. We need to seal batches
         // (not just append) for arenas and arrays to cycle through the pool pipeline.
         var msgsPerBatch = options.BatchSize / (MessageSize + 20); // +20 for record overhead
-        var warmupMessages = msgsPerBatch * 4; // Fill 4 batches to warm pools
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        for (var i = 0; i < warmupMessages; i++)
-        {
-            _accumulator.AppendFromSpansAsync(
-                "bench-topic", 0, ts,
-                _keyBytes, false, _valueBytes, false,
-                null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
 
-            // Drain periodically to release memory and return arenas/arrays to pools
-            if (i % msgsPerBatch == msgsPerBatch - 1)
-                DrainAll();
-        }
-        DrainAll();
+        // Warm single-partition pools by filling and draining 4 complete batches
+        FillAndDrain(partition: 0, batchCount: 4, msgsPerBatch, ts);
 
-        // Also warm multi-partition deques used by AppendMultiPartition
+        // Warm multi-partition deques used by AppendMultiPartition
         for (var p = 0; p < 10; p++)
-        {
-            for (var i = 0; i < msgsPerBatch + 1; i++)
-            {
-                _accumulator.AppendFromSpansAsync(
-                    "bench-topic", p, ts,
-                    _keyBytes, false, _valueBytes, false,
-                    null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
-            }
-            DrainAll();
-        }
+            FillAndDrain(partition: p, batchCount: 1, msgsPerBatch, ts);
 
         // Start background drainer to prevent buffer from filling
         _drainerCts = new CancellationTokenSource();
@@ -120,6 +101,23 @@ public class AccumulatorAppendBenchmarks
         }
     }
 
+    private void FillAndDrain(int partition, int batchCount, int msgsPerBatch, long ts)
+    {
+        var totalMessages = msgsPerBatch * batchCount;
+        for (var i = 0; i < totalMessages; i++)
+        {
+            _accumulator.AppendFromSpansAsync(
+                "bench-topic", partition, ts,
+                _keyBytes, false, _valueBytes, false,
+                null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
+
+            // Drain periodically to release memory and return arenas/arrays to pools
+            if (i % msgsPerBatch == msgsPerBatch - 1)
+                DrainAll();
+        }
+        DrainAll();
+    }
+
     private void DrainAll()
     {
         while (_accumulator.TryDrainBatch(out var batch))
@@ -129,7 +127,7 @@ public class AccumulatorAppendBenchmarks
         }
     }
 
-    private Task DrainLoop(CancellationToken ct)
+    private void DrainLoop(CancellationToken ct)
     {
         // Spin-based drainer: must keep up with the append thread to avoid starving
         // the arena/array pools. Task.Delay(1ms) is too slow when batches seal every ~100μs.
@@ -147,6 +145,5 @@ public class AccumulatorAppendBenchmarks
                 sw.SpinOnce();
             }
         }
-        return Task.CompletedTask;
     }
 }
