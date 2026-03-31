@@ -465,8 +465,11 @@ public sealed class RecordBatch : IDisposable
     // ── Pool for producer-path RecordBatch reuse ──
     // Eliminates per-batch class allocation (~120 bytes) that survives Gen0 due to
     // its lifetime spanning the send pipeline (1-10ms), contributing to high Gen1/Gen0 ratio.
-    private static readonly ConcurrentStack<RecordBatch> s_pool = new();
-    private static int s_poolCount;
+    // Uses an array-based LIFO stack instead of ConcurrentStack to avoid ~32-byte Node
+    // allocation per Push — at 400 batches/sec this eliminates ~12.8 KB/sec of Gen0 pressure
+    // that can seed GC feedback loops on low-core machines.
+    private static readonly RecordBatch?[] s_pool = new RecordBatch?[MaxPoolSize];
+    private static int s_top;
     private const int MaxPoolSize = 2048;
 
     /// <summary>
@@ -476,12 +479,23 @@ public sealed class RecordBatch : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static RecordBatch RentFromPool()
     {
-        if (s_pool.TryPop(out var batch))
+        while (true)
         {
-            Interlocked.Decrement(ref s_poolCount);
-            batch._returnedToPoolFlag = 0;
-            Volatile.Write(ref batch._disposed, 0);
-            return batch;
+            var top = Volatile.Read(ref s_top);
+            if (top <= 0)
+                break;
+
+            if (Interlocked.CompareExchange(ref s_top, top - 1, top) == top)
+            {
+                var batch = Interlocked.Exchange(ref s_pool[top - 1], null);
+                if (batch is not null)
+                {
+                    batch._returnedToPoolFlag = 0;
+                    Volatile.Write(ref batch._disposed, 0);
+                    return batch;
+                }
+                break;
+            }
         }
         return new RecordBatch();
     }
@@ -518,13 +532,17 @@ public sealed class RecordBatch : IDisposable
         ProducerEpoch = -1;
         BaseSequence = -1;
 
-        // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
-        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        while (true)
         {
-            s_pool.Push(this);
-            Interlocked.Increment(ref s_poolCount);
+            var top = Volatile.Read(ref s_top);
+            if (top >= MaxPoolSize)
+                return; // Pool full — discard for GC
+
+            if (Interlocked.CompareExchange(ref s_top, top + 1, top) == top)
+            {
+                Volatile.Write(ref s_pool[top], this);
+                return;
+            }
         }
     }
 
