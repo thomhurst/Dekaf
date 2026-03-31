@@ -19,6 +19,7 @@ public class InflightTrackingBenchmarks
     private PartitionInflightTracker _tracker = null!;
     private RecordAccumulator _accumulator = null!;
     private TopicPartition[] _partitions = null!;
+    private InflightEntry[] _burstEntries = null!;
 
     [Params(1, 10)]
     public int PartitionCount { get; set; }
@@ -43,6 +44,8 @@ public class InflightTrackingBenchmarks
             var entry = _tracker.Register(tp, i * 100, 100);
             _tracker.Complete(entry);
         }
+
+        _burstEntries = new InflightEntry[1100];
     }
 
     [GlobalCleanup]
@@ -90,17 +93,15 @@ public class InflightTrackingBenchmarks
     public void RegisterBurst_PoolExhaustion()
     {
         // Register 1100 entries without completing (exceeds default pool size of 1024)
-        var entries = new InflightEntry[1100];
         for (var i = 0; i < 1100; i++)
         {
             var tp = _partitions[i % PartitionCount];
-            entries[i] = _tracker.Register(tp, i * 100, 100);
+            _burstEntries[i] = _tracker.Register(tp, i * 100, 100);
         }
 
-        // Now complete them all
         for (var i = 0; i < 1100; i++)
         {
-            _tracker.Complete(entries[i]);
+            _tracker.Complete(_burstEntries[i]);
         }
     }
 }

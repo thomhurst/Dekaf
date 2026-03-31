@@ -90,9 +90,10 @@ internal abstract class ObjectPool<T> where T : class
                 if (item is not null)
                     return item;
 
-                // Slot was null — lost a race with another pop. The _top was already
-                // decremented, so the pool "lost" a slot. This is benign: the pool count
-                // is approximate, and the lost slot is recovered on the next Return.
+                // Slot was null — another Rent concurrently claimed this item before
+                // we read it. The _top was already decremented, so the pool "lost" a slot.
+                // This is benign: pool count is approximate, and a future Return will
+                // overwrite _slots[top-1] with a fresh item, recovering the position.
                 break;
             }
             // CAS failed — another thread modified _top. Retry.
@@ -157,7 +158,7 @@ internal abstract class ObjectPool<T> where T : class
 
             if (Interlocked.CompareExchange(ref _top, top + 1, top) == top)
             {
-                _slots[top] = item;
+                _slots[top] = item; // Plain write: PreWarm runs before the pool is shared
             }
             // CAS failed — discard item. PreWarm is best-effort; the next iteration
             // will create a fresh item at the updated _top position.
