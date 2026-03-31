@@ -159,11 +159,8 @@ internal abstract class ObjectPool<T> where T : class
             {
                 _slots[top] = item;
             }
-            else
-            {
-                // Lost the race — discard this item and try again
-                i--;
-            }
+            // CAS failed — discard item. PreWarm is best-effort; the next iteration
+            // will create a fresh item at the updated _top position.
         }
     }
 
