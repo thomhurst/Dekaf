@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
 using Dekaf.Internal;
+using Dekaf.Producer;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
@@ -465,9 +466,36 @@ public sealed class RecordBatch : IDisposable
     // ── Pool for producer-path RecordBatch reuse ──
     // Eliminates per-batch class allocation (~120 bytes) that survives Gen0 due to
     // its lifetime spanning the send pipeline (1-10ms), contributing to high Gen1/Gen0 ratio.
-    private static readonly ConcurrentStack<RecordBatch> s_pool = new();
-    private static int s_poolCount;
-    private const int MaxPoolSize = 2048;
+    // Reuses ObjectPool<T> for zero-alloc CAS-based pooling with miss tracking and exception safety.
+    private static readonly RecordBatchPool s_pool = new();
+
+    private sealed class RecordBatchPool : ObjectPool<RecordBatch>
+    {
+        public RecordBatchPool() : base(maxPoolSize: 2048) { }
+        protected override RecordBatch Create() => new();
+        protected override void Reset(RecordBatch item)
+        {
+            // Clear references to avoid holding onto GC-tracked objects
+            item._records = null!;
+            item.PreCompressedRecords = null;
+            item.PreCompressedLength = 0;
+            item.PreCompressedType = CompressionType.None;
+
+            // Reset mutable state to defaults
+            item.BaseOffset = 0;
+            item.BatchLength = 0;
+            item.PartitionLeaderEpoch = -1;
+            item.Magic = 2;
+            item.Crc = 0;
+            item.Attributes = RecordBatchAttributes.None;
+            item.LastOffsetDelta = 0;
+            item.BaseTimestamp = 0;
+            item.MaxTimestamp = 0;
+            item.ProducerId = -1;
+            item.ProducerEpoch = -1;
+            item.BaseSequence = -1;
+        }
+    }
 
     /// <summary>
     /// Rents a RecordBatch from the pool or creates a new one.
@@ -476,14 +504,10 @@ public sealed class RecordBatch : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static RecordBatch RentFromPool()
     {
-        if (s_pool.TryPop(out var batch))
-        {
-            Interlocked.Decrement(ref s_poolCount);
-            batch._returnedToPoolFlag = 0;
-            Volatile.Write(ref batch._disposed, 0);
-            return batch;
-        }
-        return new RecordBatch();
+        var batch = s_pool.Rent();
+        batch._returnedToPoolFlag = 0;
+        Volatile.Write(ref batch._disposed, 0);
+        return batch;
     }
 
     /// <summary>
@@ -498,34 +522,7 @@ public sealed class RecordBatch : IDisposable
         if (Interlocked.Exchange(ref _returnedToPoolFlag, 1) != 0)
             return;
 
-        // Clear references to avoid holding onto GC-tracked objects
-        _records = null!;
-        PreCompressedRecords = null;
-        PreCompressedLength = 0;
-        PreCompressedType = CompressionType.None;
-
-        // Reset mutable state to defaults
-        BaseOffset = 0;
-        BatchLength = 0;
-        PartitionLeaderEpoch = -1;
-        Magic = 2;
-        Crc = 0;
-        Attributes = RecordBatchAttributes.None;
-        LastOffsetDelta = 0;
-        BaseTimestamp = 0;
-        MaxTimestamp = 0;
-        ProducerId = -1;
-        ProducerEpoch = -1;
-        BaseSequence = -1;
-
-        // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
-        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
-        {
-            s_pool.Push(this);
-            Interlocked.Increment(ref s_poolCount);
-        }
+        s_pool.Return(this);
     }
 
     /// <summary>
