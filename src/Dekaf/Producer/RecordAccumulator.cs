@@ -4430,7 +4430,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // has started but Cleanup hasn't finished. If we reach here, neither was ever called.
         if (Volatile.Read(ref _cleanedUp) == 0)
         {
-            if (_completionSourcesArray is not null && _completionSourcesCount > 0)
+            if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {
                 var orphanedException = new InvalidOperationException(
                     $"Batch recycled without completing delivery — this indicates a bug in the producer pipeline " +
