@@ -717,6 +717,12 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         var producer = new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
 
+        // The BufferMemory above is seeded from PreviewProducerLimit(), which assumes N producers.
+        // RegisterProducer synchronously fires OnBudgetChanged, which calls SetMaxBufferMemory with
+        // the confirmed N+1 limit before this method returns. The producer is not observable to
+        // any other thread until Build() returns, so the brief window during which the accumulator
+        // holds the preview value is invisible to callers. Do not restructure this to "pass the
+        // confirmed limit back" — the current ordering is correct and race-free by construction.
         if (options.IsAutoTuned)
             DekafMemoryBudget.RegisterProducer(producer);
         else
@@ -1552,6 +1558,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions);
 
+        // QueuedMaxMessagesKbytes above is seeded from PreviewConsumerLimit() assuming N consumers.
+        // RegisterConsumer synchronously dispatches OnBudgetChanged with the confirmed N+1 limit
+        // before Build() returns, and the consumer is not observable to other threads until then,
+        // so the preview-to-confirmed transition is race-free. See the matching note in the
+        // producer builder above.
         if (options.IsAutoTuned)
             DekafMemoryBudget.RegisterConsumer(consumer);
         else

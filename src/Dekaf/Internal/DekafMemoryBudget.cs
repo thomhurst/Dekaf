@@ -15,6 +15,12 @@ internal interface IBudgetedInstance
 /// <summary>
 /// Process-global memory budget for Dekaf producers and consumers.
 /// Defaults to 40% of available system memory (respects container cgroup limits).
+/// <para>
+/// Although this type lives in the <c>Dekaf.Internal</c> namespace, the
+/// <see cref="SetBudget(ulong)"/>, <see cref="SetBudget(double)"/>,
+/// <see cref="TotalBudget"/>, and <see cref="OnBookkeepingError"/> members are
+/// stable public API intended for application-level capacity planning.
+/// </para>
 /// </summary>
 public static class DekafMemoryBudget
 {
@@ -35,6 +41,12 @@ public static class DekafMemoryBudget
 
     /// <summary>
     /// The total memory budget in bytes available to all Dekaf instances in the process.
+    /// <para>
+    /// Note: per-instance floors (<c>ProducerFloorBytes</c>, <c>ConsumerFloorBytes</c>)
+    /// guarantee each instance a minimum allocation even when the budget is small.
+    /// With many instances and a tight budget, the sum of per-instance limits can exceed
+    /// <see cref="TotalBudget"/>; the budget is a soft ceiling, not a hard cap.
+    /// </para>
     /// </summary>
     public static ulong TotalBudget
     {
