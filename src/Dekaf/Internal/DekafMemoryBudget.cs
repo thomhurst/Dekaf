@@ -29,6 +29,8 @@ public static class DekafMemoryBudget
     private const double ConsumerShareWhenBoth = 0.25;
     private const ulong ProducerFloorBytes = 32UL * 1024 * 1024;
     private const ulong ConsumerFloorBytes = 16UL * 1024 * 1024;
+    // 320 MiB total: preserves the pre-budget-feature 256 MiB producer default
+    // with headroom for a co-located consumer when GC memory info is unavailable.
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;
 
     private static readonly object _lock = new();
@@ -209,6 +211,7 @@ public static class DekafMemoryBudget
             _explicitlyReserved = 0;
             _producers.Clear();
             _consumers.Clear();
+            OnBookkeepingError = null;
         }
     }
 
