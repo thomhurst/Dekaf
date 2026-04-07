@@ -2679,17 +2679,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        try
-        {
-            if (_options.IsAutoTuned)
-                DekafMemoryBudget.UnregisterProducer(this);
-            else
-                DekafMemoryBudget.ReleaseExplicit(_options.BufferMemory);
-        }
-        catch
-        {
-            // Never let budget bookkeeping break disposal.
-        }
+        if (_options.IsAutoTuned)
+            DekafMemoryBudget.UnregisterProducer(this);
+        else
+            DekafMemoryBudget.ReleaseExplicit(_options.BufferMemory);
 
         var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();

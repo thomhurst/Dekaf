@@ -937,8 +937,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _sequenceNumbers.TryRemove(tp, out _);
     }
 
-    // Buffer memory tracking for backpressure
-    // long for Volatile.Read/Interlocked.Exchange support; semantically ulong (always positive).
+    // Buffer memory tracking for backpressure.
+    // Stored as long so Volatile.Read/Interlocked.Exchange apply; always holds a non-negative value.
     private long _maxBufferMemory;
     private long _bufferedBytes;
     // Adaptive connection scaling: counts slow-path entries in ReserveMemoryAsync
@@ -2330,7 +2330,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void SetMaxBufferMemory(ulong newLimit)
     {
-        var previous = (ulong)Interlocked.Exchange(ref _maxBufferMemory, (long)newLimit);
+        var previous = (ulong)Volatile.Read(ref _maxBufferMemory);
+        if (previous == newLimit)
+            return;
+
+        Interlocked.Exchange(ref _maxBufferMemory, (long)newLimit);
 
         // Growing: wake any waiters so they retry their reservation immediately.
         if (newLimit > previous)
@@ -2365,12 +2369,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryReserveMemory(int recordSize)
     {
+        // Hoisted once per call — rebalancing is rare and one-cycle staleness is acceptable
+        // (matches the snapshot semantics already used for _bufferedBytes).
+        var max = (ulong)Volatile.Read(ref _maxBufferMemory);
+
         while (true)
         {
             var current = Volatile.Read(ref _bufferedBytes);
             var newValue = current + recordSize;
 
-            if ((ulong)newValue > (ulong)Volatile.Read(ref _maxBufferMemory))
+            if ((ulong)newValue > max)
                 return false;
 
             if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
@@ -2391,7 +2399,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var current = Volatile.Read(ref _bufferedBytes);
             var newValue = current + recordSize;
 
-            if ((ulong)newValue > (ulong)Volatile.Read(ref _maxBufferMemory))
+            if ((ulong)newValue > max)
                 return false;
 
             if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)

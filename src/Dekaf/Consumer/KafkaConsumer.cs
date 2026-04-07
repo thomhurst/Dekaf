@@ -403,7 +403,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private readonly ConsumerOptions _options;
 
-    // long for Volatile.Read/Interlocked.Exchange support; semantically ulong (always positive).
+    // Current budget limit in bytes (mutated live by DekafMemoryBudget rebalancing).
     private long _currentQueuedMaxBytes;
 
     internal ulong CurrentQueuedMaxBytes => (ulong)Volatile.Read(ref _currentQueuedMaxBytes);
@@ -3543,17 +3543,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (Interlocked.Exchange(ref _consumerDisposed, 1) != 0)
             return;
 
-        try
-        {
-            if (_options.IsAutoTuned)
-                DekafMemoryBudget.UnregisterConsumer(this);
-            else
-                DekafMemoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
-        }
-        catch
-        {
-            // Budget bookkeeping must not break disposal
-        }
+        if (_options.IsAutoTuned)
+            DekafMemoryBudget.UnregisterConsumer(this);
+        else
+            DekafMemoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
 
         var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
