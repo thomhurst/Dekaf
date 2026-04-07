@@ -242,6 +242,11 @@ public sealed class ConsumerOptions
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;
 
     /// <summary>
+    /// True when QueuedMaxMessagesKbytes was auto-tuned from the global memory budget.
+    /// </summary>
+    internal bool IsAutoTuned { get; init; }
+
+    /// <summary>
     /// Enable partition end-of-file (EOF) events.
     /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
     /// when it reaches the end of a partition (caught up to the high watermark).

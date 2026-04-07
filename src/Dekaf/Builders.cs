@@ -800,6 +800,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
     private int _queuedMinMessages = 100000;
+    private int? _queuedMaxMessagesKbytes;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private readonly List<string> _topicsToSubscribe = [];
@@ -1247,6 +1248,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets an explicit upper bound on prefetched message bytes (in kilobytes),
+    /// overriding the auto-tuned share of <see cref="DekafMemoryBudget"/>.
+    /// </summary>
+    /// <param name="kbytes">Maximum prefetched bytes in KB. Must be at least 1.</param>
+    public ConsumerBuilder<TKey, TValue> WithQueuedMaxMessagesKbytes(int kbytes)
+    {
+        if (kbytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(kbytes), "Queued max messages kbytes must be at least 1");
+        _queuedMaxMessagesKbytes = kbytes;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum number of overlapping prefetch operations.
     /// With depth 1, fetches are purely sequential. With depth 2, one eager fetch
     /// overlaps with the synchronous fetch. Higher values allow more overlapping
@@ -1516,6 +1530,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
             QueuedMinMessages = _queuedMinMessages,
+            QueuedMaxMessagesKbytes = _queuedMaxMessagesKbytes
+                ?? (int)(DekafMemoryBudget.PreviewConsumerLimit() / 1024),
+            IsAutoTuned = _queuedMaxMessagesKbytes is null,
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
@@ -1534,6 +1551,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
             : null;
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions);
+
+        if (options.IsAutoTuned)
+            DekafMemoryBudget.RegisterConsumer(consumer);
+        else
+            DekafMemoryBudget.ReserveExplicit((ulong)_queuedMaxMessagesKbytes!.Value * 1024);
 
         if (_topicsToSubscribe.Count > 0)
         {

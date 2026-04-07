@@ -181,6 +181,20 @@ public static class DekafMemoryBudget
         }
     }
 
+    /// <summary>
+    /// Computes the limit a newly-registered consumer would receive.
+    /// </summary>
+    internal static ulong PreviewConsumerLimit()
+    {
+        lock (_lock)
+        {
+            var consumerCount = _consumers.Count + 1;
+            var auto = AutoBudgetUnlocked();
+            var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);
+            return Math.Max(share / (ulong)consumerCount, ConsumerFloorBytes);
+        }
+    }
+
     private static ulong ComputePerProducerLimitUnlocked()
     {
         if (_producers.Count == 0)
