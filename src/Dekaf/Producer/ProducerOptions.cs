@@ -53,9 +53,19 @@ public sealed class ProducerOptions
     /// <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> block until space is available
     /// (controlled by <see cref="MaxBlockMs"/>).
     /// <para>
-    /// Default is 256MB, which provides sufficient buffer for most workloads while keeping
-    /// the memory footprint reasonable. At 268K msg/sec with 1KB messages, a 256MB buffer
-    /// holds ~1 second of data before backpressure engages.
+    /// <b>Default (auto-tuned):</b> When not set explicitly, this value is derived from the
+    /// process-global <c>DekafMemoryBudget</c>, which claims 40% of available system memory
+    /// (respecting container cgroup limits). The budget is split across all live producer and
+    /// consumer instances: when both roles exist, producers share 75% and consumers share 25%;
+    /// when only one role exists, it gets 100%. Each role's share is divided equally among
+    /// its instances, and instances are rebalanced live as producers/consumers are built or
+    /// disposed.
+    /// </para>
+    /// <para>
+    /// <b>Explicit override:</b> Setting this value via <c>WithBufferMemory()</c> opts this
+    /// producer out of auto-tuning. The explicit amount is subtracted from the global budget
+    /// before auto-tuned instances are sized, so explicit overrides still count against the
+    /// process-wide total.
     /// </para>
     /// <para>
     /// <b>Tuning guidance:</b> Increase this value if profiling shows significant time in
