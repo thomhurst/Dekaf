@@ -284,10 +284,20 @@ public static class DekafMemoryBudget
 
         public void Dispatch()
         {
+            // Isolate per-instance failures so one bad callback cannot block sibling
+            // notifications or escape Register*/Build(). Callbacks are contracted to
+            // be lock-free atomic writes; anything that throws here is a bug that
+            // should surface via OnBookkeepingError rather than corrupting the budget.
             foreach (var p in Producers)
-                p.OnBudgetChanged(ProducerLimit);
+            {
+                try { p.OnBudgetChanged(ProducerLimit); }
+                catch (Exception ex) { try { OnBookkeepingError?.Invoke(ex); } catch { } }
+            }
             foreach (var c in Consumers)
-                c.OnBudgetChanged(ConsumerLimit);
+            {
+                try { c.OnBudgetChanged(ConsumerLimit); }
+                catch (Exception ex) { try { OnBookkeepingError?.Invoke(ex); } catch { } }
+            }
         }
     }
 

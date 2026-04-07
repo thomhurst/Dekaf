@@ -2330,6 +2330,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void SetMaxBufferMemory(ulong newLimit)
     {
+        // Concurrent calls from overlapping budget rebalances race on this write —
+        // whichever Interlocked.Exchange runs last wins. That is safe: each rebalance
+        // is computed under DekafMemoryBudget._lock against the latest registry state,
+        // so the last-writer-wins outcome still matches the latest logical budget, and
+        // the next Register/Unregister will rebalance again if the state changes.
+        // Do NOT add "only apply if newer" logic — there is no monotonic version here.
         var previous = (ulong)Volatile.Read(ref _maxBufferMemory);
         if (previous == newLimit)
             return;
