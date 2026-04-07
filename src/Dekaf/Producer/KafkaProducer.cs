@@ -22,7 +22,7 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
+public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IBudgetedInstance
 {
     /// <summary>
     /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
@@ -3028,6 +3028,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private partial void LogSenderLoopFailed(Exception ex);
 
     #endregion
+
+    void IBudgetedInstance.OnBudgetChanged(ulong newLimit) => _accumulator.SetMaxBufferMemory(newLimit);
 }
 
 /// <summary>
