@@ -1,5 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Retry;
@@ -679,7 +680,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             Acks = _acks,
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
-            BufferMemory = _bufferMemory ?? 268435456, // 256 MB default
+            BufferMemory = _bufferMemory ?? DekafMemoryBudget.PreviewProducerLimit(),
+            IsAutoTuned = _bufferMemory is null,
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
@@ -713,7 +715,14 @@ public sealed class ProducerBuilder<TKey, TValue>
             ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
-        return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
+        var producer = new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
+
+        if (options.IsAutoTuned)
+            DekafMemoryBudget.RegisterProducer(producer);
+        else
+            DekafMemoryBudget.ReserveExplicit(_bufferMemory!.Value);
+
+        return producer;
     }
 
     /// <summary>

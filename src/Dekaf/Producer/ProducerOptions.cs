@@ -67,6 +67,12 @@ public sealed class ProducerOptions
     public ulong BufferMemory { get; init; } = 256L * 1024 * 1024;
 
     /// <summary>
+    /// True when BufferMemory was auto-tuned from the global memory budget.
+    /// False when the user explicitly set BufferMemory via WithBufferMemory().
+    /// </summary>
+    internal bool IsAutoTuned { get; init; }
+
+    /// <summary>
     /// Compression type.
     /// </summary>
     public CompressionType CompressionType { get; init; } = CompressionType.None;

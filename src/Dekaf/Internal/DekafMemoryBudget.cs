@@ -165,6 +165,22 @@ public static class DekafMemoryBudget
         return total > _explicitlyReserved ? total - _explicitlyReserved : 0;
     }
 
+    /// <summary>
+    /// Computes the limit a newly-registered producer would receive.
+    /// Used by builders to seed the initial RecordAccumulator buffer size before
+    /// the producer is constructed and registered.
+    /// </summary>
+    internal static ulong PreviewProducerLimit()
+    {
+        lock (_lock)
+        {
+            var producerCount = _producers.Count + 1;
+            var auto = AutoBudgetUnlocked();
+            var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
+            return Math.Max(share / (ulong)producerCount, ProducerFloorBytes);
+        }
+    }
+
     private static ulong ComputePerProducerLimitUnlocked()
     {
         if (_producers.Count == 0)

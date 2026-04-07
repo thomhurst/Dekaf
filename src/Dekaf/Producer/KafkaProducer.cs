@@ -43,6 +43,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly ConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
+    internal RecordAccumulator RecordAccumulator => _accumulator;
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
 
@@ -2677,6 +2678,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        try
+        {
+            if (_options.IsAutoTuned)
+                DekafMemoryBudget.UnregisterProducer(this);
+            else
+                DekafMemoryBudget.ReleaseExplicit(_options.BufferMemory);
+        }
+        catch
+        {
+            // Never let budget bookkeeping break disposal.
+        }
 
         var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();
