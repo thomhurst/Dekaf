@@ -42,6 +42,14 @@ public static class DekafMemoryBudget
     }
 
     /// <summary>
+    /// Diagnostics hook invoked when budget bookkeeping throws during disposal.
+    /// Bookkeeping failures are swallowed so that disposal cannot fail, but callers
+    /// wiring a logger here can observe otherwise-silent regressions. Invoked on the
+    /// disposing thread; handlers must not throw.
+    /// </summary>
+    public static Action<Exception>? OnBookkeepingError { get; set; }
+
+    /// <summary>
     /// Override the budget with an explicit byte count.
     /// Must be called before building any Dekaf instances.
     /// </summary>
@@ -100,9 +108,11 @@ public static class DekafMemoryBudget
             }
             snapshot.Dispatch();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Budget bookkeeping must never break disposal.
+            // Budget bookkeeping must never break disposal. Route through the
+            // diagnostics hook so callers can still observe unexpected regressions.
+            try { OnBookkeepingError?.Invoke(ex); } catch { /* handler must not throw */ }
         }
     }
 
@@ -130,9 +140,11 @@ public static class DekafMemoryBudget
             }
             snapshot.Dispatch();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Budget bookkeeping must never break disposal.
+            // Budget bookkeeping must never break disposal. Route through the
+            // diagnostics hook so callers can still observe unexpected regressions.
+            try { OnBookkeepingError?.Invoke(ex); } catch { /* handler must not throw */ }
         }
     }
 
@@ -165,9 +177,11 @@ public static class DekafMemoryBudget
             }
             snapshot.Dispatch();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Budget bookkeeping must never break disposal.
+            // Budget bookkeeping must never break disposal. Route through the
+            // diagnostics hook so callers can still observe unexpected regressions.
+            try { OnBookkeepingError?.Invoke(ex); } catch { /* handler must not throw */ }
         }
     }
 
