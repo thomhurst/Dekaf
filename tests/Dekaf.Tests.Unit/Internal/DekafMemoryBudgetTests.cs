@@ -47,4 +47,25 @@ public class DekafMemoryBudgetTests
         await Assert.That(() => DekafMemoryBudget.SetBudget(percentOfAvailable: 1.5))
             .Throws<ArgumentOutOfRangeException>();
     }
+
+    [Test]
+    public async Task SetBudget_WithPercent_ClearsPriorExplicitBudget()
+    {
+        DekafMemoryBudget.ResetForTesting();
+        DekafMemoryBudget.SetBudget(1_073_741_824UL); // 1 GB explicit
+        DekafMemoryBudget.SetBudget(percentOfAvailable: 0.10);
+
+        var available = (ulong)GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        var expected = (ulong)(available * 0.10);
+
+        await Assert.That(DekafMemoryBudget.TotalBudget).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task SetBudget_WithZeroBytes_Throws()
+    {
+        DekafMemoryBudget.ResetForTesting();
+        await Assert.That(() => DekafMemoryBudget.SetBudget(0UL))
+            .Throws<ArgumentOutOfRangeException>();
+    }
 }

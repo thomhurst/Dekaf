@@ -7,6 +7,7 @@ namespace Dekaf.Internal;
 public static class DekafMemoryBudget
 {
     private const double DefaultPercentOfAvailable = 0.40;
+    private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024; // 256 MiB producer + 64 MiB consumer
 
     private static readonly object _lock = new();
     private static ulong? _explicitBudget;
@@ -26,7 +27,7 @@ public static class DekafMemoryBudget
 
                 var available = (ulong)GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
                 if (available == 0)
-                    return 320UL * 1024 * 1024; // Fallback: 256 MB producer + 64 MB consumer
+                    return FallbackBudgetBytes;
 
                 return (ulong)(available * _percentOfAvailable);
             }
@@ -39,6 +40,7 @@ public static class DekafMemoryBudget
     /// </summary>
     public static void SetBudget(ulong bytes)
     {
+        ArgumentOutOfRangeException.ThrowIfZero(bytes);
         lock (_lock)
         {
             _explicitBudget = bytes;
