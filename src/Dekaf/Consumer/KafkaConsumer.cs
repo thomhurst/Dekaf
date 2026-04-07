@@ -1193,7 +1193,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             ensureAssignment: EnsureAssignmentAsync,
             getAssignmentCount: () => _assignmentSnapshot.Count,
             getMaxBytes: () => CalculatePrefetchMaxBytes(
-                (int)(CurrentQueuedMaxBytes / 1024),
+                (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
                 _assignmentSnapshot.Count,
                 _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
                 _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,

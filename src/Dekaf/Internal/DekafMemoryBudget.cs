@@ -100,7 +100,7 @@ public static class DekafMemoryBudget
             }
             snapshot.Dispatch();
         }
-        catch
+        catch (Exception)
         {
             // Budget bookkeeping must never break disposal.
         }
@@ -130,7 +130,7 @@ public static class DekafMemoryBudget
             }
             snapshot.Dispatch();
         }
-        catch
+        catch (Exception)
         {
             // Budget bookkeeping must never break disposal.
         }
@@ -165,7 +165,7 @@ public static class DekafMemoryBudget
             }
             snapshot.Dispatch();
         }
-        catch
+        catch (Exception)
         {
             // Budget bookkeeping must never break disposal.
         }

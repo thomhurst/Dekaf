@@ -1531,7 +1531,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             EnablePartitionEof = _enablePartitionEof,
             QueuedMinMessages = _queuedMinMessages,
             QueuedMaxMessagesKbytes = _queuedMaxMessagesKbytes
-                ?? (int)(DekafMemoryBudget.PreviewConsumerLimit() / 1024),
+                ?? (int)Math.Min(DekafMemoryBudget.PreviewConsumerLimit() / 1024, int.MaxValue),
             IsAutoTuned = _queuedMaxMessagesKbytes is null,
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,

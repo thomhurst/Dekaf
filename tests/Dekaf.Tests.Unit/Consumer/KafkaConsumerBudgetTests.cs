@@ -51,4 +51,26 @@ public class KafkaConsumerBudgetTests
 
         DekafMemoryBudget.ResetForTesting();
     }
+
+    [Test]
+    public async Task DisposingConsumer_RebalancesRemainingConsumers()
+    {
+        DekafMemoryBudget.ResetForTesting();
+        DekafMemoryBudget.SetBudget(1_000_000_000UL);
+
+        await using var c1 = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092").WithGroupId("t1").Build();
+        var c2 = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092").WithGroupId("t2").Build();
+
+        var splitLimit = ((KafkaConsumer<string, string>)c1).CurrentQueuedMaxBytes;
+        await Assert.That(splitLimit).IsEqualTo(500_000_000UL);
+
+        await c2.DisposeAsync();
+
+        var grownLimit = ((KafkaConsumer<string, string>)c1).CurrentQueuedMaxBytes;
+        await Assert.That(grownLimit).IsEqualTo(1_000_000_000UL);
+
+        DekafMemoryBudget.ResetForTesting();
+    }
 }
