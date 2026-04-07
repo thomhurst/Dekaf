@@ -2424,7 +2424,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         MaybeRatchetPoolCapacity(pressureCount);
 
         var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
-        LogBufferMemoryWaiting(recordSize, currentBufferedBytes, (ulong)Volatile.Read(ref _maxBufferMemory));
+        var currentMaxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
+        LogBufferMemoryWaiting(recordSize, currentBufferedBytes, currentMaxBufferMemory);
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
