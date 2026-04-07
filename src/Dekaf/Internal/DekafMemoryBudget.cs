@@ -29,6 +29,13 @@ public static class DekafMemoryBudget
     private const double ConsumerShareWhenBoth = 0.25;
     private const ulong ProducerFloorBytes = 32UL * 1024 * 1024;
     private const ulong ConsumerFloorBytes = 16UL * 1024 * 1024;
+    // Ceilings match the historical per-instance defaults (ProducerOptions.BufferMemory = 256 MiB,
+    // ConsumerOptions.QueuedMaxMessagesKbytes = 65536 KB = 64 MiB). Auto-tuning is designed to
+    // shrink per-instance limits when many instances share a tight budget — it must NOT grow
+    // beyond the legacy defaults, or a single producer on a large host will buffer multi-GB of
+    // records and blow the GC heap. Users who want larger buffers opt in via WithBufferMemory().
+    private const ulong ProducerCeilingBytes = 256UL * 1024 * 1024;
+    private const ulong ConsumerCeilingBytes = 64UL * 1024 * 1024;
     // 320 MiB total: preserves the pre-budget-feature 256 MiB producer default
     // with headroom for a co-located consumer when GC memory info is unavailable.
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;
@@ -245,7 +252,8 @@ public static class DekafMemoryBudget
             var producerCount = _producers.Count + 1;
             var auto = AutoBudgetUnlocked();
             var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
-            return Math.Max(share / (ulong)producerCount, ProducerFloorBytes);
+            var perInstance = Math.Max(share / (ulong)producerCount, ProducerFloorBytes);
+            return Math.Min(perInstance, ProducerCeilingBytes);
         }
     }
 
@@ -259,7 +267,8 @@ public static class DekafMemoryBudget
             var consumerCount = _consumers.Count + 1;
             var auto = AutoBudgetUnlocked();
             var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);
-            return Math.Max(share / (ulong)consumerCount, ConsumerFloorBytes);
+            var perInstance = Math.Max(share / (ulong)consumerCount, ConsumerFloorBytes);
+            return Math.Min(perInstance, ConsumerCeilingBytes);
         }
     }
 
@@ -270,8 +279,8 @@ public static class DekafMemoryBudget
 
         var auto = AutoBudgetUnlocked();
         var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
-        var perInstance = share / (ulong)_producers.Count;
-        return Math.Max(perInstance, ProducerFloorBytes);
+        var perInstance = Math.Max(share / (ulong)_producers.Count, ProducerFloorBytes);
+        return Math.Min(perInstance, ProducerCeilingBytes);
     }
 
     private static ulong ComputePerConsumerLimitUnlocked()
@@ -281,8 +290,8 @@ public static class DekafMemoryBudget
 
         var auto = AutoBudgetUnlocked();
         var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);
-        var perInstance = share / (ulong)_consumers.Count;
-        return Math.Max(perInstance, ConsumerFloorBytes);
+        var perInstance = Math.Max(share / (ulong)_consumers.Count, ConsumerFloorBytes);
+        return Math.Min(perInstance, ConsumerCeilingBytes);
     }
 
     /// <summary>

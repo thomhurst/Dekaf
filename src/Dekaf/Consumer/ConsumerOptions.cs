@@ -243,7 +243,9 @@ public sealed class ConsumerOptions
     /// consumer instances: when both roles exist, consumers share 25% and producers share 75%;
     /// when only consumers exist, they get 100%. Each role's share is divided equally among
     /// its instances, and instances are rebalanced live as producers/consumers are built or
-    /// disposed.
+    /// disposed. Per-instance limits are capped at 64 MiB (the historical default) so
+    /// auto-tuning only shrinks per-instance limits when many instances share a tight budget
+    /// — it never grows a single consumer above the legacy 65536 KB default.
     /// </para>
     /// <para>
     /// <b>Explicit override:</b> Setting this value via <c>WithQueuedMaxMessagesKbytes()</c>

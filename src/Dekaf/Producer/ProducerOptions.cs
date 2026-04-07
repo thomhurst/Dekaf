@@ -59,7 +59,9 @@ public sealed class ProducerOptions
     /// consumer instances: when both roles exist, producers share 75% and consumers share 25%;
     /// when only one role exists, it gets 100%. Each role's share is divided equally among
     /// its instances, and instances are rebalanced live as producers/consumers are built or
-    /// disposed.
+    /// disposed. Per-instance limits are capped at 256 MiB (the historical default) so a
+    /// single producer on a large host does not buffer multi-GB of records — auto-tuning
+    /// only shrinks per-instance limits when many instances share a tight budget.
     /// </para>
     /// <para>
     /// <b>Explicit override:</b> Setting this value via <c>WithBufferMemory()</c> opts this
