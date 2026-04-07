@@ -235,11 +235,33 @@ public sealed class ConsumerOptions
 
     /// <summary>
     /// Maximum total size of prefetched messages in kilobytes.
-    /// Limits memory usage when prefetching is enabled. Default is 65536 KB (64 MB).
+    /// Limits memory usage when prefetching is enabled.
+    /// <para>
+    /// <b>Default (auto-tuned):</b> When not set explicitly, this value is derived from the
+    /// process-global <c>DekafMemoryBudget</c>, which claims 40% of available system memory
+    /// (respecting container cgroup limits). The budget is split across all live producer and
+    /// consumer instances: when both roles exist, consumers share 25% and producers share 75%;
+    /// when only consumers exist, they get 100%. Each role's share is divided equally among
+    /// its instances, and instances are rebalanced live as producers/consumers are built or
+    /// disposed.
+    /// </para>
+    /// <para>
+    /// <b>Explicit override:</b> Setting this value via <c>WithQueuedMaxMessagesKbytes()</c>
+    /// opts this consumer out of auto-tuning. The explicit amount is subtracted from the
+    /// global budget before auto-tuned instances are sized, so explicit overrides still count
+    /// against the process-wide total.
+    /// </para>
+    /// <para>
     /// This value may be automatically raised at runtime when the pipeline depth and
     /// assigned partition count require a larger buffer to avoid stalling prefetch.
+    /// </para>
     /// </summary>
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;
+
+    /// <summary>
+    /// True when QueuedMaxMessagesKbytes was auto-tuned from the global memory budget.
+    /// </summary>
+    internal bool IsAutoTuned { get; init; }
 
     /// <summary>
     /// Enable partition end-of-file (EOF) events.

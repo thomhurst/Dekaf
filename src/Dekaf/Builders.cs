@@ -1,5 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Retry;
@@ -679,7 +680,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             Acks = _acks,
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
-            BufferMemory = _bufferMemory ?? 268435456, // 256 MB default
+            BufferMemory = _bufferMemory ?? DekafMemoryBudget.PreviewProducerLimit(),
+            IsAutoTuned = _bufferMemory is null,
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
@@ -713,7 +715,23 @@ public sealed class ProducerBuilder<TKey, TValue>
             ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
-        return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
+        var producer = new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
+
+        // The BufferMemory above is seeded from PreviewProducerLimit(), which assumes N producers.
+        // RegisterProducer rebalances to N+1 and synchronously fires OnBudgetChanged on every
+        // registered instance (including this new one) via snapshot.Dispatch() before returning.
+        // While existing instances' callbacks run, this producer's accumulator briefly holds the
+        // stale preview value, but the new producer has not been returned from Build() yet and is
+        // therefore not used for production. The final OnBudgetChanged on the new producer — the
+        // last step of RegisterProducer — corrects the accumulator before control returns to the
+        // caller. No code path today couples existing producers to the new producer's limit, so
+        // this ordering is safe in practice.
+        if (options.IsAutoTuned)
+            DekafMemoryBudget.RegisterProducer(producer);
+        else
+            DekafMemoryBudget.ReserveExplicit(_bufferMemory!.Value);
+
+        return producer;
     }
 
     /// <summary>
@@ -791,6 +809,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
     private int _queuedMinMessages = 100000;
+    private int? _queuedMaxMessagesKbytes;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private readonly List<string> _topicsToSubscribe = [];
@@ -1238,6 +1257,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets an explicit upper bound on prefetched message bytes (in kilobytes),
+    /// overriding the auto-tuned share of <see cref="DekafMemoryBudget"/>.
+    /// </summary>
+    /// <param name="kbytes">Maximum prefetched bytes in KB. Must be at least 1.</param>
+    public ConsumerBuilder<TKey, TValue> WithQueuedMaxMessagesKbytes(int kbytes)
+    {
+        if (kbytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(kbytes), "Queued max messages kbytes must be at least 1");
+        _queuedMaxMessagesKbytes = kbytes;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum number of overlapping prefetch operations.
     /// With depth 1, fetches are purely sequential. With depth 2, one eager fetch
     /// overlaps with the synchronous fetch. Higher values allow more overlapping
@@ -1507,6 +1539,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
             QueuedMinMessages = _queuedMinMessages,
+            QueuedMaxMessagesKbytes = _queuedMaxMessagesKbytes
+                ?? (int)Math.Min(DekafMemoryBudget.PreviewConsumerLimit() / 1024, int.MaxValue),
+            IsAutoTuned = _queuedMaxMessagesKbytes is null,
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
@@ -1525,6 +1560,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
             : null;
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions);
+
+        // QueuedMaxMessagesKbytes above is seeded from PreviewConsumerLimit() assuming N consumers.
+        // RegisterConsumer rebalances to N+1 and synchronously dispatches OnBudgetChanged on every
+        // registered consumer (including this one) before returning. The new consumer is not used
+        // until Build() returns, and its final OnBudgetChanged applies the confirmed limit before
+        // that happens. See the matching note in the producer builder above.
+        if (options.IsAutoTuned)
+            DekafMemoryBudget.RegisterConsumer(consumer);
+        else
+            DekafMemoryBudget.ReserveExplicit((ulong)_queuedMaxMessagesKbytes!.Value * 1024);
 
         if (_topicsToSubscribe.Count > 0)
         {

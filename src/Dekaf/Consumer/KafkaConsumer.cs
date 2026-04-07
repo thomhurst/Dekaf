@@ -392,7 +392,7 @@ internal sealed class PendingFetchData : IDisposable
 /// </remarks>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>, DeadLetter.IRawRecordAccessor
+public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>, DeadLetter.IRawRecordAccessor, IBudgetedInstance
 {
     /// <summary>
     /// Delay in milliseconds when all assigned partitions are paused, to prevent
@@ -402,6 +402,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private const int AllPartitionsPausedDelayMs = 100;
 
     private readonly ConsumerOptions _options;
+
+    // Current budget limit in bytes (mutated live by DekafMemoryBudget rebalancing).
+    private long _currentQueuedMaxBytes;
+
+    internal ulong CurrentQueuedMaxBytes => (ulong)Volatile.Read(ref _currentQueuedMaxBytes);
+
+    void IBudgetedInstance.OnBudgetChanged(ulong newLimit)
+    {
+        Interlocked.Exchange(ref _currentQueuedMaxBytes, (long)newLimit);
+    }
+
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly IConnectionPool _connectionPool;
@@ -523,6 +534,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         MetadataOptions? metadataOptions = null)
     {
         _options = options;
+        _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
 
@@ -1181,7 +1193,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             ensureAssignment: EnsureAssignmentAsync,
             getAssignmentCount: () => _assignmentSnapshot.Count,
             getMaxBytes: () => CalculatePrefetchMaxBytes(
-                _options.QueuedMaxMessagesKbytes,
+                (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
                 _assignmentSnapshot.Count,
                 _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
                 _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
@@ -3530,6 +3542,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         if (Interlocked.Exchange(ref _consumerDisposed, 1) != 0)
             return;
+
+        if (_options.IsAutoTuned)
+            DekafMemoryBudget.UnregisterConsumer(this);
+        else
+            DekafMemoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
+
         var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
 

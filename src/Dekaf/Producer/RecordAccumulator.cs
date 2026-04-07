@@ -937,8 +937,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _sequenceNumbers.TryRemove(tp, out _);
     }
 
-    // Buffer memory tracking for backpressure
-    private readonly ulong _maxBufferMemory;
+    // Buffer memory tracking for backpressure.
+    // Stored as long so Volatile.Read/Interlocked.Exchange apply; always holds a non-negative value.
+    private long _maxBufferMemory;
     private long _bufferedBytes;
     // Adaptive connection scaling: counts slow-path entries in ReserveMemoryAsync
     private long _bufferPressureEvents;
@@ -1476,7 +1477,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio);
         _batchPool = new PartitionBatchPool(options, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
-        _maxBufferMemory = options.BufferMemory;
+        _maxBufferMemory = (long)options.BufferMemory;
 
         // Pre-warm a small number of pool entries to cover initial burst without
         // excessive upfront memory usage. The pools grow lazily on demand after this.
@@ -1912,7 +1913,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 catch (OperationCanceledException)
                 {
-                    if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                    if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
                         TryReleaseSemaphore(_asyncBufferSpaceSignal);
                     throw;
                 }
@@ -1927,7 +1928,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
             TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         return AppendAfterReservation(topic, partition, timestamp, key, value,
@@ -2200,7 +2201,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 catch (OperationCanceledException)
                 {
-                    if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                    if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
                         TryReleaseSemaphore(_asyncBufferSpaceSignal);
                     throw;
                 }
@@ -2215,7 +2216,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
             TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
@@ -2318,7 +2319,36 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Gets the maximum buffer memory limit in bytes.
     /// </summary>
-    public ulong MaxBufferMemory => _maxBufferMemory;
+    public ulong MaxBufferMemory => (ulong)Volatile.Read(ref _maxBufferMemory);
+
+    /// <summary>
+    /// Atomically updates the maximum buffer memory limit. Used by the global
+    /// memory budget for dynamic rebalancing.
+    /// Growing the limit signals waiting producers so they re-check immediately.
+    /// Shrinking the limit takes effect on the next reservation attempt — in-flight
+    /// reservations are not revoked.
+    /// </summary>
+    internal void SetMaxBufferMemory(ulong newLimit)
+    {
+        // Concurrent calls from overlapping budget rebalances race on this write —
+        // whichever Interlocked.Exchange runs last wins. That is safe: each rebalance
+        // is computed under DekafMemoryBudget._lock against the latest registry state,
+        // so the last-writer-wins outcome still matches the latest logical budget, and
+        // the next Register/Unregister will rebalance again if the state changes.
+        // Do NOT add "only apply if newer" logic — there is no monotonic version here.
+        var previous = (ulong)Volatile.Read(ref _maxBufferMemory);
+        if (previous == newLimit)
+            return;
+
+        Interlocked.Exchange(ref _maxBufferMemory, (long)newLimit);
+
+        // Growing: wake any waiters so they retry their reservation immediately.
+        if (newLimit > previous)
+            TryReleaseSemaphore(_asyncBufferSpaceSignal);
+    }
+
+    /// <summary>Test-only synchronous reservation helper.</summary>
+    internal bool TryReserveMemoryForTest(int size) => TryReserveMemory(size);
 
     /// <summary>
     /// Gets the cumulative count of buffer pressure events (slow-path entries in memory reservation).
@@ -2330,7 +2360,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
     /// Used by adaptive connection scaling to confirm buffer is actually full.
     /// </summary>
-    internal double BufferUtilization => (double)Volatile.Read(ref _bufferedBytes) / (double)_maxBufferMemory;
+    internal double BufferUtilization => (double)Volatile.Read(ref _bufferedBytes) / (double)(ulong)Volatile.Read(ref _maxBufferMemory);
 
     /// <summary>
     /// Attempts to reserve buffer memory for a record without blocking.
@@ -2345,12 +2375,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryReserveMemory(int recordSize)
     {
+        // Hoisted once per call — rebalancing is rare and one-cycle staleness is acceptable
+        // (matches the snapshot semantics already used for _bufferedBytes).
+        var max = (ulong)Volatile.Read(ref _maxBufferMemory);
+
         while (true)
         {
             var current = Volatile.Read(ref _bufferedBytes);
             var newValue = current + recordSize;
 
-            if ((ulong)newValue > _maxBufferMemory)
+            if ((ulong)newValue > max)
                 return false;
 
             if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
@@ -2371,7 +2405,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var current = Volatile.Read(ref _bufferedBytes);
             var newValue = current + recordSize;
 
-            if ((ulong)newValue > _maxBufferMemory)
+            if ((ulong)newValue > max)
                 return false;
 
             if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
@@ -2396,7 +2430,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         MaybeRatchetPoolCapacity(pressureCount);
 
         var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
-        LogBufferMemoryWaiting(recordSize, currentBufferedBytes, _maxBufferMemory);
+        var currentMaxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
+        LogBufferMemoryWaiting(recordSize, currentBufferedBytes, currentMaxBufferMemory);
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
@@ -2446,14 +2481,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
                     TryReleaseSemaphore(_asyncBufferSpaceSignal);
                 throw;
             }
         }
 
         // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
             TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
@@ -2506,7 +2541,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             elapsed,
             configured,
             $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
-            $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
+            $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{(ulong)Volatile.Read(ref _maxBufferMemory)} bytes. " +
             $"Producer is generating messages faster than the network can send them. " +
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
     }
