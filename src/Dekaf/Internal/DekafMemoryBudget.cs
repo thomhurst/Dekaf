@@ -45,9 +45,11 @@ public static class DekafMemoryBudget
     // assigning it to BufferMemory. Chosen at the top of the observed amplification range so
     // worst-case workloads undershoot the target rather than OOMing the host.
     //
-    // Consumers have no equivalent divisor: fetch responses are accounted for under
-    // QueuedMaxBytes directly, with no pooled-buffer indirection between network and queue.
-    private const int ProducerOverheadDivisor = 6;
+    // Consumers have no equivalent divisor: fetch responses are placed directly into the
+    // bounded consumer queue (accounted for under QueuedMaxBytes), with no pooled-buffer
+    // indirection, no PendingResponse retention, and no ArrayPool amplification between
+    // the network and the user-visible queue.
+    internal const int ProducerOverheadDivisor = 6;
     // 320 MiB total: preserves the pre-budget-feature 256 MiB producer default
     // with headroom for a co-located consumer when GC memory info is unavailable.
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;

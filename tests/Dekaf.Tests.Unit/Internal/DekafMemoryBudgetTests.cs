@@ -86,7 +86,7 @@ public class DekafMemoryBudgetTests
     // auto-tuned BufferMemory and actual resident producer memory. Consumer limits have no
     // divisor. Budget chosen so per-instance math divides cleanly by 6 and by 2.
     private const ulong TestBudget = 1536UL * 1024 * 1024; // 1.5 GiB
-    private const int ProducerDivisor = 6;
+    private const int ProducerDivisor = DekafMemoryBudget.ProducerOverheadDivisor;
 
     [Test]
     public async Task SingleProducer_GetsFullProducerShare()
@@ -210,7 +210,7 @@ public class DekafMemoryBudgetTests
         DekafMemoryBudget.RegisterProducer(p);
         DekafMemoryBudget.RegisterConsumer(c);
 
-        var expectedProducer = (ulong)(budget * 0.75) / 6;
+        var expectedProducer = (ulong)(budget * 0.75) / (ulong)DekafMemoryBudget.ProducerOverheadDivisor;
         var expectedConsumer = (ulong)(budget * 0.25);
         await Assert.That(p.CurrentLimit).IsEqualTo(expectedProducer);
         await Assert.That(c.CurrentLimit).IsEqualTo(expectedConsumer);

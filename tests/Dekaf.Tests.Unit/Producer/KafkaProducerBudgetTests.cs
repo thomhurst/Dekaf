@@ -17,7 +17,7 @@ public class KafkaProducerBudgetTests
     // BufferMemory is share / ProducerOverheadDivisor. Budget chosen so per-instance math
     // divides cleanly by 6 and by 2, and the result stays above the 32 MiB floor.
     private const ulong TestBudget = 1536UL * 1024 * 1024; // 1.5 GiB
-    private const int ProducerDivisor = 6;
+    private const int ProducerDivisor = DekafMemoryBudget.ProducerOverheadDivisor;
 
     [Test]
     public async Task ProducerBuilder_WithoutExplicitBufferMemory_UsesBudget()
