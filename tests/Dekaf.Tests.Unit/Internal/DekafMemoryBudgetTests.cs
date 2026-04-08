@@ -81,10 +81,12 @@ public class DekafMemoryBudgetTests
         }
     }
 
-    // Budgets in the split tests are kept at or below the producer ceiling (256 MiB) so the
-    // ceiling clamp is a no-op. Auto-tuning must not grow a single instance above the historical
-    // per-instance default — see CeilingAppliedWhenBudgetExceedsCap below for the clamp test.
-    private const ulong TestBudget = 256UL * 1024 * 1024; // exactly the producer ceiling
+    // BufferMemory is scaled down by an overhead divisor for producers (see
+    // DekafMemoryBudget.ProducerOverheadDivisor) to account for the amplification between
+    // auto-tuned BufferMemory and actual resident producer memory. Consumer limits have no
+    // divisor. Budget chosen so per-instance math divides cleanly by 6 and by 2.
+    private const ulong TestBudget = 1536UL * 1024 * 1024; // 1.5 GiB
+    private const int ProducerDivisor = DekafMemoryBudget.ProducerOverheadDivisor;
 
     [Test]
     public async Task SingleProducer_GetsFullProducerShare()
@@ -95,7 +97,7 @@ public class DekafMemoryBudgetTests
         var p = new FakeInstance();
         DekafMemoryBudget.RegisterProducer(p);
 
-        await Assert.That(p.CurrentLimit).IsEqualTo(TestBudget);
+        await Assert.That(p.CurrentLimit).IsEqualTo(TestBudget / ProducerDivisor);
 
         DekafMemoryBudget.UnregisterProducer(p);
     }
@@ -111,7 +113,7 @@ public class DekafMemoryBudgetTests
         DekafMemoryBudget.RegisterProducer(p);
         DekafMemoryBudget.RegisterConsumer(c);
 
-        await Assert.That(p.CurrentLimit).IsEqualTo((ulong)(TestBudget * 0.75));
+        await Assert.That(p.CurrentLimit).IsEqualTo((ulong)(TestBudget * 0.75) / ProducerDivisor);
         await Assert.That(c.CurrentLimit).IsEqualTo((ulong)(TestBudget * 0.25));
 
         DekafMemoryBudget.UnregisterProducer(p);
@@ -129,8 +131,8 @@ public class DekafMemoryBudgetTests
         DekafMemoryBudget.RegisterProducer(p1);
         DekafMemoryBudget.RegisterProducer(p2);
 
-        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget / 2);
-        await Assert.That(p2.CurrentLimit).IsEqualTo(TestBudget / 2);
+        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget / 2 / ProducerDivisor);
+        await Assert.That(p2.CurrentLimit).IsEqualTo(TestBudget / 2 / ProducerDivisor);
 
         DekafMemoryBudget.UnregisterProducer(p1);
         DekafMemoryBudget.UnregisterProducer(p2);
@@ -144,13 +146,13 @@ public class DekafMemoryBudgetTests
 
         var p1 = new FakeInstance();
         DekafMemoryBudget.RegisterProducer(p1);
-        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget);
+        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget / ProducerDivisor);
 
         var p2 = new FakeInstance();
         DekafMemoryBudget.RegisterProducer(p2);
 
-        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget / 2);
-        await Assert.That(p2.CurrentLimit).IsEqualTo(TestBudget / 2);
+        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget / 2 / ProducerDivisor);
+        await Assert.That(p2.CurrentLimit).IsEqualTo(TestBudget / 2 / ProducerDivisor);
 
         DekafMemoryBudget.UnregisterProducer(p1);
         DekafMemoryBudget.UnregisterProducer(p2);
@@ -169,7 +171,7 @@ public class DekafMemoryBudgetTests
 
         DekafMemoryBudget.UnregisterProducer(p2);
 
-        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget);
+        await Assert.That(p1.CurrentLimit).IsEqualTo(TestBudget / ProducerDivisor);
 
         DekafMemoryBudget.UnregisterProducer(p1);
     }
@@ -178,37 +180,40 @@ public class DekafMemoryBudgetTests
     public async Task ExplicitOverride_SubtractedFromBudget_BeforeAutoSplit()
     {
         DekafMemoryBudget.ResetForTesting();
-        // Budget 320 MiB, reserve 100 MiB → 220 MiB to auto, below the 256 MiB ceiling so we
-        // actually observe the subtraction rather than the clamp.
-        DekafMemoryBudget.SetBudget(320UL * 1024 * 1024);
+        // Budget 420 MiB, reserve 120 MiB → 300 MiB to auto. Producer gets 300 / 6 = 50 MiB.
+        DekafMemoryBudget.SetBudget(420UL * 1024 * 1024);
 
-        DekafMemoryBudget.ReserveExplicit(100UL * 1024 * 1024);
+        DekafMemoryBudget.ReserveExplicit(120UL * 1024 * 1024);
 
         var p = new FakeInstance();
         DekafMemoryBudget.RegisterProducer(p);
 
-        await Assert.That(p.CurrentLimit).IsEqualTo(220UL * 1024 * 1024);
+        await Assert.That(p.CurrentLimit).IsEqualTo(50UL * 1024 * 1024);
 
         DekafMemoryBudget.UnregisterProducer(p);
-        DekafMemoryBudget.ReleaseExplicit(100UL * 1024 * 1024);
+        DekafMemoryBudget.ReleaseExplicit(120UL * 1024 * 1024);
     }
 
     [Test]
-    public async Task CeilingAppliedWhenBudgetExceedsCap()
+    public async Task LargeBudget_ProducerBufferMemory_BoundedByDivisor()
     {
+        // Regression guard for the stress-test OOM: on a 16 GiB simulated host a single
+        // producer must never be assigned the entire share as BufferMemory. The divisor
+        // keeps BufferMemory = share / ProducerOverheadDivisor so the producer's total
+        // resident footprint (~divisor * BufferMemory) stays near the budget target.
         DekafMemoryBudget.ResetForTesting();
-        DekafMemoryBudget.SetBudget(16UL * 1024 * 1024 * 1024); // 16 GiB — simulates a large host
+        const ulong budget = 16UL * 1024 * 1024 * 1024; // 16 GiB
+        DekafMemoryBudget.SetBudget(budget);
 
         var p = new FakeInstance();
         var c = new FakeInstance();
         DekafMemoryBudget.RegisterProducer(p);
         DekafMemoryBudget.RegisterConsumer(c);
 
-        // Producers clamped to 256 MiB, consumers clamped to 64 MiB regardless of how much
-        // headroom the global budget has. This is the regression guard for the stress-test
-        // blow-up that auto-tuned a single producer to multi-GB BufferMemory.
-        await Assert.That(p.CurrentLimit).IsEqualTo(256UL * 1024 * 1024);
-        await Assert.That(c.CurrentLimit).IsEqualTo(64UL * 1024 * 1024);
+        var expectedProducer = (ulong)(budget * 0.75) / (ulong)DekafMemoryBudget.ProducerOverheadDivisor;
+        var expectedConsumer = (ulong)(budget * 0.25);
+        await Assert.That(p.CurrentLimit).IsEqualTo(expectedProducer);
+        await Assert.That(c.CurrentLimit).IsEqualTo(expectedConsumer);
 
         DekafMemoryBudget.UnregisterProducer(p);
         DekafMemoryBudget.UnregisterConsumer(c);

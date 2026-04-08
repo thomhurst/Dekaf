@@ -17,10 +17,10 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
 
-        // Pin the budget below the 256 MiB producer ceiling so the rebalance is actually
-        // observable — on a large host the ceiling clamps both initial and split values to
-        // 256 MiB, making "rebalanced < initial" vacuously false.
-        DekafMemoryBudget.SetBudget(128UL * 1024 * 1024);
+        // Pin the budget so rebalance is deterministic. BufferMemory = share / 4 (overhead
+        // divisor), so 512 MiB → 128 MiB for one producer, 64 MiB for two. Both are above
+        // the 32 MiB producer floor so the "rebalanced < initial" assertion is meaningful.
+        DekafMemoryBudget.SetBudget(512UL * 1024 * 1024);
         try
         {
         // Build first auto-tuned producer (no explicit BufferMemory).

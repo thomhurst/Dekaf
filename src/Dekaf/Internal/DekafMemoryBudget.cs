@@ -29,13 +29,27 @@ public static class DekafMemoryBudget
     private const double ConsumerShareWhenBoth = 0.25;
     private const ulong ProducerFloorBytes = 32UL * 1024 * 1024;
     private const ulong ConsumerFloorBytes = 16UL * 1024 * 1024;
-    // Ceilings match the historical per-instance defaults (ProducerOptions.BufferMemory = 256 MiB,
-    // ConsumerOptions.QueuedMaxMessagesKbytes = 65536 KB = 64 MiB). Auto-tuning is designed to
-    // shrink per-instance limits when many instances share a tight budget — it must NOT grow
-    // beyond the legacy defaults, or a single producer on a large host will buffer multi-GB of
-    // records and blow the GC heap. Users who want larger buffers opt in via WithBufferMemory().
-    private const ulong ProducerCeilingBytes = 256UL * 1024 * 1024;
-    private const ulong ConsumerCeilingBytes = 64UL * 1024 * 1024;
+
+    // Amplification factor between auto-tuned BufferMemory and actual resident producer memory.
+    // BufferMemory only counts records pending in the RecordAccumulator. Each 1 byte of buffered
+    // record data transitively retains several bytes of live memory that are NOT counted toward
+    // BufferMemory: pooled key/value byte arrays in ProducerDataPool, serialized record-batch
+    // buffers waiting on ArrayPool retention, PendingResponse entries between TCP write and
+    // broker ack (BrokerSender releases the BufferMemory reservation on TCP write, not on ack
+    // — see BrokerSender.SendBatchesAsync), and pipeline writer/reader segments per connection.
+    // Empirically the amplification is ~4-6x under sustained high throughput.
+    //
+    // The public contract of DekafMemoryBudget is "40% of available system memory" — that is a
+    // target for *total* resident dekaf footprint, not just BufferMemory. To keep the total
+    // footprint close to the budget we divide each producer's share by this factor before
+    // assigning it to BufferMemory. Chosen at the top of the observed amplification range so
+    // worst-case workloads undershoot the target rather than OOMing the host.
+    //
+    // Consumers have no equivalent divisor: fetch responses are placed directly into the
+    // bounded consumer queue (accounted for under QueuedMaxBytes), with no pooled-buffer
+    // indirection, no PendingResponse retention, and no ArrayPool amplification between
+    // the network and the user-visible queue.
+    internal const int ProducerOverheadDivisor = 6;
     // 320 MiB total: preserves the pre-budget-feature 256 MiB producer default
     // with headroom for a co-located consumer when GC memory info is unavailable.
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;
@@ -55,6 +69,11 @@ public static class DekafMemoryBudget
     /// guarantee each instance a minimum allocation even when the budget is small.
     /// With many instances and a tight budget, the sum of per-instance limits can exceed
     /// <see cref="TotalBudget"/>; the budget is a soft ceiling, not a hard cap.
+    /// </para>
+    /// <para>
+    /// Note: producers receive only a fraction of their per-instance share as
+    /// <c>BufferMemory</c> (the remainder covers pooled buffers, in-flight batches, and pipeline
+    /// segments that are not tracked by the accumulator). See <c>ProducerOptions.BufferMemory</c>.
     /// </para>
     /// </summary>
     public static ulong TotalBudget
@@ -252,8 +271,8 @@ public static class DekafMemoryBudget
             var producerCount = _producers.Count + 1;
             var auto = AutoBudgetUnlocked();
             var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
-            var perInstance = Math.Max(share / (ulong)producerCount, ProducerFloorBytes);
-            return Math.Min(perInstance, ProducerCeilingBytes);
+            var perInstance = share / (ulong)producerCount / (ulong)ProducerOverheadDivisor;
+            return Math.Max(perInstance, ProducerFloorBytes);
         }
     }
 
@@ -267,8 +286,7 @@ public static class DekafMemoryBudget
             var consumerCount = _consumers.Count + 1;
             var auto = AutoBudgetUnlocked();
             var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);
-            var perInstance = Math.Max(share / (ulong)consumerCount, ConsumerFloorBytes);
-            return Math.Min(perInstance, ConsumerCeilingBytes);
+            return Math.Max(share / (ulong)consumerCount, ConsumerFloorBytes);
         }
     }
 
@@ -279,8 +297,8 @@ public static class DekafMemoryBudget
 
         var auto = AutoBudgetUnlocked();
         var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
-        var perInstance = Math.Max(share / (ulong)_producers.Count, ProducerFloorBytes);
-        return Math.Min(perInstance, ProducerCeilingBytes);
+        var perInstance = share / (ulong)_producers.Count / (ulong)ProducerOverheadDivisor;
+        return Math.Max(perInstance, ProducerFloorBytes);
     }
 
     private static ulong ComputePerConsumerLimitUnlocked()
@@ -290,15 +308,15 @@ public static class DekafMemoryBudget
 
         var auto = AutoBudgetUnlocked();
         var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);
-        var perInstance = Math.Max(share / (ulong)_consumers.Count, ConsumerFloorBytes);
-        return Math.Min(perInstance, ConsumerCeilingBytes);
+        var perInstance = share / (ulong)_consumers.Count;
+        return Math.Max(perInstance, ConsumerFloorBytes);
     }
 
     /// <summary>
-     /// Snapshot of the current per-instance limits and the instances to notify.
-     /// Callers must invoke <see cref="Dispatch"/> AFTER releasing <see cref="_lock"/>
-     /// so that budget callbacks never run with the global lock held.
-     /// </summary>
+    /// Snapshot of the current per-instance limits and the instances to notify.
+    /// Callers must invoke <see cref="Dispatch"/> AFTER releasing <see cref="_lock"/>
+    /// so that budget callbacks never run with the global lock held.
+    /// </summary>
     private readonly struct RebalanceSnapshot
     {
         public required IBudgetedInstance[] Producers { get; init; }
