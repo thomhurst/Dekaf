@@ -14,10 +14,10 @@ public class KafkaProducerBudgetTests
         await Assert.That(implements).IsTrue();
     }
 
-    // BufferMemory is share / ProducerOverheadDivisor (4). Budget must be large enough that
-    // the resulting per-instance limit stays above the 32 MiB floor so assertions are exact.
-    private const ulong TestBudget = 1024UL * 1024 * 1024; // 1 GiB
-    private const int ProducerDivisor = 4;
+    // BufferMemory is share / ProducerOverheadDivisor. Budget chosen so per-instance math
+    // divides cleanly by 6 and by 2, and the result stays above the 32 MiB floor.
+    private const ulong TestBudget = 1536UL * 1024 * 1024; // 1.5 GiB
+    private const int ProducerDivisor = 6;
 
     [Test]
     public async Task ProducerBuilder_WithoutExplicitBufferMemory_UsesBudget()

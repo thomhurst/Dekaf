@@ -42,9 +42,12 @@ public static class DekafMemoryBudget
     // The public contract of DekafMemoryBudget is "40% of available system memory" — that is a
     // target for *total* resident dekaf footprint, not just BufferMemory. To keep the total
     // footprint close to the budget we divide each producer's share by this factor before
-    // assigning it to BufferMemory. Setting it higher than observed amplification is safer
-    // (undershoots the target rather than OOMing the host).
-    private const int ProducerOverheadDivisor = 4;
+    // assigning it to BufferMemory. Chosen at the top of the observed amplification range so
+    // worst-case workloads undershoot the target rather than OOMing the host.
+    //
+    // Consumers have no equivalent divisor: fetch responses are accounted for under
+    // QueuedMaxBytes directly, with no pooled-buffer indirection between network and queue.
+    private const int ProducerOverheadDivisor = 6;
     // 320 MiB total: preserves the pre-budget-feature 256 MiB producer default
     // with headroom for a co-located consumer when GC memory info is unavailable.
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;
@@ -64,6 +67,11 @@ public static class DekafMemoryBudget
     /// guarantee each instance a minimum allocation even when the budget is small.
     /// With many instances and a tight budget, the sum of per-instance limits can exceed
     /// <see cref="TotalBudget"/>; the budget is a soft ceiling, not a hard cap.
+    /// </para>
+    /// <para>
+    /// Note: producers receive only a fraction of their per-instance share as
+    /// <c>BufferMemory</c> (the remainder covers pooled buffers, in-flight batches, and pipeline
+    /// segments that are not tracked by the accumulator). See <c>ProducerOptions.BufferMemory</c>.
     /// </para>
     /// </summary>
     public static ulong TotalBudget

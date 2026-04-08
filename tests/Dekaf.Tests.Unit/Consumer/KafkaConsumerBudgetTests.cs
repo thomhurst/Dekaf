@@ -39,9 +39,9 @@ public class KafkaConsumerBudgetTests
     public async Task ProducerAndConsumer_BothAutoTuned_SplitSeventyFiveTwentyFive()
     {
         DekafMemoryBudget.ResetForTesting();
-        // Budget = 256 MiB → producer share = 192 MiB, divided by overhead divisor (4)
-        // = 48 MiB BufferMemory. Consumer share = 64 MiB (no divisor).
-        DekafMemoryBudget.SetBudget(256UL * 1024 * 1024);
+        // Budget = 384 MiB → producer share = 288 MiB / 6 divisor = 48 MiB BufferMemory.
+        // Consumer share = 96 MiB (no divisor).
+        DekafMemoryBudget.SetBudget(384UL * 1024 * 1024);
 
         await using var p = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092").Build();
@@ -52,7 +52,7 @@ public class KafkaConsumerBudgetTests
         var cLimit = ((KafkaConsumer<string, string>)c).CurrentQueuedMaxBytes;
 
         await Assert.That(pLimit).IsEqualTo(48UL * 1024 * 1024);
-        await Assert.That(cLimit).IsEqualTo(64UL * 1024 * 1024);
+        await Assert.That(cLimit).IsEqualTo(96UL * 1024 * 1024);
 
         DekafMemoryBudget.ResetForTesting();
     }

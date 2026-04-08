@@ -81,12 +81,12 @@ public class DekafMemoryBudgetTests
         }
     }
 
-    // BufferMemory is scaled down by a 4x overhead divisor for producers (see
+    // BufferMemory is scaled down by an overhead divisor for producers (see
     // DekafMemoryBudget.ProducerOverheadDivisor) to account for the amplification between
     // auto-tuned BufferMemory and actual resident producer memory. Consumer limits have no
-    // divisor. Budgets below must be divisible by 4 so assertions are exact.
-    private const ulong TestBudget = 1024UL * 1024 * 1024; // 1 GiB
-    private const int ProducerDivisor = 4;
+    // divisor. Budget chosen so per-instance math divides cleanly by 6 and by 2.
+    private const ulong TestBudget = 1536UL * 1024 * 1024; // 1.5 GiB
+    private const int ProducerDivisor = 6;
 
     [Test]
     public async Task SingleProducer_GetsFullProducerShare()
@@ -180,18 +180,43 @@ public class DekafMemoryBudgetTests
     public async Task ExplicitOverride_SubtractedFromBudget_BeforeAutoSplit()
     {
         DekafMemoryBudget.ResetForTesting();
-        // Budget 320 MiB, reserve 100 MiB → 220 MiB to auto. Producer gets 220 / 4 = 55 MiB.
-        DekafMemoryBudget.SetBudget(320UL * 1024 * 1024);
+        // Budget 420 MiB, reserve 120 MiB → 300 MiB to auto. Producer gets 300 / 6 = 50 MiB.
+        DekafMemoryBudget.SetBudget(420UL * 1024 * 1024);
 
-        DekafMemoryBudget.ReserveExplicit(100UL * 1024 * 1024);
+        DekafMemoryBudget.ReserveExplicit(120UL * 1024 * 1024);
 
         var p = new FakeInstance();
         DekafMemoryBudget.RegisterProducer(p);
 
-        await Assert.That(p.CurrentLimit).IsEqualTo(55UL * 1024 * 1024);
+        await Assert.That(p.CurrentLimit).IsEqualTo(50UL * 1024 * 1024);
 
         DekafMemoryBudget.UnregisterProducer(p);
-        DekafMemoryBudget.ReleaseExplicit(100UL * 1024 * 1024);
+        DekafMemoryBudget.ReleaseExplicit(120UL * 1024 * 1024);
+    }
+
+    [Test]
+    public async Task LargeBudget_ProducerBufferMemory_BoundedByDivisor()
+    {
+        // Regression guard for the stress-test OOM: on a 16 GiB simulated host a single
+        // producer must never be assigned the entire share as BufferMemory. The divisor
+        // keeps BufferMemory = share / ProducerOverheadDivisor so the producer's total
+        // resident footprint (~divisor * BufferMemory) stays near the budget target.
+        DekafMemoryBudget.ResetForTesting();
+        const ulong budget = 16UL * 1024 * 1024 * 1024; // 16 GiB
+        DekafMemoryBudget.SetBudget(budget);
+
+        var p = new FakeInstance();
+        var c = new FakeInstance();
+        DekafMemoryBudget.RegisterProducer(p);
+        DekafMemoryBudget.RegisterConsumer(c);
+
+        var expectedProducer = (ulong)(budget * 0.75) / 6;
+        var expectedConsumer = (ulong)(budget * 0.25);
+        await Assert.That(p.CurrentLimit).IsEqualTo(expectedProducer);
+        await Assert.That(c.CurrentLimit).IsEqualTo(expectedConsumer);
+
+        DekafMemoryBudget.UnregisterProducer(p);
+        DekafMemoryBudget.UnregisterConsumer(c);
     }
 
     [Test]
