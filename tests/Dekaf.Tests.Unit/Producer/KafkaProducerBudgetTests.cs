@@ -14,10 +14,10 @@ public class KafkaProducerBudgetTests
         await Assert.That(implements).IsTrue();
     }
 
-    // Budget kept below the 256 MiB producer ceiling so tests observe the split math rather
-    // than the ceiling clamp. See DekafMemoryBudgetTests.CeilingAppliedWhenBudgetExceedsCap for
-    // the clamp behavior.
-    private const ulong TestBudget = 128UL * 1024 * 1024;
+    // BufferMemory is share / ProducerOverheadDivisor (4). Budget must be large enough that
+    // the resulting per-instance limit stays above the 32 MiB floor so assertions are exact.
+    private const ulong TestBudget = 1024UL * 1024 * 1024; // 1 GiB
+    private const int ProducerDivisor = 4;
 
     [Test]
     public async Task ProducerBuilder_WithoutExplicitBufferMemory_UsesBudget()
@@ -30,7 +30,7 @@ public class KafkaProducerBudgetTests
             .Build();
 
         var maxBuffer = ((KafkaProducer<string, string>)producer).RecordAccumulator.MaxBufferMemory;
-        await Assert.That(maxBuffer).IsEqualTo(TestBudget);
+        await Assert.That(maxBuffer).IsEqualTo(TestBudget / ProducerDivisor);
 
         DekafMemoryBudget.ResetForTesting();
     }
@@ -61,15 +61,15 @@ public class KafkaProducerBudgetTests
         await using var p1 = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092").Build();
         var p1Limit1 = ((KafkaProducer<string, string>)p1).RecordAccumulator.MaxBufferMemory;
-        await Assert.That(p1Limit1).IsEqualTo(TestBudget);
+        await Assert.That(p1Limit1).IsEqualTo(TestBudget / ProducerDivisor);
 
         await using var p2 = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092").Build();
 
         var p1Limit2 = ((KafkaProducer<string, string>)p1).RecordAccumulator.MaxBufferMemory;
         var p2Limit = ((KafkaProducer<string, string>)p2).RecordAccumulator.MaxBufferMemory;
-        await Assert.That(p1Limit2).IsEqualTo(TestBudget / 2);
-        await Assert.That(p2Limit).IsEqualTo(TestBudget / 2);
+        await Assert.That(p1Limit2).IsEqualTo(TestBudget / 2 / ProducerDivisor);
+        await Assert.That(p2Limit).IsEqualTo(TestBudget / 2 / ProducerDivisor);
 
         DekafMemoryBudget.ResetForTesting();
     }
