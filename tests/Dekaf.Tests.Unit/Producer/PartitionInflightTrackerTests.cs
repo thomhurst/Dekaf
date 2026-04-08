@@ -341,6 +341,34 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
+    public async Task EntryPooling_SustainedRentReturnAtCapacity_ReusesAllEntries()
+    {
+        // Reproduces the failure mode that previously caused Gen2 promotion in single-broker
+        // idempotent stress: when sustained working set fits within MaxPoolSize, every Rent
+        // after warm-up must be a pool hit (no fresh allocations).
+        const int capacity = 16;
+        var pool = new InflightEntryPool(maxPoolSize: capacity);
+
+        // Warm the pool to capacity.
+        var warmRented = new InflightEntry[capacity];
+        for (var i = 0; i < capacity; i++) warmRented[i] = pool.Rent();
+        for (var i = 0; i < capacity; i++) pool.Return(warmRented[i]);
+
+        var missesBefore = pool.Misses;
+
+        // Sustained churn at capacity: rent N, return N, repeated.
+        for (var iter = 0; iter < 100; iter++)
+        {
+            var batch = new InflightEntry[capacity];
+            for (var i = 0; i < capacity; i++) batch[i] = pool.Rent();
+            for (var i = 0; i < capacity; i++) pool.Return(batch[i]);
+        }
+
+        // Zero misses after warm-up — nothing should fall through to `new InflightEntry()`.
+        await Assert.That(pool.Misses).IsEqualTo(missesBefore);
+    }
+
+    [Test]
     public async Task ReadyBatch_Reset_ClearsInflightEntry()
     {
         var pool = new ReadyBatchPool();

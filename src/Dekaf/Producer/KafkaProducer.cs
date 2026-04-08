@@ -174,7 +174,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         _retryPolicy = options.RetryPolicy;
 
-        var producerPoolSizes = PoolSizing.ForProducer(options.BufferMemory, options.BatchSize);
+        var producerPoolSizes = PoolSizing.ForProducer(
+            options.BufferMemory,
+            options.BatchSize,
+            options.MaxInFlightRequestsPerConnection,
+            options.MaxConnectionsPerBroker);
 
         // Scale shared pools based on bootstrap server count (minimum broker estimate).
         // This prevents pool contention when multiple brokers concurrently rent/return arrays.
