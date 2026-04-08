@@ -14,11 +14,16 @@ public class KafkaConsumerBudgetTests
         await Assert.That(typeof(IBudgetedInstance).IsAssignableFrom(type)).IsTrue();
     }
 
+    // Budgets are chosen so the per-instance split falls at or below the 64 MiB consumer
+    // ceiling; any larger budget would be clamped and obscure the split math. See
+    // DekafMemoryBudgetTests.CeilingAppliedWhenBudgetExceedsCap for the clamp regression guard.
+    private const ulong ConsumerCeiling = 64UL * 1024 * 1024;
+
     [Test]
     public async Task ConsumerBuilder_AutoTuned_GetsBudgetShare()
     {
         DekafMemoryBudget.ResetForTesting();
-        DekafMemoryBudget.SetBudget(1_000_000_000UL);
+        DekafMemoryBudget.SetBudget(ConsumerCeiling);
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -26,8 +31,7 @@ public class KafkaConsumerBudgetTests
             .Build();
 
         var limit = ((KafkaConsumer<string, string>)consumer).CurrentQueuedMaxBytes;
-        // Consumer-only → 100% of 1GB (rebalance sets exact byte value post-registration)
-        await Assert.That(limit).IsEqualTo(1_000_000_000UL);
+        await Assert.That(limit).IsEqualTo(ConsumerCeiling);
 
         DekafMemoryBudget.ResetForTesting();
     }
@@ -36,7 +40,9 @@ public class KafkaConsumerBudgetTests
     public async Task ProducerAndConsumer_BothAutoTuned_SplitSeventyFiveTwentyFive()
     {
         DekafMemoryBudget.ResetForTesting();
-        DekafMemoryBudget.SetBudget(1_000_000_000UL);
+        // Budget = 256 MiB → producer gets 192 MiB (below 256 MiB ceiling),
+        // consumer gets 64 MiB (exactly at ceiling — no clamp).
+        DekafMemoryBudget.SetBudget(256UL * 1024 * 1024);
 
         await using var p = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092").Build();
@@ -46,8 +52,8 @@ public class KafkaConsumerBudgetTests
         var pLimit = ((KafkaProducer<string, string>)p).RecordAccumulator.MaxBufferMemory;
         var cLimit = ((KafkaConsumer<string, string>)c).CurrentQueuedMaxBytes;
 
-        await Assert.That(pLimit).IsEqualTo(750_000_000UL);
-        await Assert.That(cLimit).IsEqualTo(250_000_000UL);
+        await Assert.That(pLimit).IsEqualTo(192UL * 1024 * 1024);
+        await Assert.That(cLimit).IsEqualTo(64UL * 1024 * 1024);
 
         DekafMemoryBudget.ResetForTesting();
     }
@@ -56,7 +62,7 @@ public class KafkaConsumerBudgetTests
     public async Task DisposingConsumer_RebalancesRemainingConsumers()
     {
         DekafMemoryBudget.ResetForTesting();
-        DekafMemoryBudget.SetBudget(1_000_000_000UL);
+        DekafMemoryBudget.SetBudget(ConsumerCeiling);
 
         await using var c1 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092").WithGroupId("t1").Build();
@@ -64,12 +70,12 @@ public class KafkaConsumerBudgetTests
             .WithBootstrapServers("localhost:9092").WithGroupId("t2").Build();
 
         var splitLimit = ((KafkaConsumer<string, string>)c1).CurrentQueuedMaxBytes;
-        await Assert.That(splitLimit).IsEqualTo(500_000_000UL);
+        await Assert.That(splitLimit).IsEqualTo(ConsumerCeiling / 2);
 
         await c2.DisposeAsync();
 
         var grownLimit = ((KafkaConsumer<string, string>)c1).CurrentQueuedMaxBytes;
-        await Assert.That(grownLimit).IsEqualTo(1_000_000_000UL);
+        await Assert.That(grownLimit).IsEqualTo(ConsumerCeiling);
 
         DekafMemoryBudget.ResetForTesting();
     }

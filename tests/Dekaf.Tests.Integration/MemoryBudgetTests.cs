@@ -1,3 +1,4 @@
+using Dekaf.Internal;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -16,6 +17,12 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
 
+        // Pin the budget below the 256 MiB producer ceiling so the rebalance is actually
+        // observable — on a large host the ceiling clamps both initial and split values to
+        // 256 MiB, making "rebalanced < initial" vacuously false.
+        DekafMemoryBudget.SetBudget(128UL * 1024 * 1024);
+        try
+        {
         // Build first auto-tuned producer (no explicit BufferMemory).
         await using var producer1 = (KafkaProducer<string, string>)await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -68,5 +75,10 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var finalLimit = producer1.RecordAccumulator.MaxBufferMemory;
         Console.WriteLine($"[MemoryBudgetTests] producer1 final limit: {finalLimit / (1024 * 1024)} MiB");
         await Assert.That(finalLimit).IsGreaterThanOrEqualTo(initialLimit);
+        }
+        finally
+        {
+            DekafMemoryBudget.ResetForTesting();
+        }
     }
 }
