@@ -68,8 +68,11 @@ internal static class PoolSizing
         // — which is the failure mode previously observed in single-broker idempotent stress.
         var clampedMaxConns = Math.Max(1, maxConnectionsPerBroker);
         var clampedMaxInFlight = Math.Max(1, maxInFlightRequestsPerConnection);
-        var peakInflightEntries = clampedMaxConns * clampedMaxInFlight * InflightEntriesPerBatch;
-        var bufferDerivedEntries = (int)maxBatches * InflightEntriesPerBatch;
+        // Compute in long to make the final Math.Clamp ceiling unconditional — pathological
+        // inputs (e.g. misconfigured maxConnectionsPerBroker) would otherwise overflow int
+        // and produce a negative intermediate that clamps to the floor instead of the ceiling.
+        var peakInflightEntries = (long)clampedMaxConns * clampedMaxInFlight * InflightEntriesPerBatch;
+        var bufferDerivedEntries = (long)maxBatches * InflightEntriesPerBatch;
         var inflightEntries = Math.Max(peakInflightEntries, bufferDerivedEntries);
 
         return new ProducerPoolSizes
@@ -77,7 +80,7 @@ internal static class PoolSizing
             ValueTaskSources = Math.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
             // Floor at 256KB to avoid ArrayPool thrash from frequent grow/shrink on modest workloads.
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
-            InflightEntries = Math.Clamp(inflightEntries, 128, 16384),
+            InflightEntries = (int)Math.Clamp(inflightEntries, 128L, 16384L),
         };
     }
 
