@@ -20,6 +20,14 @@ namespace Dekaf.Internal;
 /// promoted to Gen2 and caused a GC feedback loop. This array-based CAS stack eliminates
 /// all per-operation allocations — only the fixed-size array is allocated at construction time.
 /// </para>
+/// <para>
+/// <b>Known trade-off:</b> A narrow race between concurrent TryPush and TryPop can strand
+/// an item in a slot below the current <c>_top</c> index, effectively shrinking the pool by
+/// one. Under sustained high-contention workloads, repeated occurrences could erode the
+/// effective pool depth. This is acceptable for pool use cases: the miss path re-creates
+/// items on demand, and the race window is extremely narrow (requires a TryPop CAS to
+/// interleave between TryPush's CAS and its subsequent slot write).
+/// </para>
 /// </remarks>
 /// <typeparam name="T">The pooled item type. Must be a reference type for Interlocked.Exchange.</typeparam>
 internal sealed class LockFreeStack<T> where T : class

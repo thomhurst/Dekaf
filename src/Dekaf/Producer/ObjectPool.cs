@@ -49,8 +49,9 @@ internal abstract class ObjectPool<T> where T : class
 
     /// <summary>
     /// Resets an item before it is returned to the pool, preparing it for reuse.
-    /// Must be idempotent — may be called on items that are ultimately discarded
-    /// if the pool fills between the capacity check and the TryPush.
+    /// Must be idempotent and must not throw — may be called on items that are
+    /// ultimately discarded if the pool fills between the capacity check and the
+    /// TryPush. If Reset throws, the item is neither pooled nor returned to the caller.
     /// </summary>
     protected abstract void Reset(T item);
 

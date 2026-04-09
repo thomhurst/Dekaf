@@ -475,8 +475,10 @@ internal sealed class BatchArena
     {
         InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
 
-        // Grow the pool if needed. Brief lock is acceptable here because
-        // RatchetPoolSize is called only during producer initialization, not on the hot path.
+        // Grow the pool if needed. The lock serializes concurrent resize attempts
+        // (e.g. multiple producers created simultaneously with different batch sizes).
+        // Brief lock is acceptable because RatchetPoolSize is called only during
+        // producer initialization, not on the hot path.
         var currentPool = Volatile.Read(ref s_pool);
         if (currentPool.Capacity < newSize)
         {
@@ -4201,7 +4203,8 @@ internal sealed class BatchArrayReuseQueue
     /// Pushes each array independently for reuse. Arrays that don't fit are returned
     /// to their respective global pools. The four stacks may temporarily have different
     /// counts under concurrent access; this is safe because <see cref="TryDequeue"/>
-    /// rolls back partially-popped arrays on failure.
+    /// rolls back partially-popped arrays on failure, and all arrays are fungible
+    /// (identically-sized buffers from ArrayPool, not batch-specific state).
     /// </summary>
     public void EnqueueOrReturn(
         Record[] records,
