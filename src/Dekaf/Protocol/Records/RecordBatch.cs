@@ -146,8 +146,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 
     /// <summary>
     /// Resets the write position and ensures the buffer has at least the specified capacity.
-    /// Discards any existing written data. Used by GetDecompressedBuffer when the existing
-    /// buffer is too small for the next decompression operation.
+    /// Discards any existing written data. Used when the existing buffer is too small
+    /// for the next operation.
     /// </summary>
     public void ResetAndEnsureCapacity(int minimumCapacity)
     {
@@ -171,6 +171,96 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
         _written = 0;
         if (buf.Length > 0)
             DekafPools.SerializationBuffers.Return(buf, clearArray: false);
+    }
+}
+
+/// <summary>
+/// Lightweight IBufferWriter backed by ArrayPool&lt;byte&gt;.Shared for decompression.
+/// After decompression, <see cref="DetachBuffer"/> transfers ownership of the underlying
+/// pooled array to the caller, eliminating a second memcpy that would otherwise be needed
+/// when using a shared scratch buffer (PooledReusableBufferWriter).
+/// </summary>
+/// <remarks>
+/// Not reusable — each instance is created per decompression operation (per-batch cost, acceptable).
+/// The array is rented from ArrayPool&lt;byte&gt;.Shared so it can be returned by
+/// <see cref="LazyRecordList.Dispose"/> which also uses ArrayPool&lt;byte&gt;.Shared.
+/// </remarks>
+internal sealed class DecompressDirectBufferWriter : IBufferWriter<byte>, IDisposable
+{
+    private byte[] _buffer;
+    private int _written;
+
+    public DecompressDirectBufferWriter(int initialCapacity)
+    {
+        _buffer = ArrayPool<byte>.Shared.Rent(Math.Max(256, initialCapacity));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        _written += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Memory<byte> GetMemory(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsMemory(_written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsSpan(_written);
+    }
+
+    /// <summary>
+    /// Transfers ownership of the internal pooled array to the caller.
+    /// The caller must return it to ArrayPool&lt;byte&gt;.Shared when done.
+    /// </summary>
+    public byte[] DetachBuffer(out int length)
+    {
+        length = _written;
+        var buf = _buffer;
+        _buffer = [];
+        _written = 0;
+        return buf;
+    }
+
+    /// <summary>
+    /// Returns the rented buffer if ownership was not transferred via <see cref="DetachBuffer"/>.
+    /// </summary>
+    public void Dispose()
+    {
+        var buf = _buffer;
+        _buffer = [];
+        _written = 0;
+        if (buf.Length > 0)
+            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureCapacity(int sizeHint)
+    {
+        if (sizeHint < 1)
+            sizeHint = 1;
+
+        if (_buffer.Length - _written < sizeHint)
+        {
+            Grow(sizeHint);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Grow(int sizeHint)
+    {
+        var required = checked(_written + sizeHint);
+        var newSize = Math.Max(_buffer.Length * 2, required);
+        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+        _buffer.AsSpan(0, _written).CopyTo(newBuffer);
+        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        _buffer = newBuffer;
     }
 }
 
@@ -233,7 +323,6 @@ public sealed class RecordBatch : IDisposable
     {
         public PooledReusableBufferWriter? RecordsBuffer;
         public PooledReusableBufferWriter? CompressedBuffer;
-        public PooledReusableBufferWriter? DecompressedBuffer;
 
         /// <summary>
         /// Disposes all buffers, returning their arrays to DekafPools.SerializationBuffers.
@@ -245,8 +334,6 @@ public sealed class RecordBatch : IDisposable
             RecordsBuffer = null;
             CompressedBuffer?.Dispose();
             CompressedBuffer = null;
-            DecompressedBuffer?.Dispose();
-            DecompressedBuffer = null;
         }
     }
 
@@ -296,22 +383,6 @@ public sealed class RecordBatch : IDisposable
         else
         {
             buffer.Clear();
-        }
-        return buffer;
-    }
-
-    private static PooledReusableBufferWriter GetDecompressedBuffer(SerializationCache cache, int estimatedSize)
-    {
-        var buffer = cache.DecompressedBuffer;
-        if (buffer is null)
-        {
-            buffer = new PooledReusableBufferWriter(Math.Max(4096, estimatedSize), Volatile.Read(ref s_maxRetainedBufferSize));
-            cache.DecompressedBuffer = buffer;
-        }
-        else
-        {
-            // Reset write position and ensure capacity for decompressed data
-            buffer.ResetAndEnsureCapacity(estimatedSize);
         }
         return buffer;
     }
@@ -750,29 +821,19 @@ public sealed class RecordBatch : IDisposable
 
         if (compression != CompressionType.None)
         {
-            // Compressed data must be decompressed to a new buffer.
-            // Use pooled scratch buffer for decompression, then copy to a pooled array.
-            // The pooled array will be managed by LazyRecordList for proper cleanup.
+            // Decompress directly into an ArrayPool<byte>.Shared-backed writer, then
+            // detach the array for zero-copy handoff to LazyRecordList.
+            // This eliminates the previous decompress-to-scratch-then-copy pattern.
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
             var estimatedSize = recordsLength * 4; // Estimate 4x expansion
-            var cache = RentSerializationCache();
-            try
-            {
-                var decompressedBuffer = GetDecompressedBuffer(cache, estimatedSize);
-                codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
+            using var decompressWriter = new DecompressDirectBufferWriter(estimatedSize);
+            codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressWriter);
 
-                // Rent a pooled array and copy the decompressed data
-                var writtenLength = decompressedBuffer.WrittenCount;
-                var pooledArray = ArrayPool<byte>.Shared.Rent(writtenLength);
-                decompressedBuffer.WrittenSpan.CopyTo(pooledArray);
-                var pooledData = new PooledRecordData(pooledArray, writtenLength);
-                lazyRecords = LazyRecordList.Create(pooledData, recordCount);
-            }
-            finally
-            {
-                ReturnSerializationCache(cache);
-            }
+            // Transfer ownership of the pooled array — Dispose is a no-op after DetachBuffer.
+            var pooledArray = decompressWriter.DetachBuffer(out var writtenLength);
+            var pooledData = new PooledRecordData(pooledArray, writtenLength);
+            lazyRecords = LazyRecordList.Create(pooledData, recordCount);
         }
         else if (ResponseParsingContext.HasPooledMemory)
         {
