@@ -1063,6 +1063,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (buffer.Length < 4)
             return false;
 
+        // Single-segment fast path: avoids ReadOnlySequence per-segment iteration overhead
+        if (buffer.IsSingleSegment)
+        {
+            return TryReadResponseSingleSegment(ref buffer, out correlationId, out responseData);
+        }
+
         // Read size prefix
         Span<byte> sizeBuffer = stackalloc byte[4];
         buffer.Slice(0, 4).CopyTo(sizeBuffer);
@@ -1079,29 +1085,62 @@ public sealed partial class KafkaConnection : IKafkaConnection
         responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
         correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
 
-        // Use dedicated response pool for responses within the pool's max array size.
-        // Multi-partition fetch responses (e.g., 6 partitions × 1MB) easily exceed 4MB.
-        // Unpooled responses go to LOH and require Gen2 GC to reclaim, which on
-        // CPU-constrained machines causes cascading GC pressure.
-        byte[] responseArray;
-        bool isPooled;
-
-        if (size <= _responseBufferPool.MaxArrayLength)
-        {
-            responseArray = _responseBufferPool.Pool.Rent(size);
-            isPooled = true;
-        }
-        else
-        {
-            responseArray = new byte[size];
-            isPooled = false;
-        }
+        var (responseArray, isPooled) = RentResponseArray(size);
 
         responseBuffer.CopyTo(responseArray);
         responseData = new PooledResponseBuffer(responseArray, size, isPooled, pool: _responseBufferPool);
 
         buffer = buffer.Slice(4 + size);
         return true;
+    }
+
+    /// <summary>
+    /// Fast path for single-segment buffers. Reads size prefix, correlation ID, and copies
+    /// response data using Span operations, avoiding ReadOnlySequence per-segment iteration overhead.
+    /// </summary>
+    private bool TryReadResponseSingleSegment(
+        ref ReadOnlySequence<byte> buffer,
+        out int correlationId,
+        out PooledResponseBuffer responseData)
+    {
+        correlationId = 0;
+        responseData = default;
+
+        var span = buffer.FirstSpan;
+
+        // Read size prefix directly from span
+        var size = BinaryPrimitives.ReadInt32BigEndian(span);
+
+        if (span.Length < 4 + size)
+            return false;
+
+        // Read correlation ID directly from span (offset 4 = past size prefix)
+        correlationId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(4));
+
+        var (responseArray, isPooled) = RentResponseArray(size);
+
+        // Copy using Span.CopyTo — single memcpy, no segment iteration
+        span.Slice(4, size).CopyTo(responseArray);
+        responseData = new PooledResponseBuffer(responseArray, size, isPooled, pool: _responseBufferPool);
+
+        buffer = buffer.Slice(4 + size);
+        return true;
+    }
+
+    /// <summary>
+    /// Rents a response buffer from the dedicated pool, or allocates directly for oversized responses.
+    /// Multi-partition fetch responses (e.g., 6 partitions x 1MB) easily exceed 4MB.
+    /// Unpooled responses go to LOH and require Gen2 GC to reclaim.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private (byte[] Array, bool IsPooled) RentResponseArray(int size)
+    {
+        if (size <= _responseBufferPool.MaxArrayLength)
+        {
+            return (_responseBufferPool.Pool.Rent(size), true);
+        }
+
+        return (new byte[size], false);
     }
 
     /// <summary>
