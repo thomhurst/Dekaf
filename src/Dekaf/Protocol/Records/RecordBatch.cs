@@ -198,6 +198,8 @@ internal sealed class DecompressDirectBufferWriter : IBufferWriter<byte>, IDispo
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance(int count)
     {
+        if ((uint)count > (uint)(_buffer.Length - _written))
+            throw new InvalidOperationException("Advance called with count exceeding available space.");
         _written += count;
     }
 
