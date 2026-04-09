@@ -4188,12 +4188,10 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 internal sealed class BatchArrayReuseQueue
 {
     private readonly LockFreeStack<ReusableArrays> _queue;
-    private readonly LockFreeStack<ReusableArrays> _wrapperPool;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
         _queue = new LockFreeStack<ReusableArrays>(maxSize);
-        _wrapperPool = new LockFreeStack<ReusableArrays>(maxSize);
     }
 
     /// <summary>
@@ -4206,23 +4204,20 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        if (!_wrapperPool.TryPop(out var wrapper))
-            wrapper = new ReusableArrays();
-
-        wrapper.Records = records;
-        wrapper.CompletionSources = completionSources;
-        wrapper.DataArrays = pooledDataArrays;
-        wrapper.HeaderArrays = pooledHeaderArrays;
+        var wrapper = new ReusableArrays
+        {
+            Records = records,
+            CompletionSources = completionSources,
+            DataArrays = pooledDataArrays,
+            HeaderArrays = pooledHeaderArrays,
+        };
 
         if (!_queue.TryPush(wrapper))
         {
-            // Queue full — return arrays to their global pools, recycle wrapper.
             ProducerContainerPools.Records.Return(records, clearArray: false);
             ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
             ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
             ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
-            wrapper.Clear();
-            _wrapperPool.TryPush(wrapper);
         }
     }
 
@@ -4249,18 +4244,14 @@ internal sealed class BatchArrayReuseQueue
         completionSources = wrapper.CompletionSources;
         dataArrays = wrapper.DataArrays;
         headerArrays = wrapper.HeaderArrays;
-
-        // Recycle the wrapper object.
-        wrapper.Clear();
-        _wrapperPool.TryPush(wrapper);
         return true;
     }
 }
 
 /// <summary>
-/// Pooled wrapper that keeps four batch arrays atomically together in
-/// <see cref="BatchArrayReuseQueue"/>. Instances are recycled via a companion
-/// <see cref="LockFreeStack{T}"/> — no per-operation heap allocation in steady state.
+/// Wrapper that keeps four batch arrays atomically together in
+/// <see cref="BatchArrayReuseQueue"/>. One allocation per batch (~32 bytes)
+/// is acceptable — amortized over ~1000 messages per batch.
 /// </summary>
 internal sealed class ReusableArrays
 {
@@ -4268,14 +4259,6 @@ internal sealed class ReusableArrays
     public PooledValueTaskSource<RecordMetadata>[]? CompletionSources;
     public byte[][]? DataArrays;
     public Header[][]? HeaderArrays;
-
-    public void Clear()
-    {
-        Records = null;
-        CompletionSources = null;
-        DataArrays = null;
-        HeaderArrays = null;
-    }
 }
 
 /// <summary>
