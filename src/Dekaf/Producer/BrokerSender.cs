@@ -86,9 +86,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 {
     /// <summary>
     /// Timeout for SendCoalescedAsync which only does TCP write + response task wiring.
-    /// Longer than this indicates a broken/stale connection.
+    /// Longer than this indicates a broken/stale connection. Reduced from 5000ms to 1500ms
+    /// to bound tail latency: a degraded connection previously held batches for up to 5s
+    /// before timing out, contributing to p99+ spikes.
     /// </summary>
-    private const int SendCoalescedTimeoutMs = 5000;
+    private const int SendCoalescedTimeoutMs = 1500;
 
     /// <summary>
     /// Micro-linger: when coalesced batch count is at or below this threshold,

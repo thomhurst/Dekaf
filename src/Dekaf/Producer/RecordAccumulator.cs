@@ -948,13 +948,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // capacity is ratcheted up to match the workload's actual cold-path depth.
     private long _lastPoolRatchetPressure;
     private readonly CancellationTokenSource _disposalCts = new();
-    // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
-    // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
-    // Note: SemaphoreSlim is retained here (not AsyncAutoResetSignal) because ReserveMemoryAsync
-    // can have multiple concurrent async waiters from parallel ProduceAsync calls.
-    // AsyncAutoResetSignal is single-waiter only. The per-call allocation from WaitAsync is
-    // acceptable: it only occurs on the backpressure slow path (buffer full), not per-message.
-    private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
+    // Broadcast signal for buffer space waiters. When buffer space is freed, the current
+    // TCS is completed (waking ALL waiters simultaneously), then swapped for a fresh one.
+    // This eliminates the serial convoy problem of SemaphoreSlim(0,1) where N waiters
+    // must wake one-at-a-time in a chain: waiter1 -> CAS -> wake waiter2 -> CAS -> ...
+    // With broadcast, all N waiters wake, attempt CAS concurrently, and losers immediately
+    // re-enter the wait loop — O(1) wake latency instead of O(N).
+    // The TCS allocation per signal is acceptable: it only fires on the backpressure slow
+    // path (buffer full), not per-message, and is guarded by a waiter count.
+    private volatile TaskCompletionSource _bufferSpaceSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _bufferSpaceWaiters; // Number of threads waiting on _bufferSpaceSignal
 
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
@@ -1306,6 +1309,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (batch is null)
                     continue;
 
+                // Skip batches still being compressed outside the SpinLock.
+                // CompressAndSignalBatch will enqueue a _readyPartitions
+                // notification when compression finishes.
+                if (!batch.IsCompressionReady)
+                    continue;
+
                 if (batch.IsRetry && batch.RetryNotBefore > 0
                     && now < batch.RetryNotBefore)
                     continue;
@@ -1431,20 +1440,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Releases a semaphore if not already signaled, ignoring disposal and max-count races.
-    /// The CurrentCount check avoids throwing SemaphoreFullException on every call under
-    /// normal (no-waiter) operation. The rare TOCTOU race (another thread releases between
-    /// check and Release) is harmless — it just means a redundant signal, caught by SFE.
+    /// Broadcasts a buffer-space-available signal, waking ALL async waiters simultaneously.
+    /// Completes the current TCS and swaps in a fresh one for future waiters.
+    /// This is O(1) wake latency vs the O(N) serial convoy of SemaphoreSlim.
+    /// Guarded by waiter count to avoid allocating a new TCS when nobody is waiting.
     /// </summary>
-    private static void TryReleaseSemaphore(SemaphoreSlim semaphore)
+    private void SignalBufferSpaceAvailable()
     {
-        try
-        {
-            if (semaphore.CurrentCount == 0)
-                semaphore.Release();
-        }
-        catch (ObjectDisposedException) { }
-        catch (SemaphoreFullException) { }
+        if (Volatile.Read(ref _bufferSpaceWaiters) == 0)
+            return;
+
+        var prev = Interlocked.Exchange(
+            ref _bufferSpaceSignal,
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        prev.TrySetResult();
     }
 
     internal ValueTask<bool> WaitForWakeupAsync(int timeoutMs)
@@ -1863,6 +1872,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
+            CompressAndSignalBatch(sealedBatch);
             SignalWakeup();
         }
 
@@ -1900,22 +1910,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (remainingMs <= 0)
                     ThrowBufferMemoryTimeout(recordSize, startTicks);
 
+                Interlocked.Increment(ref _bufferSpaceWaiters);
+
+                // Re-check AFTER incrementing to close the missed-signal window.
+                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+                {
+                    Interlocked.Decrement(ref _bufferSpaceWaiters);
+                    continue; // space likely available, re-evaluate TryReserveMemory
+                }
+
                 try
                 {
-                    await _asyncBufferSpaceSignal.WaitAsync(
-                        (int)Math.Min(remainingMs, int.MaxValue),
+                    await _bufferSpaceSignal.Task.WaitAsync(
+                        TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
                         cancellationToken
                     ).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // Timed out waiting for signal — loop back and re-check.
                 }
                 catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
                 {
                     throw new ObjectDisposedException(nameof(RecordAccumulator));
                 }
-                catch (OperationCanceledException)
+                finally
                 {
-                    if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                        TryReleaseSemaphore(_asyncBufferSpaceSignal);
-                    throw;
+                    Interlocked.Decrement(ref _bufferSpaceWaiters);
                 }
             }
         }
@@ -1926,10 +1948,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ReturnPooledHeaders(headers);
             throw;
         }
-
-        // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-            TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         return AppendAfterReservation(topic, partition, timestamp, key, value,
             headers, headerCount, completionSource, callback, recordSize);
@@ -1987,7 +2005,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     completionSource, null, recordSize))
                     return true;
 
-                // Current batch is full — seal it (compress + enqueue under lock)
+                // Current batch is full — seal it under lock, compress outside
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
@@ -2015,6 +2033,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
+            CompressAndSignalBatch(sealedBatch);
             SignalWakeup();
         }
 
@@ -2147,6 +2166,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
+            CompressAndSignalBatch(sealedBatch);
             SignalWakeup();
         }
 
@@ -2188,22 +2208,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (remainingMs <= 0)
                     ThrowBufferMemoryTimeout(recordSize, startTicks);
 
+                Interlocked.Increment(ref _bufferSpaceWaiters);
+
+                // Re-check AFTER incrementing to close the missed-signal window.
+                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+                {
+                    Interlocked.Decrement(ref _bufferSpaceWaiters);
+                    continue; // space likely available, re-evaluate TryReserveMemory
+                }
+
                 try
                 {
-                    await _asyncBufferSpaceSignal.WaitAsync(
-                        (int)Math.Min(remainingMs, int.MaxValue),
+                    await _bufferSpaceSignal.Task.WaitAsync(
+                        TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
                         cancellationToken
                     ).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // Timed out waiting for signal — loop back and re-check.
                 }
                 catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
                 {
                     throw new ObjectDisposedException(nameof(RecordAccumulator));
                 }
-                catch (OperationCanceledException)
+                finally
                 {
-                    if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                        TryReleaseSemaphore(_asyncBufferSpaceSignal);
-                    throw;
+                    Interlocked.Decrement(ref _bufferSpaceWaiters);
                 }
             }
         }
@@ -2214,10 +2246,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ReturnPooledHeaders(headers);
             throw;
         }
-
-        // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-            TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
             headers, headerCount, null, callback, recordSize);
@@ -2267,19 +2295,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Seals the current batch in a partition deque and returns the ready batch.
-    /// Seals, pre-compresses, tracks, and enqueues the batch — all under the caller's lock.
+    /// Seals, tracks, and enqueues the batch into the deque under the caller's lock.
+    /// Compression and sender notification happen OUTSIDE the lock via
+    /// <see cref="CompressAndSignalBatch"/> to avoid holding the SpinLock during
+    /// potentially expensive compression (hundreds of microseconds for a full 1MB batch).
     ///
-    /// Compression is performed under the partition SpinLock to preserve per-partition FIFO ordering.
-    /// If two batches for the same partition are sealed in rapid succession (e.g., one by the append
-    /// worker and one by the linger timer), releasing the lock between seal and enqueue would allow
-    /// concurrent compression to complete out of order — Batch B could finish before Batch A and
-    /// get enqueued first, violating ordering guarantees.
-    ///
-    /// The SpinLock contention from compression is acceptable because:
-    /// 1. Partition-affine routing (partition % workerCount) means typically only one append thread
-    ///    per partition, so lock contention is minimal.
-    /// 2. The real performance win of pre-compression is moving it OFF the send loop thread —
-    ///    whether it runs under a partition lock or not doesn't change that benefit.
+    /// Ordering is preserved because:
+    /// 1. The batch is added to the deque (AddLast) under the lock, guaranteeing FIFO order
+    ///    even when two threads seal batches for the same partition in rapid succession.
+    /// 2. The batch is marked as not yet compression-ready (<see cref="ReadyBatch.IsCompressionReady"/>
+    ///    returns false), so the drain loop skips it until compression finishes.
+    /// 3. The sender notification (_readyPartitions.Enqueue) is deferred until after compression,
+    ///    so the sender won't actively look for this partition either.
     ///
     /// MUST be called under pd.Lock.
     /// </summary>
@@ -2292,23 +2319,53 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 
-            // Pre-compress under the lock to preserve per-partition ordering.
-            if (_options.CompressionType != CompressionType.None)
-            {
-                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
-            }
-
             OnBatchEntersPipeline(readyBatch);
             pd.AddLast(readyBatch);
             ProducerDebugCounters.RecordBatchQueuedToReady();
 
-            // Notify Ready() that this partition has a sendable batch.
-            _readyPartitions.Enqueue(readyBatch.TopicPartition);
+            // Compression and _readyPartitions notification are deferred to
+            // CompressAndSignalBatch(), called by the caller AFTER releasing the lock.
         }
         _batchPool.Return(currentBatch);
         pd.CurrentBatch = null;
         Interlocked.Decrement(ref _unsealedBatchCount);
         return readyBatch;
+    }
+
+    /// <summary>
+    /// Compresses a sealed batch (if compression is configured) and then notifies the
+    /// sender that the partition has a sendable batch. This runs OUTSIDE the partition
+    /// SpinLock — compression can take hundreds of microseconds for a full 1MB batch,
+    /// and holding a SpinLock that long causes tail latency spikes on appending threads.
+    ///
+    /// Thread safety: the batch is already sealed and in the deque; no other thread can
+    /// modify it. The drain loop skips batches where <see cref="ReadyBatch.IsCompressionReady"/>
+    /// is false, so the sender won't pick it up until we finish and set the flag.
+    /// </summary>
+    private void CompressAndSignalBatch(ReadyBatch readyBatch)
+    {
+        if (_options.CompressionType != CompressionType.None)
+        {
+            try
+            {
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            }
+            catch (Exception ex)
+            {
+                // Fail delivery tasks so callers aren't stuck waiting, then mark ready
+                // so subsequent batches in this partition aren't permanently blocked.
+                readyBatch.Fail(ex);
+                readyBatch.MarkCompressionReady();
+                _readyPartitions.Enqueue(readyBatch.TopicPartition);
+                return;
+            }
+        }
+
+        // Mark compression complete so the drain loop can pick up this batch.
+        readyBatch.MarkCompressionReady();
+
+        // Notify Ready() that this partition has a sendable batch.
+        _readyPartitions.Enqueue(readyBatch.TopicPartition);
     }
 
     /// <summary>
@@ -2344,7 +2401,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Growing: wake any waiters so they retry their reservation immediately.
         if (newLimit > previous)
-            TryReleaseSemaphore(_asyncBufferSpaceSignal);
+            SignalBufferSpaceAvailable();
     }
 
     /// <summary>Test-only synchronous reservation helper.</summary>
@@ -2468,28 +2525,36 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, startTicks);
 
+            Interlocked.Increment(ref _bufferSpaceWaiters);
+
+            // Re-check AFTER incrementing to close the missed-signal window.
+            // Without this, ReleaseMemory can see waiters=0 and skip the signal.
+            if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+            {
+                Interlocked.Decrement(ref _bufferSpaceWaiters);
+                continue; // space likely available, re-evaluate TryReserveMemory
+            }
+
             try
             {
-                await _asyncBufferSpaceSignal.WaitAsync(
-                    (int)Math.Min(remainingMs, int.MaxValue),
+                await _bufferSpaceSignal.Task.WaitAsync(
+                    TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
                     cancellationToken
                 ).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Timed out waiting for signal — loop back and re-check.
             }
             catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
             {
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
-            catch (OperationCanceledException)
+            finally
             {
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                    TryReleaseSemaphore(_asyncBufferSpaceSignal);
-                throw;
+                Interlocked.Decrement(ref _bufferSpaceWaiters);
             }
         }
-
-        // Chain-wake: after successful reservation, wake next waiter if buffer space remains.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-            TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
     /// <summary>
@@ -2572,7 +2637,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Signal that space is available — wake async waiters via semaphore.
-        TryReleaseSemaphore(_asyncBufferSpaceSignal);
+        SignalBufferSpaceAvailable();
     }
 
     /// <summary>
@@ -2742,7 +2807,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (sealAll || pd.CurrentBatch.ShouldFlush(now, _options.LingerMs))
                     {
                         ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-                        // Seal under lock (includes compression + enqueue)
+                        // Seal under lock; compression happens outside
                         sealedBatch = SealCurrentBatchUnderLock(pd, pd.CurrentBatch);
                     }
                     else
@@ -2756,6 +2821,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 if (sealedBatch is not null)
                 {
+                    CompressAndSignalBatch(sealedBatch);
                     anySealed = true;
                 }
             }
@@ -3214,7 +3280,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         CompleteAppendWorkerChannels();
 
         // Wake async waiters blocked in ReserveMemoryAsync so they recheck _disposed.
-        TryReleaseSemaphore(_asyncBufferSpaceSignal);
+        SignalBufferSpaceAvailable();
 
         // Cancel the disposal token to interrupt any remaining blocked operations
         // (e.g., append workers, metadata waits). Do this AFTER graceful shutdown attempt
@@ -3351,7 +3417,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Dispose resources to prevent leaks
         _wakeupSignal?.Dispose();
         _disposalCts?.Dispose();
-        _asyncBufferSpaceSignal?.Dispose();
+        // _bufferSpaceSignal is a TaskCompletionSource — no Dispose needed.
+        // Signal any remaining waiters so they can observe disposal.
+        _bufferSpaceSignal.TrySetResult();
         _flushLingerLock.Dispose();
         // _flushTcs doesn't need disposal - it's a TaskCompletionSource
     }
@@ -4313,6 +4381,26 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal void RewriteRecordBatch(RecordBatch newRecordBatch) => _recordBatch = newRecordBatch;
 
     /// <summary>
+    /// Whether compression has completed (or was not needed) for this batch.
+    /// Set after <see cref="RecordAccumulator.CompressAndSignalBatch"/> finishes.
+    /// The drain loop skips batches where this is false to avoid sending uncompressed data.
+    /// Uses Volatile reads for lock-free checking from the sender thread.
+    /// </summary>
+    internal bool IsCompressionReady
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => Volatile.Read(ref _compressionReady) != 0;
+    }
+    private int _compressionReady;
+
+    /// <summary>
+    /// Marks compression as complete. Called by <see cref="RecordAccumulator.CompressAndSignalBatch"/>
+    /// after compression finishes (or immediately if no compression is configured).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void MarkCompressionReady() => Volatile.Write(ref _compressionReady, 1);
+
+    /// <summary>
     /// Whether BufferMemory has already been released for this batch.
     /// Set to true when ReleaseMemory is called (at TCP send time or in error paths).
     /// Prevents double-release across send and cleanup paths.
@@ -4433,6 +4521,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
         Interlocked.Exchange(ref _memoryReleased, 0);
+        Volatile.Write(ref _compressionReady, 0);
         Interlocked.Increment(ref _generation);
 
         _topicPartition = topicPartition;
