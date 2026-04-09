@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
@@ -310,10 +309,8 @@ public sealed class RecordBatch : IDisposable
     // thread migration — each unique thread that handled serialization retained a permanent
     // ~1MB buffer rented from DekafPools.SerializationBuffers. With 3+ brokers, dozens of
     // threads accumulated caches over time, depleting the pool and driving Gen2 GC pressure.
-    // A bounded ConcurrentStack pool ensures at most MaxPooledCaches buffers are retained,
-    // regardless of how many threads participate in serialization.
-    private static readonly ConcurrentStack<SerializationCache> s_cachePool = new();
     private const int MaxPooledCaches = 16;
+    private static readonly LockFreeStack<SerializationCache> s_cachePool = new(MaxPooledCaches);
 
     /// <summary>
     /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.
@@ -349,14 +346,8 @@ public sealed class RecordBatch : IDisposable
 
     private static void ReturnSerializationCache(SerializationCache cache)
     {
-        if (s_cachePool.Count < MaxPooledCaches)
-        {
-            s_cachePool.Push(cache);
-        }
-        else
-        {
+        if (!s_cachePool.TryPush(cache))
             cache.Dispose();
-        }
     }
 
     private static PooledReusableBufferWriter GetRecordsBuffer(SerializationCache cache)
@@ -909,10 +900,8 @@ internal readonly struct PooledRecordData
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
     // Pool for reusing LazyRecordList instances to eliminate per-batch class allocation.
-    // Soft limit via Volatile.Read avoids ConcurrentStack.Count overhead.
-    private static readonly ConcurrentStack<LazyRecordList> s_instancePool = new();
-    private static int s_instancePoolCount;
     private const int MaxPooledInstances = 256;
+    private static readonly LockFreeStack<LazyRecordList> s_instancePool = new(MaxPooledInstances);
 
     private ReadOnlyMemory<byte> _rawData;
     private byte[]? _pooledArray; // Track pooled array for cleanup (mutable for idempotent dispose)
@@ -953,10 +942,10 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     {
         if (s_instancePool.TryPop(out var instance))
         {
-            Interlocked.Decrement(ref s_instancePoolCount);
             Volatile.Write(ref instance._disposed, 0);
             return instance;
         }
+
         return new LazyRecordList();
     }
 
@@ -1120,14 +1109,8 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         _parsedCount = 0;
         _nextParseOffset = 0;
 
-        // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed MaxPooledInstances by a few items.
-        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_instancePoolCount) < MaxPooledInstances)
-        {
-            s_instancePool.Push(this);
-            Interlocked.Increment(ref s_instancePoolCount);
-        }
+        // Return to pool. If full, let GC handle this instance.
+        s_instancePool.TryPush(this);
     }
 }
 

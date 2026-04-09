@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
@@ -434,7 +435,11 @@ internal readonly struct AppendWorkItem
 /// </remarks>
 internal sealed class BatchArena
 {
-    private static readonly ConcurrentQueue<BatchArena> s_pool = new();
+    // Lock-free stack pool. Eliminates the ~32-byte ConcurrentQueue Node allocation
+    // per Enqueue that caused Gen2 GC pressure under high batch churn.
+    // Replaced atomically during RatchetPoolSize — always access via Volatile.Read/Write.
+    private static LockFreeStack<BatchArena> s_pool = new(DefaultPoolSize);
+    private static readonly object s_resizeLock = new();
     // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
     // This is a static/process-wide pool shared across all RecordAccumulator instances.
     // POH buffers are reclaimable by the GC when evicted from the pool (references dropped).
@@ -452,7 +457,6 @@ internal sealed class BatchArena
     // With 1MB batches: ComputePoolSize returns 128 (not 512), so 128 × ~1.1MB ≈ ~140MB.
     internal const int MaxPoolSizeCap = 512;
     private static int s_maxPoolSize = DefaultPoolSize;
-    private static int s_poolCount;
     private static long s_misses;
 
     /// <summary>
@@ -467,8 +471,37 @@ internal sealed class BatchArena
     /// ratchets the cap to 512, then a 1MB-batch producer can retain up to
     /// 512 × ~1.1MB ≈ ~560MB of POH memory instead of the normal 128 × ~1.1MB ≈ ~140MB.
     /// </summary>
-    internal static void RatchetPoolSize(int newSize) =>
+    internal static void RatchetPoolSize(int newSize)
+    {
         InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
+
+        // Grow the pool if needed. The lock serializes concurrent resize attempts
+        // (e.g. multiple producers created simultaneously with different batch sizes).
+        // Brief lock is acceptable because RatchetPoolSize is called only during
+        // producer initialization, not on the hot path.
+        var currentPool = Volatile.Read(ref s_pool);
+        if (currentPool.Capacity < newSize)
+        {
+            lock (s_resizeLock)
+            {
+                currentPool = Volatile.Read(ref s_pool);
+                if (currentPool.Capacity < newSize)
+                {
+                    var newPool = new LockFreeStack<BatchArena>(newSize);
+                    // Drain existing pool into the new one.
+                    // Note: threads holding a stale reference to currentPool (captured
+                    // before this lock) may ReturnToPool into it after this drain completes
+                    // but before the Volatile.Write below. Those arenas are not migrated
+                    // and will be GC'd. This is acceptable because RatchetPoolSize only
+                    // runs at producer initialization — the one-time loss is recovered
+                    // on demand via the miss path.
+                    while (currentPool.TryPop(out var arena))
+                        newPool.TryPush(arena);
+                    Volatile.Write(ref s_pool, newPool);
+                }
+            }
+        }
+    }
 
     /// <summary>
     /// Number of times <see cref="RentOrCreate"/> found the pool empty and had to allocate a new arena.
@@ -484,23 +517,15 @@ internal sealed class BatchArena
     /// <param name="capacity">Buffer capacity for each arena.</param>
     internal static void PreWarm(int count, int capacity)
     {
-        var maxPool = Volatile.Read(ref s_maxPoolSize);
+        var pool = Volatile.Read(ref s_pool);
         for (var i = 0; i < count; i++)
         {
-            if (Volatile.Read(ref s_poolCount) >= maxPool)
+            if (pool.Count >= Volatile.Read(ref s_maxPoolSize))
                 break;
 
             var arena = new BatchArena(capacity);
-
-            if (Interlocked.Increment(ref s_poolCount) <= maxPool)
-            {
-                s_pool.Enqueue(arena);
-            }
-            else
-            {
-                Interlocked.Decrement(ref s_poolCount);
-                break;
-            }
+            if (!pool.TryPush(arena))
+                break; // Pool full
         }
     }
 
@@ -524,12 +549,13 @@ internal sealed class BatchArena
     /// </summary>
     public static BatchArena RentOrCreate(int capacity)
     {
-        if (s_pool.TryDequeue(out var arena))
+        var pool = Volatile.Read(ref s_pool);
+        if (pool.TryPop(out var arena))
         {
-            Interlocked.Decrement(ref s_poolCount);
             arena.Reset(capacity);
             return arena;
         }
+
         Interlocked.Increment(ref s_misses);
         return new BatchArena(capacity);
     }
@@ -542,14 +568,10 @@ internal sealed class BatchArena
     {
         arena._position = 0;
 
-        if (Interlocked.Increment(ref s_poolCount) <= Volatile.Read(ref s_maxPoolSize))
+        var pool = Volatile.Read(ref s_pool);
+        if (!pool.TryPush(arena))
         {
-            s_pool.Enqueue(arena);
-        }
-        else
-        {
-            Interlocked.Decrement(ref s_poolCount);
-            // POH buffer — drop the reference so the GC can reclaim the POH segment
+            // Pool full — drop the reference so the GC can reclaim the POH segment
             // once all objects on it are dead. No ArrayPool return needed.
             arena._buffer = null!;
         }
@@ -3705,8 +3727,8 @@ internal sealed class PartitionBatch
         {
             _records = reusable.Records;
             _completionSources = reusable.CompletionSources;
-            _pooledArrays = reusable.PooledDataArrays;
-            _pooledHeaderArrays = reusable.PooledHeaderArrays;
+            _pooledArrays = reusable.DataArrays;
+            _pooledHeaderArrays = reusable.HeaderArrays;
         }
         else
         {
@@ -4227,26 +4249,22 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// When ReadyBatch finishes cleanup, it pushes the container arrays here instead of returning
 /// them to ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
 /// to ArrayPool on miss. This eliminates ~4 ArrayPool Rent/Return pairs per batch cycle.
-/// Thread-safe via ConcurrentQueue.
+/// Uses a single <see cref="LockFreeStack{T}"/> to keep all four arrays atomically together.
+/// One <see cref="ReusableArrays"/> wrapper is allocated per batch cycle (~32 bytes, amortized
+/// over ~1000 messages per batch).
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
-    private readonly ConcurrentQueue<ReusableArrays> _queue = new();
-    private readonly int _maxSize;
+    private readonly LockFreeStack<ReusableArrays> _queue;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
-        _maxSize = maxSize;
+        _queue = new LockFreeStack<ReusableArrays>(maxSize);
     }
 
-    internal readonly record struct ReusableArrays(
-        Record[] Records,
-        PooledValueTaskSource<RecordMetadata>[] CompletionSources,
-        byte[][] PooledDataArrays,
-        Header[][] PooledHeaderArrays);
-
     /// <summary>
-    /// Enqueues arrays for reuse, or returns them to ArrayPool if the queue is full.
+    /// Pushes all four arrays as an atomic unit for reuse. If the queue is full,
+    /// all arrays are returned to the global ArrayPools instead.
     /// </summary>
     public void EnqueueOrReturn(
         Record[] records,
@@ -4254,14 +4272,19 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        if (_queue.Count < _maxSize)
+        if (_queue.Count >= _queue.Capacity)
         {
-            _queue.Enqueue(new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays));
+            ProducerContainerPools.Records.Return(records, clearArray: false);
+            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
+            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
+            return;
         }
-        else
+
+        var wrapper = new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays);
+
+        if (!_queue.TryPush(wrapper))
         {
-            // Queue is full - fall back to returning arrays to dedicated pools
-            // (not ArrayPool<T>.Shared to prevent TLS accumulation from cross-thread return)
             ProducerContainerPools.Records.Return(records, clearArray: false);
             ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
             ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
@@ -4270,12 +4293,28 @@ internal sealed class BatchArrayReuseQueue
     }
 
     /// <summary>
-    /// Tries to dequeue a set of reusable arrays.
+    /// Tries to pop a complete set of reusable arrays. All four arrays are always
+    /// returned together (atomic by construction via the wrapper).
     /// </summary>
-    public bool TryDequeue(out ReusableArrays arrays)
-    {
-        return _queue.TryDequeue(out arrays);
-    }
+    public bool TryDequeue([NotNullWhen(true)] out ReusableArrays? arrays)
+        => _queue.TryPop(out arrays);
+}
+
+/// <summary>
+/// Wrapper that keeps four batch arrays atomically together in
+/// <see cref="BatchArrayReuseQueue"/>. One allocation per batch (~32 bytes)
+/// is acceptable — amortized over ~1000 messages per batch.
+/// </summary>
+internal sealed class ReusableArrays(
+    Record[] records,
+    PooledValueTaskSource<RecordMetadata>[] completionSources,
+    byte[][] dataArrays,
+    Header[][] headerArrays)
+{
+    public Record[] Records { get; } = records;
+    public PooledValueTaskSource<RecordMetadata>[] CompletionSources { get; } = completionSources;
+    public byte[][] DataArrays { get; } = dataArrays;
+    public Header[][] HeaderArrays { get; } = headerArrays;
 }
 
 /// <summary>

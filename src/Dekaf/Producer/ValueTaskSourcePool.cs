@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Dekaf.Internal;
 
@@ -37,7 +36,7 @@ public static class ValueTaskSourcePool
 
 /// <summary>
 /// Thread-safe bounded pool for <see cref="PooledValueTaskSource{T}"/> instances.
-/// Uses lock-free operations via <see cref="ConcurrentStack{T}"/> for high throughput.
+/// Uses a pre-allocated array with CAS-guarded index for zero-allocation Rent/Return.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -46,23 +45,23 @@ public static class ValueTaskSourcePool
 /// <see cref="System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore{T}"/>.
 /// </para>
 /// <para>
+/// The previous ConcurrentStack implementation allocated a ~32-byte Node per Push call.
+/// Every ProduceAsync flows through this pool, so at high throughput (millions/sec) the
+/// Node allocations promoted to Gen2 and caused a GC feedback loop. This array-based
+/// CAS stack eliminates all per-operation allocations — only the fixed-size array is allocated
+/// at construction time.
+/// </para>
+/// <para>
 /// The pool has a configurable maximum size. When the pool is empty, new instances are created.
 /// When returning an instance to a full pool, the instance is discarded (let GC handle it).
 /// This bounded approach prevents unbounded memory growth while still reducing allocations
 /// in typical workloads.
 /// </para>
-/// <para>
-/// Note: The pool count is approximate due to lock-free operations. Under high contention,
-/// the pool may temporarily contain slightly more or fewer items than <see cref="MaxPoolSize"/>.
-/// This is intentional to avoid locks in the hot path and has no correctness impact.
-/// </para>
 /// </remarks>
 /// <typeparam name="T">The result type of the value task sources.</typeparam>
 public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 {
-    private readonly ConcurrentStack<PooledValueTaskSource<T>> _pool = new();
-    private readonly int _maxPoolSize;
-    private int _poolCount; // Approximate count for bounded pool management
+    private readonly LockFreeStack<PooledValueTaskSource<T>> _stack;
     private int _disposed;
 
     /// <summary>
@@ -81,7 +80,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (maxPoolSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxPoolSize), "Max pool size must be positive.");
 
-        _maxPoolSize = maxPoolSize;
+        _stack = new LockFreeStack<PooledValueTaskSource<T>>(maxPoolSize);
     }
 
     /// <summary>
@@ -95,12 +94,8 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
 
-        if (_pool.TryPop(out var source))
-        {
-            // Decrement approximate count (may be slightly off due to races, but that's fine)
-            Interlocked.Decrement(ref _poolCount);
+        if (_stack.TryPop(out var source))
             return source;
-        }
 
         // Pool empty - create new instance
         var newSource = new PooledValueTaskSource<T>();
@@ -123,32 +118,18 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return; // Silently discard after disposal
 
-        // Check approximate count to avoid unbounded growth
-        // Use Interlocked.Increment first to "reserve" a slot, then check if over limit
-        var count = Interlocked.Increment(ref _poolCount);
-
-        if (count <= _maxPoolSize)
-        {
-            _pool.Push(source);
-        }
-        else
-        {
-            // Pool is full - decrement count and let GC handle the instance
-            Interlocked.Decrement(ref _poolCount);
-            // Instance is not pushed, will be garbage collected
-        }
+        _stack.TryPush(source);
     }
 
     /// <summary>
     /// Gets the approximate number of instances currently in the pool.
-    /// This is an approximation due to lock-free operations.
     /// </summary>
-    public int ApproximateCount => Volatile.Read(ref _poolCount);
+    public int ApproximateCount => _stack.Count;
 
     /// <summary>
     /// Gets the maximum pool size.
     /// </summary>
-    public int MaxPoolSize => _maxPoolSize;
+    public int MaxPoolSize => _stack.Capacity;
 
     /// <summary>
     /// Disposes the pool. Outstanding instances can still complete but won't be returned to the pool.
@@ -158,9 +139,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return ValueTask.CompletedTask;
 
-        // Clear the pool - instances will be garbage collected
-        _pool.Clear();
-        _poolCount = 0;
+        _stack.Clear();
 
         return ValueTask.CompletedTask;
     }
