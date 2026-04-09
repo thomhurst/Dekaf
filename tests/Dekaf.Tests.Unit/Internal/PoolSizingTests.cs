@@ -23,7 +23,21 @@ public class PoolSizingTests
         var sizes = PoolSizing.ForProducer(bufferMemory: 1UL * 1024 * 1024, batchSize: 1024 * 1024);
 
         await Assert.That(sizes.MaxRetainedBufferSize).IsEqualTo(1024 * 1024);
-        // 1 batch * 32 = 32, clamped to min 128
+        // bufferDerived = 1*32 = 32, peak (default maxConns=10, maxInFlight=5) = 1600.
+        // max(32, 1600) = 1600, well above the 128 floor.
+        await Assert.That(sizes.InflightEntries).IsEqualTo(1600);
+    }
+
+    [Test]
+    public async Task ForProducer_SmallBufferTinyConcurrency_ClampsToMinimum()
+    {
+        var sizes = PoolSizing.ForProducer(
+            bufferMemory: 1UL * 1024 * 1024,
+            batchSize: 1024 * 1024,
+            maxInFlightRequestsPerConnection: 1,
+            maxConnectionsPerBroker: 1);
+
+        // peak = 1*1*32 = 32, bufferDerived = 32, max = 32, clamped up to floor 128.
         await Assert.That(sizes.InflightEntries).IsEqualTo(128);
     }
 
@@ -63,13 +77,42 @@ public class PoolSizingTests
     [Test]
     public async Task ForProducer_InflightEntries_ScalesWithBatches()
     {
-        // 256MB / 16KB batch = 16384 batches * 32 = 524288, clamped to max 2048
+        // Default maxConns=10, maxInFlight=5 → peak = 10*5*32 = 1600.
+        // bufferDerived (256MB / 16KB clamped at 64 batches) * 32 = 2048. max(1600,2048) = 2048.
         var smallBatch = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 16 * 1024);
         await Assert.That(smallBatch.InflightEntries).IsEqualTo(2048);
 
-        // 256MB / 1MB batch = 256 batches, capped at 64 * 32 = 2048, clamped to 2048
         var largeBatch = PoolSizing.ForProducer(bufferMemory: 256UL * 1024 * 1024, batchSize: 1024 * 1024);
         await Assert.That(largeBatch.InflightEntries).IsGreaterThanOrEqualTo(128);
+    }
+
+    [Test]
+    public async Task ForProducer_InflightEntries_ScalesWithMaxConnections()
+    {
+        // High maxConnectionsPerBroker → larger peak working set must be reflected in pool size.
+        // Single-broker idempotent stress concentrates all in-flight on one BrokerSender,
+        // so the cap must cover maxConns * maxInFlight * partitionsPerBatch even at high values.
+        var sizes = PoolSizing.ForProducer(
+            bufferMemory: 256UL * 1024 * 1024,
+            batchSize: 1024 * 1024,
+            maxInFlightRequestsPerConnection: 5,
+            maxConnectionsPerBroker: 32);
+
+        // peak = 32 * 5 * 32 = 5120, well above the legacy 2048 cap.
+        await Assert.That(sizes.InflightEntries).IsGreaterThanOrEqualTo(5120);
+    }
+
+    [Test]
+    public async Task ForProducer_InflightEntries_RespectsHardCeiling()
+    {
+        var sizes = PoolSizing.ForProducer(
+            bufferMemory: 256UL * 1024 * 1024,
+            batchSize: 1024 * 1024,
+            maxInFlightRequestsPerConnection: 1000,
+            maxConnectionsPerBroker: 1000);
+
+        // Even pathological inputs should clamp to the hard ceiling (16384).
+        await Assert.That(sizes.InflightEntries).IsLessThanOrEqualTo(16384);
     }
 
     // --- ForConnection tests ---

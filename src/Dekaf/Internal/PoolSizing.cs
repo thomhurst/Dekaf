@@ -45,7 +45,11 @@ internal static class PoolSizing
         public required int CancellationTokenSources { get; init; }
     }
 
-    internal static ProducerPoolSizes ForProducer(ulong bufferMemory, int batchSize)
+    internal static ProducerPoolSizes ForProducer(
+        ulong bufferMemory,
+        int batchSize,
+        int maxInFlightRequestsPerConnection = 5,
+        int maxConnectionsPerBroker = 10)
     {
         if (batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
@@ -54,12 +58,29 @@ internal static class PoolSizing
         var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
         var estimatedMessages = (int)(maxBatches * EstimatedMessagesPerBatch);
 
+        // InflightEntries must cover the worst-case concurrent in-flight working set.
+        // The pool is shared across all BrokerSenders in the producer, but in single-broker
+        // topologies all traffic concentrates on one sender — so the cap cannot be reduced
+        // by broker count. Worst case ≈ maxConnections × maxInFlight × InflightEntriesPerBatch
+        // (one entry per partition coalesced into each in-flight produce request).
+        // If the pool is too small, Rent() falls through to `new InflightEntry()` and Return()
+        // drops on full, producing a steady stream of mid-lived (Gen0→Gen2 promoted) garbage
+        // — which is the failure mode previously observed in single-broker idempotent stress.
+        var clampedMaxConns = Math.Max(1, maxConnectionsPerBroker);
+        var clampedMaxInFlight = Math.Max(1, maxInFlightRequestsPerConnection);
+        // Compute in long to make the final Math.Clamp ceiling unconditional — pathological
+        // inputs (e.g. misconfigured maxConnectionsPerBroker) would otherwise overflow int
+        // and produce a negative intermediate that clamps to the floor instead of the ceiling.
+        var peakInflightEntries = (long)clampedMaxConns * clampedMaxInFlight * InflightEntriesPerBatch;
+        var bufferDerivedEntries = (long)maxBatches * InflightEntriesPerBatch;
+        var inflightEntries = Math.Max(peakInflightEntries, bufferDerivedEntries);
+
         return new ProducerPoolSizes
         {
             ValueTaskSources = Math.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
             // Floor at 256KB to avoid ArrayPool thrash from frequent grow/shrink on modest workloads.
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
-            InflightEntries = Math.Clamp((int)maxBatches * InflightEntriesPerBatch, 128, 2048),
+            InflightEntries = (int)Math.Clamp(inflightEntries, 128L, 16384L),
         };
     }
 
