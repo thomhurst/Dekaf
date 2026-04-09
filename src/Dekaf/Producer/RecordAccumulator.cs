@@ -4181,30 +4181,24 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// When ReadyBatch finishes cleanup, it pushes the container arrays here instead of returning
 /// them to ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
 /// to ArrayPool on miss. This eliminates ~4 ArrayPool Rent/Return pairs per batch cycle.
-/// Uses 4 independent <see cref="LockFreeStack{T}"/> instances (one per array type) to avoid
-/// allocating a wrapper object per push/pop cycle — truly zero allocation in steady state.
+/// Uses a single <see cref="LockFreeStack{T}"/> of pooled <see cref="ReusableArrays"/> wrappers
+/// to keep all four arrays atomically together. Wrapper objects are recycled — zero allocation
+/// in steady state after warm-up.
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
-    private readonly LockFreeStack<Record[]> _records;
-    private readonly LockFreeStack<PooledValueTaskSource<RecordMetadata>[]> _completionSources;
-    private readonly LockFreeStack<byte[][]> _dataArrays;
-    private readonly LockFreeStack<Header[][]> _headerArrays;
+    private readonly LockFreeStack<ReusableArrays> _queue;
+    private readonly LockFreeStack<ReusableArrays> _wrapperPool;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
-        _records = new LockFreeStack<Record[]>(maxSize);
-        _completionSources = new LockFreeStack<PooledValueTaskSource<RecordMetadata>[]>(maxSize);
-        _dataArrays = new LockFreeStack<byte[][]>(maxSize);
-        _headerArrays = new LockFreeStack<Header[][]>(maxSize);
+        _queue = new LockFreeStack<ReusableArrays>(maxSize);
+        _wrapperPool = new LockFreeStack<ReusableArrays>(maxSize);
     }
 
     /// <summary>
-    /// Pushes each array independently for reuse. Arrays that don't fit are returned
-    /// to their respective global pools. The four stacks may temporarily have different
-    /// counts under concurrent access; this is safe because <see cref="TryDequeue"/>
-    /// rolls back partially-popped arrays on failure, and all arrays are fungible
-    /// (identically-sized buffers from ArrayPool, not batch-specific state).
+    /// Pushes all four arrays as an atomic unit for reuse. If the queue is full,
+    /// all arrays are returned to the global ArrayPools instead.
     /// </summary>
     public void EnqueueOrReturn(
         Record[] records,
@@ -4212,75 +4206,75 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        if (!_records.TryPush(records))
+        if (!_wrapperPool.TryPop(out var wrapper))
+            wrapper = new ReusableArrays();
+
+        wrapper.Records = records;
+        wrapper.CompletionSources = completionSources;
+        wrapper.DataArrays = pooledDataArrays;
+        wrapper.HeaderArrays = pooledHeaderArrays;
+
+        if (!_queue.TryPush(wrapper))
+        {
+            // Queue full — return arrays to their global pools, recycle wrapper.
             ProducerContainerPools.Records.Return(records, clearArray: false);
-        if (!_completionSources.TryPush(completionSources))
             ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-        if (!_dataArrays.TryPush(pooledDataArrays))
             ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
-        if (!_headerArrays.TryPush(pooledHeaderArrays))
             ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
+            wrapper.Clear();
+            _wrapperPool.TryPush(wrapper);
+        }
     }
 
     /// <summary>
-    /// Tries to pop a complete set of reusable arrays. Returns false if any stack is empty,
-    /// pushing back any already-popped arrays to keep stacks balanced.
+    /// Tries to pop a complete set of reusable arrays. All four arrays are always
+    /// returned together (atomic by construction via the wrapper).
     /// </summary>
-    /// <remarks>
-    /// Only called from <c>PartitionBatch.PrepareForPooling</c> which is single-threaded
-    /// per partition, so the sequential pop + rollback is safe from cross-thread interference.
-    /// </remarks>
     public bool TryDequeue(
         out Record[]? records,
         out PooledValueTaskSource<RecordMetadata>[]? completionSources,
         out byte[][]? dataArrays,
         out Header[][]? headerArrays)
     {
-        if (!_records.TryPop(out records))
+        if (!_queue.TryPop(out var wrapper))
         {
+            records = null;
             completionSources = null;
             dataArrays = null;
             headerArrays = null;
             return false;
         }
 
-        if (!_completionSources.TryPop(out completionSources))
-        {
-            if (!_records.TryPush(records))
-                ProducerContainerPools.Records.Return(records, clearArray: false);
-            records = null;
-            dataArrays = null;
-            headerArrays = null;
-            return false;
-        }
+        records = wrapper.Records;
+        completionSources = wrapper.CompletionSources;
+        dataArrays = wrapper.DataArrays;
+        headerArrays = wrapper.HeaderArrays;
 
-        if (!_dataArrays.TryPop(out dataArrays))
-        {
-            if (!_records.TryPush(records))
-                ProducerContainerPools.Records.Return(records, clearArray: false);
-            if (!_completionSources.TryPush(completionSources))
-                ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-            records = null;
-            completionSources = null;
-            headerArrays = null;
-            return false;
-        }
-
-        if (!_headerArrays.TryPop(out headerArrays))
-        {
-            if (!_records.TryPush(records))
-                ProducerContainerPools.Records.Return(records, clearArray: false);
-            if (!_completionSources.TryPush(completionSources))
-                ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-            if (!_dataArrays.TryPush(dataArrays))
-                ProducerContainerPools.DataArrayRefs.Return(dataArrays, clearArray: false);
-            records = null;
-            completionSources = null;
-            dataArrays = null;
-            return false;
-        }
-
+        // Recycle the wrapper object.
+        wrapper.Clear();
+        _wrapperPool.TryPush(wrapper);
         return true;
+    }
+}
+
+/// <summary>
+/// Pooled wrapper that keeps four batch arrays atomically together in
+/// <see cref="BatchArrayReuseQueue"/>. Instances are recycled via a companion
+/// <see cref="LockFreeStack{T}"/> — no per-operation heap allocation in steady state.
+/// </summary>
+internal sealed class ReusableArrays
+{
+    public Record[]? Records;
+    public PooledValueTaskSource<RecordMetadata>[]? CompletionSources;
+    public byte[][]? DataArrays;
+    public Header[][]? HeaderArrays;
+
+    public void Clear()
+    {
+        Records = null;
+        CompletionSources = null;
+        DataArrays = null;
+        HeaderArrays = null;
     }
 }
 
