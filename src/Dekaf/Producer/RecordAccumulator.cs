@@ -4198,38 +4198,17 @@ internal sealed class BatchArrayReuseQueue
     }
 
     /// <summary>
-    /// Attempts to push all four arrays as a set. If any stack appears full, all four
-    /// arrays are returned to the global ArrayPools instead. This all-or-nothing approach
-    /// prevents persistent stack desync under concurrent enqueue/dequeue at capacity.
+    /// Pushes each array independently for reuse. Arrays that don't fit are returned
+    /// to their respective global pools. The four stacks may temporarily have different
+    /// counts under concurrent access; this is safe because <see cref="TryDequeue"/>
+    /// rolls back partially-popped arrays on failure.
     /// </summary>
-    /// <remarks>
-    /// The capacity check is not atomic with the pushes, so a concurrent TryDequeue
-    /// could free a slot between the check and a push. In that rare case, TryPush
-    /// succeeds for all stacks anyway. The guard only prevents the problematic case
-    /// where some pushes succeed and others fail, leaving stacks with different counts.
-    /// </remarks>
     public void EnqueueOrReturn(
         Record[] records,
         PooledValueTaskSource<RecordMetadata>[] completionSources,
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        // Pre-check: if any stack is at capacity, return all to global pools.
-        // This prevents desync where some stacks accept and others reject.
-        if (_records.Count >= _records.Capacity
-            || _completionSources.Count >= _completionSources.Capacity
-            || _dataArrays.Count >= _dataArrays.Capacity
-            || _headerArrays.Count >= _headerArrays.Capacity)
-        {
-            ProducerContainerPools.Records.Return(records, clearArray: false);
-            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
-            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
-            return;
-        }
-
-        // Stacks have room — push all four. If a concurrent enqueue raced us to
-        // capacity, the failed push falls back to the global pool.
         if (!_records.TryPush(records))
             ProducerContainerPools.Records.Return(records, clearArray: false);
         if (!_completionSources.TryPush(completionSources))
