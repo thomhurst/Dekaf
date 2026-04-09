@@ -502,14 +502,14 @@ public ref struct KafkaProtocolReader
             return (uint)(b0 & 0x7F) | ((ulong)b1 << 7);
         }
 
-        return ReadVarULongSlowContiguous();
+        // Start slow path at byte 2 with partial result from the two bytes already peeked
+        _position += 2;
+        return ReadVarULongSlowContiguous((uint)(b0 & 0x7F) | ((ulong)(b1 & 0x7F) << 7), shift: 14);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private ulong ReadVarULongSlowContiguous()
+    private ulong ReadVarULongSlowContiguous(ulong result = 0, int shift = 0)
     {
-        ulong result = 0;
-        var shift = 0;
 
         while (shift < 70)
         {

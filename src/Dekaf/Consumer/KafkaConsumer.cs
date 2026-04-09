@@ -232,7 +232,7 @@ internal sealed class PendingFetchData : IDisposable
         CurrentBaseTimestamp = batch.BaseTimestamp;
         var attrs = batch.Attributes;
         CurrentBatchAttributes = attrs;
-        CurrentTimestampType = ((int)attrs & 0x08) != 0
+        CurrentTimestampType = (attrs & RecordBatchAttributes.TimestampTypeLogAppendTime) != 0
             ? TimestampType.LogAppendTime
             : TimestampType.CreateTime;
     }
@@ -244,6 +244,8 @@ internal sealed class PendingFetchData : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool MoveNext()
     {
+        Debug.Assert(Volatile.Read(ref _disposed) == 0, "MoveNext() called after Dispose()");
+
         // First call - start at first batch, first record
         if (_batchIndex < 0)
         {
