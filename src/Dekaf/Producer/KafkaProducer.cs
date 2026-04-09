@@ -84,7 +84,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
-    // Always initialized since idempotence is always enabled (sequence numbers guarantee ordering at broker).
+    // Always initialized but only actively used for idempotent producers. Non-idempotent producers
+    // skip sequence assignment and inflight tracking in BrokerSender.SendCoalescedAsync, so the
+    // tracker exists but Register/Complete are never called.
     private readonly PartitionInflightTracker _inflightTracker;
 
     // Pool for PooledValueTaskSource to avoid per-message allocations
@@ -259,9 +261,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
         // in-flight simultaneously. The tracker enables coordinated retry on
         // OutOfOrderSequenceNumber instead of blind backoff.
-        // Pre-warm to prevent allocation burst during ramp-up.
-        var inflightPool = new InflightEntryPool(producerPoolSizes.InflightEntries);
-        inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
+        // Only pre-warm for idempotent producers — non-idempotent skip sequence assignment
+        // and inflight tracking entirely (no Register/Complete calls in BrokerSender).
+        var inflightPool = new InflightEntryPool(options.EnableIdempotence
+            ? producerPoolSizes.InflightEntries
+            : 1); // Minimal pool for non-idempotent (tracker exists but is never used)
+        if (options.EnableIdempotence)
+            inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
         _inflightTracker = new PartitionInflightTracker(inflightPool);
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
