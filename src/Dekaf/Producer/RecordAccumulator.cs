@@ -3655,12 +3655,12 @@ internal sealed class PartitionBatch
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Try to reclaim arrays from the reuse queue first (returned by ReadyBatch.Cleanup()),
         // avoiding 4 ArrayPool Rent operations per batch cycle.
-        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var records, out var completionSources, out var dataArrays, out var headerArrays))
+        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
         {
-            _records = records!;
-            _completionSources = completionSources!;
-            _pooledArrays = dataArrays!;
-            _pooledHeaderArrays = headerArrays!;
+            _records = reusable.Records;
+            _completionSources = reusable.CompletionSources;
+            _pooledArrays = reusable.DataArrays;
+            _pooledHeaderArrays = reusable.HeaderArrays;
         }
         else
         {
@@ -4204,13 +4204,16 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        var wrapper = new ReusableArrays
+        if (_queue.Count >= _queue.Capacity)
         {
-            Records = records,
-            CompletionSources = completionSources,
-            DataArrays = pooledDataArrays,
-            HeaderArrays = pooledHeaderArrays,
-        };
+            ProducerContainerPools.Records.Return(records, clearArray: false);
+            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
+            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
+            return;
+        }
+
+        var wrapper = new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays);
 
         if (!_queue.TryPush(wrapper))
         {
@@ -4225,27 +4228,8 @@ internal sealed class BatchArrayReuseQueue
     /// Tries to pop a complete set of reusable arrays. All four arrays are always
     /// returned together (atomic by construction via the wrapper).
     /// </summary>
-    public bool TryDequeue(
-        out Record[]? records,
-        out PooledValueTaskSource<RecordMetadata>[]? completionSources,
-        out byte[][]? dataArrays,
-        out Header[][]? headerArrays)
-    {
-        if (!_queue.TryPop(out var wrapper))
-        {
-            records = null;
-            completionSources = null;
-            dataArrays = null;
-            headerArrays = null;
-            return false;
-        }
-
-        records = wrapper.Records;
-        completionSources = wrapper.CompletionSources;
-        dataArrays = wrapper.DataArrays;
-        headerArrays = wrapper.HeaderArrays;
-        return true;
-    }
+    public bool TryDequeue([NotNullWhen(true)] out ReusableArrays? arrays)
+        => _queue.TryPop(out arrays);
 }
 
 /// <summary>
@@ -4253,12 +4237,16 @@ internal sealed class BatchArrayReuseQueue
 /// <see cref="BatchArrayReuseQueue"/>. One allocation per batch (~32 bytes)
 /// is acceptable — amortized over ~1000 messages per batch.
 /// </summary>
-internal sealed class ReusableArrays
+internal sealed class ReusableArrays(
+    Record[] records,
+    PooledValueTaskSource<RecordMetadata>[] completionSources,
+    byte[][] dataArrays,
+    Header[][] headerArrays)
 {
-    public Record[]? Records;
-    public PooledValueTaskSource<RecordMetadata>[]? CompletionSources;
-    public byte[][]? DataArrays;
-    public Header[][]? HeaderArrays;
+    public Record[] Records { get; } = records;
+    public PooledValueTaskSource<RecordMetadata>[] CompletionSources { get; } = completionSources;
+    public byte[][] DataArrays { get; } = dataArrays;
+    public Header[][] HeaderArrays { get; } = headerArrays;
 }
 
 /// <summary>
