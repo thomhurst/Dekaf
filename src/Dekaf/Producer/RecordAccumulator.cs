@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
@@ -434,11 +435,9 @@ internal readonly struct AppendWorkItem
 /// </remarks>
 internal sealed class BatchArena
 {
-    // Pre-allocated array-based CAS stack. Eliminates the ~32-byte ConcurrentQueue Node
-    // allocation per Enqueue that caused Gen2 GC pressure under high batch churn.
-    // Indices [0, s_top) contain pooled arenas; s_top is the next write position.
-    private static BatchArena?[] s_slots = new BatchArena?[DefaultPoolSize];
-    private static int s_top;
+    // Lock-free stack pool. Eliminates the ~32-byte ConcurrentQueue Node allocation
+    // per Enqueue that caused Gen2 GC pressure under high batch churn.
+    private static LockFreeStack<BatchArena> s_pool = new(DefaultPoolSize);
     private static readonly object s_resizeLock = new();
     // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
     // This is a static/process-wide pool shared across all RecordAccumulator instances.
@@ -475,19 +474,21 @@ internal sealed class BatchArena
     {
         InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
 
-        // Grow the slots array if needed. Brief lock is acceptable here because
+        // Grow the pool if needed. Brief lock is acceptable here because
         // RatchetPoolSize is called only during producer initialization, not on the hot path.
-        if (s_slots.Length < newSize)
+        var currentPool = Volatile.Read(ref s_pool);
+        if (currentPool.Capacity < newSize)
         {
             lock (s_resizeLock)
             {
-                var currentSlots = Volatile.Read(ref s_slots);
-                if (currentSlots.Length < newSize)
+                currentPool = Volatile.Read(ref s_pool);
+                if (currentPool.Capacity < newSize)
                 {
-                    var newSlots = new BatchArena?[newSize];
-                    var top = Volatile.Read(ref s_top);
-                    Array.Copy(currentSlots, newSlots, Math.Min(top, currentSlots.Length));
-                    Volatile.Write(ref s_slots, newSlots);
+                    var newPool = new LockFreeStack<BatchArena>(newSize);
+                    // Drain existing pool into the new one
+                    while (currentPool.TryPop(out var arena))
+                        newPool.TryPush(arena);
+                    Volatile.Write(ref s_pool, newPool);
                 }
             }
         }
@@ -507,21 +508,15 @@ internal sealed class BatchArena
     /// <param name="capacity">Buffer capacity for each arena.</param>
     internal static void PreWarm(int count, int capacity)
     {
-        var slots = Volatile.Read(ref s_slots);
-        var maxPool = Math.Min(Volatile.Read(ref s_maxPoolSize), slots.Length);
+        var pool = Volatile.Read(ref s_pool);
         for (var i = 0; i < count; i++)
         {
-            var top = Volatile.Read(ref s_top);
-            if (top >= maxPool)
+            if (pool.Count >= Volatile.Read(ref s_maxPoolSize))
                 break;
 
             var arena = new BatchArena(capacity);
-
-            if (Interlocked.CompareExchange(ref s_top, top + 1, top) == top)
-            {
-                slots[top] = arena; // Plain write: PreWarm runs before the pool is shared
-            }
-            // CAS failed — discard arena. PreWarm is best-effort.
+            if (!pool.TryPush(arena))
+                break; // Pool full
         }
     }
 
@@ -545,25 +540,11 @@ internal sealed class BatchArena
     /// </summary>
     public static BatchArena RentOrCreate(int capacity)
     {
-        var slots = Volatile.Read(ref s_slots);
-        while (true)
+        var pool = Volatile.Read(ref s_pool);
+        if (pool.TryPop(out var arena))
         {
-            var top = Volatile.Read(ref s_top);
-            if (top <= 0)
-                break; // Pool empty
-
-            if (Interlocked.CompareExchange(ref s_top, top - 1, top) == top)
-            {
-                var arena = Interlocked.Exchange(ref slots[top - 1], null);
-                if (arena is not null)
-                {
-                    arena.Reset(capacity);
-                    return arena;
-                }
-                // Slot was null — another Rent concurrently claimed it. Benign.
-                break;
-            }
-            // CAS failed — retry.
+            arena.Reset(capacity);
+            return arena;
         }
 
         Interlocked.Increment(ref s_misses);
@@ -578,24 +559,12 @@ internal sealed class BatchArena
     {
         arena._position = 0;
 
-        var slots = Volatile.Read(ref s_slots);
-        while (true)
+        var pool = Volatile.Read(ref s_pool);
+        if (!pool.TryPush(arena))
         {
-            var top = Volatile.Read(ref s_top);
-            if (top >= Volatile.Read(ref s_maxPoolSize) || top >= slots.Length)
-            {
-                // Pool full — drop the reference so the GC can reclaim the POH segment
-                // once all objects on it are dead. No ArrayPool return needed.
-                arena._buffer = null!;
-                return;
-            }
-
-            if (Interlocked.CompareExchange(ref s_top, top + 1, top) == top)
-            {
-                Volatile.Write(ref slots[top], arena);
-                return;
-            }
-            // CAS failed — retry.
+            // Pool full — drop the reference so the GC can reclaim the POH segment
+            // once all objects on it are dead. No ArrayPool return needed.
+            arena._buffer = null!;
         }
     }
 
@@ -4207,25 +4176,30 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
-    // Array-based CAS stack. Eliminates the ~32-byte ConcurrentQueue Node allocation
-    // per Enqueue that caused Gen2 GC pressure under high batch churn.
-    // Uses a sentinel-based occupied flag per slot instead of Interlocked.Exchange
-    // (which is unavailable for value types).
-    private readonly ReusableArrays[] _slots;
-    private readonly int[] _occupied; // 1 = slot has data, 0 = empty
-    private int _top;
+    private readonly LockFreeStack<ReusableArrays> _stack;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
-        _slots = new ReusableArrays[maxSize];
-        _occupied = new int[maxSize];
+        _stack = new LockFreeStack<ReusableArrays>(maxSize);
     }
 
-    internal readonly record struct ReusableArrays(
-        Record[] Records,
-        PooledValueTaskSource<RecordMetadata>[] CompletionSources,
-        byte[][] PooledDataArrays,
-        Header[][] PooledHeaderArrays);
+    /// <summary>
+    /// Container for the 4 working arrays that PartitionBatch rents from ArrayPool.
+    /// Sealed class (not struct) so it can be used with <see cref="LockFreeStack{T}"/> which
+    /// requires reference types for Interlocked.Exchange. Instances are pooled, so there is
+    /// no per-operation heap allocation in steady state.
+    /// </summary>
+    internal sealed class ReusableArrays(
+        Record[] records,
+        PooledValueTaskSource<RecordMetadata>[] completionSources,
+        byte[][] pooledDataArrays,
+        Header[][] pooledHeaderArrays)
+    {
+        public Record[] Records { get; } = records;
+        public PooledValueTaskSource<RecordMetadata>[] CompletionSources { get; } = completionSources;
+        public byte[][] PooledDataArrays { get; } = pooledDataArrays;
+        public Header[][] PooledHeaderArrays { get; } = pooledHeaderArrays;
+    }
 
     /// <summary>
     /// Pushes arrays for reuse, or returns them to ArrayPool if the stack is full.
@@ -4236,20 +4210,9 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        while (true)
-        {
-            var top = Volatile.Read(ref _top);
-            if (top >= _slots.Length)
-                break; // Stack full — fall through to return to pools
-
-            if (Interlocked.CompareExchange(ref _top, top + 1, top) == top)
-            {
-                _slots[top] = new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays);
-                Volatile.Write(ref _occupied[top], 1);
-                return;
-            }
-            // CAS failed — retry.
-        }
+        var container = new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays);
+        if (_stack.TryPush(container))
+            return;
 
         // Stack is full - fall back to returning arrays to dedicated pools
         // (not ArrayPool<T>.Shared to prevent TLS accumulation from cross-thread return)
@@ -4262,33 +4225,9 @@ internal sealed class BatchArrayReuseQueue
     /// <summary>
     /// Tries to pop a set of reusable arrays.
     /// </summary>
-    public bool TryDequeue(out ReusableArrays arrays)
+    public bool TryDequeue([NotNullWhen(true)] out ReusableArrays? arrays)
     {
-        while (true)
-        {
-            var top = Volatile.Read(ref _top);
-            if (top <= 0)
-            {
-                arrays = default;
-                return false;
-            }
-
-            if (Interlocked.CompareExchange(ref _top, top - 1, top) == top)
-            {
-                var index = top - 1;
-                // Spin briefly until the push completes (writer sets occupied flag after writing data).
-                // This window is extremely narrow — just the time between CAS and Volatile.Write in push.
-                var spin = new SpinWait();
-                while (Volatile.Read(ref _occupied[index]) == 0)
-                    spin.SpinOnce();
-
-                arrays = _slots[index];
-                _slots[index] = default;
-                Volatile.Write(ref _occupied[index], 0);
-                return true;
-            }
-            // CAS failed — retry.
-        }
+        return _stack.TryPop(out arrays);
     }
 }
 

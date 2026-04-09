@@ -27,7 +27,7 @@ public class BatchArrayReuseQueueTests
         var success = queue.TryDequeue(out var dequeued);
 
         await Assert.That(success).IsTrue();
-        await Assert.That(dequeued.Records).IsSameReferenceAs(arrays.Records);
+        await Assert.That(dequeued!.Records).IsSameReferenceAs(arrays.Records);
         await Assert.That(dequeued.CompletionSources).IsSameReferenceAs(arrays.CompletionSources);
         await Assert.That(dequeued.PooledDataArrays).IsSameReferenceAs(arrays.PooledDataArrays);
         await Assert.That(dequeued.PooledHeaderArrays).IsSameReferenceAs(arrays.PooledHeaderArrays);
@@ -136,7 +136,7 @@ public class BatchArrayReuseQueueTests
         var success1 = queue.TryDequeue(out var dequeued1);
 
         await Assert.That(success1).IsTrue();
-        await Assert.That(dequeued1.Records).IsSameReferenceAs(arrays1.Records);
+        await Assert.That(dequeued1!.Records).IsSameReferenceAs(arrays1.Records);
 
         // Second cycle - queue should accept new items after draining
         var arrays2 = CreateTestArrays();
@@ -144,6 +144,6 @@ public class BatchArrayReuseQueueTests
         var success2 = queue.TryDequeue(out var dequeued2);
 
         await Assert.That(success2).IsTrue();
-        await Assert.That(dequeued2.Records).IsSameReferenceAs(arrays2.Records);
+        await Assert.That(dequeued2!.Records).IsSameReferenceAs(arrays2.Records);
     }
 }

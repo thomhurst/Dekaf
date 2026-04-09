@@ -61,10 +61,7 @@ public static class ValueTaskSourcePool
 /// <typeparam name="T">The result type of the value task sources.</typeparam>
 public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 {
-    // Pre-allocated array of slots. Indices [0, _top) contain pooled items.
-    // _top is the next write position (empty slot) — the stack grows upward.
-    private readonly PooledValueTaskSource<T>?[] _slots;
-    private int _top;
+    private readonly LockFreeStack<PooledValueTaskSource<T>> _stack;
     private int _disposed;
 
     /// <summary>
@@ -83,7 +80,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (maxPoolSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxPoolSize), "Max pool size must be positive.");
 
-        _slots = new PooledValueTaskSource<T>?[maxPoolSize];
+        _stack = new LockFreeStack<PooledValueTaskSource<T>>(maxPoolSize);
     }
 
     /// <summary>
@@ -97,27 +94,8 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
 
-        // Optimistic CAS loop: try to decrement _top and take the item at that index.
-        while (true)
-        {
-            var top = Volatile.Read(ref _top);
-            if (top <= 0)
-                break; // Pool empty — fall through to create new
-
-            if (Interlocked.CompareExchange(ref _top, top - 1, top) == top)
-            {
-                // We own slot [top - 1]. Exchange it to null atomically to prevent
-                // another concurrent pop from seeing the same item (ABA prevention).
-                var source = Interlocked.Exchange(ref _slots[top - 1], null);
-                if (source is not null)
-                    return source;
-
-                // Slot was null — another Rent concurrently claimed this item.
-                // Benign: a future Return will recover the position.
-                break;
-            }
-            // CAS failed — another thread modified _top. Retry.
-        }
+        if (_stack.TryPop(out var source))
+            return source;
 
         // Pool empty - create new instance
         var newSource = new PooledValueTaskSource<T>();
@@ -140,31 +118,18 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return; // Silently discard after disposal
 
-        while (true)
-        {
-            var top = Volatile.Read(ref _top);
-            if (top >= _slots.Length)
-                return; // Pool full — instance will be garbage collected
-
-            if (Interlocked.CompareExchange(ref _top, top + 1, top) == top)
-            {
-                // We own slot [top]. Write the item.
-                Volatile.Write(ref _slots[top], source);
-                return;
-            }
-            // CAS failed — retry.
-        }
+        _stack.TryPush(source);
     }
 
     /// <summary>
     /// Gets the approximate number of instances currently in the pool.
     /// </summary>
-    public int ApproximateCount => Volatile.Read(ref _top);
+    public int ApproximateCount => _stack.Count;
 
     /// <summary>
     /// Gets the maximum pool size.
     /// </summary>
-    public int MaxPoolSize => _slots.Length;
+    public int MaxPoolSize => _stack.Capacity;
 
     /// <summary>
     /// Disposes the pool. Outstanding instances can still complete but won't be returned to the pool.
@@ -174,11 +139,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return ValueTask.CompletedTask;
 
-        // Clear the pool - instances will be garbage collected
-        var top = Volatile.Read(ref _top);
-        for (var i = 0; i < top; i++)
-            _slots[i] = null;
-        Volatile.Write(ref _top, 0);
+        _stack.Clear();
 
         return ValueTask.CompletedTask;
     }
