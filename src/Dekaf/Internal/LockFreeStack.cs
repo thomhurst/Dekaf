@@ -85,8 +85,10 @@ internal sealed class LockFreeStack<T> where T : class
                 if (item is not null)
                     return true;
 
-                // Slot was null — a concurrent Rent or Return race claimed it. Benign:
-                // a future TryPush will recover the position.
+                // Slot was null — a concurrent TryPush hadn't written its item yet when
+                // we cleared the slot. That item will be overwritten by the next TryPush
+                // (the _top index is reused). For pool use cases this is benign: the pool
+                // is one item smaller and the lost item will eventually be GC'd.
                 return false;
             }
             // CAS failed — retry.

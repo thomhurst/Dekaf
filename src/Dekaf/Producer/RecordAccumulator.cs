@@ -437,6 +437,7 @@ internal sealed class BatchArena
 {
     // Lock-free stack pool. Eliminates the ~32-byte ConcurrentQueue Node allocation
     // per Enqueue that caused Gen2 GC pressure under high batch churn.
+    // Replaced atomically during RatchetPoolSize — always access via Volatile.Read/Write.
     private static LockFreeStack<BatchArena> s_pool = new(DefaultPoolSize);
     private static readonly object s_resizeLock = new();
     // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
@@ -4235,7 +4236,8 @@ internal sealed class BatchArrayReuseQueue
 
         if (!_completionSources.TryPop(out completionSources))
         {
-            _records.TryPush(records);
+            if (!_records.TryPush(records))
+                ProducerContainerPools.Records.Return(records, clearArray: false);
             records = null;
             dataArrays = null;
             headerArrays = null;
@@ -4244,8 +4246,10 @@ internal sealed class BatchArrayReuseQueue
 
         if (!_dataArrays.TryPop(out dataArrays))
         {
-            _records.TryPush(records);
-            _completionSources.TryPush(completionSources);
+            if (!_records.TryPush(records))
+                ProducerContainerPools.Records.Return(records, clearArray: false);
+            if (!_completionSources.TryPush(completionSources))
+                ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
             records = null;
             completionSources = null;
             headerArrays = null;
@@ -4254,9 +4258,12 @@ internal sealed class BatchArrayReuseQueue
 
         if (!_headerArrays.TryPop(out headerArrays))
         {
-            _records.TryPush(records);
-            _completionSources.TryPush(completionSources);
-            _dataArrays.TryPush(dataArrays);
+            if (!_records.TryPush(records))
+                ProducerContainerPools.Records.Return(records, clearArray: false);
+            if (!_completionSources.TryPush(completionSources))
+                ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+            if (!_dataArrays.TryPush(dataArrays))
+                ProducerContainerPools.DataArrayRefs.Return(dataArrays, clearArray: false);
             records = null;
             completionSources = null;
             dataArrays = null;
