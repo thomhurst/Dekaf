@@ -4181,9 +4181,9 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// When ReadyBatch finishes cleanup, it pushes the container arrays here instead of returning
 /// them to ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
 /// to ArrayPool on miss. This eliminates ~4 ArrayPool Rent/Return pairs per batch cycle.
-/// Uses a single <see cref="LockFreeStack{T}"/> of pooled <see cref="ReusableArrays"/> wrappers
-/// to keep all four arrays atomically together. Wrapper objects are recycled — zero allocation
-/// in steady state after warm-up.
+/// Uses a single <see cref="LockFreeStack{T}"/> to keep all four arrays atomically together.
+/// One <see cref="ReusableArrays"/> wrapper is allocated per batch cycle (~32 bytes, amortized
+/// over ~1000 messages per batch).
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
