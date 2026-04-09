@@ -3646,12 +3646,12 @@ internal sealed class PartitionBatch
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Try to reclaim arrays from the reuse queue first (returned by ReadyBatch.Cleanup()),
         // avoiding 4 ArrayPool Rent operations per batch cycle.
-        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
+        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var records, out var completionSources, out var dataArrays, out var headerArrays))
         {
-            _records = reusable.Records;
-            _completionSources = reusable.CompletionSources;
-            _pooledArrays = reusable.PooledDataArrays;
-            _pooledHeaderArrays = reusable.PooledHeaderArrays;
+            _records = records;
+            _completionSources = completionSources;
+            _pooledArrays = dataArrays;
+            _pooledHeaderArrays = headerArrays;
         }
         else
         {
@@ -4172,37 +4172,28 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// When ReadyBatch finishes cleanup, it pushes the container arrays here instead of returning
 /// them to ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
 /// to ArrayPool on miss. This eliminates ~4 ArrayPool Rent/Return pairs per batch cycle.
-/// Thread-safe via array-based CAS stack (zero allocation per push/pop).
+/// Uses 4 independent <see cref="LockFreeStack{T}"/> instances (one per array type) to avoid
+/// allocating a wrapper object per push/pop cycle — truly zero allocation in steady state.
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
-    private readonly LockFreeStack<ReusableArrays> _stack;
+    private readonly LockFreeStack<Record[]> _records;
+    private readonly LockFreeStack<PooledValueTaskSource<RecordMetadata>[]> _completionSources;
+    private readonly LockFreeStack<byte[][]> _dataArrays;
+    private readonly LockFreeStack<Header[][]> _headerArrays;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
-        _stack = new LockFreeStack<ReusableArrays>(maxSize);
+        _records = new LockFreeStack<Record[]>(maxSize);
+        _completionSources = new LockFreeStack<PooledValueTaskSource<RecordMetadata>[]>(maxSize);
+        _dataArrays = new LockFreeStack<byte[][]>(maxSize);
+        _headerArrays = new LockFreeStack<Header[][]>(maxSize);
     }
 
     /// <summary>
-    /// Container for the 4 working arrays that PartitionBatch rents from ArrayPool.
-    /// Sealed class (not struct) so it can be used with <see cref="LockFreeStack{T}"/> which
-    /// requires reference types for Interlocked.Exchange. Instances are pooled, so there is
-    /// no per-operation heap allocation in steady state.
-    /// </summary>
-    internal sealed class ReusableArrays(
-        Record[] records,
-        PooledValueTaskSource<RecordMetadata>[] completionSources,
-        byte[][] pooledDataArrays,
-        Header[][] pooledHeaderArrays)
-    {
-        public Record[] Records { get; } = records;
-        public PooledValueTaskSource<RecordMetadata>[] CompletionSources { get; } = completionSources;
-        public byte[][] PooledDataArrays { get; } = pooledDataArrays;
-        public Header[][] PooledHeaderArrays { get; } = pooledHeaderArrays;
-    }
-
-    /// <summary>
-    /// Pushes arrays for reuse, or returns them to ArrayPool if the stack is full.
+    /// Pushes each array independently for reuse. Arrays that don't fit are returned
+    /// to their dedicated pools. The 4 stacks are sized identically so they fill/empty
+    /// in lockstep under normal operation; individual fallback is only a safety net.
     /// </summary>
     public void EnqueueOrReturn(
         Record[] records,
@@ -4210,24 +4201,69 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        var container = new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays);
-        if (_stack.TryPush(container))
-            return;
-
-        // Stack is full - fall back to returning arrays to dedicated pools
-        // (not ArrayPool<T>.Shared to prevent TLS accumulation from cross-thread return)
-        ProducerContainerPools.Records.Return(records, clearArray: false);
-        ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-        ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
-        ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
+        if (!_records.TryPush(records))
+            ProducerContainerPools.Records.Return(records, clearArray: false);
+        if (!_completionSources.TryPush(completionSources))
+            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+        if (!_dataArrays.TryPush(pooledDataArrays))
+            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
+        if (!_headerArrays.TryPush(pooledHeaderArrays))
+            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
     }
 
     /// <summary>
-    /// Tries to pop a set of reusable arrays.
+    /// Tries to pop a complete set of reusable arrays. Returns false if any stack is empty,
+    /// pushing back any already-popped arrays to keep stacks balanced.
     /// </summary>
-    public bool TryDequeue([NotNullWhen(true)] out ReusableArrays? arrays)
+    /// <remarks>
+    /// Only called from <c>PartitionBatch.PrepareForPooling</c> which is single-threaded
+    /// per partition, so the sequential pop + rollback is safe from cross-thread interference.
+    /// </remarks>
+    public bool TryDequeue(
+        out Record[]? records,
+        out PooledValueTaskSource<RecordMetadata>[]? completionSources,
+        out byte[][]? dataArrays,
+        out Header[][]? headerArrays)
     {
-        return _stack.TryPop(out arrays);
+        if (!_records.TryPop(out records))
+        {
+            completionSources = null;
+            dataArrays = null;
+            headerArrays = null;
+            return false;
+        }
+
+        if (!_completionSources.TryPop(out completionSources))
+        {
+            _records.TryPush(records);
+            records = null;
+            dataArrays = null;
+            headerArrays = null;
+            return false;
+        }
+
+        if (!_dataArrays.TryPop(out dataArrays))
+        {
+            _records.TryPush(records);
+            _completionSources.TryPush(completionSources);
+            records = null;
+            completionSources = null;
+            headerArrays = null;
+            return false;
+        }
+
+        if (!_headerArrays.TryPop(out headerArrays))
+        {
+            _records.TryPush(records);
+            _completionSources.TryPush(completionSources);
+            _dataArrays.TryPush(dataArrays);
+            records = null;
+            completionSources = null;
+            dataArrays = null;
+            return false;
+        }
+
+        return true;
     }
 }
 

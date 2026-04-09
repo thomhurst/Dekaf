@@ -67,8 +67,12 @@ internal abstract class ObjectPool<T> where T : class
 
     /// <summary>
     /// Returns an item to the pool for reuse. If the pool is full, the item is discarded without reset.
-    /// Reset is only performed on items that will actually be pooled, avoiding wasted work on discards.
     /// </summary>
+    /// <remarks>
+    /// The Count check and TryPush are not atomic, so Reset may run on an item that is ultimately
+    /// discarded if the pool fills between the check and push. This is benign — Reset is idempotent
+    /// and the wasted work is rare (only under high contention at exact pool capacity).
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(T item)
     {
