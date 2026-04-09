@@ -85,10 +85,22 @@ internal sealed class LockFreeStack<T> where T : class
                 if (item is not null)
                     return true;
 
-                // Slot was null — a concurrent TryPush hadn't written its item yet when
-                // we cleared the slot. That item will be overwritten by the next TryPush
-                // (the _top index is reused). For pool use cases this is benign: the pool
-                // is one item smaller and the lost item will eventually be GC'd.
+                // Race between TryPush (increment _top, then write slot) and this TryPop
+                // (decrement _top, then exchange slot). Two sub-cases:
+                //
+                // Case 1 — Exchange runs before TryPush writes: slot is still null.
+                //   The item TryPush writes next lands at an index below _top and is
+                //   permanently stranded. The pool is one item smaller; the lost item
+                //   will eventually be GC'd.
+                //
+                // Case 2 — Exchange runs after TryPush writes: slot contains the new
+                //   item. Exchange returns it (not the original). The original item was
+                //   overwritten and is lost. The next TryPop will find a null slot at
+                //   _slots[_top] and hit case 1, returning false before recovering on
+                //   a subsequent TryPush.
+                //
+                // Both cases are benign for pool use: the pool transiently loses one
+                // item, which is re-created on demand via the miss path.
                 return false;
             }
             // CAS failed — retry.
