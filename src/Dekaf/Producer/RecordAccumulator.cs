@@ -1440,23 +1440,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Releases a semaphore if not already signaled, ignoring disposal and max-count races.
-    /// The CurrentCount check avoids throwing SemaphoreFullException on every call under
-    /// normal (no-waiter) operation. The rare TOCTOU race (another thread releases between
-    /// check and Release) is harmless — it just means a redundant signal, caught by SFE.
-    /// </summary>
-    private static void TryReleaseSemaphore(SemaphoreSlim semaphore)
-    {
-        try
-        {
-            if (semaphore.CurrentCount == 0)
-                semaphore.Release();
-        }
-        catch (ObjectDisposedException) { }
-        catch (SemaphoreFullException) { }
-    }
-
-    /// <summary>
     /// Broadcasts a buffer-space-available signal, waking ALL async waiters simultaneously.
     /// Completes the current TCS and swaps in a fresh one for future waiters.
     /// This is O(1) wake latency vs the O(N) serial convoy of SemaphoreSlim.
@@ -1928,6 +1911,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     ThrowBufferMemoryTimeout(recordSize, startTicks);
 
                 Interlocked.Increment(ref _bufferSpaceWaiters);
+
+                // Re-check AFTER incrementing to close the missed-signal window.
+                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+                {
+                    Interlocked.Decrement(ref _bufferSpaceWaiters);
+                    continue; // space likely available, re-evaluate TryReserveMemory
+                }
+
                 try
                 {
                     await _bufferSpaceSignal.Task.WaitAsync(
@@ -2217,6 +2209,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     ThrowBufferMemoryTimeout(recordSize, startTicks);
 
                 Interlocked.Increment(ref _bufferSpaceWaiters);
+
+                // Re-check AFTER incrementing to close the missed-signal window.
+                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+                {
+                    Interlocked.Decrement(ref _bufferSpaceWaiters);
+                    continue; // space likely available, re-evaluate TryReserveMemory
+                }
+
                 try
                 {
                     await _bufferSpaceSignal.Task.WaitAsync(
@@ -2345,7 +2346,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (_options.CompressionType != CompressionType.None)
         {
-            readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            try
+            {
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            }
+            catch (Exception ex)
+            {
+                // Fail delivery tasks so callers aren't stuck waiting, then mark ready
+                // so subsequent batches in this partition aren't permanently blocked.
+                readyBatch.Fail(ex);
+                readyBatch.MarkCompressionReady();
+                _readyPartitions.Enqueue(readyBatch.TopicPartition);
+                return;
+            }
         }
 
         // Mark compression complete so the drain loop can pick up this batch.
@@ -2513,6 +2526,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ThrowBufferMemoryTimeout(recordSize, startTicks);
 
             Interlocked.Increment(ref _bufferSpaceWaiters);
+
+            // Re-check AFTER incrementing to close the missed-signal window.
+            // Without this, ReleaseMemory can see waiters=0 and skip the signal.
+            if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+            {
+                Interlocked.Decrement(ref _bufferSpaceWaiters);
+                continue; // space likely available, re-evaluate TryReserveMemory
+            }
+
             try
             {
                 await _bufferSpaceSignal.Task.WaitAsync(
