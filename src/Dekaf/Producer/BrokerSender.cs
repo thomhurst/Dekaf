@@ -1924,8 +1924,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // GetAndIncrementSequence on the same shared counter, causing sequence
             // conflicts that led to OutOfOrderSequenceNumber errors.
             //
-            // Non-idempotent producers skip sequence assignment and inflight tracking
-            // entirely — they have no producer ID, no epochs, and no sequence numbers.
+            // Non-idempotent (and transactional) producers skip sequence assignment and
+            // inflight tracking — they have no epoch recovery delegate.
             // This eliminates per-batch ConcurrentDictionary lookups and pool rent/return
             // that previously ran unnecessarily for non-idempotent producers.
             if (_getCurrentEpoch is not null)

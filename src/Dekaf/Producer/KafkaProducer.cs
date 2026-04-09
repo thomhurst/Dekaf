@@ -265,7 +265,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // and inflight tracking entirely (no Register/Complete calls in BrokerSender).
         var inflightPool = new InflightEntryPool(options.EnableIdempotence
             ? producerPoolSizes.InflightEntries
-            : 1); // Minimal pool for non-idempotent (tracker exists but is never used)
+            : 1); // Minimum valid size; entries never rented for non-idempotent
         if (options.EnableIdempotence)
             inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
         _inflightTracker = new PartitionInflightTracker(inflightPool);
