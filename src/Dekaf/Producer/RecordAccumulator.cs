@@ -3648,10 +3648,10 @@ internal sealed class PartitionBatch
         // avoiding 4 ArrayPool Rent operations per batch cycle.
         if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var records, out var completionSources, out var dataArrays, out var headerArrays))
         {
-            _records = records;
-            _completionSources = completionSources;
-            _pooledArrays = dataArrays;
-            _pooledHeaderArrays = headerArrays;
+            _records = records!;
+            _completionSources = completionSources!;
+            _pooledArrays = dataArrays!;
+            _pooledHeaderArrays = headerArrays!;
         }
         else
         {
