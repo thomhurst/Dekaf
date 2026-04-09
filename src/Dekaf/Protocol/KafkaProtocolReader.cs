@@ -480,7 +480,34 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ulong ReadVarULongFast()
     {
-        // Fast path for contiguous memory - direct span access
+        if (_position >= _span.Length)
+            ThrowInsufficientData();
+
+        // Fast path: single byte (0-127) - most common for small timestamp deltas
+        var b0 = _span[_position];
+        if ((b0 & 0x80) == 0)
+        {
+            _position++;
+            return b0;
+        }
+
+        // Two-byte path (128-16383) - second most common
+        if (_position + 1 >= _span.Length)
+            ThrowInsufficientData();
+
+        var b1 = _span[_position + 1];
+        if ((b1 & 0x80) == 0)
+        {
+            _position += 2;
+            return (uint)(b0 & 0x7F) | ((ulong)b1 << 7);
+        }
+
+        return ReadVarULongSlowContiguous();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private ulong ReadVarULongSlowContiguous()
+    {
         ulong result = 0;
         var shift = 0;
 
