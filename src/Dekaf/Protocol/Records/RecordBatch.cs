@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
@@ -218,10 +217,11 @@ public sealed class RecordBatch : IDisposable
     // thread migration — each unique thread that handled serialization retained a permanent
     // ~1MB buffer rented from DekafPools.SerializationBuffers. With 3+ brokers, dozens of
     // threads accumulated caches over time, depleting the pool and driving Gen2 GC pressure.
-    // A bounded ConcurrentStack pool ensures at most MaxPooledCaches buffers are retained,
-    // regardless of how many threads participate in serialization.
-    private static readonly ConcurrentStack<SerializationCache> s_cachePool = new();
+    // Uses an array-based CAS stack instead of ConcurrentStack to eliminate the ~32-byte
+    // Node allocation per Push that contributed to Gen2 GC pressure.
     private const int MaxPooledCaches = 16;
+    private static readonly SerializationCache?[] s_cacheSlots = new SerializationCache?[MaxPooledCaches];
+    private static int s_cacheTop;
 
     /// <summary>
     /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.
@@ -252,21 +252,42 @@ public sealed class RecordBatch : IDisposable
 
     private static SerializationCache RentSerializationCache()
     {
-        if (s_cachePool.TryPop(out var cache))
-            return cache;
+        while (true)
+        {
+            var top = Volatile.Read(ref s_cacheTop);
+            if (top <= 0)
+                break;
+
+            if (Interlocked.CompareExchange(ref s_cacheTop, top - 1, top) == top)
+            {
+                var cache = Interlocked.Exchange(ref s_cacheSlots[top - 1], null);
+                if (cache is not null)
+                    return cache;
+
+                // Slot was null — another thread claimed it. Benign.
+                break;
+            }
+        }
 
         return new SerializationCache();
     }
 
     private static void ReturnSerializationCache(SerializationCache cache)
     {
-        if (s_cachePool.Count < MaxPooledCaches)
+        while (true)
         {
-            s_cachePool.Push(cache);
-        }
-        else
-        {
-            cache.Dispose();
+            var top = Volatile.Read(ref s_cacheTop);
+            if (top >= MaxPooledCaches)
+            {
+                cache.Dispose();
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref s_cacheTop, top + 1, top) == top)
+            {
+                Volatile.Write(ref s_cacheSlots[top], cache);
+                return;
+            }
         }
     }
 
@@ -846,10 +867,11 @@ internal readonly struct PooledRecordData
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
     // Pool for reusing LazyRecordList instances to eliminate per-batch class allocation.
-    // Soft limit via Volatile.Read avoids ConcurrentStack.Count overhead.
-    private static readonly ConcurrentStack<LazyRecordList> s_instancePool = new();
-    private static int s_instancePoolCount;
+    // Uses an array-based CAS stack instead of ConcurrentStack to eliminate the ~32-byte
+    // Node allocation per Push that contributed to Gen2 GC pressure.
     private const int MaxPooledInstances = 256;
+    private static readonly LazyRecordList?[] s_instanceSlots = new LazyRecordList?[MaxPooledInstances];
+    private static int s_instanceTop;
 
     private ReadOnlyMemory<byte> _rawData;
     private byte[]? _pooledArray; // Track pooled array for cleanup (mutable for idempotent dispose)
@@ -888,12 +910,25 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static LazyRecordList Rent()
     {
-        if (s_instancePool.TryPop(out var instance))
+        while (true)
         {
-            Interlocked.Decrement(ref s_instancePoolCount);
-            Volatile.Write(ref instance._disposed, 0);
-            return instance;
+            var top = Volatile.Read(ref s_instanceTop);
+            if (top <= 0)
+                break;
+
+            if (Interlocked.CompareExchange(ref s_instanceTop, top - 1, top) == top)
+            {
+                var instance = Interlocked.Exchange(ref s_instanceSlots[top - 1], null);
+                if (instance is not null)
+                {
+                    Volatile.Write(ref instance._disposed, 0);
+                    return instance;
+                }
+                // Slot was null — another thread claimed it. Benign.
+                break;
+            }
         }
+
         return new LazyRecordList();
     }
 
@@ -1057,13 +1092,19 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         _parsedCount = 0;
         _nextParseOffset = 0;
 
-        // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed MaxPooledInstances by a few items.
-        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_instancePoolCount) < MaxPooledInstances)
+        // Return to array-based CAS stack pool.
+        while (true)
         {
-            s_instancePool.Push(this);
-            Interlocked.Increment(ref s_instancePoolCount);
+            var top = Volatile.Read(ref s_instanceTop);
+            if (top >= MaxPooledInstances)
+                return; // Pool full — let GC handle this instance
+
+            if (Interlocked.CompareExchange(ref s_instanceTop, top + 1, top) == top)
+            {
+                Volatile.Write(ref s_instanceSlots[top], this);
+                return;
+            }
+            // CAS failed — retry.
         }
     }
 }
