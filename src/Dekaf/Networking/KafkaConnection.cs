@@ -368,14 +368,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
             _pipeMemoryPool = new PipeMemoryPool();
         }
 
-        // minimumBufferSize controls the buffer the writer retains between writes. Keep it
-        // modest (64 KB) — larger values cause each connection to permanently hold a large
-        // ArrayPool buffer, which accumulates across many connections (3 brokers * adaptive
-        // scaling). The writer allocates larger buffers on demand via GetMemory when needed.
-        _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(
-            pool: _pipeMemoryPool,
-            minimumBufferSize: 65536,
-            leaveOpen: true));
+        // RetainedBufferPipeWriter keeps its internal buffer across FlushAsync calls, avoiding
+        // the per-flush rent/return cycle of StreamPipeWriter that causes hundreds of GB of
+        // allocation churn under high-throughput single-connection scenarios (idempotent producer).
+        // minimumBufferSize is kept modest (64 KB) — the writer allocates larger buffers on demand
+        // via GetMemory when needed, and retains the high-water-mark buffer for the connection's
+        // lifetime. See RetainedBufferPipeWriter for full rationale.
+        _writer = new RetainedBufferPipeWriter(_stream, _pipeMemoryPool, minimumBufferSize: 65536);
 
         // Use a read pump to decouple reads from PipeReader signaling.
         // PipeReader.Create(Stream).ReadAsync can block indefinitely when concurrent reads
