@@ -209,8 +209,12 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     {
         if (_container is not null)
         {
-            await ExecCreateTopicAsync(_container, "kafka-topics", "localhost:9092",
-                topic, partitions, replicationFactor).ConfigureAwait(false);
+            // Use the Dekaf admin client API instead of exec-ing kafka-topics inside the
+            // container. The cp-kafka broker advertises its external host port in metadata,
+            // which the CLI inside the container can't reach — causing a 60-second timeout.
+            // The admin client runs on the host and connects via the external bootstrap address.
+            await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor)
+                .ConfigureAwait(false);
             return;
         }
 
