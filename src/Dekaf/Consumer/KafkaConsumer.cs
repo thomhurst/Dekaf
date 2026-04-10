@@ -169,8 +169,6 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     internal long CurrentBaseOffset { get; private set; }
     internal long CurrentBaseTimestamp { get; private set; }
-    internal RecordBatchAttributes CurrentBatchAttributes { get; private set; }
-
     /// <summary>
     /// Cached timestamp type for the current batch.
     /// Computed once per batch transition instead of per-message.
@@ -231,7 +229,6 @@ internal sealed class PendingFetchData : IDisposable
         CurrentBaseOffset = batch.BaseOffset;
         CurrentBaseTimestamp = batch.BaseTimestamp;
         var attrs = batch.Attributes;
-        CurrentBatchAttributes = attrs;
         CurrentTimestampType = (attrs & RecordBatchAttributes.TimestampTypeLogAppendTime) != 0
             ? TimestampType.LogAppendTime
             : TimestampType.CreateTime;
@@ -368,7 +365,6 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecordsCount = 0;
         CurrentBaseOffset = 0;
         CurrentBaseTimestamp = 0;
-        CurrentBatchAttributes = RecordBatchAttributes.None;
         CurrentTimestampType = default;
         LastYieldedOffset = -1;
         TotalBytesConsumed = 0;
