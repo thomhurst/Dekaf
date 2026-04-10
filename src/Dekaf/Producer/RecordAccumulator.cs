@@ -948,7 +948,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes.
     /// Resets values in place rather than clearing the dictionary to avoid re-allocating
     /// ConcurrentDictionary Node and StrongBox objects when sequences are next assigned.
+    /// O(n) over tracked partitions; acceptable for this recovery path since n is bounded
+    /// by the partition count the producer writes to.
     /// </summary>
+    /// <remarks>
+    /// The dictionary is intentionally append-only — entries are never removed, only zeroed.
+    /// This avoids Node/StrongBox churn that causes Gen2 GC pressure under high throughput.
+    /// </remarks>
     internal void ResetSequenceNumbers()
     {
         foreach (var kvp in _sequenceNumbers)
