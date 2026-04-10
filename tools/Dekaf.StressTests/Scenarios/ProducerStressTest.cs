@@ -27,7 +27,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
             .WithIdempotence(false)
-            .WithAcks(Acks.Leader)
+            .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithSocketSendBufferBytes(options.BatchSize);

@@ -1739,7 +1739,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private PartitionBatch RentBatch(TopicPartition topicPartition)
     {
         var batch = _batchPool.Rent(topicPartition);
-        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional, ProducerId >= 0 ? this : null);
+        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional);
         return batch;
     }
 
@@ -3594,7 +3594,6 @@ internal sealed class PartitionBatch
     private long _producerId = -1;
     private short _producerEpoch = -1;
     private bool _isTransactional;
-    private RecordAccumulator? _accumulator;
 
     /// <summary>
     /// Divisor for computing the arena overflow margin from BatchSize.
@@ -3669,12 +3668,11 @@ internal sealed class PartitionBatch
     /// <summary>
     /// Sets the transaction state for this batch. Called by RecordAccumulator after renting.
     /// </summary>
-    internal void SetTransactionState(long producerId, short producerEpoch, bool isTransactional, RecordAccumulator? accumulator)
+    internal void SetTransactionState(long producerId, short producerEpoch, bool isTransactional)
     {
         _producerId = producerId;
         _producerEpoch = producerEpoch;
         _isTransactional = isTransactional;
-        _accumulator = accumulator;
     }
 
     /// <summary>

@@ -1923,6 +1923,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // ResetSequenceNumbers() called inside BumpEpochAsync — both threads called
             // GetAndIncrementSequence on the same shared counter, causing sequence
             // conflicts that led to OutOfOrderSequenceNumber errors.
+            //
+            // Non-idempotent producers skip sequence assignment and inflight tracking
+            // entirely — they have no producer ID, epochs, or sequence numbers.
+            // This eliminates per-batch ConcurrentDictionary lookups and pool rent/return
+            // that previously ran unnecessarily for non-idempotent producers.
+            // Note: transactional producers ARE idempotent and need sequence assignment,
+            // but don't use epoch recovery (_getCurrentEpoch is null for them).
+            if (_requirePartitionAffinity) // EnableIdempotence — covers both idempotent and transactional
             {
                 var currentEpoch = _getCurrentEpoch?.Invoke() ?? (short)-1;
                 var currentPid = currentEpoch >= 0 ? _accumulator.ProducerId : -1L;
@@ -1961,20 +1969,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Retry batch with correct epoch — keeps its original sequence
                     }
                 }
-            }
 
-            // Register fresh batches with inflight tracker at send time (not drain time).
-            // Stale batches were re-registered above. Retry batches with correct epoch
-            // keep their existing inflight entries. Only batches without entries need registration.
-            for (var i = 0; i < count; i++)
-            {
-                var batch = batches[i];
-                if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
+                // Register fresh batches with inflight tracker at send time (not drain time).
+                // Stale batches were re-registered above. Retry batches with correct epoch
+                // keep their existing inflight entries. Only batches without entries need registration.
+                for (var i = 0; i < count; i++)
                 {
-                    batch.InflightEntry = _inflightTracker.Register(
-                        batch.TopicPartition,
-                        batch.RecordBatch.BaseSequence,
-                        batch.CompletionSourcesCount);
+                    var batch = batches[i];
+                    if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
+                    {
+                        batch.InflightEntry = _inflightTracker.Register(
+                            batch.TopicPartition,
+                            batch.RecordBatch.BaseSequence,
+                            batch.CompletionSourcesCount);
+                    }
                 }
             }
 
