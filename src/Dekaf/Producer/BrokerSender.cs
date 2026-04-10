@@ -995,6 +995,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Partition affinity (partition % N) keeps each partition's batches
                             // on the same connection for CPU cache locality. This also preserves
                             // per-partition sequence ordering for idempotent producers.
+                            // Note: when ConnectionsPerBroker exceeds the partition count, some
+                            // connections will be idle. Adaptive scaling handles this naturally
+                            // by scaling down unused connections.
                             for (var i = 0; i < coalescedCount; i++)
                             {
                                 var connIdx = coalescedBatches[i].TopicPartition.Partition % _connectionCount;
@@ -2860,7 +2863,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers require ALL connections to be drained before shrinking
         // because partitions remap (P % N -> P % (N-1)) and in-flight batches on any
         // connection could conflict with new batches post-remap, causing sequence errors.
-        // Non-idempotent producers only need the last connection idle (no sequence numbers).
+        // Non-idempotent producers only need the last connection idle — partition affinity
+        // means other connections still serve their assigned partitions without conflict.
         if (_isIdempotent)
         {
             if (_totalPendingResponseCount > 0)
