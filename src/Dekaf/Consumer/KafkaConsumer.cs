@@ -1011,16 +1011,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Yield records lazily from pending fetches
             System.Diagnostics.Activity? previousActivity = null;
+            // Hoist invariant boolean checks outside try so they're accessible in finally.
+            // These values are stable during a single ConsumeAsync iteration (snapshotted
+            // once per call, not per message) and are each a virtual/interface dispatch or
+            // volatile read that adds ~2-5ns per message at 100K+ msg/s.
+            var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
+                                 || Diagnostics.DekafMetrics.BytesReceived.Enabled;
             try
             {
-                // Hoist invariant boolean checks outside inner loops to avoid
-                // per-message overhead. These values are stable during a single
-                // ConsumeAsync iteration (snapshotted once per call, not per message)
-                // and are each a virtual/interface dispatch or volatile read that
-                // adds ~2-5ns per message at 100K+ msg/s.
                 var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
-                var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
-                                     || Diagnostics.DekafMetrics.BytesReceived.Enabled;
                 var hasInterceptors = _interceptors is not null;
                 var rawTrackingEnabled = _rawRecordTrackingEnabled;
 
@@ -1170,16 +1169,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // so we batch the Counter<T>.Add calls (virtual dispatch + bucket lookup)
                     // into a single pair per partition-fetch instead of per message.
                     if (metricsEnabled && pending.MessageCount > 0)
-                    {
-                        if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
-                        {
-                            metricTags = new System.Diagnostics.TagList
-                                { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
-                            _metricTagsCache[pending.Topic] = metricTags;
-                        }
-                        Diagnostics.DekafMetrics.MessagesReceived.Add(pending.MessageCount, metricTags);
-                        Diagnostics.DekafMetrics.BytesReceived.Add(pending.TotalBytesConsumed, metricTags);
-                    }
+                        EmitFetchMetrics(pending);
 
                     // Report batch processing time to the adaptive fetch sizer (per-batch, not per-message)
                     if (batchProcessingStarted.HasValue)
@@ -1206,19 +1196,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     if (current.LastYieldedOffset >= 0)
                     {
                         _positions[current.TopicPartition] = current.LastYieldedOffset + 1;
+                        if (!_prefetchEnabled)
+                            _fetchPositions[current.TopicPartition] = current.LastYieldedOffset + 1;
                     }
 
                     if (metricsEnabled && current.MessageCount > 0)
-                    {
-                        if (!_metricTagsCache.TryGetValue(current.Topic, out var metricTags))
-                        {
-                            metricTags = new System.Diagnostics.TagList
-                                { { Diagnostics.DekafDiagnostics.MessagingDestinationName, current.Topic } };
-                            _metricTagsCache[current.Topic] = metricTags;
-                        }
-                        Diagnostics.DekafMetrics.MessagesReceived.Add(current.MessageCount, metricTags);
-                        Diagnostics.DekafMetrics.BytesReceived.Add(current.TotalBytesConsumed, metricTags);
-                    }
+                        EmitFetchMetrics(current);
                 }
             }
 
@@ -1849,6 +1832,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public long? GetPosition(TopicPartition partition)
     {
         return _positions.TryGetValue(partition, out var position) ? position : null;
+    }
+
+    private void EmitFetchMetrics(PendingFetchData fetch)
+    {
+        if (!_metricTagsCache.TryGetValue(fetch.Topic, out var metricTags))
+        {
+            metricTags = new System.Diagnostics.TagList
+                { { Diagnostics.DekafDiagnostics.MessagingDestinationName, fetch.Topic } };
+            _metricTagsCache[fetch.Topic] = metricTags;
+        }
+        Diagnostics.DekafMetrics.MessagesReceived.Add(fetch.MessageCount, metricTags);
+        Diagnostics.DekafMetrics.BytesReceived.Add(fetch.TotalBytesConsumed, metricTags);
     }
 
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
