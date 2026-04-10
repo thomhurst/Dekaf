@@ -87,6 +87,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="linger">The time to wait before sending a batch.</param>
     public ProducerBuilder<TKey, TValue> WithLinger(TimeSpan linger)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(linger.TotalMilliseconds, int.MaxValue, nameof(linger));
         _lingerMs = (int)linger.TotalMilliseconds;
         return this;
     }
@@ -127,6 +128,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (maxBlock <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(maxBlock), "MaxBlock must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBlock.TotalMilliseconds, int.MaxValue, nameof(maxBlock));
 
         _maxBlockMs = (int)maxBlock.TotalMilliseconds;
         return this;
@@ -256,6 +258,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Transaction timeout must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _transactionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -451,6 +454,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
@@ -558,6 +562,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Delivery timeout must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _deliveryTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -573,6 +578,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -936,6 +942,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="interval">The interval between automatic commits.</param>
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(TimeSpan interval)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
         _autoCommitIntervalMs = (int)interval.TotalMilliseconds;
         return this;
     }
@@ -1060,6 +1067,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (maxWait <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(maxWait), "Fetch max wait must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxWait.TotalMilliseconds, int.MaxValue, nameof(maxWait));
         _fetchMaxWaitMs = (int)maxWait.TotalMilliseconds;
         return this;
     }
@@ -1070,6 +1078,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="timeout">The session timeout duration.</param>
     public ConsumerBuilder<TKey, TValue> WithSessionTimeout(TimeSpan timeout)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
         _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
     }
@@ -1086,6 +1095,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Heartbeat interval must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
 
         _heartbeatIntervalMs = (int)interval.TotalMilliseconds;
         return this;
@@ -1355,6 +1365,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }

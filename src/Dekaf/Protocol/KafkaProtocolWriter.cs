@@ -238,6 +238,10 @@ public ref struct KafkaProtocolWriter
 
         // Slow path for long strings
         var byteCount = Encoding.UTF8.GetByteCount(value);
+
+        if (byteCount > short.MaxValue)
+            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
+
         WriteInt16((short)byteCount);
 
         if (byteCount > 0)
@@ -289,6 +293,10 @@ public ref struct KafkaProtocolWriter
     public void WriteString(ReadOnlySpan<char> value)
     {
         var byteCount = Encoding.UTF8.GetByteCount(value);
+
+        if (byteCount > short.MaxValue)
+            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
+
         WriteInt16((short)byteCount);
 
         if (byteCount > 0)
