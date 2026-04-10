@@ -924,6 +924,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // (lock-free hash lookup only), avoiding AddOrUpdate's per-call bucket locking.
     // During leader migration, two BrokerSender threads may access the same partition
     // concurrently, so StrongBox.Value is mutated via Interlocked.Add for atomicity.
+    //
+    // Reset operations use Interlocked.Exchange(ref box.Value, 0) instead of TryRemove
+    // to avoid re-allocating ConcurrentDictionary internal Node objects (~48 bytes) and
+    // StrongBox instances (~24 bytes) per partition. Under epoch bump recovery, TryRemove
+    // followed by GetOrAdd caused these mid-lived objects to survive Gen0, get promoted
+    // to Gen2, then die — creating pathological Gen2 GC pressure in idempotent workloads.
     private readonly ConcurrentDictionary<TopicPartition, StrongBox<int>> _sequenceNumbers = new();
 
     /// <summary>
@@ -940,10 +946,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes.
+    /// Resets values in place rather than clearing the dictionary to avoid re-allocating
+    /// ConcurrentDictionary Node and StrongBox objects when sequences are next assigned.
     /// </summary>
     internal void ResetSequenceNumbers()
     {
-        _sequenceNumbers.Clear();
+        foreach (var kvp in _sequenceNumbers)
+            Interlocked.Exchange(ref kvp.Value.Value, 0);
     }
 
     /// <summary>
@@ -952,11 +961,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// that triggered OOSN/InvalidProducerEpoch need their sequences reset to 0.
     /// Unaffected partitions keep their current sequence counters; the broker carries
     /// forward per-partition sequence state across epoch bumps (KIP-360).
+    /// Resets in place via Interlocked.Exchange to avoid Node/StrongBox reallocation.
     /// </summary>
     internal void ResetSequencesForPartitions(IReadOnlyCollection<TopicPartition> partitions)
     {
         foreach (var tp in partitions)
-            _sequenceNumbers.TryRemove(tp, out _);
+        {
+            if (_sequenceNumbers.TryGetValue(tp, out var box))
+                Interlocked.Exchange(ref box.Value, 0);
+        }
     }
 
     // Buffer memory tracking for backpressure.
