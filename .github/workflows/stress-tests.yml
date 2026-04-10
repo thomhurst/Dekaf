@@ -41,6 +41,14 @@ jobs:
             client: confluent
             brokers: 1
             name: Confluent Producer (Idempotent)
+          - scenario: producer-acks-all
+            client: dekaf
+            brokers: 1
+            name: Dekaf Producer (Acks All)
+          - scenario: producer-acks-all
+            client: confluent
+            brokers: 1
+            name: Confluent Producer (Acks All)
           - scenario: consumer
             client: dekaf
             brokers: 1
@@ -59,6 +67,14 @@ jobs:
             client: confluent
             brokers: 3
             name: Confluent Producer (3 Brokers)
+          - scenario: producer-acks-all
+            client: dekaf
+            brokers: 3
+            name: Dekaf Producer Acks All (3 Brokers)
+          - scenario: producer-acks-all
+            client: confluent
+            brokers: 3
+            name: Confluent Producer Acks All (3 Brokers)
           - scenario: producer-idempotent
             client: dekaf
             brokers: 3
