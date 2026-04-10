@@ -2863,8 +2863,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers require ALL connections to be drained before shrinking
         // because partitions remap (P % N -> P % (N-1)) and in-flight batches on any
         // connection could conflict with new batches post-remap, causing sequence errors.
-        // Non-idempotent producers only need the last connection idle — partition affinity
-        // means other connections still serve their assigned partitions without conflict.
+        // Non-idempotent producers only need the last connection idle — no sequence numbers
+        // means partition remapping mid-flight cannot cause ordering violations.
         if (_isIdempotent)
         {
             if (_totalPendingResponseCount > 0)
