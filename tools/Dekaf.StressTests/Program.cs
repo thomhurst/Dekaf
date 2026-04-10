@@ -214,6 +214,8 @@ public static class Program
             new ConfluentProducerIdempotentStressTest(),
             new ProducerAsyncStressTest(),
             new ConfluentProducerAsyncStressTest(),
+            new ProducerAcksAllStressTest(),
+            new ConfluentProducerAcksAllStressTest(),
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
             new ConsumerStressTest(),
