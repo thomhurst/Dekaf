@@ -753,6 +753,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var scaledToCount = MaybeScaleConnections();
 
+                    // Deferred scale drain: idempotent producers defer scale operations until
+                    // inflight reaches 0, but under sustained load the send loop refills slots
+                    // immediately, permanently blocking the scale-up. Pause sending briefly
+                    // (~1-5ms, at most once per ScaleCooldownMs) to let inflight drain.
+                    if (scaledToCount == 0
+                        && (_deferredScaleUpCount > 0 || _deferredScaleDownConnection is not null))
+                    {
+                        var drainDeadline = Environment.TickCount64 + ScaleCooldownMs;
+                        var pending = Volatile.Read(ref _totalPendingResponseCount);
+
+                        while (pending > 0 && Environment.TickCount64 < drainDeadline)
+                        {
+                            ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
+                            pending = Volatile.Read(ref _totalPendingResponseCount);
+
+                            if (pending > 0)
+                            {
+                                HandleTimedOutRequests(carryOver, cancellationToken);
+                                pending = Volatile.Read(ref _totalPendingResponseCount);
+
+                                if (pending > 0)
+                                {
+                                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                                    pending = Volatile.Read(ref _totalPendingResponseCount);
+                                }
+                            }
+                        }
+
+                        // Re-run: inflight should be 0 so the deferred operation will be applied.
+                        scaledToCount = MaybeScaleConnections();
+                    }
+
                     if (scaledToCount > 0)
                     {
                         var newScratches = new ProduceRequestScratch[scaledToCount];
