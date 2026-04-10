@@ -1197,16 +1197,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
 
-                // Flush consumed position for any partially-iterated pending fetch.
-                // When the caller breaks out of the await foreach loop mid-fetch,
-                // the per-fetch _positions update (after the inner while loop) hasn't
-                // run yet. Flush here so CommitAsync() commits up to the last yielded message.
+                // Flush position and metrics for any partially-iterated pending fetch.
+                // Only relevant when the caller breaks early or an exception propagates;
+                // on normal loop exit _pendingFetches is empty and this is a no-op.
                 if (_pendingFetches.Count > 0)
                 {
                     var current = _pendingFetches.Peek();
                     if (current.LastYieldedOffset >= 0)
                     {
                         _positions[current.TopicPartition] = current.LastYieldedOffset + 1;
+                    }
+
+                    if (metricsEnabled && current.MessageCount > 0)
+                    {
+                        if (!_metricTagsCache.TryGetValue(current.Topic, out var metricTags))
+                        {
+                            metricTags = new System.Diagnostics.TagList
+                                { { Diagnostics.DekafDiagnostics.MessagingDestinationName, current.Topic } };
+                            _metricTagsCache[current.Topic] = metricTags;
+                        }
+                        Diagnostics.DekafMetrics.MessagesReceived.Add(current.MessageCount, metricTags);
+                        Diagnostics.DekafMetrics.BytesReceived.Add(current.TotalBytesConsumed, metricTags);
                     }
                 }
             }
