@@ -1924,21 +1924,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // GetAndIncrementSequence on the same shared counter, causing sequence
             // conflicts that led to OutOfOrderSequenceNumber errors.
             //
-            // Non-idempotent (and transactional) producers skip sequence assignment and
-            // inflight tracking — they have no epoch recovery delegate.
+            // Non-idempotent producers skip sequence assignment and inflight tracking
+            // entirely — they have no producer ID, epochs, or sequence numbers.
             // This eliminates per-batch ConcurrentDictionary lookups and pool rent/return
             // that previously ran unnecessarily for non-idempotent producers.
-            if (_getCurrentEpoch is not null)
+            // Note: transactional producers ARE idempotent and need sequence assignment,
+            // but don't use epoch recovery (_getCurrentEpoch is null for them).
+            if (_requirePartitionAffinity) // EnableIdempotence — covers both idempotent and transactional
             {
-                var currentEpoch = _getCurrentEpoch.Invoke();
-                var currentPid = _accumulator.ProducerId;
+                var currentEpoch = _getCurrentEpoch?.Invoke() ?? (short)-1;
+                var currentPid = currentEpoch >= 0 ? _accumulator.ProducerId : -1L;
 
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
                     var tp = batch.TopicPartition;
                     var recordCount = batch.RecordBatch.Records.Count;
-                    var isStaleEpoch = batch.RecordBatch.ProducerEpoch >= 0
+                    var isStaleEpoch = currentEpoch >= 0
+                        && batch.RecordBatch.ProducerEpoch >= 0
                         && batch.RecordBatch.ProducerEpoch != currentEpoch;
 
                     if (isStaleEpoch)

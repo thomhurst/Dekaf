@@ -261,8 +261,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
         // in-flight simultaneously. The tracker enables coordinated retry on
         // OutOfOrderSequenceNumber instead of blind backoff.
-        // Only pre-warm for idempotent producers — non-idempotent (and transactional) producers
-        // skip sequence assignment and inflight tracking (no epoch recovery delegate in BrokerSender).
+        // Only pre-warm for idempotent producers — non-idempotent producers skip sequence
+        // assignment and inflight tracking entirely (no producer ID or sequence numbers).
         var inflightPool = new InflightEntryPool(options.EnableIdempotence
             ? producerPoolSizes.InflightEntries
             : 1); // Minimum valid size; entries never rented for non-idempotent
