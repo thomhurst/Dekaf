@@ -1112,20 +1112,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                             pending.TrackConsumed(offset, messageBytes);
 
-                            // Record consumer metrics — uses hoisted metricsEnabled flag to avoid
-                            // per-message Enabled property checks (virtual dispatch on Counter<T>).
-                            if (metricsEnabled)
-                            {
-                                if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
-                                {
-                                    metricTags = new System.Diagnostics.TagList
-                                        { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
-                                    _metricTagsCache[pending.Topic] = metricTags;
-                                }
-                                Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
-                                Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
-                            }
-
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
                             if (hasInterceptors)
@@ -1153,10 +1139,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             break;
                         }
 
-                        // Update consumed position per-message so GetPosition()/CommitAsync()
-                        // reflect the latest message the app has seen, even mid-batch.
-                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-
                         yield return nextResult;
                     }
 
@@ -1164,14 +1146,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    // Batch-level fetch position update (once per partition-fetch, not per message).
-                    // _fetchPositions controls where the next fetch request starts from.
-                    // In prefetch mode, the prefetch thread already advances _fetchPositions
-                    // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
-                    // since _fetchPositions was set at prefetch time before the fault occurred.
-                    if (pending.LastYieldedOffset >= 0 && !_prefetchEnabled)
+                    // Per-fetch position updates (once per partition-fetch, not per message).
+                    // Moving _positions from per-message to per-fetch eliminates a ConcurrentDictionary
+                    // write per message (~20-50ns each due to hash + lock + barrier overhead).
+                    // GetPosition()/CommitAsync() are called infrequently (auto-commit every 5s)
+                    // so per-fetch granularity is sufficient.
+                    if (pending.LastYieldedOffset >= 0)
                     {
-                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
+                        // _fetchPositions controls where the next fetch request starts from.
+                        // In prefetch mode, the prefetch thread already advances _fetchPositions
+                        // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
+                        // since _fetchPositions was set at prefetch time before the fault occurred.
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        }
+                    }
+
+                    // Record consumer metrics per-fetch instead of per-message.
+                    // PendingFetchData already tracks MessageCount and TotalBytesConsumed,
+                    // so we batch the Counter<T>.Add calls (virtual dispatch + bucket lookup)
+                    // into a single pair per partition-fetch instead of per message.
+                    if (metricsEnabled && pending.MessageCount > 0)
+                    {
+                        if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
+                        {
+                            metricTags = new System.Diagnostics.TagList
+                                { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                            _metricTagsCache[pending.Topic] = metricTags;
+                        }
+                        Diagnostics.DekafMetrics.MessagesReceived.Add(pending.MessageCount, metricTags);
+                        Diagnostics.DekafMetrics.BytesReceived.Add(pending.TotalBytesConsumed, metricTags);
                     }
 
                     // Report batch processing time to the adaptive fetch sizer (per-batch, not per-message)
@@ -1189,6 +1196,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
+
+                // Flush consumed position for any partially-iterated pending fetch.
+                // When the caller breaks out of the await foreach loop mid-fetch,
+                // the per-fetch _positions update (after the inner while loop) hasn't
+                // run yet. Flush here so CommitAsync() commits up to the last yielded message.
+                if (_pendingFetches.Count > 0)
+                {
+                    var current = _pendingFetches.Peek();
+                    if (current.LastYieldedOffset >= 0)
+                    {
+                        _positions[current.TopicPartition] = current.LastYieldedOffset + 1;
+                    }
+                }
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
