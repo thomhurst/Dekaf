@@ -57,8 +57,7 @@ internal sealed class ConfluentProducerAcksAllStressTest : IStressTestScenario
 
         throughput.Start();
         var messageIndex = 0L;
-        var lastStatusTime = DateTime.UtcNow;
-        var lastStatusMessageCount = 0L;
+        var progress = new PeriodicProgressReporter(throughput);
 
         var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
         var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(cts.Token);
@@ -77,20 +76,11 @@ internal sealed class ConfluentProducerAcksAllStressTest : IStressTestScenario
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
-                // Yield and report status periodically
+                // Yield periodically to avoid starving other tasks
                 if (messageIndex % 100_000 == 0)
                 {
                     await Task.Yield();
-                    var now = DateTime.UtcNow;
-                    if ((now - lastStatusTime).TotalSeconds >= 10)
-                    {
-                        var elapsedSinceLastStatus = (now - lastStatusTime).TotalSeconds;
-                        var messagesSinceLastStatus = messageIndex - lastStatusMessageCount;
-                        var instantaneousMsgSec = messagesSinceLastStatus / elapsedSinceLastStatus;
-                        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {messageIndex:N0} messages | instant: {instantaneousMsgSec:N0} msg/sec | avg: {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
-                        lastStatusTime = now;
-                        lastStatusMessageCount = messageIndex;
-                    }
+                    progress.RecordMessage();
                 }
             }
             catch (OperationCanceledException)
