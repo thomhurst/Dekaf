@@ -45,8 +45,8 @@ internal sealed class PooledMemoryStream : Stream
         get => _position;
         set
         {
-            if (value < 0 || value > int.MaxValue)
-                throw new ArgumentOutOfRangeException(nameof(value), $"Position must be between 0 and {int.MaxValue}.");
+            if (value < 0 || value > Array.MaxLength)
+                throw new ArgumentOutOfRangeException(nameof(value), $"Position must be between 0 and {Array.MaxLength}.");
             _position = (int)value;
         }
     }
@@ -61,8 +61,8 @@ internal sealed class PooledMemoryStream : Stream
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var newPosition = (long)_position + count;
-        if (newPosition > int.MaxValue)
-            throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {int.MaxValue} bytes.");
+        if (newPosition > Array.MaxLength)
+            throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {Array.MaxLength} bytes.");
 
         EnsureCapacity((int)newPosition);
         Buffer.BlockCopy(buffer, offset, _buffer, _position, count);
@@ -75,7 +75,10 @@ internal sealed class PooledMemoryStream : Stream
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        EnsureCapacity(checked(_position + 1));
+        if (_position == Array.MaxLength)
+            throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {Array.MaxLength} bytes.");
+
+        EnsureCapacity(_position + 1);
         _buffer[_position++] = value;
         if (_position > _length)
             _length = _position;
@@ -133,8 +136,8 @@ internal sealed class PooledMemoryStream : Stream
             _ => throw new ArgumentOutOfRangeException(nameof(origin))
         };
 
-        if (newPosition < 0 || newPosition > int.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(offset), $"Seek position must be between 0 and {int.MaxValue}.");
+        if (newPosition < 0 || newPosition > Array.MaxLength)
+            throw new ArgumentOutOfRangeException(nameof(offset), $"Seek position must be between 0 and {Array.MaxLength}.");
 
         _position = (int)newPosition;
         return _position;
@@ -144,8 +147,8 @@ internal sealed class PooledMemoryStream : Stream
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (value < 0 || value > int.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(value), $"Length must be between 0 and {int.MaxValue}.");
+        if (value < 0 || value > Array.MaxLength)
+            throw new ArgumentOutOfRangeException(nameof(value), $"Length must be between 0 and {Array.MaxLength}.");
 
         EnsureCapacity((int)value);
         _length = (int)value;
