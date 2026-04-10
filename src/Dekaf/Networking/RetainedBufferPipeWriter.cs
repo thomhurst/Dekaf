@@ -23,6 +23,10 @@ namespace Dekaf.Networking;
 /// <b>Usage pattern:</b> <c>KafkaConnection</c> always follows the sequence
 /// <c>GetMemory(length) → copy → Advance(length) → FlushAsync()</c> under a write lock,
 /// with at most one unflushed write at a time. This writer is optimized for that pattern.
+/// <para/>
+/// <b>Memory:</b> The buffer grows to fit the largest message seen on the connection (high-water
+/// mark) and is retained until the connection closes. This trades per-flush GC churn for
+/// connection-lifetime memory proportional to the largest message size.
 /// </summary>
 internal sealed class RetainedBufferPipeWriter : PipeWriter
 {
@@ -47,7 +51,7 @@ internal sealed class RetainedBufferPipeWriter : PipeWriter
 
     public override void Advance(int bytes)
     {
-        ObjectDisposedException.ThrowIf(_completed, this);
+        ThrowIfCompleted();
 
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
 
@@ -61,14 +65,14 @@ internal sealed class RetainedBufferPipeWriter : PipeWriter
 
     public override Memory<byte> GetMemory(int sizeHint = 0)
     {
-        ObjectDisposedException.ThrowIf(_completed, this);
+        ThrowIfCompleted();
         EnsureCapacity(sizeHint);
         return _currentBuffer!.Memory[_bytesWritten..];
     }
 
     public override Span<byte> GetSpan(int sizeHint = 0)
     {
-        ObjectDisposedException.ThrowIf(_completed, this);
+        ThrowIfCompleted();
         EnsureCapacity(sizeHint);
         return _currentBuffer!.Memory.Span[_bytesWritten..];
     }
@@ -84,6 +88,7 @@ internal sealed class RetainedBufferPipeWriter : PipeWriter
         {
             await _stream.WriteAsync(_currentBuffer!.Memory[.._bytesWritten], cancellationToken)
                 .ConfigureAwait(false);
+            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             _bytesWritten = 0;
             // Buffer is RETAINED — not returned to the pool.
         }
@@ -144,6 +149,14 @@ internal sealed class RetainedBufferPipeWriter : PipeWriter
         _currentBuffer?.Dispose();
         _currentBuffer = newBuffer;
         _currentBufferSize = newBufferSize;
+    }
+
+    private void ThrowIfCompleted()
+    {
+        if (_completed)
+        {
+            throw new InvalidOperationException("PipeWriter has been completed.");
+        }
     }
 
     private void ReturnBuffer()
