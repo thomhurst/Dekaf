@@ -86,11 +86,12 @@ internal sealed class RetainedBufferPipeWriter : PipeWriter
 
         if (_bytesWritten > 0)
         {
-            await _stream.WriteAsync(_currentBuffer!.Memory[.._bytesWritten], cancellationToken)
+            var bytesToFlush = _bytesWritten;
+            _bytesWritten = 0; // Optimistic reset — connection is closed on failure anyway.
+            // Buffer is RETAINED — not returned to the pool.
+            await _stream.WriteAsync(_currentBuffer!.Memory[..bytesToFlush], cancellationToken)
                 .ConfigureAwait(false);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            _bytesWritten = 0;
-            // Buffer is RETAINED — not returned to the pool.
         }
 
         return new FlushResult(isCanceled: false, isCompleted: false);
