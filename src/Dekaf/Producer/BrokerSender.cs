@@ -390,11 +390,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
-    // Idempotent producers use partition affinity for per-partition sequence ordering across
-    // multiple connections; non-idempotent producers use round-robin for better distribution.
+    // All producers use partition affinity (partition % N) for CPU cache locality.
+    // Idempotent producers additionally require affinity for per-partition sequence ordering.
     private IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
-    private readonly bool _requirePartitionAffinity;
+    private readonly bool _isIdempotent;
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
@@ -521,18 +521,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
-        // Idempotent producers use partition affinity (partition % connectionCount) to
-        // preserve per-partition sequence ordering across connections. Non-idempotent
-        // producers use round-robin for better utilization with skewed partition traffic.
+        // All producers use partition affinity (partition % connectionCount) for CPU cache
+        // locality. Idempotent producers additionally need affinity for sequence ordering.
         _connectionCount = options.ConnectionsPerBroker;
-        _requirePartitionAffinity = options.EnableIdempotence;
+        _isIdempotent = options.EnableIdempotence;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
         // Adaptive scaling: available for all non-transactional producers.
-        // Idempotent producers use partition affinity (partition % N) which preserves
-        // per-partition sequence ordering across multiple connections. Transactions
-        // are excluded because coordinator requests require a single connection.
+        // All producers use partition affinity (partition % N) for cache locality.
+        // Idempotent producers additionally need affinity for sequence ordering.
+        // Transactions are excluded because coordinator requests require a single connection.
         _adaptiveScalingEnabled = options.EnableAdaptiveConnections && options.TransactionalId is null;
         _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
@@ -669,10 +668,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var connectionBuckets = new ConnectionBucket[_connectionCount];
         for (var c = 0; c < _connectionCount; c++)
             connectionBuckets[c].Batches = new ReadyBatch[maxCoalesce];
-
-        // Round-robin counter for non-idempotent multi-connection bucket assignment.
-        // Distributes batches evenly across connections regardless of partition skew.
-        var roundRobinCounter = 0u;
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -997,13 +992,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // === Multi-connection path ===
 
                             // Distribute coalesced batches into per-connection buckets.
-                            // Idempotent: partition affinity (partition % N) for sequence ordering.
-                            // Non-idempotent: round-robin for even distribution across connections.
+                            // Partition affinity (partition % N) keeps each partition's batches
+                            // on the same connection for CPU cache locality. This also preserves
+                            // per-partition sequence ordering for idempotent producers.
+                            // Note: when ConnectionsPerBroker exceeds the partition count, some
+                            // connections will be idle. Adaptive scaling handles this naturally
+                            // by scaling down unused connections.
                             for (var i = 0; i < coalescedCount; i++)
                             {
-                                var connIdx = _requirePartitionAffinity
-                                    ? coalescedBatches[i].TopicPartition.Partition % _connectionCount
-                                    : (int)(roundRobinCounter++ % (uint)_connectionCount);
+                                var connIdx = coalescedBatches[i].TopicPartition.Partition % _connectionCount;
                                 ref var bucket = ref connectionBuckets[connIdx];
                                 bucket.Batches[bucket.Count++] = coalescedBatches[i];
                             }
@@ -1930,7 +1927,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // that previously ran unnecessarily for non-idempotent producers.
             // Note: transactional producers ARE idempotent and need sequence assignment,
             // but don't use epoch recovery (_getCurrentEpoch is null for them).
-            if (_requirePartitionAffinity) // EnableIdempotence — covers both idempotent and transactional
+            if (_isIdempotent) // EnableIdempotence — covers both idempotent and transactional
             {
                 var currentEpoch = _getCurrentEpoch?.Invoke() ?? (short)-1;
                 var currentPid = currentEpoch >= 0 ? _accumulator.ProducerId : -1L;
@@ -2747,7 +2744,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // remap and new batches could arrive on a different connection than
                     // the in-flight ones, causing OutOfOrderSequenceNumber errors.
                     // Defer the update until all in-flight responses have drained.
-                    if (_requirePartitionAffinity && _totalPendingResponseCount > 0)
+                    if (_isIdempotent && _totalPendingResponseCount > 0)
                     {
                         _deferredScaleUpCount = actualCount;
                         return 0;
@@ -2780,7 +2777,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     // Same affinity concern as scale-up: shrinking from N to N-1 remaps
                     // partitions (P % N -> P % (N-1)). Defer until all in-flight drained.
-                    if (_requirePartitionAffinity && _totalPendingResponseCount > 0)
+                    if (_isIdempotent && _totalPendingResponseCount > 0)
                     {
                         _deferredScaleDownConnection = removedConnection;
                         return 0;
@@ -2863,11 +2860,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (now - _lowUtilizationStartTicks < ScaleDownSustainedMs)
             return 0; // Not sustained long enough
 
-        // When partition affinity is required, ALL connections must be drained before
-        // shrinking — not just the last one — because partitions remap (P % N -> P % (N-1))
-        // and in-flight batches on any connection could conflict with new batches post-remap.
-        // Without affinity, only the last connection needs to be idle.
-        if (_requirePartitionAffinity)
+        // Idempotent producers require ALL connections to be drained before shrinking
+        // because partitions remap (P % N -> P % (N-1)) and in-flight batches on any
+        // connection could conflict with new batches post-remap, causing sequence errors.
+        // Non-idempotent producers only need the last connection idle — no sequence numbers
+        // means partition remapping mid-flight cannot cause ordering violations.
+        if (_isIdempotent)
         {
             if (_totalPendingResponseCount > 0)
                 return 0; // Still has in-flight requests across connections — wait for drain
