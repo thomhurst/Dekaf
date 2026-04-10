@@ -41,6 +41,8 @@ public class VarIntEncodingTests
     [Arguments(-1)]
     [Arguments(127)]
     [Arguments(-128)]
+    [Arguments(8192)]      // ZigZag → 16384 = first 3-byte varint (exercises 2→3 byte boundary)
+    [Arguments(-8193)]     // ZigZag → 16385
     [Arguments(16383)]
     [Arguments(-16384)]
     [Arguments(int.MaxValue)]
@@ -78,6 +80,9 @@ public class VarIntEncodingTests
     [Arguments(0L)]
     [Arguments(1L)]
     [Arguments(-1L)]
+    [Arguments(8192L)]     // ZigZag → 16384 = first 3-byte varint (exercises 2→3 byte boundary)
+    [Arguments(-8193L)]    // ZigZag → 16385 (just past boundary)
+    [Arguments(1048575L)]  // ZigZag → 2097150 = last 3-byte varint
     [Arguments(long.MaxValue)]
     [Arguments(long.MinValue)]
     public async Task VarLong_RoundTrip(long value)

@@ -966,6 +966,15 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns the underlying parsed records array for direct access,
+    /// bypassing the IReadOnlyList indexer overhead (Volatile.Read + disposed check +
+    /// EnsureParsedUpTo call per access). Only valid after <see cref="EnsureAllParsed"/>.
+    /// The array may be oversized (rented from ArrayPool); use <see cref="Count"/> for bounds.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Record[]? GetParsedArray() => _parsedRecords;
+
     public Record this[int index]
     {
         get

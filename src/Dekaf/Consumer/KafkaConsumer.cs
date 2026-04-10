@@ -144,15 +144,22 @@ internal sealed class PendingFetchData : IDisposable
     public RecordBatch CurrentBatch => _batches[_batchIndex];
 
     /// <summary>
-    /// Gets the current record directly from the cached records list,
-    /// bypassing the RecordBatch.Records property's Volatile.Read check per message.
-    /// Safe because EagerParseAll() is called before iteration, ensuring all records are parsed.
+    /// Gets the current record via direct array access, bypassing the LazyRecordList
+    /// indexer overhead (Volatile.Read + disposed check + EnsureParsedUpTo per access).
+    /// Safe because EagerParseAll() is called before iteration begins.
     /// </summary>
-    public Record CurrentRecord => _currentRecords![_recordIndex];
+    public Record CurrentRecord
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _currentRecordsArray is not null
+            ? _currentRecordsArray[_recordIndex]
+            : _currentRecords![_recordIndex];
+    }
 
-    // Cached state to avoid per-message property indirection through RecordBatch.Records
-    // (which involves Volatile.Read + ObjectDisposedException check per access).
-    // Updated only on batch transitions, amortizing the cost.
+    // Cached batch state updated only on batch transitions, amortizing per-record cost.
+    // _currentRecordsArray bypasses IReadOnlyList<Record> virtual dispatch + LazyRecordList
+    // indexer overhead by caching the underlying Record[] directly.
+    private Record[]? _currentRecordsArray;
     private IReadOnlyList<Record>? _currentRecords;
     private int _currentRecordsCount;
 
@@ -163,6 +170,12 @@ internal sealed class PendingFetchData : IDisposable
     internal long CurrentBaseOffset { get; private set; }
     internal long CurrentBaseTimestamp { get; private set; }
     internal RecordBatchAttributes CurrentBatchAttributes { get; private set; }
+
+    /// <summary>
+    /// Cached timestamp type for the current batch.
+    /// Computed once per batch transition instead of per-message.
+    /// </summary>
+    internal TimestampType CurrentTimestampType { get; private set; }
 
     /// <summary>
     /// Updates tracking for batch-level position.
@@ -206,21 +219,32 @@ internal sealed class PendingFetchData : IDisposable
     private void CacheCurrentBatchState()
     {
         var batch = _batches[_batchIndex];
-        _currentRecords = batch.Records;
-        _currentRecordsCount = _currentRecords.Count;
+        var records = batch.Records;
+        _currentRecords = records;
+        _currentRecordsCount = records.Count;
+
+        // Cache raw array for direct indexing (bypasses LazyRecordList indexer overhead).
+        _currentRecordsArray = records is Protocol.Records.LazyRecordList lazyList
+            ? lazyList.GetParsedArray()
+            : null;
+
         CurrentBaseOffset = batch.BaseOffset;
         CurrentBaseTimestamp = batch.BaseTimestamp;
-        CurrentBatchAttributes = batch.Attributes;
+        var attrs = batch.Attributes;
+        CurrentBatchAttributes = attrs;
+        CurrentTimestampType = (attrs & RecordBatchAttributes.TimestampTypeLogAppendTime) != 0
+            ? TimestampType.LogAppendTime
+            : TimestampType.CreateTime;
     }
 
     /// <summary>
     /// Advances to the next record across all batches.
     /// Returns false when no more records are available.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool MoveNext()
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(PendingFetchData));
+        Debug.Assert(Volatile.Read(ref _disposed) == 0, "MoveNext() called after Dispose()");
 
         // First call - start at first batch, first record
         if (_batchIndex < 0)
@@ -339,11 +363,13 @@ internal sealed class PendingFetchData : IDisposable
         _memoryOwner = null;
         _batchIndex = -1;
         _recordIndex = -1;
+        _currentRecordsArray = null;
         _currentRecords = null;
         _currentRecordsCount = 0;
         CurrentBaseOffset = 0;
         CurrentBaseTimestamp = 0;
         CurrentBatchAttributes = RecordBatchAttributes.None;
+        CurrentTimestampType = default;
         LastYieldedOffset = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
@@ -1050,9 +1076,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 headers = record.Headers[..record.HeaderCount];
                             }
 
-                            var timestampType = ((int)pending.CurrentBatchAttributes & 0x08) != 0
-                                ? TimestampType.LogAppendTime
-                                : TimestampType.CreateTime;
+                            // Use batch-level cached timestamp type (computed once per batch
+                            // transition in CacheCurrentBatchState, not per message)
+                            var timestampType = pending.CurrentTimestampType;
 
                             var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                                (record.IsValueNull ? 0 : record.Value.Length);
