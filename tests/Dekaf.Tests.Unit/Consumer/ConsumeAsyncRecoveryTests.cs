@@ -338,7 +338,7 @@ public sealed class ConsumeAsyncRecoveryTests
     public async Task GetPosition_AfterPartialBatchConsumed_ReflectsLastYieldedOffset()
     {
         // Arrange: a single fetch with 5 records at offsets 20..24.
-        // We consume 3 of the 5 and then break out.
+        // We consume 3 of the 5 and then check GetPosition mid-batch.
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
             CreateBatch(20,
@@ -355,24 +355,38 @@ public sealed class ConsumeAsyncRecoveryTests
         var results = new List<ConsumeResult<string, string>>();
         var tp = new TopicPartition(Topic, Partition);
 
-        // Act: consume exactly 3 records then break
+        // Act: consume exactly 3 records, checking position after each yield
+        long? positionAfterFirst = null;
+        long? positionAfterSecond = null;
+        long? positionAfterThird = null;
+
         await foreach (var result in consumer.ConsumeAsync(cts.Token))
         {
             results.Add(result);
 
-            if (results.Count == 3)
+            switch (results.Count)
             {
-                cts.Cancel();
-                break;
+                case 1:
+                    positionAfterFirst = consumer.GetPosition(tp);
+                    break;
+                case 2:
+                    positionAfterSecond = consumer.GetPosition(tp);
+                    break;
+                case 3:
+                    positionAfterThird = consumer.GetPosition(tp);
+                    cts.Cancel();
+                    break;
             }
+
+            if (cts.IsCancellationRequested)
+                break;
         }
 
-        // Assert: position is flushed to last yielded offset + 1 on early exit.
-        // _positions is updated per-fetch (not per-message) for throughput, and the
-        // finally block in ConsumeAsync flushes the current fetch's position on break.
-        // After consuming offset 22, position = 23.
-        var positionAfterBreak = consumer.GetPosition(tp);
-        await Assert.That(positionAfterBreak).IsEqualTo(23L);
+        // Assert: each position = last yielded offset + 1
+        // After offset 20 -> position 21, after 21 -> 22, after 22 -> 23
+        await Assert.That(positionAfterFirst).IsEqualTo(21L);
+        await Assert.That(positionAfterSecond).IsEqualTo(22L);
+        await Assert.That(positionAfterThird).IsEqualTo(23L);
 
         // Verify the records themselves
         await Assert.That(results.Count).IsEqualTo(3);

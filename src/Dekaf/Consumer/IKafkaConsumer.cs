@@ -102,9 +102,6 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 
     /// <summary>
     /// Gets the current position (next offset to consume) for a partition.
-    /// Updated at per-fetch granularity (once per partition-fetch, not per message)
-    /// for performance. Reflects the offset after the last fully-consumed fetch,
-    /// or the last yielded message if the caller broke out of the consume loop early.
     /// </summary>
     long? GetPosition(TopicPartition partition);
 
