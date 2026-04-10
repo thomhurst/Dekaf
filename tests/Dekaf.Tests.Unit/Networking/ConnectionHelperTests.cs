@@ -159,12 +159,12 @@ public class ConnectionHelperTests
     #region CalculatePipelineThresholds Tests
 
     [Test]
-    public async Task CalculatePipelineThresholds_ThreeBrokersTwoConnections_CapsAtMaximum()
+    public async Task CalculatePipelineThresholds_ThreeBrokersTwoConnections_CapsAtDefaultMaximum()
     {
         // 256 MB BufferMemory, 2 connections/broker, 3 brokers
-        // Per-pipe budget = 256 MB / (2 * 3) / 4 = ~10.7 MB, capped to 4 MB
+        // Per-pipe budget = 256 MB / (2 * 3) / 4 = ~10.7 MB, capped to default 4 MB
         const ulong bufferMemory = 268435456; // 256 MB
-        const long expectedPause = 4L * 1024 * 1024; // 4 MB cap
+        const long expectedPause = ConnectionHelper.DefaultMaximumPauseThresholdBytes; // 4 MB cap
 
         var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(bufferMemory, connectionsPerBroker: 2, brokerCount: 3);
 
@@ -195,13 +195,95 @@ public class ConnectionHelperTests
     }
 
     [Test]
-    public async Task CalculatePipelineThresholds_VeryLargeBufferMemory_ClampsToMaximum()
+    public async Task CalculatePipelineThresholds_VeryLargeBufferMemory_ClampsToDefaultMaximum()
     {
-        // Very large BufferMemory still clamps to MaximumPauseThresholdBytes (4 MB)
+        // Very large BufferMemory still clamps to DefaultMaximumPauseThresholdBytes (4 MB) when no override
         const ulong bufferMemory = ulong.MaxValue;
-        const long expectedPause = 4L * 1024 * 1024; // 4 MB cap
+        const long expectedPause = ConnectionHelper.DefaultMaximumPauseThresholdBytes; // 4 MB cap
 
         var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(bufferMemory, connectionsPerBroker: 1, brokerCount: 1);
+
+        await Assert.That(pause).IsEqualTo(expectedPause);
+        await Assert.That(resume).IsEqualTo(expectedPause / 2);
+    }
+
+    #endregion
+
+    #region Custom MaxPauseThreshold Tests (Consumer Pipeline Fix)
+
+    [Test]
+    public async Task CalculatePipelineThresholds_CustomMaxPauseThreshold_UsesProvidedCap()
+    {
+        // Consumer scenario: FetchMaxBytes = 50 MB passed as maxPauseThreshold
+        // Per-pipe budget = 256 MB / (2 * 3) / 4 = ~10.7 MB, capped to 50 MB → uses 10.7 MB
+        const ulong bufferMemory = 268435456; // 256 MB
+        const long maxPauseThreshold = 50L * 1024 * 1024; // 50 MB (FetchMaxBytes)
+        const long expectedPause = 268435456L / (2 * 3) / 4; // ~10.7 MB, within 50 MB cap
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(
+            bufferMemory, connectionsPerBroker: 2, brokerCount: 3, maxPauseThreshold: maxPauseThreshold);
+
+        await Assert.That(pause).IsEqualTo(expectedPause);
+        await Assert.That(resume).IsEqualTo(expectedPause / 2);
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_HighThroughputConsumer_AllowsLargerThreshold()
+    {
+        // High-throughput consumer: FetchMaxBytes = 100 MB, single broker, 1 connection
+        // Per-pipe budget = 256 MB / 1 / 4 = 64 MB, capped to 100 MB → uses 64 MB
+        const ulong bufferMemory = 268435456; // 256 MB
+        const long maxPauseThreshold = 100L * 1024 * 1024; // 100 MB (ForHighThroughput)
+        const long expectedPause = 268435456L / 1 / 4; // 64 MB, within 100 MB cap
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(
+            bufferMemory, connectionsPerBroker: 1, brokerCount: 1, maxPauseThreshold: maxPauseThreshold);
+
+        await Assert.That(pause).IsEqualTo(expectedPause);
+        await Assert.That(resume).IsEqualTo(expectedPause / 2);
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_VeryLargeBufferMemory_ClampsToCustomMaximum()
+    {
+        // Very large BufferMemory clamps to the custom maxPauseThreshold, not the default 4 MB
+        const ulong bufferMemory = ulong.MaxValue;
+        const long maxPauseThreshold = 50L * 1024 * 1024; // 50 MB
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(
+            bufferMemory, connectionsPerBroker: 1, brokerCount: 1, maxPauseThreshold: maxPauseThreshold);
+
+        await Assert.That(pause).IsEqualTo(maxPauseThreshold);
+        await Assert.That(resume).IsEqualTo(maxPauseThreshold / 2);
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_DefaultMaxPauseThreshold_MatchesDefaultConstant()
+    {
+        // Verify the default parameter matches the constant (producer scenario)
+        // Both calls should produce identical results
+        const ulong bufferMemory = 268435456; // 256 MB
+
+        var withDefault = ConnectionHelper.CalculatePipelineThresholds(bufferMemory, connectionsPerBroker: 2, brokerCount: 3);
+        var withExplicit = ConnectionHelper.CalculatePipelineThresholds(
+            bufferMemory, connectionsPerBroker: 2, brokerCount: 3,
+            maxPauseThreshold: ConnectionHelper.DefaultMaximumPauseThresholdBytes);
+
+        await Assert.That(withDefault.PauseThreshold).IsEqualTo(withExplicit.PauseThreshold);
+        await Assert.That(withDefault.ResumeThreshold).IsEqualTo(withExplicit.ResumeThreshold);
+    }
+
+    [Test]
+    public async Task CalculatePipelineThresholds_CustomMaxBelowFloor_FloorsAtMinimum()
+    {
+        // Even with a custom maxPauseThreshold, the floor (1 MB) is respected
+        // Very low buffer memory → per-pipe budget < 1 MB → floored to 1 MB
+        const ulong bufferMemory = 1L * 1024 * 1024; // 1 MB
+        const long maxPauseThreshold = 50L * 1024 * 1024; // 50 MB
+        const long expectedPause = 1L * 1024 * 1024; // 1 MB floor
+
+        var (pause, resume) = ConnectionHelper.CalculatePipelineThresholds(
+            bufferMemory, connectionsPerBroker: 1, brokerCount: 1, maxPauseThreshold: maxPauseThreshold);
 
         await Assert.That(pause).IsEqualTo(expectedPause);
         await Assert.That(resume).IsEqualTo(expectedPause / 2);

@@ -587,6 +587,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Consumer connections use the default MaxInFlightRequestsPerConnection (5).
         // Unlike the producer, consumers don't expose this setting — fetch requests are
         // inherently sequential per partition, so the default is appropriate.
+        //
+        // Consumer connections use FetchMaxBytes as the pipeline pause threshold cap instead
+        // of the default 4 MB producer cap. TryReadResponse requires the entire response frame
+        // in the pipe buffer before it can parse, so the pipe must be able to buffer at least
+        // one full fetch response without backpressure-throttling the socket read pump.
         _connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
@@ -605,7 +610,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(options.FetchMaxBytes));
+            ResponseBufferPool.Create(options.FetchMaxBytes),
+            maxPipelinePauseThreshold: options.FetchMaxBytes);
 
         _metadataManager = new MetadataManager(
             _connectionPool,

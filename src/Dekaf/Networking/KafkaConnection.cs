@@ -53,12 +53,19 @@ internal static class ConnectionHelper
     // fetch responses are copied into PooledResponseBuffer immediately in TryReadResponse.
     private const long MinimumPauseThresholdBytes = 1L * 1024 * 1024;
 
-    // Maximum pause threshold per connection (4 MB)
+    // Default maximum pause threshold per connection (4 MB)
     // Caps per-connection buffering to prevent a single connection from retaining excessive
     // memory in the MemoryPool. Without this cap, a single-broker/single-connection setup
     // with 256 MB BufferMemory would allow 64 MB per pipe — far more than needed for
     // transient network buffering.
-    private const long MaximumPauseThresholdBytes = 4L * 1024 * 1024;
+    //
+    // This default is appropriate for producer connections where responses are small (< 1 KB).
+    // Consumer connections should override this with a value >= FetchMaxBytes, since fetch
+    // responses can be tens of megabytes and TryReadResponse requires the entire response
+    // frame in the pipe buffer before it can be parsed. A cap smaller than the response size
+    // causes the pipe writer (socket read pump) to stutter-step through hundreds of
+    // pause/resume cycles per response, collapsing TCP window sizes and throughput.
+    internal const long DefaultMaximumPauseThresholdBytes = 4L * 1024 * 1024;
 
     // Divisor for per-connection pipeline budget allocation (25% = 1/4)
     //
@@ -85,6 +92,12 @@ internal static class ConnectionHelper
     /// <param name="bufferMemory">Total producer BufferMemory in bytes</param>
     /// <param name="connectionsPerBroker">Number of connections per broker (must be positive)</param>
     /// <param name="brokerCount">Number of brokers (must be positive, defaults to 1 for backward compatibility)</param>
+    /// <param name="maxPauseThreshold">
+    /// Maximum per-connection pause threshold in bytes. Defaults to <see cref="DefaultMaximumPauseThresholdBytes"/>
+    /// (4 MB), which is appropriate for producer connections with small responses.
+    /// Consumer connections should pass <c>FetchMaxBytes</c> (or larger) to avoid throttling
+    /// large fetch responses that require the entire frame in the pipe buffer.
+    /// </param>
     /// <returns>Tuple of (pauseThreshold, resumeThreshold) in bytes</returns>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when connectionsPerBroker or brokerCount is less than or equal to zero.
@@ -92,7 +105,8 @@ internal static class ConnectionHelper
     public static (long PauseThreshold, long ResumeThreshold) CalculatePipelineThresholds(
         ulong bufferMemory,
         int connectionsPerBroker,
-        int brokerCount = 1)
+        int brokerCount = 1,
+        long maxPauseThreshold = DefaultMaximumPauseThresholdBytes)
     {
         if (connectionsPerBroker <= 0)
         {
@@ -116,7 +130,7 @@ internal static class ConnectionHelper
         var totalConnections = (ulong)connectionsPerBroker * (ulong)brokerCount;
         var perPipeBudget = bufferMemory / totalConnections / BufferMemoryDivisor;
 
-        var pauseThreshold = Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
+        var pauseThreshold = Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, maxPauseThreshold);
 
         var resumeThreshold = pauseThreshold / 2;
 
@@ -137,6 +151,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private readonly ulong _bufferMemory;
     private readonly int _connectionsPerBroker;
     private readonly int _brokerCount;
+    private readonly long _maxPipelinePauseThreshold;
     private readonly ResponseBufferPool _responseBufferPool;
 
     private Socket? _socket;
@@ -209,7 +224,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ulong bufferMemory = 33554432,
         int connectionsPerBroker = 1,
         int brokerCount = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default, maxPipelinePauseThreshold: ConnectionHelper.DefaultMaximumPauseThresholdBytes)
     {
     }
 
@@ -222,7 +237,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ulong bufferMemory,
         int connectionsPerBroker,
         int brokerCount,
-        ResponseBufferPool responseBufferPool)
+        ResponseBufferPool responseBufferPool,
+        long maxPipelinePauseThreshold = ConnectionHelper.DefaultMaximumPauseThresholdBytes)
     {
         _host = host;
         _port = port;
@@ -235,6 +251,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _bufferMemory = bufferMemory;
         _connectionsPerBroker = connectionsPerBroker;
         _brokerCount = Math.Max(1, brokerCount);
+        _maxPipelinePauseThreshold = maxPipelinePauseThreshold;
         _responseBufferPool = responseBufferPool;
     }
 
@@ -248,7 +265,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ulong bufferMemory = 33554432,
         int connectionsPerBroker = 1,
         int brokerCount = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default, maxPipelinePauseThreshold: ConnectionHelper.DefaultMaximumPauseThresholdBytes)
     {
         BrokerId = brokerId;
     }
@@ -271,8 +288,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         int connectionsPerBroker,
         int brokerCount,
         ResponseBufferPool responseBufferPool,
-        PipeMemoryPool? sharedPipeMemoryPool = null)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool)
+        PipeMemoryPool? sharedPipeMemoryPool = null,
+        long maxPipelinePauseThreshold = ConnectionHelper.DefaultMaximumPauseThresholdBytes)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool, maxPipelinePauseThreshold)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -344,7 +362,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var (pauseThreshold, resumeThreshold) = ConnectionHelper.CalculatePipelineThresholds(
             _bufferMemory,
             _connectionsPerBroker,
-            _brokerCount);
+            _brokerCount,
+            _maxPipelinePauseThreshold);
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 

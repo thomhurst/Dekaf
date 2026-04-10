@@ -15,6 +15,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
     private readonly ResponseBufferPool _responseBufferPool;
+    private readonly long _maxPipelinePauseThreshold;
 
     /// <summary>
     /// Shared memory pool for all connections. Bounds total retained memory to one set of
@@ -88,7 +89,8 @@ public sealed partial class ConnectionPool : IConnectionPool
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
         ResponseBufferPool responseBufferPool,
-        int? pipeMemoryBucketCapacity = null)
+        int? pipeMemoryBucketCapacity = null,
+        long maxPipelinePauseThreshold = ConnectionHelper.DefaultMaximumPauseThresholdBytes)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
@@ -96,6 +98,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
+        _maxPipelinePauseThreshold = maxPipelinePauseThreshold;
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
@@ -117,6 +120,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = ResponseBufferPool.Default;
+        _maxPipelinePauseThreshold = ConnectionHelper.DefaultMaximumPauseThresholdBytes;
         _connectionFactory = connectionFactory;
         // No shared pool needed: factory-created connections manage their own pools.
     }
@@ -566,7 +570,8 @@ public sealed partial class ConnectionPool : IConnectionPool
             DefaultBufferMemory, _connectionsPerBroker,
             BrokerCount,
             _responseBufferPool,
-            _sharedPipeMemoryPool);
+            _sharedPipeMemoryPool,
+            _maxPipelinePauseThreshold);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -684,7 +689,8 @@ public sealed partial class ConnectionPool : IConnectionPool
             DefaultBufferMemory, _connectionsPerBroker,
             BrokerCount,
             _responseBufferPool,
-            _sharedPipeMemoryPool);
+            _sharedPipeMemoryPool,
+            _maxPipelinePauseThreshold);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
