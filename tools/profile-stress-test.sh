@@ -70,7 +70,7 @@ fi
 # Pass remaining args to stress test (defaults if none given)
 STRESS_ARGS=("$@")
 if [ ${#STRESS_ARGS[@]} -eq 0 ]; then
-    STRESS_ARGS=(--duration 5 --scenario producer --client dekaf --message-size 1000 --connections-per-broker 1)
+    STRESS_ARGS=(--duration 5 --scenario producer --client dekaf --message-size 1000)
 fi
 
 # --- Preflight checks ---

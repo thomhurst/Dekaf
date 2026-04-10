@@ -112,11 +112,9 @@ public static class Program
             ConnectionsPerBroker = connectionsPerBroker
         };
 
-        // Baseline pass: single connection for fair comparison with Confluent.
-        // Skipped when running a multi-connection-only job (the baseline already
-        // exists from the dedicated single-connection CI matrix entry).
         if (options.ConnectionsPerBroker == 1)
         {
+            // Baseline pass: single connection for fair comparison with Confluent.
             foreach (var scenario in scenarios)
             {
                 Console.WriteLine();
@@ -130,11 +128,10 @@ public static class Program
                 GC.Collect();
             }
         }
-
-        // Multi-connection pass: run Dekaf-only producer scenarios with explicit
-        // ConnectionsPerBroker to measure parallel TCP connection throughput.
-        if (options.ConnectionsPerBroker > 1)
+        else
         {
+            // Multi-connection pass: Dekaf-only producer scenarios with explicit
+            // ConnectionsPerBroker to measure parallel TCP connection throughput.
             var multiConnScenarios = scenarios
                 .Where(s => s.Client == "Dekaf" && s.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -372,7 +369,7 @@ public static class Program
               --batch-size <bytes>    Producer batch size (default: 1048576)
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
-              --connections-per-broker <n>  TCP connections per broker for multi-conn pass (default: 3, use 1 to skip)
+              --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -399,6 +396,6 @@ public static class Program
         public int BatchSize { get; set; } = 1048576;
         public string Compression { get; set; } = "none";
         public int Brokers { get; set; } = 1;
-        public int ConnectionsPerBroker { get; set; } = 3;
+        public int ConnectionsPerBroker { get; set; } = 1;
     }
 }
