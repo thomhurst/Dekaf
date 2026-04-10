@@ -295,7 +295,7 @@ public ref struct KafkaProtocolWriter
         var byteCount = Encoding.UTF8.GetByteCount(value);
 
         if (byteCount > short.MaxValue)
-            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).");
+            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
 
         WriteInt16((short)byteCount);
 

@@ -130,20 +130,12 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        int newSize;
-        try
-        {
-            var doubled = checked(_buffer.Length * 2);
-            var required = checked(_written + sizeHint);
-            newSize = Math.Max(doubled, required);
-        }
-        catch (OverflowException)
-        {
-            newSize = Array.MaxLength;
-        }
+        var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
+        var required = Math.Min((long)_written + sizeHint, Array.MaxLength);
+        var newSize = (int)Math.Max(doubled, required);
 
-        if (newSize > Array.MaxLength)
-            newSize = Array.MaxLength;
+        if (newSize <= _buffer.Length)
+            throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
 
         // Rent from pool - not zero-initialized, avoiding Buffer.ZeroMemoryInternal overhead.
         var newBuffer = DekafPools.SerializationBuffers.Rent(newSize);
@@ -268,20 +260,12 @@ internal sealed class DecompressDirectBufferWriter : IBufferWriter<byte>, IDispo
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        int newSize;
-        try
-        {
-            var doubled = checked(_buffer.Length * 2);
-            var required = checked(_written + sizeHint);
-            newSize = Math.Max(doubled, required);
-        }
-        catch (OverflowException)
-        {
-            newSize = Array.MaxLength;
-        }
+        var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
+        var required = Math.Min((long)_written + sizeHint, Array.MaxLength);
+        var newSize = (int)Math.Max(doubled, required);
 
-        if (newSize > Array.MaxLength)
-            newSize = Array.MaxLength;
+        if (newSize <= _buffer.Length)
+            throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
 
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);

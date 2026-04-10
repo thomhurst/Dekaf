@@ -75,7 +75,7 @@ internal sealed class PooledMemoryStream : Stream
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        EnsureCapacity(_position + 1);
+        EnsureCapacity(checked(_position + 1));
         _buffer[_position++] = value;
         if (_position > _length)
             _length = _position;
@@ -161,19 +161,12 @@ internal sealed class PooledMemoryStream : Stream
             return;
 
         // Grow the buffer by at least doubling, but at least to the required capacity.
-        // Use checked arithmetic to detect overflow and cap at Array.MaxLength.
-        int newCapacity;
-        try
-        {
-            newCapacity = Math.Max(checked(_buffer.Length * 2), requiredCapacity);
-        }
-        catch (OverflowException)
-        {
-            newCapacity = Array.MaxLength;
-        }
+        // Widen to long to detect overflow and cap at Array.MaxLength.
+        var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
+        var newCapacity = (int)Math.Max(doubled, requiredCapacity);
 
-        if (newCapacity > Array.MaxLength)
-            newCapacity = Array.MaxLength;
+        if (newCapacity <= _buffer.Length)
+            throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
 
         var newBuffer = ArrayPool<byte>.Shared.Rent(newCapacity);
 
