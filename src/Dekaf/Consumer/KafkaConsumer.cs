@@ -210,7 +210,7 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     /// <summary>
-    /// Caches batch-level state (Records list, BaseOffset, BaseTimestamp, Attributes)
+    /// Caches batch-level state (Records array, BaseOffset, BaseTimestamp, TimestampType)
     /// so per-message access avoids repeated property indirection through RecordBatch.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
