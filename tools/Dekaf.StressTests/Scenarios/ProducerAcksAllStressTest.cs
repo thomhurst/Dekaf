@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
@@ -9,11 +8,9 @@ using Dekaf.StressTests.Reporting;
 
 namespace Dekaf.StressTests.Scenarios;
 
-internal sealed class ProducerStressTest : IStressTestScenario
+internal sealed class ProducerAcksAllStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
-    public string Name => "producer";
+    public string Name => "producer-acks-all";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -25,10 +22,10 @@ internal sealed class ProducerStressTest : IStressTestScenario
 
         var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-producer-dekaf")
+            .WithClientId("stress-producer-acks-all-dekaf")
             .WithIdempotence(false)
-            // Must match ConfluentProducerStressTest for an apples-to-apples comparison
-            .WithAcks(Acks.Leader)
+            // Must match ConfluentProducerAcksAllStressTest for an apples-to-apples comparison
+            .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithSocketSendBufferBytes(options.BatchSize);
@@ -43,10 +40,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
 
         var producer = await builder.BuildAsync(cancellationToken);
 
-        Console.WriteLine($"  Warming up Dekaf producer...");
-        // First produce uses ProduceAsync to prime the topic metadata cache asynchronously.
-        // Send() would block the thread via FetchTopicMetadataSync (.GetAwaiter().GetResult())
-        // which hangs if the broker is slow to respond to new topic metadata requests.
+        Console.WriteLine($"  Warming up Dekaf acks-all producer...");
         await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
         for (var i = 0; i < 999; i++)
         {
@@ -62,7 +56,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
-        Console.WriteLine($"  Running Dekaf producer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Running Dekaf acks-all producer stress test for {options.DurationMinutes} minutes...");
         Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
         StressTestHelpers.LogResourceUsage("Initial");
 
@@ -78,7 +72,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
             try
             {
                 var start = Stopwatch.GetTimestamp();
-                await producer.FireAsync(options.Topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue);
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
@@ -145,17 +139,4 @@ internal sealed class ProducerStressTest : IStressTestScenario
             GcStats = gcStats.ToSnapshot()
         };
     }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 }
