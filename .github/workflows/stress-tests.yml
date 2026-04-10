@@ -83,6 +83,28 @@ jobs:
             client: confluent
             brokers: 3
             name: Confluent Producer Idempotent (3 Brokers)
+          # Multi-connection variants: Dekaf-only with explicit 3 connections per broker.
+          # Tests whether explicit multi-connection config outperforms adaptive scaling.
+          - scenario: producer
+            client: dekaf
+            brokers: 1
+            connections_per_broker: 3
+            name: Dekaf Producer (3conn)
+          - scenario: producer
+            client: dekaf
+            brokers: 3
+            connections_per_broker: 3
+            name: Dekaf Producer (3conn, 3 Brokers)
+          - scenario: producer-idempotent
+            client: dekaf
+            brokers: 1
+            connections_per_broker: 3
+            name: Dekaf Producer Idempotent (3conn)
+          - scenario: producer-idempotent
+            client: dekaf
+            brokers: 3
+            connections_per_broker: 3
+            name: Dekaf Producer Idempotent (3conn, 3 Brokers)
 
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -146,12 +168,13 @@ jobs:
             --scenario ${{ matrix.scenario }} \
             --client ${{ matrix.client }} \
             --brokers ${{ matrix.brokers }} \
+            --connections-per-broker ${{ matrix.connections_per_broker || '1' }} \
             --output ./results
 
       - name: Upload Results
         uses: actions/upload-artifact@v7
         with:
-          name: results-${{ matrix.client }}-${{ matrix.scenario }}-${{ matrix.brokers }}brokers
+          name: results-${{ matrix.client }}-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.connections_per_broker && format('-{0}conn', matrix.connections_per_broker) || '' }}
           path: tools/Dekaf.StressTests/results/
           retention-days: 90
 
