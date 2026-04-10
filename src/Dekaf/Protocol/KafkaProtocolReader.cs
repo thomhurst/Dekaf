@@ -510,7 +510,6 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private ulong ReadVarULongSlowContiguous(ulong result, int shift)
     {
-
         while (shift < 70)
         {
             if (_position >= _span.Length)
