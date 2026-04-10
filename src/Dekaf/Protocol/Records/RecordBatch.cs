@@ -130,8 +130,20 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var required = checked(_written + sizeHint);
-        var newSize = Math.Max(_buffer.Length * 2, required);
+        int newSize;
+        try
+        {
+            var doubled = checked(_buffer.Length * 2);
+            var required = checked(_written + sizeHint);
+            newSize = Math.Max(doubled, required);
+        }
+        catch (OverflowException)
+        {
+            newSize = Array.MaxLength;
+        }
+
+        if (newSize > Array.MaxLength)
+            newSize = Array.MaxLength;
 
         // Rent from pool - not zero-initialized, avoiding Buffer.ZeroMemoryInternal overhead.
         var newBuffer = DekafPools.SerializationBuffers.Rent(newSize);
@@ -256,8 +268,21 @@ internal sealed class DecompressDirectBufferWriter : IBufferWriter<byte>, IDispo
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var required = checked(_written + sizeHint);
-        var newSize = Math.Max(_buffer.Length * 2, required);
+        int newSize;
+        try
+        {
+            var doubled = checked(_buffer.Length * 2);
+            var required = checked(_written + sizeHint);
+            newSize = Math.Max(doubled, required);
+        }
+        catch (OverflowException)
+        {
+            newSize = Array.MaxLength;
+        }
+
+        if (newSize > Array.MaxLength)
+            newSize = Array.MaxLength;
+
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
         ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);

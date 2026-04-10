@@ -43,7 +43,12 @@ internal sealed class PooledMemoryStream : Stream
     public override long Position
     {
         get => _position;
-        set => _position = (int)value;
+        set
+        {
+            if (value < 0 || value > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(value), $"Position must be between 0 and {int.MaxValue}.");
+            _position = (int)value;
+        }
     }
 
     /// <summary>
@@ -55,7 +60,11 @@ internal sealed class PooledMemoryStream : Stream
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        EnsureCapacity(_position + count);
+        var newPosition = (long)_position + count;
+        if (newPosition > int.MaxValue)
+            throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {int.MaxValue} bytes.");
+
+        EnsureCapacity((int)newPosition);
         Buffer.BlockCopy(buffer, offset, _buffer, _position, count);
         _position += count;
         if (_position > _length)
@@ -124,6 +133,9 @@ internal sealed class PooledMemoryStream : Stream
             _ => throw new ArgumentOutOfRangeException(nameof(origin))
         };
 
+        if (newPosition < 0 || newPosition > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(offset), $"Seek position must be between 0 and {int.MaxValue}.");
+
         _position = (int)newPosition;
         return _position;
     }
@@ -131,6 +143,9 @@ internal sealed class PooledMemoryStream : Stream
     public override void SetLength(long value)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (value < 0 || value > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(value), $"Length must be between 0 and {int.MaxValue}.");
 
         EnsureCapacity((int)value);
         _length = (int)value;
@@ -145,8 +160,21 @@ internal sealed class PooledMemoryStream : Stream
         if (requiredCapacity <= _buffer.Length)
             return;
 
-        // Grow the buffer by at least doubling, but at least to the required capacity
-        var newCapacity = Math.Max(_buffer.Length * 2, requiredCapacity);
+        // Grow the buffer by at least doubling, but at least to the required capacity.
+        // Use checked arithmetic to detect overflow and cap at Array.MaxLength.
+        int newCapacity;
+        try
+        {
+            newCapacity = Math.Max(checked(_buffer.Length * 2), requiredCapacity);
+        }
+        catch (OverflowException)
+        {
+            newCapacity = Array.MaxLength;
+        }
+
+        if (newCapacity > Array.MaxLength)
+            newCapacity = Array.MaxLength;
+
         var newBuffer = ArrayPool<byte>.Shared.Rent(newCapacity);
 
         Buffer.BlockCopy(_buffer, 0, newBuffer, 0, _length);
