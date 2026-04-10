@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
@@ -11,8 +10,6 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ProducerAcksAllStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public string Name => "producer-acks-all";
     public string Client => "Dekaf";
 
@@ -27,6 +24,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-acks-all-dekaf")
             .WithIdempotence(false)
+            // Must match ConfluentProducerAcksAllStressTest for an apples-to-apples comparison
             .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
@@ -74,7 +72,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             try
             {
                 var start = Stopwatch.GetTimestamp();
-                await producer.FireAsync(options.Topic, GetKey(messageIndex), messageValue);
+                await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue);
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
@@ -141,17 +139,4 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             GcStats = gcStats.ToSnapshot()
         };
     }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 }
