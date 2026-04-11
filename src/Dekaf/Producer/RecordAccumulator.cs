@@ -1508,15 +1508,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             while (true)
             {
+                // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
+                if (Volatile.Read(ref _disposed) != 0)
+                    return;
+
                 var madeProgress = false;
 
                 while (_pendingAppends.TryPeek(out var op))
                 {
-                    // Skip already-completed operations (timeout/cancel/dispose won the race)
+                    // Skip already-completed operations (timeout/cancel/dispose won the race).
+                    // Don't set madeProgress — clearing expired ops doesn't free memory.
                     if (op.IsCompleted)
                     {
                         _pendingAppends.TryDequeue(out _);
-                        madeProgress = true;
                         continue;
                     }
 
@@ -2052,7 +2056,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             key.Return();
             value.Return();
             ReturnPooledHeaders(headers);
-            return new ValueTask<bool>(false);
+            return ValueTask.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
 
         if (cancellationToken.IsCancellationRequested)
@@ -2071,6 +2075,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             this, _pendingAppendPool, cancellationToken);
 
         _pendingAppends.Enqueue(op);
+
+        // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
+        // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                return ValueTask.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
+        }
 
         // Try immediate serve — memory may have been freed between TryReserveMemory and now
         DrainPendingAppends();
@@ -3381,11 +3393,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Wake async waiters blocked in ReserveMemoryAsync so they recheck _disposed.
         SignalBufferSpaceAvailable();
 
-        // Drain and fail all queued PendingAppend operations
+        // Acquire the drain lock to prevent concurrent DrainPendingAppends from
+        // dequeuing ops while we're clearing the queue (avoids TryPeek/TryDequeue mismatch).
+        var spinWait = new SpinWait();
+        while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+            spinWait.SpinOnce();
+
         while (_pendingAppends.TryDequeue(out var op))
         {
             op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
+
+        Volatile.Write(ref _draining, 0);
 
         // Cancel the disposal token to interrupt any remaining blocked operations
         // (e.g., append workers, metadata waits). Do this AFTER graceful shutdown attempt

@@ -1811,13 +1811,19 @@ public class RecordAccumulatorTests
                     largeValue, valueIsNull: false,
                     null, 0, null, CancellationToken.None));
 
-            // Yield to let the background task enqueue the PendingAppend
-            for (var i = 0; i < 100 && !appendTask.IsCompleted; i++)
-                await Task.Yield();
+            // Release enough memory to serve the pending append.
+            // Use a retry loop: if the background task hasn't enqueued yet,
+            // ReleaseMemory won't drain anything, but the task's own
+            // DrainPendingAppends call after Enqueue will pick it up.
+            // We retry to cover the case where memory was released before the enqueue.
+            while (!appendTask.IsCompleted)
+            {
+                var bufferedBytes = (int)accumulator.BufferedBytes;
+                if (bufferedBytes > 0)
+                    accumulator.ReleaseMemory(bufferedBytes);
 
-            // Release enough memory to serve the pending append
-            var bufferedBytes = (int)accumulator.BufferedBytes;
-            accumulator.ReleaseMemory(bufferedBytes);
+                await Task.Delay(1);
+            }
 
             // The append should complete successfully
             var result = await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
