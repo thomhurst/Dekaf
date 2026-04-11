@@ -52,7 +52,6 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private readonly Timer _timer;
     private CancellationTokenRegistration _cancellationRegistration;
     private long _startTicks;
-    private long _deadline;
     private RecordAccumulator _accumulator = null!;
 
     // Pool return
@@ -107,7 +106,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         long startTicks,
-        long deadline,
+        long deadlineTickCount,
         RecordAccumulator accumulator,
         PendingAppendPool pool,
         CancellationToken cancellationToken)
@@ -123,12 +122,11 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _callback = callback;
         _recordSize = recordSize;
         _startTicks = startTicks;
-        _deadline = deadline;
         _accumulator = accumulator;
         _pool = pool;
 
         // Arm timeout timer. Compute remaining ms from deadline.
-        var remainingMs = deadline - Environment.TickCount64;
+        var remainingMs = deadlineTickCount - Environment.TickCount64;
         if (remainingMs > 0)
         {
             _timer.Change(remainingMs, Timeout.Infinite);

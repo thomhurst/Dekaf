@@ -2298,13 +2298,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Cold path for <see cref="AppendFromSpansAsync"/>: waits for memory reservation then appends
-    /// using the pre-copied <see cref="PooledMemory"/> data.
-    /// The reservation loop is inlined to avoid allocating a second async state machine.
-    /// </summary>
-    /// <summary>
     /// Zero-allocation slow path for span-based append using pooled <see cref="PendingAppend"/>.
-    /// The spans are already copied to <see cref="PooledMemory"/> by the caller.
+    /// Delegates to <see cref="AppendSlowPathPooled"/> with null completionSource.
     /// </summary>
     private ValueTask<bool> AppendFromSpansSlowPathPooled(
         string topic,
@@ -2318,39 +2313,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) != 0)
-        {
-            keyPooled.Return();
-            valuePooled.Return();
-            ReturnPooledHeaders(headers);
-            return new ValueTask<bool>(false);
-        }
-
-        if (cancellationToken.IsCancellationRequested)
-        {
-            keyPooled.Return();
-            valuePooled.Return();
-            ReturnPooledHeaders(headers);
-            return ValueTask.FromException<bool>(new OperationCanceledException(cancellationToken));
-        }
-
-        var (startTicks, deadline) = BeginReservationWait(recordSize);
-
-        var op = _pendingAppendPool.Rent();
-        // Span-based path has no completionSource (fire-and-forget with callback)
-        op.Initialize(topic, partition, timestamp, keyPooled, valuePooled, headers, headerCount,
-            null, callback, recordSize, startTicks, deadline,
-            this, _pendingAppendPool, cancellationToken);
-
-        _pendingAppends.Enqueue(op);
-
-        // Try immediate serve — memory may have been freed between TryReserveMemory and now
-        DrainPendingAppends();
-
-        return new ValueTask<bool>(op, op.Version);
+        return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
+            headers, headerCount, null, callback, recordSize, cancellationToken);
     }
-
-
 
     /// <summary>
     /// Copies a ReadOnlySpan to a PooledMemory backed by ArrayPool.
