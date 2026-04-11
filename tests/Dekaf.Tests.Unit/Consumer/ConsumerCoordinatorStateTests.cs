@@ -351,6 +351,10 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
                 Port = 9092
             }));
 
+        // Return error code in response instead of throwing from callback.
+        // NSubstitute callback exceptions on ValueTask<T> methods are unreliable
+        // on some platforms, causing test timeouts. The coordinator checks
+        // response.ErrorCode and throws its own GroupException internally.
         _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
                 Arg.Any<JoinGroupRequest>(),
                 Arg.Any<short>(),
@@ -360,10 +364,14 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
                 callCount++;
                 if (callCount == 1)
                 {
-                    throw new GroupException(errorCode, $"{errorCode}")
+                    return ValueTask.FromResult(new JoinGroupResponse
                     {
-                        GroupId = "test-group"
-                    };
+                        ErrorCode = errorCode,
+                        MemberId = string.Empty,
+                        GenerationId = -1,
+                        Leader = string.Empty,
+                        Members = []
+                    });
                 }
 
                 return ValueTask.FromResult(new JoinGroupResponse
@@ -522,9 +530,13 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
             .Returns(_ =>
             {
                 callCount++;
+                // Use ValueTask.FromException instead of throwing directly from callback.
+                // NSubstitute callback exceptions on ValueTask<T> methods are unreliable
+                // on some platforms, causing test timeouts.
                 if (callCount == 1)
                 {
-                    throw new ObjectDisposedException("Connection disposed");
+                    return ValueTask.FromException<FindCoordinatorResponse>(
+                        new ObjectDisposedException("Connection disposed"));
                 }
 
                 return ValueTask.FromResult(new FindCoordinatorResponse
