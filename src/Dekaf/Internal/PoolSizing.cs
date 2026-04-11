@@ -31,6 +31,7 @@ internal static class PoolSizing
         public required int ValueTaskSources { get; init; }
         public required int MaxRetainedBufferSize { get; init; }
         public required int InflightEntries { get; init; }
+        public required int PendingAppends { get; init; }
     }
 
     internal readonly record struct ConnectionPoolSizes
@@ -75,12 +76,15 @@ internal static class PoolSizing
         var bufferDerivedEntries = (long)maxBatches * InflightEntriesPerBatch;
         var inflightEntries = Math.Max(peakInflightEntries, bufferDerivedEntries);
 
+        var pendingAppends = Math.Clamp(clampedMaxConns * clampedMaxInFlight * 4, 64, 1024);
+
         return new ProducerPoolSizes
         {
             ValueTaskSources = Math.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
             // Floor at 256KB to avoid ArrayPool thrash from frequent grow/shrink on modest workloads.
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
             InflightEntries = (int)Math.Clamp(inflightEntries, 128L, 16384L),
+            PendingAppends = pendingAppends,
         };
     }
 
