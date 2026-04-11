@@ -1,4 +1,3 @@
-using System.Threading.Channels;
 using Dekaf.Errors;
 using Dekaf.Protocol;
 
@@ -44,7 +43,7 @@ internal sealed class PrefetchPipelineRunner
     private readonly Func<CancellationToken, Task> _waitForMemoryAvailable;
     private readonly Action<Exception> _logError;
     private readonly Action<long, long> _logMemoryLimitPaused;
-    private readonly ChannelWriter<PendingFetchData>? _channelWriter;
+    private readonly Action<Exception?>? _onComplete;
     private readonly int _pipelineDepth;
     private readonly Action<int, int>? _onIterationComplete;
     private readonly Queue<Task> _inFlightQueue = new();
@@ -78,7 +77,7 @@ internal sealed class PrefetchPipelineRunner
     /// <param name="waitForMemoryAvailable">Blocks until prefetch memory drops below the limit.</param>
     /// <param name="logError">Logs a non-fatal fetch error.</param>
     /// <param name="logMemoryLimitPaused">Logs when prefetch is paused due to memory pressure.</param>
-    /// <param name="channelWriter">Optional channel to complete on shutdown.</param>
+    /// <param name="onComplete">Optional callback invoked when the runner exits, with an optional error (for signaling completion).</param>
     /// <param name="pipelineDepth">Maximum number of concurrent fetches (1 synchronous + N-1 eager).</param>
     /// <param name="onIterationComplete">Optional callback invoked with (inFlightCount, pipelineDepth) for testing.</param>
     public PrefetchPipelineRunner(
@@ -90,7 +89,7 @@ internal sealed class PrefetchPipelineRunner
         Func<CancellationToken, Task> waitForMemoryAvailable,
         Action<Exception> logError,
         Action<long, long> logMemoryLimitPaused,
-        ChannelWriter<PendingFetchData>? channelWriter = null,
+        Action<Exception?>? onComplete = null,
         int pipelineDepth = 3,
         Action<int, int>? onIterationComplete = null)
     {
@@ -102,7 +101,7 @@ internal sealed class PrefetchPipelineRunner
         _waitForMemoryAvailable = waitForMemoryAvailable;
         _logError = logError;
         _logMemoryLimitPaused = logMemoryLimitPaused;
-        _channelWriter = channelWriter;
+        _onComplete = onComplete;
         _pipelineDepth = pipelineDepth;
         _onIterationComplete = onIterationComplete;
     }
@@ -214,7 +213,7 @@ internal sealed class PrefetchPipelineRunner
 
                     if (ConsecutiveErrors >= MaxConsecutiveErrors)
                     {
-                        _channelWriter?.TryComplete(
+                        _onComplete?.Invoke(
                             new KafkaException(ErrorCode.UnknownServerError,
                                 $"Prefetch loop failed {ConsecutiveErrors} consecutive times, last error: {ex.Message}", ex));
                         return;
@@ -229,7 +228,7 @@ internal sealed class PrefetchPipelineRunner
             // Drain any in-flight fetches to observe exceptions and prevent fire-and-forget leaks
             await DrainAllInFlightSafelyAsync().ConfigureAwait(false);
 
-            _channelWriter?.TryComplete();
+            _onComplete?.Invoke(null);
         }
     }
 

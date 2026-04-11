@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -398,8 +397,8 @@ internal sealed class PendingFetchData : IDisposable
 /// <list type="bullet">
 ///   <item><description><b>Prefetch loop</b> (<see cref="PrefetchLoopAsync"/>): Runs on a background
 ///     thread when <c>QueuedMinMessages &gt; 1</c>, fetching records ahead of the consume loop.
-///     Coordinates with the user thread via the bounded <see cref="_prefetchChannel"/> and
-///     <see cref="_prefetchLock"/> for EOF state.</description></item>
+///     Coordinates with the user thread via the bounded <see cref="_prefetchBuffer"/> and
+///     lock-free <see cref="_eofEmitted"/> for EOF state.</description></item>
 ///   <item><description><b>Heartbeat</b> (managed by <see cref="ConsumerCoordinator"/>): Sends
 ///     periodic heartbeats to the group coordinator on a background thread to keep the consumer
 ///     alive in the group.</description></item>
@@ -409,7 +408,7 @@ internal sealed class PendingFetchData : IDisposable
 /// </list>
 /// <para>Thread-safe data structures (<see cref="ConcurrentDictionary{TKey,TValue}"/>,
 /// <see cref="ConcurrentQueue{T}"/>, <see cref="System.Threading.Channels.Channel{T}"/>)
-/// and locks (<see cref="_assignmentLock"/>, <see cref="_prefetchLock"/>) are used to coordinate
+/// and locks (<see cref="_assignmentLock"/>) are used to coordinate
 /// between the user thread and these background tasks.</para>
 /// </remarks>
 /// <typeparam name="TKey">Key type.</typeparam>
@@ -470,14 +469,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     // Partition EOF tracking
     private readonly ConcurrentDictionary<TopicPartition, long> _highWatermarks = new();  // High watermark per partition (thread-safe for prefetch)
-    private readonly HashSet<TopicPartition> _eofEmitted = [];               // Partitions where EOF has been emitted (still needs lock)
+    private readonly ConcurrentDictionary<TopicPartition, byte> _eofEmitted = new(); // Partitions where EOF has been emitted (lock-free)
     private readonly ConcurrentQueue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield (thread-safe for prefetch thread)
 
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
 
     // Background prefetch support
-    private readonly Channel<PendingFetchData> _prefetchChannel;
+    private readonly MpscFetchBuffer _prefetchBuffer;
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
@@ -495,14 +494,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
     //   2. _assignmentLock    — serializes assignment changes between the consume loop and prefetch loop
-    //   3. _prefetchLock      — guards _eofEmitted; acquired under _assignmentLock in EnsureAssignmentAsync
-    //   4. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
+    //   3. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
     //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
-    //      InvalidateFetchRequestCache) and independently; never nested with each other or with
-    //      _prefetchLock
+    //      InvalidateFetchRequestCache) and independently; never nested with each other
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
-    private readonly object _prefetchLock = new();
+
 
     private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeWakeupSources = new();
     private CancellationTokenSource? _autoCommitCts;
@@ -519,7 +516,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private int _consumerDisposed;
     private int _closed;
     private volatile bool _initialized;
-    private bool _prefetchEnabled;
+    private volatile bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool;
@@ -659,14 +656,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     : null);
         }
 
-        // Initialize prefetch channel - bounded by QueuedMinMessages batches
+        // Initialize prefetch buffer - bounded by QueuedMinMessages batches
         var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
-        _prefetchChannel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(prefetchCapacity * 10)
-        {
-            SingleReader = true,
-            SingleWriter = false, // Multiple brokers write concurrently via PrefetchFromBrokerAsync
-            FullMode = BoundedChannelFullMode.Wait
-        });
+        _prefetchBuffer = new MpscFetchBuffer(prefetchCapacity * 10);
 
         // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
@@ -730,7 +722,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Clear stale fetched data (same rationale as Assign).
         // NOTE: This runs after releasing _assignmentLock, so there is a small race window
-        // where the prefetch worker could write new valid items into _prefetchChannel between
+        // where the prefetch worker could write new valid items into _prefetchBuffer between
         // lock release and this call. Those items get discarded here. Correctness is maintained
         // because the worker will re-fetch them on the next iteration, but there is a small
         // one-time latency cost for the discarded prefetch.
@@ -944,54 +936,44 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 if (prefetchEnabled)
                 {
-                    // Try to read from prefetch channel, draining available items up to a bound
-                    if (_prefetchChannel.Reader.TryRead(out var prefetched))
+                    // Try to read from prefetch buffer, draining available items up to a bound
+                    if (_prefetchBuffer.TryRead(out var prefetched))
                     {
                         _pendingFetches.Enqueue(prefetched);
                         TrackPrefetchedBytes(prefetched, release: true);
-                        DrainPrefetchChannel();
+                        DrainPrefetchBuffer();
                     }
                     else
                     {
-                        // Wait for prefetch with timeout, then try direct fetch
-                        using var timeoutCts = _ctsPool.Rent();
-                        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
-                        using var reg = cancellationToken.CanBeCanceled
-                            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                            : default;
-
-                        // Close any race window: if token was cancelled between method entry and registration
-                        if (cancellationToken.IsCancellationRequested)
-                            timeoutCts.Cancel();
+                        // Wait for prefetch with timeout using synchronous WaitToRead —
+                        // the consumer thread has nothing else to do while waiting.
+                        cancellationToken.ThrowIfCancellationRequested();
 
                         try
                         {
-                            // Use WaitToReadAsync + TryRead to avoid OperationCanceledException allocation on timeout.
-                            // When the channel is completed with an error, WaitToReadAsync throws it directly
-                            // (unlike ReadAsync which wraps in ChannelClosedException).
-                            if (await _prefetchChannel.Reader.WaitToReadAsync(timeoutCts.Token).ConfigureAwait(false))
+                            // WaitToRead throws stored completion errors directly.
+                            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
                             {
-                                // TryRead cannot miss: SingleReader = true guarantees no concurrent drain
-                                if (_prefetchChannel.Reader.TryRead(out var fetched))
+                                if (_prefetchBuffer.TryRead(out var fetched))
                                 {
                                     _pendingFetches.Enqueue(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
-                                    DrainPrefetchChannel();
+                                    DrainPrefetchBuffer();
                                 }
                                 else
                                 {
-                                    System.Diagnostics.Debug.Fail("WaitToReadAsync signalled data available but TryRead returned false");
+                                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
                                 }
                             }
-                            else
+                            else if (_prefetchBuffer.IsCompleted)
                             {
-                                // Channel completed without error — prefetch pipeline has stopped.
+                                // Buffer completed without error — prefetch pipeline has stopped.
                                 // Reached when PrefetchPipelineRunner exits its loop normally
-                                // (e.g., cancellation) and calls TryComplete() in its finally block.
+                                // (e.g., cancellation) and calls Complete() in its finally block.
                                 break;
                             }
                         }
-                        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                         {
                             // Prefetch not ready - check for EOF events before continuing
                             // (EOF events are queued by prefetch loop when partition is caught up)
@@ -1205,6 +1187,290 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
+    public async IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
+
+        ThrowIfNotInitialized();
+
+        // Start auto-commit if enabled (only in Auto mode)
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
+        {
+            await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Start background prefetch if enabled (QueuedMinMessages > 1)
+        bool prefetchEnabled = _options.QueuedMinMessages > 1;
+        _prefetchEnabled = prefetchEnabled;
+        if (prefetchEnabled)
+        {
+            StartPrefetch(cancellationToken);
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_assignmentSnapshot.Count == 0)
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            // Get pending data - either from prefetch channel or direct fetch
+            if (_pendingFetches.Count == 0)
+            {
+                if (prefetchEnabled)
+                {
+                    // Try to read from prefetch buffer, draining available items up to a bound
+                    if (_prefetchBuffer.TryRead(out PendingFetchData? prefetched))
+                    {
+                        _pendingFetches.Enqueue(prefetched);
+                        TrackPrefetchedBytes(prefetched, release: true);
+                        DrainPrefetchBuffer();
+                    }
+                    else
+                    {
+                        // Wait for prefetch with timeout using synchronous WaitToRead
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
+                            {
+                                if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
+                                {
+                                    _pendingFetches.Enqueue(fetched);
+                                    TrackPrefetchedBytes(fetched, release: true);
+                                    DrainPrefetchBuffer();
+                                }
+                                else
+                                {
+                                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
+                                }
+                            }
+                            else if (_prefetchBuffer.IsCompleted)
+                            {
+                                break;
+                            }
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Prefetch not ready - check for EOF events before continuing
+                        }
+                    }
+                }
+                else
+                {
+                    // Direct fetch (no prefetching)
+                    await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            // Yield batches from pending fetches
+            bool metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
+                                  || Diagnostics.DekafMetrics.BytesReceived.Enabled;
+
+            while (_pendingFetches.Count > 0)
+            {
+                PendingFetchData pending = _pendingFetches.Dequeue();
+                long? batchProcessingStarted = _adaptiveFetchSizer is not null
+                    ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
+
+                try
+                {
+                    // Eagerly parse all records upfront for cache-friendly access
+                    pending.EagerParseAll();
+
+                    // Yield the batch to the caller for synchronous iteration
+                    ConsumeBatch<TKey, TValue> batch = new(pending, _keyDeserializer, _valueDeserializer);
+                    yield return batch;
+
+                    // After caller finishes iterating: update positions once per batch
+                    if (pending.LastYieldedOffset >= 0)
+                    {
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        }
+                    }
+
+                    // Record consumer metrics per-fetch
+                    if (metricsEnabled && pending.MessageCount > 0)
+                    {
+                        EmitFetchMetrics(pending);
+                    }
+
+                    // Report batch processing time to the adaptive fetch sizer
+                    if (batchProcessingStarted.HasValue)
+                    {
+                        TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                    }
+                }
+                finally
+                {
+                    pending.Dispose();
+                }
+            }
+
+            // Drain any pending EOF events (batch API does not surface partition EOF;
+            // callers who need EOF notification should use ConsumeAsync instead)
+            while (_pendingEofEvents.TryDequeue(out _))
+            {
+                // Discarded — EOF is informational and not relevant for batch throughput
+            }
+        }
+    }
+
+    public async IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
+
+        ThrowIfNotInitialized();
+
+        // Start auto-commit if enabled (only in Auto mode)
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
+        {
+            await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Start background prefetch if enabled (QueuedMinMessages > 1)
+        bool prefetchEnabled = _options.QueuedMinMessages > 1;
+        _prefetchEnabled = prefetchEnabled;
+        if (prefetchEnabled)
+        {
+            StartPrefetch(cancellationToken);
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_assignmentSnapshot.Count == 0)
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            // Get pending data - either from prefetch channel or direct fetch
+            if (_pendingFetches.Count == 0)
+            {
+                if (prefetchEnabled)
+                {
+                    // Try to read from prefetch buffer, draining available items up to a bound
+                    if (_prefetchBuffer.TryRead(out PendingFetchData? prefetched))
+                    {
+                        _pendingFetches.Enqueue(prefetched);
+                        TrackPrefetchedBytes(prefetched, release: true);
+                        DrainPrefetchBuffer();
+                    }
+                    else
+                    {
+                        // Wait for prefetch with timeout using synchronous WaitToRead
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
+                            {
+                                if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
+                                {
+                                    _pendingFetches.Enqueue(fetched);
+                                    TrackPrefetchedBytes(fetched, release: true);
+                                    DrainPrefetchBuffer();
+                                }
+                                else
+                                {
+                                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
+                                }
+                            }
+                            else if (_prefetchBuffer.IsCompleted)
+                            {
+                                break;
+                            }
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Prefetch not ready - check for EOF events before continuing
+                        }
+                    }
+                }
+                else
+                {
+                    // Direct fetch (no prefetching)
+                    await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            // Yield raw batches from pending fetches
+            bool metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
+                                  || Diagnostics.DekafMetrics.BytesReceived.Enabled;
+
+            while (_pendingFetches.Count > 0)
+            {
+                PendingFetchData pending = _pendingFetches.Dequeue();
+                long? batchProcessingStarted = _adaptiveFetchSizer is not null
+                    ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
+
+                try
+                {
+                    // Eagerly parse all records upfront for cache-friendly access
+                    pending.EagerParseAll();
+
+                    // Yield the raw batch to the caller for synchronous iteration
+                    ConsumeRawBatch batch = new(pending);
+                    yield return batch;
+
+                    // After caller finishes iterating: update positions once per batch
+                    if (pending.LastYieldedOffset >= 0)
+                    {
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        }
+                    }
+
+                    // Record consumer metrics per-fetch
+                    if (metricsEnabled && pending.MessageCount > 0)
+                    {
+                        EmitFetchMetrics(pending);
+                    }
+
+                    // Report batch processing time to the adaptive fetch sizer
+                    if (batchProcessingStarted.HasValue)
+                    {
+                        TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                    }
+                }
+                finally
+                {
+                    pending.Dispose();
+                }
+            }
+
+            // Drain any pending EOF events (raw batch API does not surface partition EOF;
+            // callers who need EOF notification should use ConsumeAsync instead)
+            while (_pendingEofEvents.TryDequeue(out _))
+            {
+                // Discarded — EOF is informational and not relevant for raw batch throughput
+            }
+        }
+    }
+
     private void StartPrefetch(CancellationToken cancellationToken)
     {
         if (_prefetchTask is not null)
@@ -1232,7 +1498,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
             logError: LogPrefetchLoopError,
             logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
-            channelWriter: _prefetchChannel.Writer,
+            onComplete: error => _prefetchBuffer.Complete(error),
             pipelineDepth: _options.PrefetchPipelineDepth,
             onIterationComplete: _connectionScaler is null ? null : (inFlightCount, pipelineDepth) =>
             {
@@ -1531,10 +1797,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     if (records is { Count: > 0 })
                     {
                         // We have new records - reset EOF state for this partition
-                        lock (_prefetchLock)
-                        {
-                            _eofEmitted.Remove(tp);
-                        }
+                        _eofEmitted.TryRemove(tp, out _);
 
                         var pending = PendingFetchData.Create(
                             topic,
@@ -1555,17 +1818,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     else if (_options.EnablePartitionEof)
                     {
                         // No records returned - check if we're at EOF
-                        lock (_prefetchLock)
-                        {
-                            var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
 
-                            // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                            if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
-                            {
-                                // Queue EOF event and mark as emitted
-                                _pendingEofEvents.Enqueue((tp, fetchPosition));
-                                _eofEmitted.Add(tp);
-                            }
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && _eofEmitted.TryAdd(tp, 0))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
                         }
                     }
                 }
@@ -1589,7 +1848,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             for (var i = 0; i < pendingItems.Count; i++)
             {
-                await _prefetchChannel.Writer.WriteAsync(pendingItems[i], cancellationToken).ConfigureAwait(false);
+                while (!_prefetchBuffer.TryWrite(pendingItems[i]))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -1622,20 +1885,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
-    /// Drains additional ready items from the prefetch channel into <see cref="_pendingFetches"/>,
+    /// Drains additional ready items from the prefetch buffer into <see cref="_pendingFetches"/>,
     /// bounded to avoid starving <see cref="EnsureAssignmentAsync"/> (and thus rebalance detection)
     /// when many partitions produce data concurrently
     /// (e.g., N partitions produce N items per FetchResponse).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void DrainPrefetchChannel()
+    private void DrainPrefetchBuffer()
     {
         // Bound: drain at most the current assignment count to keep the loop responsive.
         // With N assigned partitions, one FetchResponse produces at most N items,
         // so this drains one full response without unbounded spinning.
         var maxDrain = _assignmentSnapshot.Count;
 
-        for (var i = 0; i < maxDrain && _prefetchChannel.Reader.TryRead(out var additional); i++)
+        for (var i = 0; i < maxDrain && _prefetchBuffer.TryRead(out var additional); i++)
         {
             _pendingFetches.Enqueue(additional);
             TrackPrefetchedBytes(additional, release: true);
@@ -1702,10 +1965,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Timeout expired with no messages - return null instead of throwing
             }
-            catch (ChannelClosedException ex) when (ex.InnerException is null && timeoutCts.IsCancellationRequested)
-            {
-                // Channel closed cleanly due to timeout-triggered cancellation — no messages available
-            }
             return null;
         }
 
@@ -1723,10 +1982,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             // Timeout expired — no message arrived. If the external token also fired by the time
             // this filter evaluates (race under load), the internal timeout still takes priority.
-        }
-        catch (ChannelClosedException ex) when (ex.InnerException is null && timeoutCts.IsCancellationRequested)
-        {
-            // Channel closed due to timeout — same race rationale as above.
         }
 
         return null;
@@ -1843,11 +2098,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _positions[tp] = offset.Offset;
         _fetchPositions[tp] = offset.Offset;
 
-        // Reset EOF state for this partition so it can fire again (still needs lock)
-        lock (_prefetchLock)
-        {
-            _eofEmitted.Remove(tp);
-        }
+        // Reset EOF state for this partition so it can fire again
+        _eofEmitted.TryRemove(tp, out _);
         ClearFetchBuffer();
         return this;
     }
@@ -1861,13 +2113,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _fetchPositions[partition] = 0;
         }
 
-        // Reset EOF state (still needs lock)
-        lock (_prefetchLock)
+        // Reset EOF state
+        foreach (var partition in partitions)
         {
-            foreach (var partition in partitions)
-            {
-                _eofEmitted.Remove(partition);
-            }
+            _eofEmitted.TryRemove(partition, out _);
         }
         ClearFetchBuffer();
         return this;
@@ -1882,13 +2131,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _fetchPositions[partition] = -1; // Special value meaning end
         }
 
-        // Reset EOF state (still needs lock)
-        lock (_prefetchLock)
+        // Reset EOF state
+        foreach (var partition in partitions)
         {
-            foreach (var partition in partitions)
-            {
-                _eofEmitted.Remove(partition);
-            }
+            _eofEmitted.TryRemove(partition, out _);
         }
         ClearFetchBuffer();
         return this;
@@ -1903,7 +2149,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         // Also drain prefetched items that haven't been moved to _pendingFetches yet.
         // Without this, stale data from old partitions would surface after reassignment.
-        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        while (_prefetchBuffer.TryRead(out var prefetched))
         {
             TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
@@ -1944,40 +2190,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Also drain prefetch channel items for revoked partitions.
+        // Also drain prefetch buffer items for revoked partitions.
         // Without this, stale data from revoked partitions sitting in the prefetch
-        // channel would be consumed after an incremental unassign (cooperative rebalance),
+        // buffer would be consumed after an incremental unassign (cooperative rebalance),
         // causing data for partitions no longer owned by this consumer to be yielded.
-        DrainPrefetchChannelForPartitions(removeSet);
+        DrainPrefetchBufferForPartitions(removeSet);
     }
 
-    private void DrainPrefetchChannelForPartitions(HashSet<TopicPartition> partitionsToRemove)
+    private void DrainPrefetchBufferForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
-        DrainChannelForPartitions(
-            _prefetchChannel.Reader,
+        DrainBufferForPartitions(
+            _prefetchBuffer,
             partitionsToRemove,
             _pendingFetches,
             pending => TrackPrefetchedBytes(pending, release: true));
     }
 
     /// <summary>
-    /// Drains a prefetch channel, disposing items whose partition is in <paramref name="partitionsToRemove"/>
+    /// Drains a prefetch buffer, disposing items whose partition is in <paramref name="partitionsToRemove"/>
     /// and enqueuing retained items into <paramref name="retainedQueue"/>.
     /// </summary>
     /// <remarks>
-    /// O(n) over prefetch channel items — acceptable because rebalance is infrequent (not hot path).
+    /// O(n) over prefetch buffer items — acceptable because rebalance is infrequent (not hot path).
     /// Items for retained partitions move to <paramref name="retainedQueue"/>; revoked items are disposed.
     /// Retained items are appended after existing queue items. This is acceptable
     /// because Kafka consumption is sequential per partition and cross-partition ordering is
     /// not guaranteed — so the relative order between partitions does not matter.
     /// </remarks>
-    internal static void DrainChannelForPartitions(
-        ChannelReader<PendingFetchData> channelReader,
+    internal static void DrainBufferForPartitions(
+        MpscFetchBuffer buffer,
         HashSet<TopicPartition> partitionsToRemove,
         Queue<PendingFetchData> retainedQueue,
         Action<PendingFetchData> onItemRemoved)
     {
-        while (channelReader.TryRead(out var prefetched))
+        while (buffer.TryRead(out var prefetched))
         {
             if (partitionsToRemove.Contains(prefetched.TopicPartition))
             {
@@ -2350,13 +2596,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         _fetchPositions.TryRemove(partition, out _);
                     }
 
-                    // Clean up EOF state (still needs lock)
-                    lock (_prefetchLock)
+                    // Clean up EOF state
+                    foreach (var partition in removedPartitions)
                     {
-                        foreach (var partition in removedPartitions)
-                        {
-                            _eofEmitted.Remove(partition);
-                        }
+                        _eofEmitted.TryRemove(partition, out _);
                     }
                 }
 
@@ -2912,10 +3155,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     if (records is { Count: > 0 })
                     {
                         // We have new records - reset EOF state for this partition
-                        lock (_prefetchLock)
-                        {
-                            _eofEmitted.Remove(tp);
-                        }
+                        _eofEmitted.TryRemove(tp, out _);
 
                         // Collect pending fetch data for lazy record iteration
                         pendingItems ??= [];
@@ -2929,17 +3169,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     else if (_options.EnablePartitionEof)
                     {
                         // No records returned - check if we're at EOF
-                        lock (_prefetchLock)
-                        {
-                            var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
 
-                            // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                            if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
-                            {
-                                // Queue EOF event and mark as emitted
-                                _pendingEofEvents.Enqueue((tp, fetchPosition));
-                                _eofEmitted.Add(tp);
-                            }
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && _eofEmitted.TryAdd(tp, 0))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
                         }
                     }
                 }
@@ -3444,7 +3680,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             pending.Dispose();
         }
-        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        while (_prefetchBuffer.TryRead(out var prefetched))
         {
             TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
@@ -3656,8 +3892,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             pending.Dispose();
         }
 
-        // Drain and dispose prefetch channel items
-        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        // Drain and dispose prefetch buffer items
+        while (_prefetchBuffer.TryRead(out var prefetched))
         {
             TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Threading.Channels;
 using Dekaf;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
@@ -8,10 +7,10 @@ namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
 /// Tests for the pipelined prefetch state machine in <see cref="PrefetchPipelineRunner"/>
-/// and the static <c>DrainChannelForPartitions</c> helper on KafkaConsumer.
+/// and the static <c>DrainBufferForPartitions</c> helper on KafkaConsumer.
 /// Validates ordering guarantees, error counting, drain behavior on assignment loss,
 /// drain behavior on memory limit, pipeline depth, shutdown exception observation,
-/// and channel drain logic for cooperative rebalance.
+/// and buffer drain logic for cooperative rebalance.
 /// </summary>
 public class PrefetchPipelineRunnerTests
 {
@@ -434,9 +433,9 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
-    public async Task RunAsync_Shutdown_CompletesChannel()
+    public async Task RunAsync_Shutdown_InvokesOnComplete()
     {
-        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var completeCalled = false;
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -448,15 +447,15 @@ public class PrefetchPipelineRunnerTests
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
-            channelWriter: channel.Writer);
+            onComplete: _ => completeCalled = true);
 
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
         await runner.RunAsync(cts.Token);
 
-        // Channel should be completed after the runner exits
-        await Assert.That(channel.Reader.Completion.IsCompleted).IsTrue();
+        // onComplete should be invoked after the runner exits
+        await Assert.That(completeCalled).IsTrue();
     }
 
     #endregion
@@ -828,7 +827,7 @@ public class PrefetchPipelineRunnerTests
         Func<CancellationToken, Task>? waitForMemoryAvailable = null,
         Action<Exception>? logError = null,
         Action<long, long>? logMemoryLimitPaused = null,
-        ChannelWriter<PendingFetchData>? channelWriter = null,
+        Action<Exception?>? onComplete = null,
         int pipelineDepth = 2,
         Action<int, int>? onIterationComplete = null)
     {
@@ -845,7 +844,7 @@ public class PrefetchPipelineRunnerTests
             }),
             logError: logError ?? (_ => { }),
             logMemoryLimitPaused: logMemoryLimitPaused ?? ((_, _) => { }),
-            channelWriter: channelWriter,
+            onComplete: onComplete,
             pipelineDepth: pipelineDepth,
             onIterationComplete: onIterationComplete);
     }
@@ -1140,24 +1139,19 @@ public class PrefetchPipelineRunnerTests
     #region Scenario: Buffer fills ahead of consumption
 
     [Test]
-    public async Task RunAsync_BufferFillsAheadOfConsumption_ChannelReceivesItems()
+    public async Task RunAsync_BufferFillsAheadOfConsumption_FetchesExecute()
     {
-        // Verifies that the prefetch loop writes items into the channel ahead of the consumer reading them.
+        // Verifies that the prefetch loop executes fetches ahead of the consumer reading them.
         // This is the core prefetch value proposition: data ready before the consumer asks.
-        var channel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(10)
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
         var fetchCount = 0;
-        var channelWriteCount = 0;
+        var fetchWriteCount = 0;
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
             {
                 var id = Interlocked.Increment(ref fetchCount);
-                // Simulate writing to channel (mimics PrefetchFromBrokerAsync behavior)
-                Interlocked.Increment(ref channelWriteCount);
+                // Simulate writing to buffer (mimics PrefetchFromBrokerAsync behavior)
+                Interlocked.Increment(ref fetchWriteCount);
 
                 if (id >= 5)
                 {
@@ -1167,14 +1161,13 @@ public class PrefetchPipelineRunnerTests
             },
             assignmentCount: 1,
             maxBytes: long.MaxValue,
-            prefetchedBytes: 0,
-            channelWriter: channel.Writer);
+            prefetchedBytes: 0);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
         // Multiple fetches completed without the consumer reading — buffer filled ahead
-        await Assert.That(Volatile.Read(ref channelWriteCount)).IsGreaterThanOrEqualTo(3);
+        await Assert.That(Volatile.Read(ref fetchWriteCount)).IsGreaterThanOrEqualTo(3);
     }
 
     #endregion
@@ -1460,15 +1453,11 @@ public class PrefetchPipelineRunnerTests
     #region Scenario: Disposal cleans up all resources
 
     [Test]
-    public async Task RunAsync_Disposal_ChannelCompletedAndInFlightDrained()
+    public async Task RunAsync_Disposal_OnCompleteCalledAndInFlightDrained()
     {
-        // Verifies that on cancellation (disposal), the channel is completed and
+        // Verifies that on cancellation (disposal), onComplete is invoked and
         // all in-flight fetches are drained, preventing resource leaks.
-        var channel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(10)
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
+        var completeCalled = false;
         var fetchCount = 0;
         var inFlightStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var inFlightCanComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1491,7 +1480,7 @@ public class PrefetchPipelineRunnerTests
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
-            channelWriter: channel.Writer);
+            onComplete: _ => completeCalled = true);
 
         using var cts = new CancellationTokenSource();
 
@@ -1508,8 +1497,8 @@ public class PrefetchPipelineRunnerTests
 
         await runTask;
 
-        // Channel should be completed
-        await Assert.That(channel.Reader.Completion.IsCompleted).IsTrue();
+        // onComplete should be invoked
+        await Assert.That(completeCalled).IsTrue();
         // All in-flight fetches drained
         await Assert.That(runner.InFlightPrefetchCount).IsEqualTo(0);
     }
@@ -1519,11 +1508,7 @@ public class PrefetchPipelineRunnerTests
     {
         // Tests that if an in-flight fetch throws during disposal, the exception
         // is observed and does not become an unobserved task exception.
-        var channel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(10)
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
+        var completeCalled = false;
         var fetchCount = 0;
         var loggedErrors = new List<Exception>();
 
@@ -1548,7 +1533,7 @@ public class PrefetchPipelineRunnerTests
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
-            channelWriter: channel.Writer,
+            onComplete: _ => completeCalled = true,
             logError: ex => loggedErrors.Add(ex));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -1556,31 +1541,30 @@ public class PrefetchPipelineRunnerTests
 
         // Exception from in-flight fetch was observed (logged), not leaked
         await Assert.That(loggedErrors.Any(e => e.Message == "in-flight fetch crashed")).IsTrue();
-        // Channel completed cleanly
-        await Assert.That(channel.Reader.Completion.IsCompleted).IsTrue();
+        // onComplete invoked cleanly
+        await Assert.That(completeCalled).IsTrue();
     }
 
     #endregion
 
-    #region Scenario: DrainChannelForPartitions — static helper tests
+    #region Scenario: DrainBufferForPartitions — static helper tests
 
     [Test]
-    public async Task DrainChannelForPartitions_RevokedItemsDisposed()
+    public async Task DrainBufferForPartitions_RevokedItemsDisposed()
     {
         // Items for revoked partitions should be disposed and not enqueued.
-        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var buffer = new MpscFetchBuffer(16);
         var revokedTp = new TopicPartition("topic-a", 0);
 
         var item = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
-        await channel.Writer.WriteAsync(item);
-        channel.Writer.Complete();
+        buffer.TryWrite(item);
 
         var removeSet = new HashSet<TopicPartition> { revokedTp };
         var retainedQueue = new Queue<PendingFetchData>();
         var releasedItems = new List<PendingFetchData>();
 
-        KafkaConsumer<string, string>.DrainChannelForPartitions(
-            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+        KafkaConsumer<string, string>.DrainBufferForPartitions(
+            buffer, removeSet, retainedQueue, p => releasedItems.Add(p));
 
         // Revoked item should have been passed to the release callback
         await Assert.That(releasedItems).Count().IsEqualTo(1);
@@ -1589,23 +1573,22 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
-    public async Task DrainChannelForPartitions_RetainedItemsPreserved()
+    public async Task DrainBufferForPartitions_RetainedItemsPreserved()
     {
         // Items for non-revoked partitions should be enqueued in retainedQueue.
-        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var buffer = new MpscFetchBuffer(16);
         var retainedTp = new TopicPartition("topic-a", 0);
         var revokedTp = new TopicPartition("topic-b", 1);
 
         var retained = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
-        await channel.Writer.WriteAsync(retained);
-        channel.Writer.Complete();
+        buffer.TryWrite(retained);
 
         var removeSet = new HashSet<TopicPartition> { revokedTp };
         var retainedQueue = new Queue<PendingFetchData>();
         var releasedItems = new List<PendingFetchData>();
 
-        KafkaConsumer<string, string>.DrainChannelForPartitions(
-            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+        KafkaConsumer<string, string>.DrainBufferForPartitions(
+            buffer, removeSet, retainedQueue, p => releasedItems.Add(p));
 
         // Retained item should be in the queue
         await Assert.That(retainedQueue).Count().IsEqualTo(1);
@@ -1621,28 +1604,27 @@ public class PrefetchPipelineRunnerTests
     }
 
     [Test]
-    public async Task DrainChannelForPartitions_EmptyChannel_NoErrors()
+    public async Task DrainBufferForPartitions_EmptyBuffer_NoErrors()
     {
-        // An empty channel should be drained without errors.
-        var channel = Channel.CreateUnbounded<PendingFetchData>();
-        channel.Writer.Complete();
+        // An empty buffer should be drained without errors.
+        var buffer = new MpscFetchBuffer(16);
 
         var removeSet = new HashSet<TopicPartition> { new("topic-a", 0) };
         var retainedQueue = new Queue<PendingFetchData>();
         var releaseCount = 0;
 
-        KafkaConsumer<string, string>.DrainChannelForPartitions(
-            channel.Reader, removeSet, retainedQueue, _ => releaseCount++);
+        KafkaConsumer<string, string>.DrainBufferForPartitions(
+            buffer, removeSet, retainedQueue, _ => releaseCount++);
 
         await Assert.That(retainedQueue).Count().IsEqualTo(0);
         await Assert.That(releaseCount).IsEqualTo(0);
     }
 
     [Test]
-    public async Task DrainChannelForPartitions_MixedPartitions_CorrectSplit()
+    public async Task DrainBufferForPartitions_MixedPartitions_CorrectSplit()
     {
         // A mix of revoked and retained partitions should be split correctly.
-        var channel = Channel.CreateUnbounded<PendingFetchData>();
+        var buffer = new MpscFetchBuffer(16);
 
         var revokedTp1 = new TopicPartition("topic-a", 0);
         var revokedTp2 = new TopicPartition("topic-a", 2);
@@ -1654,18 +1636,17 @@ public class PrefetchPipelineRunnerTests
         var revoked2 = PendingFetchData.Create("topic-a", 2, Array.Empty<RecordBatch>());
         var retained2 = PendingFetchData.Create("topic-b", 0, Array.Empty<RecordBatch>());
 
-        await channel.Writer.WriteAsync(revoked1);
-        await channel.Writer.WriteAsync(retained1);
-        await channel.Writer.WriteAsync(revoked2);
-        await channel.Writer.WriteAsync(retained2);
-        channel.Writer.Complete();
+        buffer.TryWrite(revoked1);
+        buffer.TryWrite(retained1);
+        buffer.TryWrite(revoked2);
+        buffer.TryWrite(retained2);
 
         var removeSet = new HashSet<TopicPartition> { revokedTp1, revokedTp2 };
         var retainedQueue = new Queue<PendingFetchData>();
         var releasedItems = new List<PendingFetchData>();
 
-        KafkaConsumer<string, string>.DrainChannelForPartitions(
-            channel.Reader, removeSet, retainedQueue, p => releasedItems.Add(p));
+        KafkaConsumer<string, string>.DrainBufferForPartitions(
+            buffer, removeSet, retainedQueue, p => releasedItems.Add(p));
 
         // 2 retained items preserved in order
         await Assert.That(retainedQueue).Count().IsEqualTo(2);

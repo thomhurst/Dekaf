@@ -14,7 +14,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-raw, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -89,7 +89,7 @@ public static class Program
         await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
         await kafka.CreateTopicAsync(consumerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
 
-        if (options.Scenario is "consumer" or "consumer-raw" or "all")
+        if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "all")
         {
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
         }
@@ -243,7 +243,9 @@ public static class Program
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
             new ConsumerStressTest(),
+            new ConsumerBatchStressTest(),
             new ConsumerRawStressTest(),
+            new ConsumerRawBatchStressTest(),
             new ConfluentConsumerStressTest()
         };
 
@@ -361,7 +363,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-raw, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
