@@ -162,14 +162,17 @@ internal sealed class PartitionInflightTracker : IDisposable
     private readonly InflightEntryPool _pool;
     private readonly Timer? _pruneTimer;
 
-    public PartitionInflightTracker(InflightEntryPool? pool = null)
+    public PartitionInflightTracker(InflightEntryPool? pool = null, bool enablePruning = true)
     {
         _pool = pool ?? new InflightEntryPool();
-        _pruneTimer = new Timer(
-            static state => ((PartitionInflightTracker)state!).PruneStalePartitions(),
-            this,
-            PruneInterval,
-            PruneInterval);
+        if (enablePruning)
+        {
+            _pruneTimer = new Timer(
+                static state => ((PartitionInflightTracker)state!).PruneStalePartitions(),
+                this,
+                PruneInterval,
+                PruneInterval);
+        }
     }
 
     /// <summary>
@@ -338,6 +341,9 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// <summary>
     /// Fails all in-flight entries for a partition. Signals all with exception, clears list, returns to pool.
     /// Used during fatal errors or producer shutdown.
+    /// Uses dictionary lookup (not entry.State) because it targets a whole partition by key,
+    /// not an individual entry. Safe against pruning: the pruner only removes partitions
+    /// with Count == 0, and FailAll only acts on partitions that have in-flight entries.
     /// </summary>
     public void FailAll(TopicPartition topicPartition, Exception exception)
     {
@@ -470,7 +476,10 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             // Double-check under lock: a concurrent Register may have reactivated this partition.
-            var shouldRemove = false;
+            // TryRemove is called inside the lock to prevent a TOCTOU race where Register
+            // reuses the same PartitionState via GetOrAdd between lock release and removal.
+            // Nesting SpinLock + ConcurrentDictionary's internal stripe lock is safe here:
+            // no other code path holds a SpinLock while calling ConcurrentDictionary methods.
             var lockTaken = false;
             try
             {
@@ -488,20 +497,11 @@ internal sealed class PartitionInflightTracker : IDisposable
                     continue;
                 }
 
-                shouldRemove = true;
+                _partitions.TryRemove(kvp);
             }
             finally
             {
                 if (lockTaken) state.Lock.Exit();
-            }
-
-            // Remove outside the SpinLock to avoid nesting SpinLock + ConcurrentDictionary's
-            // internal lock. Uses the KeyValuePair overload so removal only succeeds if the
-            // dictionary still holds the same PartitionState reference — prevents a TOCTOU race
-            // where a concurrent Register reuses the same key with the existing state object.
-            if (shouldRemove)
-            {
-                _partitions.TryRemove(kvp);
             }
         }
     }
