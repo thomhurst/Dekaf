@@ -1522,10 +1522,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Dequeue — we own the reservation now
                 _pendingAppends.TryDequeue(out _);
 
-                // If the operation was completed between Peek and here, release the reservation
-                if (op.IsCompleted)
+                // Claim the operation with CAS BEFORE touching resources.
+                // This prevents timeout/cancel from cleaning up key/value/headers
+                // while AppendAfterReservation is using them.
+                if (!op.TryClaim())
                 {
-                    ReleaseMemory(op.RecordSize);
+                    // Timeout/cancel won the race and already cleaned up resources.
+                    // Release the memory reservation we made above.
+                    ReleaseMemoryWithoutDrain(op.RecordSize);
                     continue;
                 }
 
@@ -1536,15 +1540,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         op.Key, op.Value, op.Headers, op.HeaderCount,
                         op.CompletionSource, op.Callback, op.RecordSize);
 
-                    // Complete the pending operation — if it was already completed
-                    // (timeout/cancel), AppendAfterReservation already took ownership
-                    // of the resources, so no cleanup is needed.
-                    op.TryComplete(result);
+                    op.CompleteResult(result);
                 }
                 catch (Exception ex)
                 {
                     // AppendAfterReservation handles its own resource cleanup on throw
-                    op.TryFail(ex);
+                    op.CompleteException(ex);
                 }
             }
         }
@@ -2036,7 +2037,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return new ValueTask<bool>(false);
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            return ValueTask.FromException<bool>(new OperationCanceledException(cancellationToken));
+        }
 
         var (startTicks, deadline) = BeginReservationWait(recordSize);
 
@@ -2376,7 +2383,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return new ValueTask<bool>(false);
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            keyPooled.Return();
+            valuePooled.Return();
+            ReturnPooledHeaders(headers);
+            return ValueTask.FromException<bool>(new OperationCanceledException(cancellationToken));
+        }
 
         var (startTicks, deadline) = BeginReservationWait(recordSize);
 
@@ -2877,6 +2890,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Signal that space is available — wake async waiters via semaphore.
         SignalBufferSpaceAvailable();
+    }
+
+    /// <summary>
+    /// Releases reserved buffer memory without triggering <see cref="DrainPendingAppends"/>.
+    /// Used inside <see cref="DrainPendingAppends"/> when a claimed operation was already
+    /// completed by timeout/cancel and the memory reservation must be returned.
+    /// Avoids infinite recursion: ReleaseMemory → DrainPendingAppends → ReleaseMemoryWithoutDrain.
+    /// </summary>
+    private void ReleaseMemoryWithoutDrain(int size)
+    {
+        Interlocked.Add(ref _bufferedBytes, -size);
+        // No drain or signal — we're already inside the drain loop.
     }
 
     /// <summary>

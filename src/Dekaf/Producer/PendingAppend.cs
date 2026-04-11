@@ -151,26 +151,42 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     }
 
     /// <summary>
-    /// Attempts to complete the operation successfully (called by drain when memory is available).
+    /// Claims ownership of this operation (CAS from pending to completed).
+    /// Called by <see cref="RecordAccumulator.DrainPendingAppends"/> BEFORE calling
+    /// <see cref="RecordAccumulator.AppendAfterReservation"/> to prevent timeout/cancel
+    /// from cleaning up resources while the drain is using them.
     /// </summary>
-    /// <param name="result">The result of the append operation.</param>
-    /// <returns>True if this call won the completion race; false if already completed.</returns>
-    public bool TryComplete(bool result)
+    /// <returns>True if this call won the race; false if timeout/cancel/dispose already completed it.</returns>
+    public bool TryClaim()
     {
         if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
             return false;
 
         DisarmTimerAndCancellation();
-        _core.SetResult(result);
         return true;
     }
 
     /// <summary>
+    /// Sets the successful result after <see cref="TryClaim"/> + AppendAfterReservation.
+    /// Must only be called after <see cref="TryClaim"/> returned true.
+    /// Resources are consumed by AppendAfterReservation — no cleanup needed.
+    /// </summary>
+    public void CompleteResult(bool result) => _core.SetResult(result);
+
+    /// <summary>
+    /// Sets an exception result after <see cref="TryClaim"/> + failed AppendAfterReservation.
+    /// Must only be called after <see cref="TryClaim"/> returned true.
+    /// AppendAfterReservation handles its own resource cleanup on throw.
+    /// </summary>
+    public void CompleteException(Exception exception) => _core.SetException(exception);
+
+    /// <summary>
     /// Attempts to fail the operation with an exception (timeout, cancellation, disposal).
-    /// Cleans up owned resources (PooledMemory, headers, pending produce count) on success.
+    /// Cleans up owned resources (PooledMemory, headers, pending produce count) since
+    /// drain will not process this operation.
     /// </summary>
     /// <param name="exception">The exception to complete with.</param>
-    /// <returns>True if this call won the completion race; false if already completed.</returns>
+    /// <returns>True if this call won the completion race; false if drain already claimed it.</returns>
     public bool TryFail(Exception exception)
     {
         if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
