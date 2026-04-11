@@ -2067,6 +2067,103 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private partial void LogReceiveLoopShutdownRetryFailed(Exception ex, int brokerId);
 
     #endregion
+
+    /// <summary>
+    /// Tracks the state of a response frame being assembled incrementally
+    /// across multiple pipe read cycles. Used when the response is larger
+    /// than what's currently available in the pipe buffer.
+    /// </summary>
+    internal struct PartialFrameContext
+    {
+        public byte[]? Buffer;
+        public int FrameSize;
+        public int Offset;
+        public int CorrelationId;
+        public bool IsPooled;
+
+        public readonly bool IsActive => Buffer is not null;
+        public readonly int Remaining => FrameSize - Offset;
+    }
+
+    /// <summary>
+    /// Called when the pipe buffer has the 4-byte frame size header but not the full payload.
+    /// Rents a response buffer, copies all available data, and consumes it from the pipe.
+    /// Requires at least 8 bytes (4-byte size + 4-byte correlation ID).
+    /// </summary>
+    internal static bool TryStartPartialFrame(
+        ref ReadOnlySequence<byte> buffer,
+        ref PartialFrameContext context,
+        ResponseBufferPool responseBufferPool)
+    {
+        if (buffer.Length < 8) // Need size header + correlation ID
+            return false;
+
+        // Read frame size
+        Span<byte> sizeSpan = stackalloc byte[4];
+        buffer.Slice(0, 4).CopyTo(sizeSpan);
+        var frameSize = BinaryPrimitives.ReadInt32BigEndian(sizeSpan);
+
+        // If the full frame is available, don't start partial — let TryReadResponse handle it
+        if (buffer.Length >= 4 + frameSize)
+            return false;
+
+        // Read correlation ID (first 4 bytes of payload, at offset 4)
+        Span<byte> corrSpan = stackalloc byte[4];
+        buffer.Slice(4, 4).CopyTo(corrSpan);
+        var correlationId = BinaryPrimitives.ReadInt32BigEndian(corrSpan);
+
+        // Rent response buffer
+        byte[] responseArray;
+        bool isPooled;
+        if (frameSize <= responseBufferPool.MaxArrayLength)
+        {
+            responseArray = responseBufferPool.Pool.Rent(frameSize);
+            isPooled = true;
+        }
+        else
+        {
+            responseArray = new byte[frameSize];
+            isPooled = false;
+        }
+
+        // Copy all available payload (skip the 4-byte size header, it's not part of the response)
+        var availablePayload = (int)(buffer.Length - 4);
+        buffer.Slice(4, availablePayload).CopyTo(responseArray);
+
+        context = new PartialFrameContext
+        {
+            Buffer = responseArray,
+            FrameSize = frameSize,
+            Offset = availablePayload,
+            CorrelationId = correlationId,
+            IsPooled = isPooled
+        };
+
+        // Consume everything from the pipe buffer
+        buffer = buffer.Slice(buffer.End);
+        return true;
+    }
+
+    /// <summary>
+    /// Copies available data from the pipe into the partial frame buffer.
+    /// Returns true when the frame is complete.
+    /// </summary>
+    internal static bool ContinuePartialFrame(
+        ref ReadOnlySequence<byte> buffer,
+        ref PartialFrameContext context)
+    {
+        var remaining = context.Remaining;
+        var available = (int)Math.Min(buffer.Length, remaining);
+
+        if (available > 0)
+        {
+            buffer.Slice(0, available).CopyTo(context.Buffer.AsSpan(context.Offset));
+            context.Offset += available;
+            buffer = buffer.Slice(available);
+        }
+
+        return context.Remaining == 0;
+    }
 }
 
 /// <summary>
