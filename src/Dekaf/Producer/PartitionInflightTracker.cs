@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace Dekaf.Producer;
@@ -12,6 +13,11 @@ internal sealed class InflightEntry
     public TopicPartition TopicPartition { get; private set; }
     public int BaseSequence { get; private set; }
     public int RecordCount { get; private set; }
+
+    /// <summary>
+    /// Per-partition state, stored at registration to avoid dictionary lookup races with pruning.
+    /// </summary>
+    internal PartitionState? State { get; set; }
 
     internal InflightEntry? Previous { get; set; }
     internal InflightEntry? Next { get; set; }
@@ -84,6 +90,7 @@ internal sealed class InflightEntry
         TopicPartition = default;
         BaseSequence = 0;
         RecordCount = 0;
+        State = null;
         Previous = null;
         Next = null;
         InList = false;
@@ -108,6 +115,13 @@ internal sealed class PartitionState
     public InflightEntry? Head;
     public InflightEntry? Tail;
     public int Count;
+
+    /// <summary>
+    /// Stopwatch ticks when this partition last became idle (Count dropped to 0).
+    /// Set via Volatile.Write in Complete/FailAll; read by the pruning timer.
+    /// Zero means the partition is active (has in-flight entries).
+    /// </summary>
+    public long LastIdleTicks;
 }
 
 /// <summary>
@@ -135,15 +149,30 @@ internal sealed class InflightEntryPool(int maxPoolSize = 1024)
 /// Happy path cost: 1 pool rent + SpinLock enter/exit + 2 pointer writes + pool return = ~50ns.
 /// Zero heap allocation in steady state (InflightEntry pooled, TCS lazy).
 /// SpinLock replaces Monitor lock to eliminate 5.2% CPU overhead from Monitor.Wait contention.
+///
+/// Idle partition states are pruned by a background timer (5-minute TTL) to prevent
+/// unbounded dictionary growth in producers with dynamic topic routing.
 /// </summary>
-internal sealed class PartitionInflightTracker
+internal sealed class PartitionInflightTracker : IDisposable
 {
+    private static readonly long PruneTtlTicks = Stopwatch.Frequency * 300; // 5 minutes
+    private static readonly TimeSpan PruneInterval = TimeSpan.FromMinutes(5);
+
     private readonly ConcurrentDictionary<TopicPartition, PartitionState> _partitions = new();
     private readonly InflightEntryPool _pool;
+    private readonly Timer? _pruneTimer;
 
-    public PartitionInflightTracker(InflightEntryPool? pool = null)
+    public PartitionInflightTracker(InflightEntryPool? pool = null, bool enablePruning = true)
     {
         _pool = pool ?? new InflightEntryPool();
+        if (enablePruning)
+        {
+            _pruneTimer = new Timer(
+                static state => ((PartitionInflightTracker)state!).PruneStalePartitions(),
+                this,
+                PruneInterval,
+                PruneInterval);
+        }
     }
 
     /// <summary>
@@ -156,6 +185,7 @@ internal sealed class PartitionInflightTracker
         entry.Initialize(topicPartition, baseSequence, recordCount);
 
         var state = _partitions.GetOrAdd(topicPartition, static _ => new PartitionState());
+        entry.State = state;
 
         var lockTaken = false;
         try
@@ -163,6 +193,9 @@ internal sealed class PartitionInflightTracker
             state.Lock.Enter(ref lockTaken);
 
             entry.InList = true;
+
+            // Clear idle timestamp — partition is now active
+            Volatile.Write(ref state.LastIdleTicks, 0);
 
             if (state.Tail is null)
             {
@@ -190,14 +223,17 @@ internal sealed class PartitionInflightTracker
 
     /// <summary>
     /// Marks a batch as complete. Removes from linked list, signals TCS if exists, returns to pool.
+    /// Uses the stored PartitionState reference to avoid dictionary lookup races with pruning.
     /// </summary>
     public void Complete(InflightEntry entry)
     {
-        if (!_partitions.TryGetValue(entry.TopicPartition, out var state))
+        var state = entry.State;
+        if (state is null)
         {
             return;
         }
 
+        var becameIdle = false;
         var lockTaken = false;
         try
         {
@@ -233,10 +269,18 @@ internal sealed class PartitionInflightTracker
             }
 
             state.Count--;
+            becameIdle = state.Count == 0;
         }
         finally
         {
             if (lockTaken) state.Lock.Exit();
+        }
+
+        // Written outside the lock (unlike Register's write inside the lock) because
+        // becameIdle was already determined atomically with Count-- under the SpinLock.
+        if (becameIdle)
+        {
+            Volatile.Write(ref state.LastIdleTicks, Stopwatch.GetTimestamp());
         }
 
         // Signal completion outside lock to avoid holding lock during continuations
@@ -248,12 +292,16 @@ internal sealed class PartitionInflightTracker
     /// <summary>
     /// Waits for the predecessor batch to complete. If no predecessor exists, completes immediately.
     /// Only called on OutOfOrderSequenceNumber (failure path), so lazy TCS allocation is acceptable.
+    /// Uses the stored PartitionState reference to avoid dictionary lookup races with pruning.
     /// </summary>
+#pragma warning disable CA1822 // Instance method for API consistency — operates on tracker's entries
     public async ValueTask WaitForPredecessorAsync(InflightEntry entry, CancellationToken cancellationToken)
+#pragma warning restore CA1822
     {
         Task? predecessorTask = null;
 
-        if (!_partitions.TryGetValue(entry.TopicPartition, out var state))
+        var state = entry.State;
+        if (state is null)
         {
             return;
         }
@@ -293,6 +341,9 @@ internal sealed class PartitionInflightTracker
     /// <summary>
     /// Fails all in-flight entries for a partition. Signals all with exception, clears list, returns to pool.
     /// Used during fatal errors or producer shutdown.
+    /// Uses dictionary lookup (not entry.State) because it targets a whole partition by key,
+    /// not an individual entry. Safe against pruning: the pruner only removes partitions
+    /// with Count == 0, and FailAll only acts on partitions that have in-flight entries.
     /// </summary>
     public void FailAll(TopicPartition topicPartition, Exception exception)
     {
@@ -333,6 +384,8 @@ internal sealed class PartitionInflightTracker
             if (lockTaken) state.Lock.Exit();
         }
 
+        Volatile.Write(ref state.LastIdleTicks, Stopwatch.GetTimestamp());
+
         // Signal and return outside lock
         foreach (var entry in entries)
         {
@@ -343,12 +396,15 @@ internal sealed class PartitionInflightTracker
 
     /// <summary>
     /// Returns true if the entry is head-of-line (no predecessor) for its partition.
-    /// Must be checked under the partition state SpinLock for consistency.
+    /// Uses the stored PartitionState reference to avoid dictionary lookup races with pruning.
     /// Used by epoch bump recovery to determine if a batch can trigger the bump.
     /// </summary>
+#pragma warning disable CA1822 // Instance method for API consistency — operates on tracker's entries
     public bool IsHeadOfLine(InflightEntry entry)
+#pragma warning restore CA1822
     {
-        if (!_partitions.TryGetValue(entry.TopicPartition, out var state))
+        var state = entry.State;
+        if (state is null)
         {
             return true; // Not tracked — treat as head-of-line
         }
@@ -385,5 +441,84 @@ internal sealed class PartitionInflightTracker
         {
             if (lockTaken) state.Lock.Exit();
         }
+    }
+
+    /// <summary>
+    /// Gets the number of tracked partitions in the dictionary. Diagnostic/testing only.
+    /// </summary>
+    public int GetTrackedPartitionCount() => _partitions.Count;
+
+    /// <summary>
+    /// Prunes partition states that have been idle for longer than the TTL.
+    /// Called by the background timer every 5 minutes.
+    /// </summary>
+    private void PruneStalePartitions()
+    {
+        try
+        {
+            PruneWithCutoff(Stopwatch.GetTimestamp() - PruneTtlTicks);
+        }
+        catch (Exception)
+        {
+            // Swallow to keep the timer alive; an unhandled exception from a Timer
+            // callback crashes the process and permanently stops pruning.
+        }
+    }
+
+    /// <summary>
+    /// Prunes partition states idle before <paramref name="cutoffTicks"/>.
+    /// Exposed for deterministic testing — production code uses <see cref="PruneStalePartitions"/>.
+    /// </summary>
+    internal void PruneWithCutoff(long cutoffTicks)
+    {
+        foreach (var kvp in _partitions)
+        {
+            var state = kvp.Value;
+            var lastIdle = Volatile.Read(ref state.LastIdleTicks);
+
+            // Skip active partitions (LastIdleTicks == 0 means in-flight entries exist)
+            // or partitions that became idle after the cutoff.
+            if (lastIdle == 0 || lastIdle > cutoffTicks)
+            {
+                continue;
+            }
+
+            // Double-check under lock: a concurrent Register may have reactivated this partition.
+            // TryRemove is inside the lock to close the window where Register's GetOrAdd
+            // returns the existing state, then blocks on the SpinLock while the pruner removes it.
+            // A narrow race remains: Register's GetOrAdd can resolve *before* the pruner acquires
+            // the lock, causing the entry to reference a state that gets removed from the dict.
+            // This is benign — Complete/WaitForPredecessor/IsHeadOfLine use stored entry.State
+            // and work correctly; only FailAll (which targets Count>0 partitions the pruner
+            // won't touch) and GetInflightCount would miss the orphaned state.
+            var lockTaken = false;
+            try
+            {
+                state.Lock.Enter(ref lockTaken);
+
+                if (state.Count != 0)
+                {
+                    continue;
+                }
+
+                // Re-read inside the lock in case Register cleared it concurrently
+                lastIdle = Volatile.Read(ref state.LastIdleTicks);
+                if (lastIdle == 0 || lastIdle > cutoffTicks)
+                {
+                    continue;
+                }
+
+                _partitions.TryRemove(kvp);
+            }
+            finally
+            {
+                if (lockTaken) state.Lock.Exit();
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _pruneTimer?.Dispose();
     }
 }

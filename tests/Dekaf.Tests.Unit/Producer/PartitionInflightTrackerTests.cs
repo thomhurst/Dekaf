@@ -10,7 +10,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Register_SingleBatch_ReturnsEntryWithCorrectProperties()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
 
@@ -22,7 +22,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Register_MultipleBatches_MaintainsInsertionOrder()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -44,7 +44,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Register_DifferentPartitions_AreIndependent()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry0 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry1 = tracker.Register(Tp1, baseSequence: 0, recordCount: 5);
@@ -62,7 +62,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Complete_HeadEntry_RemovesFromList()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -77,7 +77,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Complete_MiddleEntry_UnlinksCorrectly()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -94,7 +94,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Complete_TailEntry_UpdatesTailPointer()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -109,7 +109,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Complete_OnlyEntry_LeavesEmptyList()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
 
@@ -121,7 +121,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task Complete_SignalsPredecessorTCS_WakesSuccessor()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -142,7 +142,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task WaitForPredecessor_NoPredecessor_CompletesImmediately()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
 
@@ -155,7 +155,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task WaitForPredecessor_PredecessorAlreadyComplete_CompletesImmediately()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -171,7 +171,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task WaitForPredecessor_PredecessorPending_BlocksUntilComplete()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -193,7 +193,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task WaitForPredecessor_Cancellation_ThrowsOperationCancelled()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -213,7 +213,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task WaitForPredecessor_LazyTCS_OnlyCreatedWhenNeeded()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -232,7 +232,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task FailAll_SignalsAllEntriesWithException()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
@@ -263,7 +263,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task FailAll_EmptyPartition_NoOp()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         // Should not throw
         tracker.FailAll(Tp0, new InvalidOperationException("test"));
@@ -274,7 +274,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task GetInflightCount_ReflectsRegistrationsAndCompletions()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
 
         await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
 
@@ -294,7 +294,7 @@ public sealed class PartitionInflightTrackerTests
     [Test]
     public async Task ConcurrentRegisterAndComplete_NoCorruption()
     {
-        var tracker = new PartitionInflightTracker();
+        var tracker = new PartitionInflightTracker(enablePruning: false);
         const int iterations = 1000;
 
         var tasks = new List<Task>();
@@ -384,5 +384,133 @@ public sealed class PartitionInflightTrackerTests
 
         // After reset, InflightEntry should be null
         await Assert.That(batch.InflightEntry).IsNull();
+    }
+
+    // --- Pruning tests ---
+
+    [Test]
+    public async Task GetTrackedPartitionCount_ReflectsRegisteredPartitions()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(0);
+
+        tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+
+        tracker.Register(Tp1, baseSequence: 0, recordCount: 5);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_RemovesIdlePartitions()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        // Partition is now idle (Count == 0). Prune with a cutoff far in the future
+        // to guarantee the idle timestamp is older than the cutoff.
+        var cutoff = long.MaxValue;
+        tracker.PruneWithCutoff(cutoff);
+
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_DoesNotRemoveActivePartitions()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        // Register but do NOT complete — partition has inflight entries
+        tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+
+        tracker.PruneWithCutoff(long.MaxValue);
+
+        // Should still be tracked because Count > 0
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_DoesNotRemoveRecentlyIdlePartitions()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        // Prune with cutoff of 0 — the idle timestamp will be newer than this
+        tracker.PruneWithCutoff(0);
+
+        // Should still be tracked because it became idle after the cutoff
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_RegisterAfterPrune_CreatesNewState()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry1);
+
+        tracker.PruneWithCutoff(long.MaxValue);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(0);
+
+        // Re-register on the same partition — should create fresh state
+        var entry2 = tracker.Register(Tp0, baseSequence: 100, recordCount: 5);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+
+        tracker.Complete(entry2);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Complete_MultipleEntries_WorksWithStoredState()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
+
+        tracker.Complete(entry1);
+        tracker.Complete(entry2);
+
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_ConcurrentRegisterRace_DoesNotPruneActivePartition()
+    {
+        // Verifies that if a Register happens between the pruner reading Count==0
+        // and attempting removal, the partition is NOT removed.
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        // Re-register immediately (simulating concurrent Register)
+        tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
+
+        // Now prune — should NOT remove because Count is now 1
+        tracker.PruneWithCutoff(long.MaxValue);
+
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Dispose_PreventsTimerFromFiring()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: true);
+        tracker.Dispose();
+
+        // After dispose, register/complete should still work (no timer needed)
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
     }
 }
