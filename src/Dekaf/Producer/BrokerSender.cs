@@ -1480,10 +1480,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Check if any migrating partitions can be unfenced after responses completed
                 if (_migratingPartitions.Count > 0)
                 {
+                    var beforeCount = _migratingPartitions.Count;
                     CompleteMigrations(connIdx);
 
                     if (_migratingPartitions.Count == 0)
-                        LogPartitionMigrationComplete(_brokerId);
+                        LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
         }
@@ -3162,8 +3163,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] partition migration: {MigratingCount} partitions fenced during scale {OldCount} -> {NewCount}")]
     private partial void LogPartitionMigrationStarted(int brokerId, int migratingCount, int oldCount, int newCount);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] partition migration complete: all partitions migrated")]
-    private partial void LogPartitionMigrationComplete(int brokerId);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] partition migration complete: {MigratedCount} partitions migrated")]
+    private partial void LogPartitionMigrationComplete(int brokerId, int migratedCount);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} response task={ResponseTaskId}: batch already returned to pool (count={Count}, trace={DiagTrace}), skipping")]
     private partial void LogBatchAlreadyReturnedToPool(int instanceId, int responseTaskId, int count, string diagTrace);
