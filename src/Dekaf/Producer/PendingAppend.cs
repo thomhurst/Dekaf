@@ -19,7 +19,7 @@ namespace Dekaf.Producer;
 /// <para>
 /// Completion is driven by one of four sources (CAS on <c>_completed</c> ensures exactly one wins):
 /// <list type="bullet">
-///   <item><see cref="TryComplete"/> — called by <see cref="RecordAccumulator.DrainPendingAppends"/>
+///   <item><see cref="TryClaim"/> — called by <see cref="RecordAccumulator.DrainPendingAppends"/>
 ///   when buffer space is freed.</item>
 ///   <item>Timeout — <see cref="_timer"/> fires when max.block.ms deadline expires.</item>
 ///   <item>Cancellation — <see cref="CancellationToken.Register"/> callback.</item>
@@ -211,23 +211,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     /// bypasses the normal GetResult path (e.g., returning ValueTask.FromException directly).
     /// Must only be called after TryFail returned true.
     /// </summary>
-    internal void ReturnToPoolAfterTryFail()
-    {
-        // Clear references to avoid rooting objects
-        _topic = null!;
-        _key = default;
-        _value = default;
-        _headers = null;
-        _completionSource = null;
-        _callback = null;
-        _cancellationToken = default;
-        _accumulator = null!;
-
-        // Reset core (consumes the exception set by TryFail) and return to pool
-        _core.Reset();
-        Volatile.Write(ref _completed, 0);
-        _pool.Return(this);
-    }
+    internal void ReturnToPoolAfterTryFail() => ResetAndReturnToPool();
 
     private void OnTimeout()
     {
@@ -251,6 +235,27 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         TryFail(new OperationCanceledException(_cancellationToken));
     }
 
+    /// <summary>
+    /// Clears all references, resets the core for reuse, and returns to the pool.
+    /// Shared by <see cref="IValueTaskSource{T}.GetResult"/> and <see cref="ReturnToPoolAfterTryFail"/>.
+    /// </summary>
+    private void ResetAndReturnToPool()
+    {
+        // Clear references to avoid rooting objects across pool rentals
+        _topic = null!;
+        _key = default;
+        _value = default;
+        _headers = null;
+        _completionSource = null;
+        _callback = null;
+        _cancellationToken = default;
+        _accumulator = null!;
+
+        Volatile.Write(ref _completed, 0);
+        _core.Reset();
+        _pool.Return(this);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void DisarmTimerAndCancellation()
     {
@@ -270,20 +275,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         }
         finally
         {
-            // Clear references before returning to pool to avoid rooting objects
-            _topic = null!;
-            _key = default;
-            _value = default;
-            _headers = null;
-            _completionSource = null;
-            _callback = null;
-            _cancellationToken = default;
-            _accumulator = null!;
-
-            // Reset for reuse
-            Volatile.Write(ref _completed, 0);
-            _core.Reset();
-            _pool.Return(this);
+            ResetAndReturnToPool();
         }
     }
 
