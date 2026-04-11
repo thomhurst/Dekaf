@@ -1782,5 +1782,52 @@ public class RecordAccumulatorTests
         }
     }
 
+    [Test]
+    public async Task AppendFromSpansAsync_SlowPath_CompletesWhenMemoryReleased()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 5000
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Fill buffer via hot path
+            await FillBufferViaHotPath(accumulator, 100);
+
+            var largeValue = new byte[2048];
+
+            // Start an append that will block in the slow path
+            var appendTask = Task.Run(async () =>
+                await accumulator.AppendFromSpansAsync(
+                    "test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                    largeValue, valueIsNull: false,
+                    null, 0, null, CancellationToken.None));
+
+            // Yield to let the background task enqueue the PendingAppend
+            for (var i = 0; i < 100 && !appendTask.IsCompleted; i++)
+                await Task.Yield();
+
+            // Release enough memory to serve the pending append
+            var bufferedBytes = (int)accumulator.BufferedBytes;
+            accumulator.ReleaseMemory(bufferedBytes);
+
+            // The append should complete successfully
+            var result = await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(result).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
     #endregion
 }

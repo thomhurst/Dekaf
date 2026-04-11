@@ -1506,61 +1506,79 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         try
         {
-            while (_pendingAppends.TryPeek(out var op))
+            while (true)
             {
-                // Skip already-completed operations (timeout/cancel/dispose won the race)
-                if (op.IsCompleted)
+                var madeProgress = false;
+
+                while (_pendingAppends.TryPeek(out var op))
                 {
+                    // Skip already-completed operations (timeout/cancel/dispose won the race)
+                    if (op.IsCompleted)
+                    {
+                        _pendingAppends.TryDequeue(out _);
+                        madeProgress = true;
+                        continue;
+                    }
+
+                    // Try to reserve memory for this operation
+                    if (!TryReserveMemory(op.RecordSize))
+                        break; // No space — stop draining, next ReleaseMemory will retry
+
+                    // Dequeue — we own the reservation now
                     _pendingAppends.TryDequeue(out _);
-                    continue;
+                    madeProgress = true;
+
+                    // Claim the operation with CAS BEFORE touching resources.
+                    // This prevents timeout/cancel from cleaning up key/value/headers
+                    // while AppendAfterReservation is using them.
+                    if (!op.TryClaim())
+                    {
+                        // Timeout/cancel won the race and already cleaned up resources.
+                        // Release the memory reservation we made above.
+                        ReleaseMemoryWithoutDrain(op.RecordSize);
+                        continue;
+                    }
+
+                    try
+                    {
+                        var result = AppendAfterReservation(
+                            op.Topic, op.Partition, op.Timestamp,
+                            op.Key, op.Value, op.Headers, op.HeaderCount,
+                            op.CompletionSource, op.Callback, op.RecordSize);
+
+                        op.CompleteResult(result);
+                    }
+                    catch (Exception ex)
+                    {
+                        // AppendAfterReservation handles its own resource cleanup on throw
+                        op.CompleteException(ex);
+                    }
                 }
 
-                // Try to reserve memory for this operation
-                if (!TryReserveMemory(op.RecordSize))
-                    break; // No space — stop draining, next ReleaseMemory will retry
+                // Release the drain lock before re-checking so a concurrent ReleaseMemory
+                // can enter if we decide not to loop again.
+                Volatile.Write(ref _draining, 0);
 
-                // Dequeue — we own the reservation now
-                _pendingAppends.TryDequeue(out _);
-
-                // Claim the operation with CAS BEFORE touching resources.
-                // This prevents timeout/cancel from cleaning up key/value/headers
-                // while AppendAfterReservation is using them.
-                if (!op.TryClaim())
+                // Re-check: a ReleaseMemory may have arrived while we held the drain lock,
+                // and new pending items may have been enqueued. Only re-enter if we made
+                // progress last round (prevents infinite loop when head item can't be served).
+                if (!madeProgress
+                    || _pendingAppends.IsEmpty
+                    || (ulong)Volatile.Read(ref _bufferedBytes) >= (ulong)Volatile.Read(ref _maxBufferMemory))
                 {
-                    // Timeout/cancel won the race and already cleaned up resources.
-                    // Release the memory reservation we made above.
-                    ReleaseMemoryWithoutDrain(op.RecordSize);
-                    continue;
+                    return;
                 }
 
-                try
-                {
-                    var result = AppendAfterReservation(
-                        op.Topic, op.Partition, op.Timestamp,
-                        op.Key, op.Value, op.Headers, op.HeaderCount,
-                        op.CompletionSource, op.Callback, op.RecordSize);
-
-                    op.CompleteResult(result);
-                }
-                catch (Exception ex)
-                {
-                    // AppendAfterReservation handles its own resource cleanup on throw
-                    op.CompleteException(ex);
-                }
+                // Re-acquire the drain lock for another pass
+                if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+                    return; // Another thread took over
             }
         }
         finally
         {
+            // Ensure drain lock is released even on exception (inner loop already releases
+            // on normal exit, but exception path needs the finally).
             Volatile.Write(ref _draining, 0);
-        }
-
-        // Re-check: a ReleaseMemory may have arrived while we held the drain lock,
-        // and new pending items may have been enqueued. If there's available space,
-        // re-enter to serve them.
-        if (!_pendingAppends.IsEmpty
-            && (ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-        {
-            DrainPendingAppends();
         }
     }
 
