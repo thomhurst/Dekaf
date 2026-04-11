@@ -388,10 +388,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Single-threaded send loop — no locks needed.
     private readonly HashSet<TopicPartition> _partitionsNeedingSequenceReset = new();
 
-    // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
+    // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(partition)].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
     // All producers use partition affinity (partition % N) for CPU cache locality.
-    // Idempotent producers additionally require affinity for per-partition sequence ordering.
+    // Idempotent producers additionally require affinity for per-partition sequence ordering;
+    // during scaling, _migratingPartitions overrides the modulo to preserve ordering.
     private IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
     private readonly bool _isIdempotent;
@@ -409,16 +410,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
     private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
 
-    // Deferred scale-up for idempotent producers: when partition affinity is required,
-    // applying a scale-up immediately would remap partitions (P % N -> P % M) while
-    // in-flight batches are still on the old connection, causing OutOfOrderSequenceNumber
-    // errors. We defer updating _connectionCount until _totalPendingResponseCount == 0.
-    private int _deferredScaleUpCount; // 0 = no deferred scale-up pending
-
-    // Deferred scale-down for idempotent producers: same partition affinity issue as
-    // scale-up. Shrinking from N to N-1 remaps partitions (P % N -> P % (N-1)), so we
-    // must wait for all in-flight requests to drain before applying the connection count change.
-    private IKafkaConnection? _deferredScaleDownConnection; // null = no deferred scale-down pending
+    // Per-partition migration fencing for idempotent producers: during a scale event,
+    // partitions whose connection assignment changes (partition % oldCount != partition % newCount)
+    // are fenced here if they have in-flight batches on the old connection. The partition
+    // continues routing to the old connection until its in-flight clears, then is removed
+    // from this dictionary and routes via the new partition % _connectionCount.
+    // Send-loop owned (single-threaded) — no synchronization needed.
+    private readonly Dictionary<int, int> _migratingPartitions = new();
 
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
@@ -753,38 +751,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var scaledToCount = MaybeScaleConnections();
 
-                    // Deferred scale drain: idempotent producers defer scale operations until
-                    // inflight reaches 0, but under sustained load the send loop refills slots
-                    // immediately, permanently blocking the scale-up. Pause sending briefly
-                    // (~1-5ms, at most once per ScaleCooldownMs) to let inflight drain.
-                    if (scaledToCount == 0
-                        && (_deferredScaleUpCount > 0 || _deferredScaleDownConnection is not null))
-                    {
-                        var drainDeadline = Environment.TickCount64 + ScaleCooldownMs;
-                        var pending = Volatile.Read(ref _totalPendingResponseCount);
-
-                        while (pending > 0 && Environment.TickCount64 < drainDeadline)
-                        {
-                            ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
-                            pending = Volatile.Read(ref _totalPendingResponseCount);
-
-                            if (pending > 0)
-                            {
-                                HandleTimedOutRequests(carryOver, cancellationToken);
-                                pending = Volatile.Read(ref _totalPendingResponseCount);
-
-                                if (pending > 0)
-                                {
-                                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
-                                    pending = Volatile.Read(ref _totalPendingResponseCount);
-                                }
-                            }
-                        }
-
-                        // Re-run: inflight should be 0 so the deferred operation will be applied.
-                        scaledToCount = MaybeScaleConnections();
-                    }
-
                     if (scaledToCount > 0)
                     {
                         var newScratches = new ProduceRequestScratch[scaledToCount];
@@ -1032,7 +998,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // by scaling down unused connections.
                             for (var i = 0; i < coalescedCount; i++)
                             {
-                                var connIdx = coalescedBatches[i].TopicPartition.Partition % _connectionCount;
+                                var connIdx = GetConnectionForPartition(coalescedBatches[i].TopicPartition.Partition);
                                 ref var bucket = ref connectionBuckets[connIdx];
                                 bucket.Batches[bucket.Count++] = coalescedBatches[i];
                             }
@@ -1509,6 +1475,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (pendingList.Capacity > 16 && pendingList.Count < pendingList.Capacity / 4)
                 {
                     pendingList.TrimExcess();
+                }
+
+                // Check if any migrating partitions can be unfenced after responses completed
+                if (_migratingPartitions.Count > 0)
+                {
+                    var beforeCount = _migratingPartitions.Count;
+                    CompleteMigrations(connIdx);
+
+                    if (_migratingPartitions.Count == 0)
+                        LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
         }
@@ -2491,6 +2467,118 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns the connection index for a partition, respecting any active migration fence.
+    /// During migration, fenced partitions continue routing to their old connection
+    /// until in-flight batches complete, preserving per-partition sequence ordering.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetConnectionForPartition(int partitionIndex)
+    {
+        // Common case: no migrations active — dictionary Count check is a single branch on 0.
+        // During migration: one hash lookup per batch, negligible vs TCP write cost.
+        return _migratingPartitions.Count > 0
+            && _migratingPartitions.TryGetValue(partitionIndex, out var oldConn)
+            ? oldConn
+            : partitionIndex % _connectionCount;
+    }
+
+    /// <summary>
+    /// Checks whether a specific partition has any in-flight batches on the given connection.
+    /// Scans pending responses (at most _maxInFlight entries, typically 5) for the connection.
+    /// Only called during migration transitions — not on the hot path.
+    /// </summary>
+    private bool HasInflightForPartition(int connectionIndex, int partitionIndex)
+    {
+        var pendingList = _pendingResponsesByConnection[connectionIndex];
+        for (var i = 0; i < pendingList.Count; i++)
+        {
+            var pr = pendingList[i];
+            for (var j = 0; j < pr.Count; j++)
+            {
+                if (pr.Batches[j].TopicPartition.Partition == partitionIndex)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Checks migrating partitions whose old connection is <paramref name="connectionIndex"/>
+    /// and unfences them if they no longer have in-flight batches on that connection.
+    /// Called from ProcessCompletedResponses only when _migratingPartitions is non-empty.
+    /// </summary>
+    private void CompleteMigrations(int connectionIndex)
+    {
+        var pendingList = _pendingResponsesByConnection[connectionIndex];
+
+        // Fast path: if this connection has no remaining pending responses,
+        // all partitions fenced on this connection can migrate immediately.
+        if (pendingList.Count == 0)
+        {
+            var keysToRemove = _migratingPartitions.Count <= 64
+                ? (Span<int>)stackalloc int[_migratingPartitions.Count]
+                : new int[_migratingPartitions.Count];
+            var removeCount = 0;
+
+            foreach (var kvp in _migratingPartitions)
+            {
+                if (kvp.Value == connectionIndex)
+                    keysToRemove[removeCount++] = kvp.Key;
+            }
+
+            for (var i = 0; i < removeCount; i++)
+                _migratingPartitions.Remove(keysToRemove[i]);
+
+            return;
+        }
+
+        // Connection still has pending responses — check partition by partition
+        var keysToCheck = _migratingPartitions.Count <= 64
+            ? (Span<int>)stackalloc int[_migratingPartitions.Count]
+            : new int[_migratingPartitions.Count];
+        var checkCount = 0;
+
+        foreach (var kvp in _migratingPartitions)
+        {
+            if (kvp.Value == connectionIndex)
+                keysToCheck[checkCount++] = kvp.Key;
+        }
+
+        for (var i = 0; i < checkCount; i++)
+        {
+            if (!HasInflightForPartition(connectionIndex, keysToCheck[i]))
+                _migratingPartitions.Remove(keysToCheck[i]);
+        }
+    }
+
+    /// <summary>
+    /// Fences partitions whose connection assignment changes during a scale event.
+    /// For idempotent producers, partitions with in-flight batches on their old connection
+    /// are added to <see cref="_migratingPartitions"/> so they continue routing to the old
+    /// connection until in-flight clears, preventing OutOfOrderSequenceNumber errors.
+    /// </summary>
+    private void FenceAffectedPartitions(int oldConnCount, int newConnCount)
+    {
+        if (!_isIdempotent)
+            return;
+
+        foreach (var tp in _knownPartitions)
+        {
+            var partition = tp.Partition;
+            var oldConn = partition % oldConnCount;
+            var newConn = partition % newConnCount;
+
+            if (oldConn != newConn && HasInflightForPartition(oldConn, partition))
+            {
+                _migratingPartitions.TryAdd(partition, oldConn);
+            }
+        }
+
+        if (_migratingPartitions.Count > 0)
+            LogPartitionMigrationStarted(_brokerId, _migratingPartitions.Count, oldConnCount, newConnCount);
+    }
+
+    /// <summary>
     /// Returns the pinned connection for the given connection index.
     /// Each connection slot caches a healthy connection for reuse.
     /// </summary>
@@ -2673,16 +2761,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _drainingConnection = null;
         }
 
-        // Dispose deferred scale-down connection if present. This connection was removed from
-        // _pinnedConnections by the shrink task but hasn't been applied via ApplyScaleDown yet
-        // (waiting for in-flight requests to drain). It's not tracked anywhere else, so we must
-        // dispose it explicitly here to avoid a resource leak.
-        if (_deferredScaleDownConnection is not null)
-        {
-            try { await _deferredScaleDownConnection.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
-            _deferredScaleDownConnection = null;
-        }
+        _migratingPartitions.Clear();
 
         var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
@@ -2741,22 +2820,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Phase 0: Poll draining connection for disposal
         MaybeDrainAndDisposeConnection();
 
-        // Phase 0b: Apply deferred scale-up once in-flight requests have drained
-        if (_deferredScaleUpCount > 0 && _totalPendingResponseCount == 0)
-        {
-            var count = _deferredScaleUpCount;
-            _deferredScaleUpCount = 0;
-            return ApplyScaleUp(count);
-        }
-
-        // Phase 0c: Apply deferred scale-down once in-flight requests have drained
-        if (_deferredScaleDownConnection is not null && _totalPendingResponseCount == 0)
-        {
-            var conn = _deferredScaleDownConnection;
-            _deferredScaleDownConnection = null;
-            return ApplyScaleDown(conn);
-        }
-
         // Phase 1a: Check if a pending background scale-up completed
         if (_pendingScaleTask is not null)
         {
@@ -2771,17 +2834,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
                 {
-                    // Idempotent producers use partition affinity (partition % N). If we
-                    // update _connectionCount while in-flight batches exist, partitions
-                    // remap and new batches could arrive on a different connection than
-                    // the in-flight ones, causing OutOfOrderSequenceNumber errors.
-                    // Defer the update until all in-flight responses have drained.
-                    if (_isIdempotent && _totalPendingResponseCount > 0)
-                    {
-                        _deferredScaleUpCount = actualCount;
-                        return 0;
-                    }
-
                     return ApplyScaleUp(actualCount);
                 }
             }
@@ -2807,14 +2859,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var removedConnection = task.Result;
                 if (removedConnection is not null)
                 {
-                    // Same affinity concern as scale-up: shrinking from N to N-1 remaps
-                    // partitions (P % N -> P % (N-1)). Defer until all in-flight drained.
-                    if (_isIdempotent && _totalPendingResponseCount > 0)
-                    {
-                        _deferredScaleDownConnection = removedConnection;
-                        return 0;
-                    }
-
                     return ApplyScaleDown(removedConnection);
                 }
             }
@@ -2825,14 +2869,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             return 0;
         }
-
-        // If a deferred scale operation is waiting for in-flight requests to drain,
-        // don't start new scale operations — the deferred one takes priority.
-        // This guard also prevents a second _pendingScaleTask from being launched while
-        // a deferred value is pending, ensuring Phase 1a never observes a stale task
-        // completion that could overwrite the deferred count.
-        if (_deferredScaleUpCount > 0 || _deferredScaleDownConnection is not null)
-            return 0;
 
         var now = Environment.TickCount64;
 
@@ -2952,6 +2988,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         DekafPools.RatchetSerializationBucketCapacity(
             actualCount * PoolSizing.SerializationArraysPerConnection);
 
+        FenceAffectedPartitions(oldCount, actualCount);
+
         LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
         return actualCount;
     }
@@ -2990,6 +3028,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // ensures no requests are assigned to the removed connection index, so
         // MaybeDrainAndDisposeConnection can safely dispose it immediately.
         _drainingConnection = removedConnection;
+
+        FenceAffectedPartitions(oldCount, newCount);
 
         LogAdaptiveScaleDown(_brokerId, oldCount, newCount);
         return newCount;
@@ -3119,6 +3159,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] adaptive scale-down failed (current: {CurrentCount} connections)")]
     private partial void LogAdaptiveScaleDownFailed(Exception exception, int brokerId, int currentCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] partition migration: {MigratingCount} partitions fenced during scale {OldCount} -> {NewCount}")]
+    private partial void LogPartitionMigrationStarted(int brokerId, int migratingCount, int oldCount, int newCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] partition migration complete: {MigratedCount} partitions migrated")]
+    private partial void LogPartitionMigrationComplete(int brokerId, int migratedCount);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} response task={ResponseTaskId}: batch already returned to pool (count={Count}, trace={DiagTrace}), skipping")]
     private partial void LogBatchAlreadyReturnedToPool(int instanceId, int responseTaskId, int count, string diagTrace);

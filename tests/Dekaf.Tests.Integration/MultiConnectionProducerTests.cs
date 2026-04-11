@@ -320,4 +320,50 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         await Assert.That(received).Count().IsEqualTo(messageCount);
     }
+
+    [Test]
+    public async Task IdempotentProducer_AdaptiveScaling_NoDuplicatesOrGaps()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 6);
+        const int messageCount = 10_000;
+
+        // Start with 1 connection, enable adaptive scaling up to 3.
+        // High throughput fire-and-forget should trigger adaptive scale-up,
+        // exercising the per-partition migration fencing logic.
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-adaptive-scale-idem")
+            .WithAcks(Acks.All)
+            .WithConnectionsPerBroker(1)
+            .WithAdaptiveConnections(maxConnections: 3)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < messageCount; i++)
+        {
+            await producer.FireAsync(topic, $"key-{i % 100}", $"msg-{i}");
+        }
+
+        await producer.FlushWithTimeoutAsync();
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Assign(Enumerable.Range(0, 6)
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray());
+
+        var received = new HashSet<string>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            received.Add(msg.Value!);
+            if (received.Count >= messageCount) break;
+        }
+
+        await Assert.That(received).Count().IsEqualTo(messageCount);
+    }
 }
