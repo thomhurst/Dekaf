@@ -1016,11 +1016,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
                         DispatchResponse(correlationId, responseData);
                     }
 
-                    // Phase 3: If there's a frame header for a large response that doesn't
-                    // fit in the current buffer, start incremental assembly. This rents a
-                    // response buffer, copies what's available, and consumes it from the pipe
-                    // so subsequent reads can continue filling without hitting the pause threshold.
-                    if (!_partialFrame.IsActive && buffer.Length >= 8)
+                    // Phase 3: Start incremental assembly for frames that don't fit
+                    // in the current buffer, keeping the pipe below the pause threshold.
+                    if (buffer.Length >= 8)
                     {
                         TryStartPartialFrame(ref buffer, ref _partialFrame, _responseBufferPool);
                     }
@@ -1204,8 +1202,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         // Clean up any partial frame being assembled
         if (_partialFrame.IsActive)
         {
-            if (_partialFrame.IsPooled)
-                _responseBufferPool.Pool.Return(_partialFrame.Buffer!);
+            new PooledResponseBuffer(
+                _partialFrame.Buffer!, _partialFrame.FrameSize,
+                _partialFrame.IsPooled, pool: _responseBufferPool).Dispose();
             _partialFrame = default;
         }
 
@@ -2159,19 +2158,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
         buffer.Slice(4, 4).CopyTo(corrSpan);
         var correlationId = BinaryPrimitives.ReadInt32BigEndian(corrSpan);
 
-        // Rent response buffer
-        byte[] responseArray;
-        bool isPooled;
-        if (frameSize <= responseBufferPool.MaxArrayLength)
-        {
-            responseArray = responseBufferPool.Pool.Rent(frameSize);
-            isPooled = true;
-        }
-        else
-        {
-            responseArray = new byte[frameSize];
-            isPooled = false;
-        }
+        // Rent response buffer (same logic as RentResponseArray instance method)
+        var (responseArray, isPooled) = frameSize <= responseBufferPool.MaxArrayLength
+            ? (responseBufferPool.Pool.Rent(frameSize), true)
+            : (new byte[frameSize], false);
 
         // Copy all available payload (skip the 4-byte size header, it's not part of the response)
         var availablePayload = (int)(buffer.Length - 4);
