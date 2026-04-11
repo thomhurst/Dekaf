@@ -2078,81 +2078,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return new ValueTask<bool>(op, op.Version);
     }
 
-    private async ValueTask<bool> AppendSlowPathLegacy(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        Header[]? headers,
-        int headerCount,
-        PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback,
-        int recordSize,
-        CancellationToken cancellationToken)
-    {
-        // Inlined reservation loop — avoids allocating a second async state machine
-        // for ReserveMemoryAsync. One state machine instead of two per cold-path message.
-        // KEEP IN SYNC with WaitForReservationAsync and the other inlined copy.
-        var (startTicks, deadline) = BeginReservationWait(recordSize);
-
-        try
-        {
-            while (!TryReserveMemory(recordSize))
-            {
-                if (Volatile.Read(ref _disposed) != 0)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var remainingMs = deadline - Environment.TickCount64;
-                if (remainingMs <= 0)
-                    ThrowBufferMemoryTimeout(recordSize, startTicks);
-
-                Interlocked.Increment(ref _bufferSpaceWaiters);
-
-                // Re-check AFTER incrementing to close the missed-signal window.
-                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                    continue; // space likely available, re-evaluate TryReserveMemory
-                }
-
-                try
-                {
-                    await _bufferSpaceSignal.Task.WaitAsync(
-                        TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
-                        cancellationToken
-                    ).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // Timed out waiting for signal — loop back and re-check.
-                }
-                catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
-                {
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                }
-            }
-        }
-        catch
-        {
-            key.Return();
-            value.Return();
-            ReturnPooledHeaders(headers);
-            throw;
-        }
-
-        return AppendAfterReservation(topic, partition, timestamp, key, value,
-            headers, headerCount, completionSource, callback, recordSize);
-    }
-
-
     /// <summary>
     /// Non-blocking variant of Append for the ProduceAsync fast path.
     /// Returns false when buffer is full (caller falls back to async slow path)
@@ -2425,78 +2350,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return new ValueTask<bool>(op, op.Version);
     }
 
-    private async ValueTask<bool> AppendFromSpansAsyncSlowPathLegacy(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory keyPooled,
-        PooledMemory valuePooled,
-        Header[]? headers,
-        int headerCount,
-        Action<RecordMetadata, Exception?>? callback,
-        int recordSize,
-        CancellationToken cancellationToken)
-    {
-        // Inlined reservation loop — avoids allocating a second async state machine
-        // for ReserveMemoryAsync. One state machine instead of two per cold-path message.
-        // KEEP IN SYNC with WaitForReservationAsync and the other inlined copy.
-        var (startTicks, deadline) = BeginReservationWait(recordSize);
 
-        try
-        {
-            while (!TryReserveMemory(recordSize))
-            {
-                if (Volatile.Read(ref _disposed) != 0)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var remainingMs = deadline - Environment.TickCount64;
-                if (remainingMs <= 0)
-                    ThrowBufferMemoryTimeout(recordSize, startTicks);
-
-                Interlocked.Increment(ref _bufferSpaceWaiters);
-
-                // Re-check AFTER incrementing to close the missed-signal window.
-                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                    continue; // space likely available, re-evaluate TryReserveMemory
-                }
-
-                try
-                {
-                    await _bufferSpaceSignal.Task.WaitAsync(
-                        TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
-                        cancellationToken
-                    ).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // Timed out waiting for signal — loop back and re-check.
-                }
-                catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
-                {
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                }
-            }
-        }
-        catch
-        {
-            keyPooled.Return();
-            valuePooled.Return();
-            ReturnPooledHeaders(headers);
-            throw;
-        }
-
-        return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize);
-    }
 
     /// <summary>
     /// Copies a ReadOnlySpan to a PooledMemory backed by ArrayPool.
@@ -2769,11 +2623,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// and the max.block.ms deadline. Must be called after <see cref="BeginReservationWait"/>.
     /// </summary>
     /// <remarks>
-    /// The two legacy production slow paths (<see cref="AppendSlowPathLegacy"/> and
-    /// <see cref="AppendFromSpansAsyncSlowPathLegacy"/>) inline this loop body to avoid allocating
-    /// a second async state machine per cold-path message. This method is the canonical
-    /// version used by <see cref="ReserveMemoryAsync"/> (called from tests).
-    /// KEEP IN SYNC: any changes here must be mirrored in both inlined copies.
+    /// Used by <see cref="ReserveMemoryAsync"/> (called from tests).
+    /// The production slow paths now use the pooled <see cref="PendingAppend"/> mechanism
+    /// instead of inlining this loop.
     /// </remarks>
     private async ValueTask WaitForReservationAsync(int recordSize, long startTicks, long deadline,
         CancellationToken cancellationToken)
