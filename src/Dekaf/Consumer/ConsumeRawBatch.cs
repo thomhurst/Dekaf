@@ -144,20 +144,9 @@ namespace Dekaf.Consumer
                 return true;
             }
 
-            /// <summary>
-            /// Reset is not supported.
-            /// </summary>
-            public readonly void Reset()
-            {
-                throw new NotSupportedException();
-            }
+            public readonly void Reset() => throw new NotSupportedException();
 
-            /// <summary>
-            /// No resources to dispose.
-            /// </summary>
-            public readonly void Dispose()
-            {
-            }
+            public readonly void Dispose() { }
         }
     }
 }

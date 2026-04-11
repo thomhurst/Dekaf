@@ -476,7 +476,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly Queue<PendingFetchData> _pendingFetches = new();
 
     // Background prefetch support
-    private readonly SpscFetchBuffer _prefetchBuffer;
+    private readonly MpscFetchBuffer _prefetchBuffer;
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
@@ -516,7 +516,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private int _consumerDisposed;
     private int _closed;
     private volatile bool _initialized;
-    private bool _prefetchEnabled;
+    private volatile bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool;
@@ -658,7 +658,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Initialize prefetch buffer - bounded by QueuedMinMessages batches
         var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
-        _prefetchBuffer = new SpscFetchBuffer(prefetchCapacity * 10);
+        _prefetchBuffer = new MpscFetchBuffer(prefetchCapacity * 10);
 
         // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
@@ -2210,7 +2210,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// not guaranteed — so the relative order between partitions does not matter.
     /// </remarks>
     internal static void DrainBufferForPartitions(
-        SpscFetchBuffer buffer,
+        MpscFetchBuffer buffer,
         HashSet<TopicPartition> partitionsToRemove,
         Queue<PendingFetchData> retainedQueue,
         Action<PendingFetchData> onItemRemoved)

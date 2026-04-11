@@ -13,28 +13,22 @@ namespace Dekaf.Consumer;
 /// Multiple prefetch tasks (one per broker) write concurrently via <see cref="TryWrite"/>,
 /// while the single consumer thread reads via <see cref="TryRead"/>.
 /// </summary>
-internal sealed class SpscFetchBuffer
+internal sealed class MpscFetchBuffer
 {
     private readonly PendingFetchData?[] _buffer;
     private readonly int _mask;
 
-    // _headReserved: CAS-incremented by producers to reserve a slot.
-    // _headCommitted: Volatile-incremented by producers after storing the item.
-    //                 The reader only sees slots up to _headCommitted.
-    // _tail: only modified by the single consumer thread.
-    // Each index occupies its own 128-byte padded struct to prevent false sharing
-    // across cache line pairs (128 bytes covers Intel spatial prefetcher).
     private PaddedIndex _headReserved;
     private PaddedIndex _headCommitted;
     private PaddedIndex _tail;
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
-    private readonly SemaphoreSlim _spaceAvailable = new(0, 1);
+    private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
     private volatile bool _consumerWaiting;
     private volatile bool _completed;
     private volatile Exception? _completionError;
 
-    public SpscFetchBuffer(int capacity)
+    public MpscFetchBuffer(int capacity)
     {
         // Round up to next power of 2 for mask-based indexing
         var size = 1;
@@ -59,16 +53,12 @@ internal sealed class SpscFetchBuffer
             if (head - tail >= _buffer.Length)
                 return false; // Full
 
-            // Reserve this slot via CAS — another producer may beat us
             if (Interlocked.CompareExchange(ref _headReserved.Value, head + 1, head) != head)
-                continue; // Lost race, retry
+                continue;
 
-            // Slot reserved — store the item
             _buffer[head & _mask] = item;
 
-            // Advance committed index. Must wait for all prior slots to commit first
-            // (producers that reserved earlier slots must finish storing before we advance).
-            // SpinWait ensures producers commit in reservation order.
+            // Wait for prior slots to commit so the reader sees items in order
             var spin = new SpinWait();
             while (Volatile.Read(ref _headCommitted.Value) != head)
                 spin.SpinOnce();
@@ -120,12 +110,10 @@ internal sealed class SpscFetchBuffer
         }
 
         item = _buffer[tail & _mask]!;
-        _buffer[tail & _mask] = null; // Allow GC
+        _buffer[tail & _mask] = null;
         Volatile.Write(ref _tail.Value, tail + 1);
 
-        // Signal producers that space is available
-        if (_spaceAvailable.CurrentCount == 0)
-            _spaceAvailable.Release();
+        _spaceAvailable.Release();
 
         return true;
     }

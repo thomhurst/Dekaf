@@ -1553,7 +1553,7 @@ public class PrefetchPipelineRunnerTests
     public async Task DrainBufferForPartitions_RevokedItemsDisposed()
     {
         // Items for revoked partitions should be disposed and not enqueued.
-        var buffer = new SpscFetchBuffer(16);
+        var buffer = new MpscFetchBuffer(16);
         var revokedTp = new TopicPartition("topic-a", 0);
 
         var item = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
@@ -1576,7 +1576,7 @@ public class PrefetchPipelineRunnerTests
     public async Task DrainBufferForPartitions_RetainedItemsPreserved()
     {
         // Items for non-revoked partitions should be enqueued in retainedQueue.
-        var buffer = new SpscFetchBuffer(16);
+        var buffer = new MpscFetchBuffer(16);
         var retainedTp = new TopicPartition("topic-a", 0);
         var revokedTp = new TopicPartition("topic-b", 1);
 
@@ -1607,7 +1607,7 @@ public class PrefetchPipelineRunnerTests
     public async Task DrainBufferForPartitions_EmptyBuffer_NoErrors()
     {
         // An empty buffer should be drained without errors.
-        var buffer = new SpscFetchBuffer(16);
+        var buffer = new MpscFetchBuffer(16);
 
         var removeSet = new HashSet<TopicPartition> { new("topic-a", 0) };
         var retainedQueue = new Queue<PendingFetchData>();
@@ -1624,7 +1624,7 @@ public class PrefetchPipelineRunnerTests
     public async Task DrainBufferForPartitions_MixedPartitions_CorrectSplit()
     {
         // A mix of revoked and retained partitions should be split correctly.
-        var buffer = new SpscFetchBuffer(16);
+        var buffer = new MpscFetchBuffer(16);
 
         var revokedTp1 = new TopicPartition("topic-a", 0);
         var revokedTp2 = new TopicPartition("topic-a", 2);

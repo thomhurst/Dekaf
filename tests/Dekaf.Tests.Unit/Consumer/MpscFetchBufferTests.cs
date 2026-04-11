@@ -5,11 +5,11 @@ using Dekaf.Protocol.Records;
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
-/// Tests for the <see cref="SpscFetchBuffer"/> single-producer single-consumer ring buffer.
+/// Tests for the <see cref="MpscFetchBuffer"/> multi-producer single-consumer ring buffer.
 /// Validates write/read semantics, capacity enforcement, wait behavior, completion signaling,
 /// and concurrent producer/consumer correctness.
 /// </summary>
-public class SpscFetchBufferTests
+public class MpscFetchBufferTests
 {
     private static PendingFetchData CreateDummy(string topic = "test-topic", int partition = 0)
     {
@@ -21,7 +21,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task TryWrite_TryRead_SingleItem_RoundTrips()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         var item = CreateDummy();
 
         var written = buffer.TryWrite(item);
@@ -38,7 +38,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task TryRead_EmptyBuffer_ReturnsFalse()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
 
         var read = buffer.TryRead(out var result);
         await Assert.That(read).IsFalse();
@@ -49,7 +49,7 @@ public class SpscFetchBufferTests
     public async Task TryWrite_FullBuffer_ReturnsFalse()
     {
         // Capacity rounds up to power of 2, so capacity=2 gives size=2
-        var buffer = new SpscFetchBuffer(2);
+        var buffer = new MpscFetchBuffer(2);
 
         var item1 = CreateDummy("topic", 0);
         var item2 = CreateDummy("topic", 1);
@@ -70,7 +70,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task TryWrite_AfterRead_FreesSlot()
     {
-        var buffer = new SpscFetchBuffer(2);
+        var buffer = new MpscFetchBuffer(2);
 
         var item1 = CreateDummy("topic", 0);
         var item2 = CreateDummy("topic", 1);
@@ -100,7 +100,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task WaitToRead_DataAlreadyAvailable_ReturnsImmediately()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         var item = CreateDummy();
         buffer.TryWrite(item);
 
@@ -115,20 +115,21 @@ public class SpscFetchBufferTests
     [Test]
     public async Task WaitToRead_DataArrivesAfterDelay_ReturnsTrue()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         var item = CreateDummy();
 
-        // Write from another thread after a short delay
-        var writeTask = Task.Run(async () =>
+        // Use a dedicated thread (not thread pool) to avoid starvation on CI
+        var writerThread = new Thread(() =>
         {
-            await Task.Delay(50);
+            Thread.Sleep(50);
             buffer.TryWrite(item);
-        });
+        }) { IsBackground = true };
+        writerThread.Start();
 
-        var result = buffer.WaitToRead(5000, CancellationToken.None);
+        var result = buffer.WaitToRead(30_000, CancellationToken.None);
         await Assert.That(result).IsTrue();
 
-        await writeTask;
+        writerThread.Join();
 
         // Cleanup
         buffer.TryRead(out _);
@@ -138,7 +139,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task WaitToRead_CompletedEmptyBuffer_ReturnsFalse()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         buffer.Complete();
 
         var result = buffer.WaitToRead(1000, CancellationToken.None);
@@ -148,7 +149,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task WaitToRead_CompletedWithError_ThrowsError()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         var expectedException = new InvalidOperationException("test error");
         buffer.Complete(expectedException);
 
@@ -160,7 +161,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task WaitToRead_Cancelled_ThrowsOperationCancelled()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
@@ -175,14 +176,14 @@ public class SpscFetchBufferTests
     [Test]
     public async Task IsCompleted_InitiallyFalse()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         await Assert.That(buffer.IsCompleted).IsFalse();
     }
 
     [Test]
     public async Task IsCompleted_AfterComplete_IsTrue()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         buffer.Complete();
         await Assert.That(buffer.IsCompleted).IsTrue();
     }
@@ -190,7 +191,7 @@ public class SpscFetchBufferTests
     [Test]
     public async Task Complete_IsIdempotent_FirstErrorPreserved()
     {
-        var buffer = new SpscFetchBuffer(4);
+        var buffer = new MpscFetchBuffer(4);
         var error = new InvalidOperationException("fatal prefetch error");
 
         buffer.Complete(error);
@@ -211,7 +212,7 @@ public class SpscFetchBufferTests
     public async Task ConcurrentProducerConsumer_AllItemsTransferred()
     {
         const int itemCount = 10_000;
-        var buffer = new SpscFetchBuffer(64);
+        var buffer = new MpscFetchBuffer(64);
         var consumed = new List<int>();
 
         // Producer: writes itemCount items
@@ -272,7 +273,7 @@ public class SpscFetchBufferTests
         const int producerCount = 4;
         const int itemsPerProducer = 2_500;
         const int totalItems = producerCount * itemsPerProducer;
-        var buffer = new SpscFetchBuffer(64);
+        var buffer = new MpscFetchBuffer(64);
         var consumed = new ConcurrentBag<int>();
 
         // Multiple producers write concurrently (simulates multi-broker prefetch)
@@ -330,7 +331,7 @@ public class SpscFetchBufferTests
     public async Task Capacity_RoundsUpToPowerOfTwo()
     {
         // Capacity 3 should round up to 4
-        var buffer = new SpscFetchBuffer(3);
+        var buffer = new MpscFetchBuffer(3);
 
         var items = new List<PendingFetchData>();
         for (var i = 0; i < 4; i++)
