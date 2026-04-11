@@ -106,6 +106,9 @@ internal sealed class SpscFetchBuffer
 
     public void Complete(Exception? error = null)
     {
+        if (_completed)
+            return;
+
         _completionError = error;
         _completed = true;
         _dataAvailable.Set();

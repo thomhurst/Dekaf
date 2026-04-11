@@ -186,6 +186,22 @@ public class SpscFetchBufferTests
         await Assert.That(buffer.IsCompleted).IsTrue();
     }
 
+    [Test]
+    public async Task Complete_IsIdempotent_FirstErrorPreserved()
+    {
+        var buffer = new SpscFetchBuffer(4);
+        var error = new InvalidOperationException("fatal prefetch error");
+
+        buffer.Complete(error);
+        buffer.Complete(null); // Second call should be ignored
+
+        await Assert.That(buffer.IsCompleted).IsTrue();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            buffer.WaitToRead(100, CancellationToken.None));
+        await Assert.That(ex.Message).IsEqualTo("fatal prefetch error");
+    }
+
     #endregion
 
     #region Concurrent producer/consumer
