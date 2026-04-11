@@ -167,6 +167,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+
+    // Partial frame assembly state for incremental response consumption.
+    // Only accessed from ReceiveLoopAsync (single-threaded reader).
+    private PartialFrameContext _partialFrame;
+
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
@@ -985,28 +990,39 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
                 LogReceivedBytes(buffer.Length, _host, _port);
 
-                while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
+                // Phase 1: Continue assembling a partial frame if one is in progress.
+                // The partial frame consumes data from the pipe buffer as it copies,
+                // keeping the buffer below the pause threshold for large responses.
+                if (_partialFrame.IsActive)
                 {
-                    LogReceivedResponse(correlationId, responseData.Length);
+                    if (ContinuePartialFrame(ref buffer, ref _partialFrame))
+                    {
+                        // Frame complete — dispatch it
+                        var responseData = new PooledResponseBuffer(
+                            _partialFrame.Buffer!, _partialFrame.FrameSize,
+                            _partialFrame.IsPooled, pool: _responseBufferPool);
+                        DispatchResponse(_partialFrame.CorrelationId, responseData);
+                        _partialFrame = default;
+                    }
+                }
 
-                    if (_pendingRequests.TryGetValue(correlationId, out var pending))
+                // Phase 2: Process any complete responses available in the buffer.
+                // This is the fast path for small responses (e.g., producer acks)
+                // that fit entirely within the pipe buffer.
+                if (!_partialFrame.IsActive)
+                {
+                    while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
                     {
-                        if (!pending.TryComplete(responseData))
-                        {
-                            // Request was already cancelled/failed - dispose the buffer
-                            responseData.Dispose();
-                        }
+                        DispatchResponse(correlationId, responseData);
                     }
-                    else if (_cancelledCorrelationIds.TryRemove(correlationId, out _))
+
+                    // Phase 3: If there's a frame header for a large response that doesn't
+                    // fit in the current buffer, start incremental assembly. This rents a
+                    // response buffer, copies what's available, and consumes it from the pipe
+                    // so subsequent reads can continue filling without hitting the pause threshold.
+                    if (!_partialFrame.IsActive && buffer.Length >= 8)
                     {
-                        LogLateResponseForCancelledRequest(correlationId);
-                        responseData.Dispose();
-                    }
-                    else
-                    {
-                        LogUnknownCorrelationId(correlationId);
-                        // No pending request - dispose the buffer
-                        responseData.Dispose();
+                        TryStartPartialFrame(ref buffer, ref _partialFrame, _responseBufferPool);
                     }
                 }
 
@@ -1048,6 +1064,29 @@ public sealed partial class KafkaConnection : IKafkaConnection
             LogReceiveLoopError(ex);
             Volatile.Write(ref _disposed, 1); // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
+        }
+    }
+
+    private void DispatchResponse(int correlationId, PooledResponseBuffer responseData)
+    {
+        LogReceivedResponse(correlationId, responseData.Length);
+
+        if (_pendingRequests.TryGetValue(correlationId, out var pending))
+        {
+            if (!pending.TryComplete(responseData))
+            {
+                responseData.Dispose();
+            }
+        }
+        else if (_cancelledCorrelationIds.TryRemove(correlationId, out _))
+        {
+            LogLateResponseForCancelledRequest(correlationId);
+            responseData.Dispose();
+        }
+        else
+        {
+            LogUnknownCorrelationId(correlationId);
+            responseData.Dispose();
         }
     }
 
@@ -1162,6 +1201,14 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private void FailAllPendingRequests(Exception ex)
     {
+        // Clean up any partial frame being assembled
+        if (_partialFrame.IsActive)
+        {
+            if (_partialFrame.IsPooled)
+                _responseBufferPool.Pool.Return(_partialFrame.Buffer!);
+            _partialFrame = default;
+        }
+
         // Do NOT remove from _pendingRequests here. The awaiter's finally block in
         // AwaitAndParseResponseAsync (or the catch in SendAsync/SendPipelinedAsync)
         // will TryRemove and return the request to the pool.
