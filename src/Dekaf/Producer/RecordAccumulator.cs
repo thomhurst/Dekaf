@@ -1830,7 +1830,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReturnPooledHeaders(Header[]? headers)
+    internal static void ReturnPooledHeaders(Header[]? headers)
     {
         if (headers is not null)
             ProducerContainerPools.Headers.Return(headers);
@@ -2080,8 +2080,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
         if (Volatile.Read(ref _disposed) != 0)
         {
-            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
-                return ValueTask.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
+            var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+            if (op.TryFail(disposedException))
+            {
+                // Caller gets a pre-built exception ValueTask, so nobody will call GetResult
+                // on this op. Manually return it to the pool to avoid leaking.
+                op.ReturnToPoolAfterTryFail();
+                return ValueTask.FromException<bool>(disposedException);
+            }
         }
 
         // Try immediate serve — memory may have been freed between TryReserveMemory and now
@@ -2460,12 +2466,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// The configured max.block.ms value. Exposed for <see cref="PendingAppend"/> timeout diagnostics.
     /// </summary>
     internal int MaxBlockMsOption => _options.MaxBlockMs;
-
-    /// <summary>
-    /// Exposes <see cref="ReturnPooledHeaders"/> for <see cref="PendingAppend"/> resource cleanup.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ReturnPooledHeadersInternal(Header[]? headers) => ReturnPooledHeaders(headers);
 
     /// <summary>
     /// Decrements the pending awaited produce count. Called by <see cref="PendingAppend"/>

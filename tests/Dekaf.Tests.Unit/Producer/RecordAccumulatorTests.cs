@@ -1822,7 +1822,7 @@ public class RecordAccumulatorTests
                 if (bufferedBytes > 0)
                     accumulator.ReleaseMemory(bufferedBytes);
 
-                await Task.Delay(1);
+                await Task.Yield();
             }
 
             // The append should complete successfully

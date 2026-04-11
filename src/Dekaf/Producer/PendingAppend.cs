@@ -51,6 +51,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     // Timeout / cancellation state
     private readonly Timer _timer;
     private CancellationTokenRegistration _cancellationRegistration;
+    private CancellationToken _cancellationToken;
     private long _startTicks;
     private RecordAccumulator _accumulator = null!;
 
@@ -122,6 +123,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _callback = callback;
         _recordSize = recordSize;
         _startTicks = startTicks;
+        _cancellationToken = cancellationToken;
         _accumulator = accumulator;
         _pool = pool;
 
@@ -195,13 +197,36 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         // Clean up owned resources since drain will not process this operation
         _key.Return();
         _value.Return();
-        RecordAccumulator.ReturnPooledHeadersInternal(_headers);
+        RecordAccumulator.ReturnPooledHeaders(_headers);
 
         if (_completionSource is not null)
             _accumulator.DecrementPendingAwaitedProduceCount();
 
         _core.SetException(exception);
         return true;
+    }
+
+    /// <summary>
+    /// Manually returns this instance to the pool when TryFail succeeded but the caller
+    /// bypasses the normal GetResult path (e.g., returning ValueTask.FromException directly).
+    /// Must only be called after TryFail returned true.
+    /// </summary>
+    internal void ReturnToPoolAfterTryFail()
+    {
+        // Clear references to avoid rooting objects
+        _topic = null!;
+        _key = default;
+        _value = default;
+        _headers = null;
+        _completionSource = null;
+        _callback = null;
+        _cancellationToken = default;
+        _accumulator = null!;
+
+        // Reset core (consumes the exception set by TryFail) and return to pool
+        _core.Reset();
+        Volatile.Write(ref _completed, 0);
+        _pool.Return(this);
     }
 
     private void OnTimeout()
@@ -223,7 +248,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     private void OnCancellation()
     {
-        TryFail(new OperationCanceledException());
+        TryFail(new OperationCanceledException(_cancellationToken));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -252,6 +277,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             _headers = null;
             _completionSource = null;
             _callback = null;
+            _cancellationToken = default;
             _accumulator = null!;
 
             // Reset for reuse
