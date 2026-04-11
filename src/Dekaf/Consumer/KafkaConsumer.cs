@@ -1281,39 +1281,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
 
-                // Eagerly parse all records upfront for cache-friendly access
-                pending.EagerParseAll();
-
-                // Yield the batch to the caller for synchronous iteration
-                ConsumeBatch<TKey, TValue> batch = new(pending, _keyDeserializer, _valueDeserializer);
-                yield return batch;
-
-                // After caller finishes iterating: update positions once per batch
-                if (pending.LastYieldedOffset >= 0)
+                try
                 {
-                    _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                    // Eagerly parse all records upfront for cache-friendly access
+                    pending.EagerParseAll();
 
-                    if (!_prefetchEnabled)
+                    // Yield the batch to the caller for synchronous iteration
+                    ConsumeBatch<TKey, TValue> batch = new(pending, _keyDeserializer, _valueDeserializer);
+                    yield return batch;
+
+                    // After caller finishes iterating: update positions once per batch
+                    if (pending.LastYieldedOffset >= 0)
                     {
-                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        }
+                    }
+
+                    // Record consumer metrics per-fetch
+                    if (metricsEnabled && pending.MessageCount > 0)
+                    {
+                        EmitFetchMetrics(pending);
+                    }
+
+                    // Report batch processing time to the adaptive fetch sizer
+                    if (batchProcessingStarted.HasValue)
+                    {
+                        TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
                     }
                 }
-
-                // Record consumer metrics per-fetch
-                if (metricsEnabled && pending.MessageCount > 0)
+                finally
                 {
-                    EmitFetchMetrics(pending);
+                    pending.Dispose();
                 }
-
-                // Report batch processing time to the adaptive fetch sizer
-                if (batchProcessingStarted.HasValue)
-                {
-                    TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                    _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
-                }
-
-                // Dispose the pending fetch (releases pooled network buffer memory)
-                pending.Dispose();
             }
 
             // Drain any pending EOF events (batch API does not surface partition EOF;
@@ -1419,39 +1423,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
 
-                // Eagerly parse all records upfront for cache-friendly access
-                pending.EagerParseAll();
-
-                // Yield the raw batch to the caller for synchronous iteration
-                ConsumeRawBatch batch = new(pending);
-                yield return batch;
-
-                // After caller finishes iterating: update positions once per batch
-                if (pending.LastYieldedOffset >= 0)
+                try
                 {
-                    _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                    // Eagerly parse all records upfront for cache-friendly access
+                    pending.EagerParseAll();
 
-                    if (!_prefetchEnabled)
+                    // Yield the raw batch to the caller for synchronous iteration
+                    ConsumeRawBatch batch = new(pending);
+                    yield return batch;
+
+                    // After caller finishes iterating: update positions once per batch
+                    if (pending.LastYieldedOffset >= 0)
                     {
-                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        }
+                    }
+
+                    // Record consumer metrics per-fetch
+                    if (metricsEnabled && pending.MessageCount > 0)
+                    {
+                        EmitFetchMetrics(pending);
+                    }
+
+                    // Report batch processing time to the adaptive fetch sizer
+                    if (batchProcessingStarted.HasValue)
+                    {
+                        TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
                     }
                 }
-
-                // Record consumer metrics per-fetch
-                if (metricsEnabled && pending.MessageCount > 0)
+                finally
                 {
-                    EmitFetchMetrics(pending);
+                    pending.Dispose();
                 }
-
-                // Report batch processing time to the adaptive fetch sizer
-                if (batchProcessingStarted.HasValue)
-                {
-                    TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                    _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
-                }
-
-                // Dispose the pending fetch (releases pooled network buffer memory)
-                pending.Dispose();
             }
 
             // Drain any pending EOF events (raw batch API does not surface partition EOF;
