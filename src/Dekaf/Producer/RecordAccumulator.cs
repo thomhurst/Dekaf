@@ -1000,6 +1000,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private volatile TaskCompletionSource _bufferSpaceSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _bufferSpaceWaiters; // Number of threads waiting on _bufferSpaceSignal
 
+    // Pooled slow path: replaces async state machine allocation with a pooled IValueTaskSource<bool>.
+    // When TryReserveMemory fails, PendingAppend instances are enqueued here and drained by ReleaseMemory.
+    private readonly PendingAppendPool _pendingAppendPool;
+    private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
+    private int _draining; // CAS guard for DrainPendingAppends
+
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
     /// The deque holds sealed ReadyBatches waiting to be drained by the sender loop.
@@ -1481,6 +1487,106 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Drains the <see cref="_pendingAppends"/> queue, serving queued operations FIFO
+    /// when buffer memory becomes available. Called from <see cref="ReleaseMemory"/>.
+    /// </summary>
+    /// <remarks>
+    /// CAS on <c>_draining</c> ensures only one thread drains at a time. After releasing
+    /// the drain lock, we re-check for pending items with available memory to prevent
+    /// missed signals (a release could arrive while we hold the lock).
+    /// </remarks>
+    internal void DrainPendingAppends()
+    {
+        if (_pendingAppends.IsEmpty)
+            return;
+
+        // Only one thread drains at a time — others return immediately.
+        if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+            return;
+
+        try
+        {
+            while (true)
+            {
+                // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
+                if (Volatile.Read(ref _disposed) != 0)
+                    return;
+
+                var madeProgress = false;
+
+                while (_pendingAppends.TryPeek(out var op))
+                {
+                    // Skip already-completed operations (timeout/cancel/dispose won the race).
+                    // Don't set madeProgress — clearing expired ops doesn't free memory.
+                    if (op.IsCompleted)
+                    {
+                        _pendingAppends.TryDequeue(out _);
+                        continue;
+                    }
+
+                    // Try to reserve memory for this operation
+                    if (!TryReserveMemory(op.RecordSize))
+                        break; // No space — stop draining, next ReleaseMemory will retry
+
+                    // Dequeue — we own the reservation now
+                    _pendingAppends.TryDequeue(out _);
+                    madeProgress = true;
+
+                    // Claim the operation with CAS BEFORE touching resources.
+                    // This prevents timeout/cancel from cleaning up key/value/headers
+                    // while AppendAfterReservation is using them.
+                    if (!op.TryClaim())
+                    {
+                        // Timeout/cancel won the race and already cleaned up resources.
+                        // Release the memory reservation we made above.
+                        ReleaseMemoryWithoutDrain(op.RecordSize);
+                        continue;
+                    }
+
+                    try
+                    {
+                        var result = AppendAfterReservation(
+                            op.Topic, op.Partition, op.Timestamp,
+                            op.Key, op.Value, op.Headers, op.HeaderCount,
+                            op.CompletionSource, op.Callback, op.RecordSize);
+
+                        op.CompleteResult(result);
+                    }
+                    catch (Exception ex)
+                    {
+                        // AppendAfterReservation handles its own resource cleanup on throw
+                        op.CompleteException(ex);
+                    }
+                }
+
+                // Release the drain lock before re-checking so a concurrent ReleaseMemory
+                // can enter if we decide not to loop again.
+                Volatile.Write(ref _draining, 0);
+
+                // Re-check: a ReleaseMemory may have arrived while we held the drain lock,
+                // and new pending items may have been enqueued. Only re-enter if we made
+                // progress last round (prevents infinite loop when head item can't be served).
+                if (!madeProgress
+                    || _pendingAppends.IsEmpty
+                    || (ulong)Volatile.Read(ref _bufferedBytes) >= (ulong)Volatile.Read(ref _maxBufferMemory))
+                {
+                    return;
+                }
+
+                // Re-acquire the drain lock for another pass
+                if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+                    return; // Another thread took over
+            }
+        }
+        finally
+        {
+            // Ensure drain lock is released even on exception (inner loop already releases
+            // on normal exit, but exception path needs the finally).
+            Volatile.Write(ref _draining, 0);
+        }
+    }
+
+    /// <summary>
     /// Broadcasts a buffer-space-available signal, waking ALL async waiters simultaneously.
     /// Completes the current TCS and swaps in a fresh one for future waiters.
     /// This is O(1) wake latency vs the O(N) serial convoy of SemaphoreSlim.
@@ -1528,6 +1634,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = (long)options.BufferMemory;
+
+        // PendingAppend pool for the zero-allocation slow path.
+        // Pool size scales with max connections × max in-flight.
+        var producerPoolSizes = PoolSizing.ForProducer(options.BufferMemory, options.BatchSize,
+            options.MaxInFlightRequestsPerConnection, options.MaxConnectionsPerBroker);
+        _pendingAppendPool = new PendingAppendPool(producerPoolSizes.PendingAppends);
+        _pendingAppendPool.PreWarm(Math.Min(producerPoolSizes.PendingAppends / 4, 32));
 
         // Pre-warm a small number of pool entries to cover initial burst without
         // excessive upfront memory usage. The pools grow lazily on demand after this.
@@ -1717,7 +1830,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReturnPooledHeaders(Header[]? headers)
+    internal static void ReturnPooledHeaders(Header[]? headers)
     {
         if (headers is not null)
             ProducerContainerPools.Headers.Return(headers);
@@ -1844,8 +1957,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize));
 
-        // Cold path: buffer full, await async reservation (backpressure)
-        return AppendSlowPath(topic, partition, timestamp, key, value,
+        // Cold path: buffer full — enqueue pooled PendingAppend (zero async state machine allocation)
+        return AppendSlowPathPooled(topic, partition, timestamp, key, value,
             headers, headerCount, completionSource, callback, recordSize, cancellationToken);
     }
 
@@ -1920,7 +2033,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return true;
     }
 
-    private async ValueTask<bool> AppendSlowPath(
+    /// <summary>
+    /// Zero-allocation slow path using pooled <see cref="PendingAppend"/>.
+    /// Enqueues the operation and returns a <see cref="ValueTask{T}"/> backed by the pooled source.
+    /// Drain serves it when <see cref="ReleaseMemory"/> frees buffer space.
+    /// </summary>
+    private ValueTask<bool> AppendSlowPathPooled(
         string topic,
         int partition,
         long timestamp,
@@ -1933,67 +2051,50 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         CancellationToken cancellationToken)
     {
-        // Inlined reservation loop — avoids allocating a second async state machine
-        // for ReserveMemoryAsync. One state machine instead of two per cold-path message.
-        // KEEP IN SYNC with WaitForReservationAsync and the other inlined copy.
-        var (startTicks, deadline) = BeginReservationWait(recordSize);
-
-        try
-        {
-            while (!TryReserveMemory(recordSize))
-            {
-                if (Volatile.Read(ref _disposed) != 0)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var remainingMs = deadline - Environment.TickCount64;
-                if (remainingMs <= 0)
-                    ThrowBufferMemoryTimeout(recordSize, startTicks);
-
-                Interlocked.Increment(ref _bufferSpaceWaiters);
-
-                // Re-check AFTER incrementing to close the missed-signal window.
-                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                    continue; // space likely available, re-evaluate TryReserveMemory
-                }
-
-                try
-                {
-                    await _bufferSpaceSignal.Task.WaitAsync(
-                        TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
-                        cancellationToken
-                    ).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // Timed out waiting for signal — loop back and re-check.
-                }
-                catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
-                {
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                }
-            }
-        }
-        catch
+        if (Volatile.Read(ref _disposed) != 0)
         {
             key.Return();
             value.Return();
             ReturnPooledHeaders(headers);
-            throw;
+            return ValueTask.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
 
-        return AppendAfterReservation(topic, partition, timestamp, key, value,
-            headers, headerCount, completionSource, callback, recordSize);
-    }
+        if (cancellationToken.IsCancellationRequested)
+        {
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            return ValueTask.FromException<bool>(new OperationCanceledException(cancellationToken));
+        }
 
+        var (startTicks, deadline) = BeginReservationWait(recordSize);
+
+        var op = _pendingAppendPool.Rent();
+        op.Initialize(topic, partition, timestamp, key, value, headers, headerCount,
+            completionSource, callback, recordSize, startTicks, deadline,
+            this, _pendingAppendPool, cancellationToken);
+
+        _pendingAppends.Enqueue(op);
+
+        // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
+        // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+            if (op.TryFail(disposedException))
+            {
+                // Caller gets a pre-built exception ValueTask, so nobody will call GetResult
+                // on this op. Manually return it to the pool to avoid leaking.
+                op.ReturnToPoolAfterTryFail();
+                return ValueTask.FromException<bool>(disposedException);
+            }
+        }
+
+        // Try immediate serve — memory may have been freed between TryReserveMemory and now
+        DrainPendingAppends();
+
+        return new ValueTask<bool>(op, op.Version);
+    }
 
     /// <summary>
     /// Non-blocking variant of Append for the ProduceAsync fast path.
@@ -2146,7 +2247,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var keyPooled = keyIsNull ? PooledMemory.Null : CopySpanToPooledMemory(keyData);
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
-        return AppendFromSpansAsyncSlowPath(topic, partition, timestamp, keyPooled, valuePooled,
+        return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
             headers, headerCount, callback, recordSize, cancellationToken);
     }
 
@@ -2215,11 +2316,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Cold path for <see cref="AppendFromSpansAsync"/>: waits for memory reservation then appends
-    /// using the pre-copied <see cref="PooledMemory"/> data.
-    /// The reservation loop is inlined to avoid allocating a second async state machine.
+    /// Zero-allocation slow path for span-based append using pooled <see cref="PendingAppend"/>.
+    /// Delegates to <see cref="AppendSlowPathPooled"/> with null completionSource.
     /// </summary>
-    private async ValueTask<bool> AppendFromSpansAsyncSlowPath(
+    private ValueTask<bool> AppendFromSpansSlowPathPooled(
         string topic,
         int partition,
         long timestamp,
@@ -2231,65 +2331,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         CancellationToken cancellationToken)
     {
-        // Inlined reservation loop — avoids allocating a second async state machine
-        // for ReserveMemoryAsync. One state machine instead of two per cold-path message.
-        // KEEP IN SYNC with WaitForReservationAsync and the other inlined copy.
-        var (startTicks, deadline) = BeginReservationWait(recordSize);
-
-        try
-        {
-            while (!TryReserveMemory(recordSize))
-            {
-                if (Volatile.Read(ref _disposed) != 0)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var remainingMs = deadline - Environment.TickCount64;
-                if (remainingMs <= 0)
-                    ThrowBufferMemoryTimeout(recordSize, startTicks);
-
-                Interlocked.Increment(ref _bufferSpaceWaiters);
-
-                // Re-check AFTER incrementing to close the missed-signal window.
-                // Without this, ReleaseMemory can see waiters=0 and skip the signal.
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                    continue; // space likely available, re-evaluate TryReserveMemory
-                }
-
-                try
-                {
-                    await _bufferSpaceSignal.Task.WaitAsync(
-                        TimeSpan.FromMilliseconds(Math.Min(remainingMs, int.MaxValue)),
-                        cancellationToken
-                    ).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // Timed out waiting for signal — loop back and re-check.
-                }
-                catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
-                {
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref _bufferSpaceWaiters);
-                }
-            }
-        }
-        catch
-        {
-            keyPooled.Return();
-            valuePooled.Return();
-            ReturnPooledHeaders(headers);
-            throw;
-        }
-
-        return AppendAfterReservation(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize);
+        return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
+            headers, headerCount, null, callback, recordSize, cancellationToken);
     }
 
     /// <summary>
@@ -2420,6 +2463,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public ulong MaxBufferMemory => (ulong)Volatile.Read(ref _maxBufferMemory);
 
     /// <summary>
+    /// The configured max.block.ms value. Exposed for <see cref="PendingAppend"/> timeout diagnostics.
+    /// </summary>
+    internal int MaxBlockMsOption => _options.MaxBlockMs;
+
+    /// <summary>
+    /// Decrements the pending awaited produce count. Called by <see cref="PendingAppend"/>
+    /// when it fails before drain processes the operation.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void DecrementPendingAwaitedProduceCount() =>
+        Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+
+    /// <summary>
     /// Atomically updates the maximum buffer memory limit. Used by the global
     /// memory budget for dynamic rebalancing.
     /// Growing the limit signals waiting producers so they re-check immediately.
@@ -2544,11 +2600,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// and the max.block.ms deadline. Must be called after <see cref="BeginReservationWait"/>.
     /// </summary>
     /// <remarks>
-    /// The two production slow paths (<see cref="AppendSlowPath"/> and
-    /// <see cref="AppendFromSpansAsyncSlowPath"/>) inline this loop body to avoid allocating
-    /// a second async state machine per cold-path message. This method is the canonical
-    /// version used by <see cref="ReserveMemoryAsync"/> (called from tests).
-    /// KEEP IN SYNC: any changes here must be mirrored in both inlined copies.
+    /// Used by <see cref="ReserveMemoryAsync"/> (called from tests).
+    /// The production slow paths now use the pooled <see cref="PendingAppend"/> mechanism
+    /// instead of inlining this loop.
     /// </remarks>
     private async ValueTask WaitForReservationAsync(int recordSize, long startTicks, long deadline,
         CancellationToken cancellationToken)
@@ -2677,8 +2731,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
+        // First try to serve queued PendingAppend operations with the freed space.
+        // This avoids the TCS allocation + async wakeup overhead when pending ops exist.
+        DrainPendingAppends();
+
         // Signal that space is available — wake async waiters via semaphore.
         SignalBufferSpaceAvailable();
+    }
+
+    /// <summary>
+    /// Releases reserved buffer memory without triggering <see cref="DrainPendingAppends"/>.
+    /// Used inside <see cref="DrainPendingAppends"/> when a claimed operation was already
+    /// completed by timeout/cancel and the memory reservation must be returned.
+    /// Avoids infinite recursion: ReleaseMemory → DrainPendingAppends → ReleaseMemoryWithoutDrain.
+    /// </summary>
+    private void ReleaseMemoryWithoutDrain(int size)
+    {
+        Interlocked.Add(ref _bufferedBytes, -size);
+        // No drain or signal — we're already inside the drain loop.
     }
 
     /// <summary>
@@ -3322,6 +3392,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Wake async waiters blocked in ReserveMemoryAsync so they recheck _disposed.
         SignalBufferSpaceAvailable();
+
+        // Acquire the drain lock to prevent concurrent DrainPendingAppends from
+        // dequeuing ops while we're clearing the queue (avoids TryPeek/TryDequeue mismatch).
+        var spinWait = new SpinWait();
+        while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+            spinWait.SpinOnce();
+
+        while (_pendingAppends.TryDequeue(out var op))
+        {
+            op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
+        }
+
+        Volatile.Write(ref _draining, 0);
 
         // Cancel the disposal token to interrupt any remaining blocked operations
         // (e.g., append workers, metadata waits). Do this AFTER graceful shutdown attempt
