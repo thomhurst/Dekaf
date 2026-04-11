@@ -2194,7 +2194,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         if (available > 0)
         {
-            buffer.Slice(0, available).CopyTo(context.Buffer.AsSpan(context.Offset));
+            var destination = context.Buffer.AsSpan(context.Offset, available);
+
+            if (buffer.IsSingleSegment)
+                buffer.FirstSpan.Slice(0, available).CopyTo(destination);
+            else
+                buffer.Slice(0, available).CopyTo(destination);
+
             context.Offset += available;
             buffer = buffer.Slice(available);
         }
