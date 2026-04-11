@@ -454,7 +454,15 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// </summary>
     private void PruneStalePartitions()
     {
-        PruneWithCutoff(Stopwatch.GetTimestamp() - PruneTtlTicks);
+        try
+        {
+            PruneWithCutoff(Stopwatch.GetTimestamp() - PruneTtlTicks);
+        }
+        catch (Exception)
+        {
+            // Swallow to keep the timer alive; an unhandled exception from a Timer
+            // callback crashes the process and permanently stops pruning.
+        }
     }
 
     /// <summary>
@@ -476,10 +484,13 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             // Double-check under lock: a concurrent Register may have reactivated this partition.
-            // TryRemove is called inside the lock to prevent a TOCTOU race where Register
-            // reuses the same PartitionState via GetOrAdd between lock release and removal.
-            // Nesting SpinLock + ConcurrentDictionary's internal stripe lock is safe here:
-            // no other code path holds a SpinLock while calling ConcurrentDictionary methods.
+            // TryRemove is inside the lock to close the window where Register's GetOrAdd
+            // returns the existing state, then blocks on the SpinLock while the pruner removes it.
+            // A narrow race remains: Register's GetOrAdd can resolve *before* the pruner acquires
+            // the lock, causing the entry to reference a state that gets removed from the dict.
+            // This is benign — Complete/WaitForPredecessor/IsHeadOfLine use stored entry.State
+            // and work correctly; only FailAll (which targets Count>0 partitions the pruner
+            // won't touch) and GetInflightCount would miss the orphaned state.
             var lockTaken = false;
             try
             {
