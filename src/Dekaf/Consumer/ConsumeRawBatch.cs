@@ -12,18 +12,20 @@ namespace Dekaf.Consumer
     {
         public long Offset { get; }
         public long TimestampMs { get; }
+        public TimestampType TimestampType { get; }
         public ReadOnlyMemory<byte> Key { get; }
         public ReadOnlyMemory<byte> Value { get; }
         public bool IsKeyNull { get; }
         public bool IsValueNull { get; }
 
         internal ConsumeRawRecord(
-            long offset, long timestampMs,
+            long offset, long timestampMs, TimestampType timestampType,
             ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value,
             bool isKeyNull, bool isValueNull)
         {
             Offset = offset;
             TimestampMs = timestampMs;
+            TimestampType = timestampType;
             Key = key;
             Value = value;
             IsKeyNull = isKeyNull;
@@ -131,6 +133,7 @@ namespace Dekaf.Consumer
                 Current = new ConsumeRawRecord(
                     offset: offset,
                     timestampMs: timestampMs,
+                    timestampType: pending.CurrentTimestampType,
                     key: record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key,
                     value: record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value,
                     isKeyNull: record.IsKeyNull,

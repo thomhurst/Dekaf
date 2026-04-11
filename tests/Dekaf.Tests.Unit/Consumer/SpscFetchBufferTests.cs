@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 
@@ -234,7 +235,7 @@ public class SpscFetchBufferTests
             {
                 if (buffer.TryRead(out var item))
                 {
-                    consumed.Add(item!.PartitionIndex);
+                    consumed.Add(item.PartitionIndex);
                     item.Dispose();
                 }
                 else if (buffer.IsCompleted)
@@ -242,7 +243,7 @@ public class SpscFetchBufferTests
                     // Drain remaining
                     while (buffer.TryRead(out var remaining))
                     {
-                        consumed.Add(remaining!.PartitionIndex);
+                        consumed.Add(remaining.PartitionIndex);
                         remaining.Dispose();
                     }
                     break;
@@ -263,6 +264,62 @@ public class SpscFetchBufferTests
         {
             await Assert.That(consumed[i]).IsEqualTo(i);
         }
+    }
+
+    [Test]
+    public async Task MultipleProducers_SingleConsumer_AllItemsTransferred()
+    {
+        const int producerCount = 4;
+        const int itemsPerProducer = 2_500;
+        const int totalItems = producerCount * itemsPerProducer;
+        var buffer = new SpscFetchBuffer(64);
+        var consumed = new ConcurrentBag<int>();
+
+        // Multiple producers write concurrently (simulates multi-broker prefetch)
+        var producerTasks = new Task[producerCount];
+        for (var p = 0; p < producerCount; p++)
+        {
+            var producerId = p;
+            producerTasks[p] = Task.Run(() =>
+            {
+                for (var i = 0; i < itemsPerProducer; i++)
+                {
+                    var item = CreateDummy("topic", producerId * itemsPerProducer + i);
+                    while (!buffer.TryWrite(item))
+                    {
+                        Thread.SpinWait(100);
+                    }
+                }
+            });
+        }
+
+        // Single consumer
+        var consumerTask = Task.Run(() =>
+        {
+            var count = 0;
+            while (count < totalItems)
+            {
+                if (buffer.TryRead(out var item))
+                {
+                    consumed.Add(item.PartitionIndex);
+                    item.Dispose();
+                    count++;
+                }
+                else
+                {
+                    Thread.SpinWait(10);
+                }
+            }
+        });
+
+        await Task.WhenAll(producerTasks);
+        await consumerTask;
+
+        await Assert.That(consumed).Count().IsEqualTo(totalItems);
+
+        // All items should be unique (no duplicates or lost items)
+        var sorted = consumed.OrderBy(x => x).ToList();
+        await Assert.That(sorted.Distinct().Count()).IsEqualTo(totalItems);
     }
 
     #endregion

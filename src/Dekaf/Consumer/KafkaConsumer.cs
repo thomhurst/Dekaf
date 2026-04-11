@@ -939,8 +939,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Try to read from prefetch buffer, draining available items up to a bound
                     if (_prefetchBuffer.TryRead(out var prefetched))
                     {
-                        _pendingFetches.Enqueue(prefetched!);
-                        TrackPrefetchedBytes(prefetched!, release: true);
+                        _pendingFetches.Enqueue(prefetched);
+                        TrackPrefetchedBytes(prefetched, release: true);
                         DrainPrefetchBuffer();
                     }
                     else
@@ -956,8 +956,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             {
                                 if (_prefetchBuffer.TryRead(out var fetched))
                                 {
-                                    _pendingFetches.Enqueue(fetched!);
-                                    TrackPrefetchedBytes(fetched!, release: true);
+                                    _pendingFetches.Enqueue(fetched);
+                                    TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
                                 else
@@ -1229,8 +1229,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Try to read from prefetch buffer, draining available items up to a bound
                     if (_prefetchBuffer.TryRead(out PendingFetchData? prefetched))
                     {
-                        _pendingFetches.Enqueue(prefetched!);
-                        TrackPrefetchedBytes(prefetched!, release: true);
+                        _pendingFetches.Enqueue(prefetched);
+                        TrackPrefetchedBytes(prefetched, release: true);
                         DrainPrefetchBuffer();
                     }
                     else
@@ -1244,8 +1244,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             {
                                 if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
                                 {
-                                    _pendingFetches.Enqueue(fetched!);
-                                    TrackPrefetchedBytes(fetched!, release: true);
+                                    _pendingFetches.Enqueue(fetched);
+                                    TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
                                 else
@@ -1367,8 +1367,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Try to read from prefetch buffer, draining available items up to a bound
                     if (_prefetchBuffer.TryRead(out PendingFetchData? prefetched))
                     {
-                        _pendingFetches.Enqueue(prefetched!);
-                        TrackPrefetchedBytes(prefetched!, release: true);
+                        _pendingFetches.Enqueue(prefetched);
+                        TrackPrefetchedBytes(prefetched, release: true);
                         DrainPrefetchBuffer();
                     }
                     else
@@ -1382,8 +1382,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             {
                                 if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
                                 {
-                                    _pendingFetches.Enqueue(fetched!);
-                                    TrackPrefetchedBytes(fetched!, release: true);
+                                    _pendingFetches.Enqueue(fetched);
+                                    TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
                                 else
@@ -1843,7 +1843,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 while (!_prefetchBuffer.TryWrite(pendingItems[i]))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    Thread.SpinWait(100);
+                    await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -1892,8 +1892,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         for (var i = 0; i < maxDrain && _prefetchBuffer.TryRead(out var additional); i++)
         {
-            _pendingFetches.Enqueue(additional!);
-            TrackPrefetchedBytes(additional!, release: true);
+            _pendingFetches.Enqueue(additional);
+            TrackPrefetchedBytes(additional, release: true);
         }
     }
 
@@ -2143,8 +2143,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Without this, stale data from old partitions would surface after reassignment.
         while (_prefetchBuffer.TryRead(out var prefetched))
         {
-            TrackPrefetchedBytes(prefetched!, release: true);
-            prefetched!.Dispose();
+            TrackPrefetchedBytes(prefetched, release: true);
+            prefetched.Dispose();
         }
         // Clear pending EOF events as they are stale after buffer clear
         _pendingEofEvents.Clear();
@@ -2217,7 +2217,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     {
         while (buffer.TryRead(out var prefetched))
         {
-            if (partitionsToRemove.Contains(prefetched!.TopicPartition))
+            if (partitionsToRemove.Contains(prefetched.TopicPartition))
             {
                 onItemRemoved(prefetched);
                 prefetched.Dispose();
@@ -3674,8 +3674,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         while (_prefetchBuffer.TryRead(out var prefetched))
         {
-            TrackPrefetchedBytes(prefetched!, release: true);
-            prefetched!.Dispose();
+            TrackPrefetchedBytes(prefetched, release: true);
+            prefetched.Dispose();
         }
 
         LogConsumerClosed();
@@ -3887,8 +3887,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Drain and dispose prefetch buffer items
         while (_prefetchBuffer.TryRead(out var prefetched))
         {
-            TrackPrefetchedBytes(prefetched!, release: true);
-            prefetched!.Dispose();
+            TrackPrefetchedBytes(prefetched, release: true);
+            prefetched.Dispose();
         }
 
         _assignmentLock.Dispose();
