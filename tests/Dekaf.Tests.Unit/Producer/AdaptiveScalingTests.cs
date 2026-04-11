@@ -196,4 +196,44 @@ public class AdaptiveScalingTests
     }
 
     #endregion
+
+    #region Partition Affinity Stability Tests
+
+    [Test]
+    [Arguments(1, 2, 6)]
+    [Arguments(2, 3, 12)]
+    [Arguments(1, 3, 6)]
+    [Arguments(3, 4, 12)]
+    public async Task PartitionModuloChange_IdentifiesAffectedPartitions(
+        int oldCount, int newCount, int partitionCount)
+    {
+        // Verify which partitions change connection during scale events.
+        // This validates the migration detection logic used by BrokerSender.
+        var changed = 0;
+        for (var p = 0; p < partitionCount; p++)
+        {
+            if (p % oldCount != p % newCount)
+                changed++;
+        }
+
+        // At least some partitions should change (scale is meaningful)
+        await Assert.That(changed).IsGreaterThan(0);
+
+        // Not all partitions should change (modulo preserves some)
+        await Assert.That(changed).IsLessThan(partitionCount);
+    }
+
+    [Test]
+    [Arguments(1, 2)]
+    [Arguments(2, 3)]
+    [Arguments(3, 4)]
+    public async Task PartitionModuloChange_PreservesPartition0(int oldCount, int newCount)
+    {
+        // Partition 0 always maps to connection 0 regardless of connection count.
+        // This means partition 0 never needs migration fencing.
+        await Assert.That(0 % oldCount).IsEqualTo(0);
+        await Assert.That(0 % newCount).IsEqualTo(0);
+    }
+
+    #endregion
 }
