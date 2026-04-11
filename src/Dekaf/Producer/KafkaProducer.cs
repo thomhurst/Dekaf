@@ -2880,6 +2880,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         await DisposeWithBudgetAsync(
             _accumulator.DisposeAsync(), Math.Max(500, RemainingMs() / 2), "accumulator");
 
+        // Stop the inflight tracker's pruning timer to prevent callbacks after disposal.
+        _inflightTracker.Dispose();
+
         // Dispose ValueTaskSource pool — prevents resource leaks (usually fast).
         await DisposeWithBudgetAsync(
             _valueTaskSourcePool.DisposeAsync(), Math.Max(200, RemainingMs() / 10), "valueTaskSourcePool");

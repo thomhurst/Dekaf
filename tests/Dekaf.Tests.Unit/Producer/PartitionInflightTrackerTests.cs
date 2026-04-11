@@ -385,4 +385,132 @@ public sealed class PartitionInflightTrackerTests
         // After reset, InflightEntry should be null
         await Assert.That(batch.InflightEntry).IsNull();
     }
+
+    // --- Pruning tests ---
+
+    [Test]
+    public async Task GetTrackedPartitionCount_ReflectsRegisteredPartitions()
+    {
+        var tracker = new PartitionInflightTracker();
+
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(0);
+
+        tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+
+        tracker.Register(Tp1, baseSequence: 0, recordCount: 5);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_RemovesIdlePartitions()
+    {
+        var tracker = new PartitionInflightTracker();
+
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        // Partition is now idle (Count == 0). Prune with a cutoff far in the future
+        // to guarantee the idle timestamp is older than the cutoff.
+        var cutoff = long.MaxValue;
+        tracker.PruneWithCutoff(cutoff);
+
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_DoesNotRemoveActivePartitions()
+    {
+        var tracker = new PartitionInflightTracker();
+
+        // Register but do NOT complete — partition has inflight entries
+        tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+
+        tracker.PruneWithCutoff(long.MaxValue);
+
+        // Should still be tracked because Count > 0
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_DoesNotRemoveRecentlyIdlePartitions()
+    {
+        var tracker = new PartitionInflightTracker();
+
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        // Prune with cutoff of 0 — the idle timestamp will be newer than this
+        tracker.PruneWithCutoff(0);
+
+        // Should still be tracked because it became idle after the cutoff
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_RegisterAfterPrune_CreatesNewState()
+    {
+        var tracker = new PartitionInflightTracker();
+
+        var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry1);
+
+        tracker.PruneWithCutoff(long.MaxValue);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(0);
+
+        // Re-register on the same partition — should create fresh state
+        var entry2 = tracker.Register(Tp0, baseSequence: 100, recordCount: 5);
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+
+        tracker.Complete(entry2);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Complete_MultipleEntries_WorksWithStoredState()
+    {
+        var tracker = new PartitionInflightTracker();
+
+        var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
+
+        tracker.Complete(entry1);
+        tracker.Complete(entry2);
+
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PruneWithCutoff_ConcurrentRegisterRace_DoesNotPruneActivePartition()
+    {
+        // Verifies that if a Register happens between the pruner reading Count==0
+        // and attempting removal, the partition is NOT removed.
+        var tracker = new PartitionInflightTracker();
+
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        // Re-register immediately (simulating concurrent Register)
+        tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
+
+        // Now prune — should NOT remove because Count is now 1
+        tracker.PruneWithCutoff(long.MaxValue);
+
+        await Assert.That(tracker.GetTrackedPartitionCount()).IsEqualTo(1);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Dispose_PreventsTimerFromFiring()
+    {
+        var tracker = new PartitionInflightTracker();
+        tracker.Dispose();
+
+        // After dispose, register/complete should still work (no timer needed)
+        var entry = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        tracker.Complete(entry);
+
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(0);
+    }
 }
