@@ -126,14 +126,17 @@ public class MpscFetchBufferTests
         }) { IsBackground = true };
         writerThread.Start();
 
-        var result = buffer.WaitToRead(30_000, CancellationToken.None);
-        await Assert.That(result).IsTrue();
-
-        writerThread.Join();
-
-        // Cleanup
-        buffer.TryRead(out _);
-        item.Dispose();
+        try
+        {
+            var result = buffer.WaitToRead(30_000, CancellationToken.None);
+            await Assert.That(result).IsTrue();
+        }
+        finally
+        {
+            writerThread.Join();
+            buffer.TryRead(out _);
+            item.Dispose();
+        }
     }
 
     [Test]
@@ -260,7 +263,7 @@ public class MpscFetchBufferTests
 
         await Assert.That(consumed).Count().IsEqualTo(itemCount);
 
-        // Verify ordering is preserved (SPSC guarantees FIFO)
+        // Single producer: ordering is preserved (FIFO within one producer)
         for (var i = 0; i < itemCount; i++)
         {
             await Assert.That(consumed[i]).IsEqualTo(i);

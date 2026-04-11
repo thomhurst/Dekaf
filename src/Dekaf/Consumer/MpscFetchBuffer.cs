@@ -24,6 +24,7 @@ internal sealed class MpscFetchBuffer
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
+    private volatile bool _producerWaiting;
     private volatile bool _consumerWaiting;
     private volatile bool _completed;
     private volatile Exception? _completionError;
@@ -83,13 +84,18 @@ internal sealed class MpscFetchBuffer
             return;
 
         // Slow path: wait for the consumer to drain
+        _producerWaiting = true;
         try
         {
+            // Re-check after setting flag to avoid missed signal
+            if (Volatile.Read(ref _headReserved.Value) - Volatile.Read(ref _tail.Value) < _buffer.Length)
+                return;
+
             await _spaceAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        finally
         {
-            throw;
+            _producerWaiting = false;
         }
     }
 
@@ -113,7 +119,8 @@ internal sealed class MpscFetchBuffer
         _buffer[tail & _mask] = null;
         Volatile.Write(ref _tail.Value, tail + 1);
 
-        _spaceAvailable.Release();
+        if (_producerWaiting)
+            _spaceAvailable.Release();
 
         return true;
     }
