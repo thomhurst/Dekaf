@@ -291,7 +291,9 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// Only called on OutOfOrderSequenceNumber (failure path), so lazy TCS allocation is acceptable.
     /// Uses the stored PartitionState reference to avoid dictionary lookup races with pruning.
     /// </summary>
+#pragma warning disable CA1822 // Instance method for API consistency — operates on tracker's entries
     public async ValueTask WaitForPredecessorAsync(InflightEntry entry, CancellationToken cancellationToken)
+#pragma warning restore CA1822
     {
         Task? predecessorTask = null;
 
@@ -391,7 +393,9 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// Uses the stored PartitionState reference to avoid dictionary lookup races with pruning.
     /// Used by epoch bump recovery to determine if a batch can trigger the bump.
     /// </summary>
+#pragma warning disable CA1822 // Instance method for API consistency — operates on tracker's entries
     public bool IsHeadOfLine(InflightEntry entry)
+#pragma warning restore CA1822
     {
         var state = entry.State;
         if (state is null)
