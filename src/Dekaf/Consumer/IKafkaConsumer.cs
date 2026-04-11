@@ -85,6 +85,21 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Consumes messages in batches for maximum throughput.
+    /// Each batch contains all records from a single partition fetch response.
+    /// Records within a batch are iterated synchronously (no async overhead per message).
+    /// Position tracking is deferred to batch completion.
+    /// </summary>
+    IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Consumes raw (undeserialized) messages in batches for maximum throughput.
+    /// Records provide zero-copy <see cref="ReadOnlyMemory{T}"/> access to key/value data.
+    /// No deserialization, header copying, interceptors, or tracing overhead.
+    /// </summary>
+    IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Commits the offsets of all consumed messages.
     /// Use with OffsetCommitMode.Manual to control when offsets are committed.
     /// </summary>
