@@ -548,6 +548,8 @@ public sealed class MetadataRecoveryStrategyTests
     [Test]
     public async Task RebootstrapRequired_ErrorCode_HasValue129()
     {
+        // Pinned to the Kafka protocol spec value — ensures the enum stays in sync
+        // with the wire format. See: apache/kafka Errors.java, KIP-1102.
         var value = (short)ErrorCode.RebootstrapRequired;
         await Assert.That(value).IsEqualTo((short)129);
     }
@@ -578,24 +580,24 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
-    public async Task TryRebootstrapAsync_Immediate_SkipsTimerDelay()
+    public async Task TryRebootstrapImmediateAsync_SkipsTimerDelay()
     {
-        // With immediate=true (KIP-1102 broker-initiated), rebootstrap should be
-        // attempted on the very first call without waiting for the timer.
+        // KIP-1102 broker-initiated rebootstrap should attempt DNS resolution immediately,
+        // without waiting for the timer-gated path.
         var manager = CreateTestManager(new MetadataOptions
         {
             MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
             MetadataRecoveryRebootstrapTriggerMs = 300000
         });
 
-        // immediate=true should skip the timer and attempt DNS resolution immediately.
-        // Since we have a null connection pool, the rebootstrap will fail to connect,
+        // Immediate rebootstrap should skip the timer and attempt DNS resolution.
+        // Since we have a null connection pool, it will fail to connect,
         // but it should NOT return false due to "not yet triggered".
-        var immediateResult = await manager.TryRebootstrapAsync(null, CancellationToken.None, immediate: true);
+        var immediateResult = await manager.TryRebootstrapImmediateAsync(null, CancellationToken.None);
         await Assert.That(immediateResult).IsFalse();
 
-        // Normal (non-immediate) first call should still record timestamp and return false
-        // (proving immediate didn't consume the "first call" CAS slot)
+        // Timer-gated first call should still record timestamp and return false
+        // (proving the immediate path didn't consume the CAS slot)
         var normalResult = await manager.TryRebootstrapAsync(null, CancellationToken.None);
         await Assert.That(normalResult).IsFalse();
     }

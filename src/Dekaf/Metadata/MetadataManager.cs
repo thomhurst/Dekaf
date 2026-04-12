@@ -446,6 +446,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     _metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
+                // KIP-1102: If the broker signals rebootstrap, prefer fresh topology
+                // from re-resolved DNS over the current response's potentially-stale data.
+                if (response.ErrorCode == ErrorCode.RebootstrapRequired
+                    && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
+                {
+                    var rebootstrapped = await TryRebootstrapImmediateAsync(topics, cancellationToken).ConfigureAwait(false);
+                    if (rebootstrapped)
+                    {
+                        ResetAllBrokersUnavailableTimestamp();
+                        return;
+                    }
+                    // Rebootstrap failed — fall through and apply the original response as best-effort fallback
+                }
+
                 // Topic-specific requests merge into the existing snapshot to preserve
                 // metadata for other topics. Full-cluster requests replace the snapshot.
                 // This matches the Java client's incremental metadata update behavior.
@@ -463,13 +477,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
-
-                // KIP-1102: Broker signaled that client should rebootstrap immediately
-                if (response.ErrorCode == ErrorCode.RebootstrapRequired
-                    && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
-                {
-                    await TryRebootstrapAsync(topics, cancellationToken, immediate: true).ConfigureAwait(false);
-                }
 
                 return;
             }
@@ -498,37 +505,49 @@ public sealed partial class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Attempts to recover by re-resolving bootstrap server DNS to discover new broker IPs.
+    /// Timer-gated rebootstrap: attempts recovery by re-resolving bootstrap server DNS to discover new broker IPs.
     /// Only triggers after the configured delay has elapsed since all brokers became unavailable.
     /// </summary>
-    internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken, bool immediate = false)
+    internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
-        if (!immediate)
+        var now = Environment.TickCount64;
+
+        // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
+        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
         {
-            var now = Environment.TickCount64;
-
-            // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
-            if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
-            {
-                // First time all brokers are unavailable - we just recorded the timestamp
-                LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
-                return false;
-            }
-
-            var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
-            if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
-            {
-                LogRebootstrapNotYetTriggered(elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
-                return false;
-            }
-
-            LogRebootstrapTriggered(elapsedMs);
-        }
-        else
-        {
-            LogBrokerInitiatedRebootstrap();
+            // First time all brokers are unavailable - we just recorded the timestamp
+            LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
+            return false;
         }
 
+        var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
+        if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
+        {
+            LogRebootstrapNotYetTriggered(elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
+            return false;
+        }
+
+        LogRebootstrapTriggered(elapsedMs);
+        return await ExecuteRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Broker-directed immediate rebootstrap (KIP-1102): skips the timer delay and re-resolves DNS immediately.
+    /// Called when a broker returns <see cref="ErrorCode.RebootstrapRequired"/> in a MetadataResponse.
+    /// </summary>
+    internal async ValueTask<bool> TryRebootstrapImmediateAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    {
+        LogBrokerInitiatedRebootstrap();
+        return await ExecuteRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Shared rebootstrap execution: re-resolves bootstrap DNS and attempts metadata fetch from new endpoints.
+    /// Intentionally does not re-check the response for <see cref="ErrorCode.RebootstrapRequired"/>
+    /// to prevent infinite recursion when the new broker also signals rebootstrap.
+    /// </summary>
+    private async ValueTask<bool> ExecuteRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    {
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -559,8 +578,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     _metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                // Intentionally does not re-check response.ErrorCode for RebootstrapRequired
-                // to prevent infinite recursion when the new broker also signals rebootstrap.
                 _metadata.Update(response, mergeTopics: topics is not null);
 
                 foreach (var broker in response.Brokers)

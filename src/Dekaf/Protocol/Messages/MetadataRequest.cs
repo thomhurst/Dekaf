@@ -21,7 +21,7 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
     public bool AllowAutoTopicCreation { get; init; } = true;
 
     /// <summary>
-    /// Whether to include cluster authorized operations (v8+).
+    /// Whether to include cluster authorized operations (v8–v10).
     /// </summary>
     public bool IncludeClusterAuthorizedOperations { get; init; }
 
