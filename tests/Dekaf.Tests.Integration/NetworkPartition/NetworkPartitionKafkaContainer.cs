@@ -12,8 +12,8 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
 {
     private DockerClient? _dockerClient;
 
-    public override string ContainerName => "apache/kafka:3.9.1";
-    public override int Version => 391;
+    public override string ContainerName => "apache/kafka:4.0.1";
+    public override int Version => 401;
 
     /// <summary>
     /// Pauses the Kafka container, simulating a network partition.

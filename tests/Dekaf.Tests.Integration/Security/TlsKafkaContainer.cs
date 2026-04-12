@@ -83,7 +83,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         TestCertificateGenerator.ExportCertificateToPemFile(_certGenerator.ServerCertificate, serverCertPemPath);
         TestCertificateGenerator.ExportPrivateKeyToPemFile(_certGenerator.ServerCertificate, serverKeyPemPath);
 
-        _container = new KafkaBuilder("apache/kafka:3.9.1")
+        _container = new KafkaBuilder("apache/kafka:4.0.1")
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
             // SSL listener configuration
             // The Testcontainers KafkaBuilder manages KAFKA_LISTENERS and KAFKA_LISTENER_SECURITY_PROTOCOL_MAP

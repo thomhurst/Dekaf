@@ -235,7 +235,7 @@ public class MessageEncodingTests
     #region Header Version Tests
 
     [Test]
-    [Arguments((short)3, (short)2, (short)1)]
+    [Arguments((short)3, (short)2, (short)0)]
     public async Task ApiVersionsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {
         var requestHeaderVersion = ApiVersionsRequest.GetRequestHeaderVersion(apiVersion);
