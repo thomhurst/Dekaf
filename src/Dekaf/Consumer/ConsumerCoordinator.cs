@@ -27,7 +27,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile int _generationId = -1;
     private string? _leaderId;
     private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
-    private HashSet<TopicPartition> _assignedPartitions = [];
+    private volatile HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
@@ -637,10 +637,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         && _state == CoordinatorState.Stable
                         && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
                     {
-                        // Volatile.Read ensures we see the latest reference even without _lock —
-                        // _assignedPartitions is replaced (not mutated) under _lock, and
-                        // reference assignment is atomic, so the snapshot is a stable HashSet.
-                        var lostPartitions = Volatile.Read(ref _assignedPartitions).ToList();
+                        var lostPartitions = _assignedPartitions.ToList();
                         if (lostPartitions.Count > 0)
                         {
                             try

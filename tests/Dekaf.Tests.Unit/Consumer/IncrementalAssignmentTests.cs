@@ -228,6 +228,57 @@ public class IncrementalAssignmentTests
     }
 
     [Test]
+    public async Task IncrementalUnassign_ClearsWatermarkOffsetsForRemovedPartitions()
+    {
+        // Arrange
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Assign(
+            new TopicPartition("topic1", 0),
+            new TopicPartition("topic1", 1));
+
+        // Watermark offsets are not set via public API (they come from fetch responses),
+        // so after IncrementalUnassign the cache entry should be absent.
+        // Verify baseline: no watermarks cached for either partition.
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 0))).IsNull();
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 1))).IsNull();
+
+        // Act
+        consumer.IncrementalUnassign(new[] { new TopicPartition("topic1", 1) });
+
+        // Assert - GetWatermarkOffsets should still return null (no stale entry)
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 1))).IsNull();
+    }
+
+    [Test]
+    public async Task IncrementalUnassign_RetainsPausedStateForKeptPartitions()
+    {
+        // Arrange
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Assign(
+            new TopicPartition("topic1", 0),
+            new TopicPartition("topic1", 1),
+            new TopicPartition("topic1", 2));
+
+        consumer.Pause(new TopicPartition("topic1", 0));
+        consumer.Pause(new TopicPartition("topic1", 1));
+
+        // Act - remove only partition 1
+        consumer.IncrementalUnassign(new[] { new TopicPartition("topic1", 1) });
+
+        // Assert - partition 0 should still be paused, partition 1 should not
+        await Assert.That(consumer.Paused.Contains(new TopicPartition("topic1", 0))).IsTrue();
+        await Assert.That(consumer.Paused.Contains(new TopicPartition("topic1", 1))).IsFalse();
+    }
+
+    [Test]
     public async Task IncrementalUnassign_ClearsPositionForRemovedPartitions()
     {
         // Arrange

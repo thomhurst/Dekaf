@@ -2468,7 +2468,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// Rate-limited to avoid excessive metadata requests (30 second interval).
     /// </summary>
     /// <returns>True if the subscription changed.</returns>
-    private async ValueTask<bool> RefreshFilteredTopicsAsync(CancellationToken cancellationToken)
+    private async ValueTask<bool> RefreshFilteredTopicsAsync(Func<string, bool> filter, CancellationToken cancellationToken)
     {
         const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
 
@@ -2487,7 +2487,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
 
         var allTopics = _metadataManager.Metadata.GetTopics();
-        var filter = _topicFilter!;
         var changed = false;
 
         // Build new subscription from matching topics
@@ -2534,9 +2533,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // only touches thread-safe structures (ConcurrentDictionary, volatile snapshots,
         // MetadataManager with its own locking) and involves a network call that would block
         // both the consume loop and prefetch loop if done under _assignmentLock.
-        if (_topicFilter is not null)
+        // Capture to local to avoid TOCTOU: Subscribe() can set _topicFilter = null concurrently.
+        var topicFilter = _topicFilter;
+        if (topicFilter is not null)
         {
-            await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
+            await RefreshFilteredTopicsAsync(topicFilter, cancellationToken).ConfigureAwait(false);
         }
 
         // Serialize the write path: both ConsumeAsync and PrefetchLoopAsync call this method
