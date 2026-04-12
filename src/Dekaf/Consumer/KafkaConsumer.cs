@@ -1089,6 +1089,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                             pending.TrackConsumed(offset, messageBytes);
 
+                            // Update consumed position per-message so GetPosition()/CommitAsync()
+                            // reflect the latest message the app has seen, even mid-batch.
+                            // Required for manual commit and graceful shutdown patterns.
+                            _positions[pending.TopicPartition] = offset + 1;
+
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
                             if (hasInterceptors)
@@ -1123,24 +1128,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    // Batch-level position updates (once per partition-fetch, not per message).
-                    // _positions is deferred here to avoid a ConcurrentDictionary write per
-                    // message (~60-100ns each). Auto-commit reads _positions periodically
-                    // (every 5s), so batch-granularity is sufficient. On early break, the
-                    // finally block below flushes _positions from LastYieldedOffset.
-                    // _fetchPositions controls where the next fetch request starts from.
+                    // Batch-level position flush: _positions was already updated per-message
+                    // above; _fetchPositions is updated here once per partition-fetch.
                     // In prefetch mode, the prefetch thread already advances _fetchPositions
-                    // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
-                    // since _fetchPositions was set at prefetch time before the fault occurred.
-                    if (pending.LastYieldedOffset >= 0)
-                    {
-                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-
-                        if (!_prefetchEnabled)
-                        {
-                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-                        }
-                    }
+                    // via UpdateFetchPositionsFromPrefetch, so we skip it here.
+                    FlushConsumedPositions(pending);
 
                     // Record consumer metrics per-fetch instead of per-message.
                     // PendingFetchData already tracks MessageCount and TotalBytesConsumed,
@@ -1171,13 +1163,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 if (_pendingFetches.Count > 0)
                 {
                     var current = _pendingFetches.Peek();
-                    if (current.LastYieldedOffset >= 0)
-                    {
-                        _positions[current.TopicPartition] = current.LastYieldedOffset + 1;
-
-                        if (!_prefetchEnabled)
-                            _fetchPositions[current.TopicPartition] = current.LastYieldedOffset + 1;
-                    }
+                    FlushConsumedPositions(current);
 
                     if (metricsEnabled && current.MessageCount > 0)
                         EmitFetchMetrics(current);
@@ -1299,15 +1285,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     yield return batch;
 
                     // After caller finishes iterating: update positions once per batch
-                    if (pending.LastYieldedOffset >= 0)
-                    {
-                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-
-                        if (!_prefetchEnabled)
-                        {
-                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-                        }
-                    }
+                    FlushConsumedPositions(pending);
 
                     // Record consumer metrics per-fetch
                     if (metricsEnabled && pending.MessageCount > 0)
@@ -1441,15 +1419,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     yield return batch;
 
                     // After caller finishes iterating: update positions once per batch
-                    if (pending.LastYieldedOffset >= 0)
-                    {
-                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-
-                        if (!_prefetchEnabled)
-                        {
-                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
-                        }
-                    }
+                    FlushConsumedPositions(pending);
 
                     // Record consumer metrics per-fetch
                     if (metricsEnabled && pending.MessageCount > 0)
@@ -1866,6 +1836,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // If no pending items were created but we have a memory owner, dispose it
         memoryOwner?.Dispose();
+    }
+
+    /// <summary>
+    /// Updates <see cref="_positions"/> and, when not in prefetch mode, <see cref="_fetchPositions"/>
+    /// from the given pending fetch data. Called at batch boundaries and in finally blocks.
+    /// In prefetch mode, <see cref="_fetchPositions"/> is managed by <see cref="UpdateFetchPositionsFromPrefetch"/>.
+    /// </summary>
+    private void FlushConsumedPositions(PendingFetchData pending)
+    {
+        if (pending.LastYieldedOffset < 0)
+            return;
+
+        var tp = pending.TopicPartition;
+        var nextOffset = pending.LastYieldedOffset + 1;
+
+        _positions[tp] = nextOffset;
+
+        if (!_prefetchEnabled)
+        {
+            _fetchPositions[tp] = nextOffset;
+        }
     }
 
     private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
