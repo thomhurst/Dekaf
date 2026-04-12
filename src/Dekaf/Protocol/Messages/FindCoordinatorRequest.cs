@@ -16,20 +16,16 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
     public CoordinatorType KeyType { get; init; } = CoordinatorType.Group;
 
     /// <summary>
-    /// The keys to look up coordinators for.
+    /// The key to look up the coordinator for.
     /// </summary>
-    public required IReadOnlyList<string> CoordinatorKeys { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => true;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
+    public required string Key { get; init; }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteInt8((sbyte)KeyType);
-        writer.WriteCompactArray(
-            CoordinatorKeys,
-            (ref KafkaProtocolWriter w, string k) => w.WriteCompactString(k));
+        // Compact array with a single element: length = count + 1 = 2
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteCompactString(Key);
         writer.WriteEmptyTaggedFields();
     }
 }

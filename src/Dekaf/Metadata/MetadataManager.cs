@@ -84,6 +84,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
     public ClusterMetadata Metadata => _metadata;
 
     /// <summary>
+    /// Returns true if API version negotiation has been performed.
+    /// </summary>
+    public bool HasNegotiatedVersions => !_brokerApiVersions.IsEmpty;
+
+    /// <summary>
+    /// Returns true if the broker reported support for the given API key during version negotiation.
+    /// </summary>
+    public bool HasApiKey(ApiKey apiKey) => _brokerApiVersions.ContainsKey(apiKey);
+
+    /// <summary>
     /// Gets the negotiated API version for the specified API key.
     /// Returns the minimum of the broker's max version and our supported version.
     /// Negotiated versions are cached for performance.
@@ -675,15 +685,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // Clear negotiated cache since broker versions may have changed
         _negotiatedVersionCache.Clear();
-
-        // Validate the broker is Kafka 4.0+ by checking for ConsumerGroupHeartbeat API (KIP-848)
-        if (!newApiVersions.ContainsKey(ApiKey.ConsumerGroupHeartbeat))
-        {
-            throw new BrokerVersionException(
-                "Dekaf requires Kafka 4.0 or later. The connected broker does not support " +
-                "the ConsumerGroupHeartbeat API (introduced in Kafka 4.0). " +
-                "Please upgrade your Kafka cluster to version 4.0 or later.");
-        }
 
         // Set metadata version last (acts as a signal that negotiation is complete)
         _metadataApiVersion = newMetadataVersion;

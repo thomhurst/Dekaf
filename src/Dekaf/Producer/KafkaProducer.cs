@@ -1325,7 +1325,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var request = new FindCoordinatorRequest
         {
-            CoordinatorKeys = [_options.TransactionalId!],
+            Key = _options.TransactionalId!,
             KeyType = CoordinatorType.Transaction
         };
 
@@ -1344,6 +1344,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 request, findCoordinatorVersion, cancellationToken).ConfigureAwait(false);
+
+            if (response.Coordinators.Count == 0)
+            {
+                throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
+                    "FindCoordinator returned an empty Coordinators array")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
 
             var coordinator = response.Coordinators[0];
             var errorCode = coordinator.ErrorCode;
@@ -1625,7 +1634,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             var findCoordRequest = new FindCoordinatorRequest
             {
-                CoordinatorKeys = [consumerGroupId],
+                Key = consumerGroupId,
                 KeyType = CoordinatorType.Group
             };
 
@@ -1633,6 +1642,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 .SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                     findCoordRequest, findCoordVersion, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (findCoordResponse.Coordinators.Count == 0)
+            {
+                throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
+                    "FindCoordinator returned an empty Coordinators array")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
 
             var coord = findCoordResponse.Coordinators[0];
             _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);

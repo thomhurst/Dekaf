@@ -140,17 +140,17 @@ public class MessageEncodingTests
 
         var request = new FindCoordinatorRequest
         {
-            CoordinatorKeys = ["my-group"],
+            Key = "my-group",
             KeyType = CoordinatorType.Group
         };
         request.Write(ref writer, version: 5);
 
-        // v5 uses CoordinatorKeys array, not Key field
+        // v5 writes Key as a single-element compact array on the wire
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
 
         // KeyType comes first (v1+)
         var keyType = reader.ReadInt8();
-        // CoordinatorKeys COMPACT_ARRAY
+        // Key written as COMPACT_ARRAY with one element
         var keysLength = reader.ReadUnsignedVarInt() - 1;
         var firstKey = reader.ReadCompactString();
 

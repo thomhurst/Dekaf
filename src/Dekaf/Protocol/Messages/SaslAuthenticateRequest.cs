@@ -15,10 +15,6 @@ public sealed class SaslAuthenticateRequest : IKafkaRequest<SaslAuthenticateResp
     /// </summary>
     public required byte[] AuthBytes { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => true;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         if (version >= 2)

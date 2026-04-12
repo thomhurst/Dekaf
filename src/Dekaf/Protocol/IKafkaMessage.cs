@@ -34,18 +34,21 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
 
     /// <summary>
     /// Returns true if this API version uses flexible encoding.
+    /// With Kafka 4.0+ all supported versions are flexible.
     /// </summary>
-    static abstract bool IsFlexibleVersion(short version);
+    static virtual bool IsFlexibleVersion(short version) => true;
 
     /// <summary>
     /// Gets the request header version for the given API version.
+    /// With Kafka 4.0+ all requests use header v2.
     /// </summary>
-    static abstract short GetRequestHeaderVersion(short version);
+    static virtual short GetRequestHeaderVersion(short version) => 2;
 
     /// <summary>
     /// Gets the response header version for the given API version.
+    /// With Kafka 4.0+ all responses use header v1.
     /// </summary>
-    static abstract short GetResponseHeaderVersion(short version);
+    static virtual short GetResponseHeaderVersion(short version) => 1;
 }
 
 /// <summary>

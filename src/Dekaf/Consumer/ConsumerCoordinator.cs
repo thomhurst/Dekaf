@@ -130,7 +130,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         var request = new FindCoordinatorRequest
         {
-            CoordinatorKeys = [_options.GroupId!],
+            Key = _options.GroupId!,
             KeyType = CoordinatorType.Group
         };
 
@@ -155,6 +155,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request,
                 findCoordinatorVersion,
                 cancellationToken).ConfigureAwait(false);
+
+            if (response.Coordinators.Count == 0)
+            {
+                throw new Errors.GroupException(ErrorCode.CoordinatorNotAvailable,
+                    "FindCoordinator returned an empty Coordinators array")
+                { GroupId = _options.GroupId };
+            }
 
             var coordinator = response.Coordinators[0];
             var errorCode = coordinator.ErrorCode;
@@ -768,6 +775,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IReadOnlySet<string> topics,
         CancellationToken cancellationToken)
     {
+        if (_metadataManager.HasNegotiatedVersions && !_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
+        {
+            throw new BrokerVersionException(
+                "The connected Kafka broker does not support the ConsumerGroupHeartbeat API " +
+                "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
+        }
+
         _subscribedTopics = topics;
         Interlocked.Exchange(ref _subscriptionChanged, 1);
 

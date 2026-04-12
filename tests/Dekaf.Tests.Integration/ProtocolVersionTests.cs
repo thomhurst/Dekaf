@@ -367,7 +367,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
             var request = new FindCoordinatorRequest
             {
-                CoordinatorKeys = ["test-group"],
+                Key = "test-group",
                 KeyType = CoordinatorType.Group
             };
 

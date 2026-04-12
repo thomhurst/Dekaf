@@ -30,10 +30,6 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
     /// </summary>
     public short ProducerEpoch { get; init; } = -1;
 
-    public static bool IsFlexibleVersion(short version) => true;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         var isFlexible = version >= 2;

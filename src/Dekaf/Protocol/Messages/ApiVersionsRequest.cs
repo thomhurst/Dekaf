@@ -20,8 +20,6 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
     /// </summary>
     public string? ClientSoftwareVersion { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => true;
-    public static short GetRequestHeaderVersion(short version) => 2;
     // ApiVersions is the bootstrap API — the broker always sends the response
     // with header v0 (no tagged fields) regardless of the API version.
     public static short GetResponseHeaderVersion(short version) => 0;

@@ -20,10 +20,6 @@ public sealed class AlterUserScramCredentialsRequest : IKafkaRequest<AlterUserSc
     /// </summary>
     public IReadOnlyList<ScramCredentialUpsertion>? Upsertions { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => true;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         // Deletions: COMPACT_ARRAY

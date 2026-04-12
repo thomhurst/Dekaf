@@ -1598,7 +1598,7 @@ public sealed class AdminClient : IAdminClient
 
         var request = new FindCoordinatorRequest
         {
-            CoordinatorKeys = [groupId],
+            Key = groupId,
             KeyType = CoordinatorType.Group
         };
 
@@ -1611,6 +1611,12 @@ public sealed class AdminClient : IAdminClient
             request,
             apiVersion,
             cancellationToken).ConfigureAwait(false);
+
+        if (response.Coordinators.Count == 0)
+        {
+            throw new Errors.GroupException(Protocol.ErrorCode.CoordinatorNotAvailable,
+                "FindCoordinator returned an empty Coordinators array");
+        }
 
         var coordinator = response.Coordinators[0];
         if (coordinator.ErrorCode != Protocol.ErrorCode.None)
