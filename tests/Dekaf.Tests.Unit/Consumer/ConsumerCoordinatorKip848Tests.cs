@@ -424,7 +424,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", rebalanceTimeoutMs: 1000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // Generous safety net — the 1s rebalance timeout is the mechanism under test.
+        // On slow CI runners with thread pool starvation, Task.Delay overshoots and a tight
+        // CTS fires before the rebalance timeout check, causing TaskCanceledException.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await Assert.That(async () =>
                 await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cts.Token))
