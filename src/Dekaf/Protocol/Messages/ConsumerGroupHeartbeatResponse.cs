@@ -104,10 +104,9 @@ public sealed class ConsumerGroupHeartbeatAssignment
 
     public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader)
     {
+        // v0 Assignment has a single field: TopicPartitions (the assigned partitions).
+        // PendingTopicPartitions does not exist in the v0 wire format.
         var assignedTopicPartitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
-
-        var pendingTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
 
         reader.SkipTaggedFields();
@@ -115,7 +114,7 @@ public sealed class ConsumerGroupHeartbeatAssignment
         return new ConsumerGroupHeartbeatAssignment
         {
             AssignedTopicPartitions = assignedTopicPartitions,
-            PendingTopicPartitions = pendingTopicPartitions
+            PendingTopicPartitions = []
         };
     }
 }
