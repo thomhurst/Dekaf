@@ -608,13 +608,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
     {
-        // Use ApiVersions v0 for bootstrapping - it's the most compatible
-        // and doesn't require flexible protocol support
+        // Use ApiVersions v3 for bootstrapping — Kafka 4.0+ is required,
+        // and the request/response header versions must match the flexible protocol
+        // format that ApiVersionsRequest declares for v3.
         var request = new ApiVersionsRequest();
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            0, // Use v0 for maximum compatibility during bootstrap
+            ApiVersionsRequest.LowestSupportedVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)

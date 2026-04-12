@@ -36,49 +36,41 @@ public sealed class ApiVersionsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        var apiKeys = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => ReadApiVersion(ref r, isFlexible))
-            : reader.ReadArray((ref KafkaProtocolReader r) => ReadApiVersion(ref r, isFlexible));
+        var apiKeys = reader.ReadCompactArray((ref KafkaProtocolReader r) => ReadApiVersion(ref r));
 
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
-        // In v3+, SupportedFeatures, FinalizedFeaturesEpoch, FinalizedFeatures, and ZkMigrationReady
-        // are in the tagged fields section (tags 0-3), not as regular inline fields
         IReadOnlyList<SupportedFeature>? supportedFeatures = null;
         var finalizedFeaturesEpoch = -1L;
         IReadOnlyList<FinalizedFeature>? finalizedFeatures = null;
         var zkMigrationReady = false;
 
-        if (isFlexible)
+        var numTaggedFields = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < numTaggedFields; i++)
         {
-            var numTaggedFields = reader.ReadUnsignedVarInt();
-            for (var i = 0; i < numTaggedFields; i++)
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            switch (tag)
             {
-                var tag = reader.ReadUnsignedVarInt();
-                var size = reader.ReadUnsignedVarInt();
-                switch (tag)
-                {
-                    case 0:
-                        supportedFeatures = reader.ReadCompactArray(
-                            (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r));
-                        break;
-                    case 1:
-                        finalizedFeaturesEpoch = reader.ReadInt64();
-                        break;
-                    case 2:
-                        finalizedFeatures = reader.ReadCompactArray(
-                            (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r));
-                        break;
-                    case 3:
-                        zkMigrationReady = reader.ReadUInt8() != 0;
-                        break;
-                    default:
-                        reader.Skip(size);
-                        break;
-                }
+                case 0:
+                    supportedFeatures = reader.ReadCompactArray(
+                        (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r));
+                    break;
+                case 1:
+                    finalizedFeaturesEpoch = reader.ReadInt64();
+                    break;
+                case 2:
+                    finalizedFeatures = reader.ReadCompactArray(
+                        (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r));
+                    break;
+                case 3:
+                    zkMigrationReady = reader.ReadUInt8() != 0;
+                    break;
+                default:
+                    reader.Skip(size);
+                    break;
             }
         }
 
@@ -94,18 +86,12 @@ public sealed class ApiVersionsResponse : IKafkaResponse
         };
     }
 
-    private static ApiVersion ReadApiVersion(ref KafkaProtocolReader reader, bool isFlexible)
+    private static ApiVersion ReadApiVersion(ref KafkaProtocolReader reader)
     {
         var apiKey = (ApiKey)reader.ReadInt16();
         var minVersion = reader.ReadInt16();
         var maxVersion = reader.ReadInt16();
-
-        // In flexible versions, every struct ends with tagged fields (even if empty)
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
-
+        reader.SkipTaggedFields();
         return new ApiVersion(apiKey, minVersion, maxVersion);
     }
 
