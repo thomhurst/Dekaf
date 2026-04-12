@@ -29,7 +29,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
     // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
     // all writes replacing the reference entirely (never in-place mutation) — verified at
-    // every assignment site: ParseAssignment (line ~524) and DisposeAsync (line ~1306).
+    // every assignment site: ParseAssignment() and DisposeAsync().
     private volatile HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _heartbeatGuard = new();
