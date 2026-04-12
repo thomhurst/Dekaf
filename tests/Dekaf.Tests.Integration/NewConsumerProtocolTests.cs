@@ -37,7 +37,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -78,7 +77,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -125,7 +123,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -172,7 +169,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
-
             .WithSessionTimeout(TimeSpan.FromMilliseconds(6000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -201,7 +197,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -248,7 +243,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -294,7 +288,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithSessionTimeout(TimeSpan.FromMilliseconds(15000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -322,7 +315,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -361,7 +353,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithGroupRemoteAssignor("uniform")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -409,7 +400,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -458,7 +448,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -505,7 +494,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -558,7 +546,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithGroupInstanceId(instanceId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
@@ -587,7 +574,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithGroupInstanceId(instanceId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -628,7 +614,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -682,7 +667,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 

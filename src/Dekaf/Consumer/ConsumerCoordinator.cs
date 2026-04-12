@@ -10,7 +10,9 @@ using Microsoft.Extensions.Logging;
 namespace Dekaf.Consumer;
 
 /// <summary>
-/// Handles consumer group coordination.
+/// Handles consumer group coordination using the KIP-848 protocol (ConsumerGroupHeartbeat API).
+/// State machine: Unjoined → Joining → Stable. There is no Syncing phase — the broker
+/// performs partition assignment server-side and returns it directly in the heartbeat response.
 /// </summary>
 public sealed partial class ConsumerCoordinator : IAsyncDisposable
 {

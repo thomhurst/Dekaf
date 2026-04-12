@@ -447,6 +447,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return;
             }
+            catch (BrokerVersionException)
+            {
+                throw; // Permanent error — do not retry against another broker
+            }
             catch (Exception ex)
             {
                 LogMetadataRefreshFailed(ex, host, port);
@@ -538,6 +542,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return true;
             }
+            catch (BrokerVersionException)
+            {
+                throw; // Permanent error — do not retry against another broker
+            }
             catch (Exception ex)
             {
                 LogRebootstrapEndpointFailed(ex, host, port);
@@ -611,7 +619,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Use ApiVersions v3 for bootstrapping — Kafka 4.0+ is required,
         // and the request/response header versions must match the flexible protocol
         // format that ApiVersionsRequest declares for v3.
-        var request = new ApiVersionsRequest();
+        // ClientSoftwareName/Version are mandatory for v3 — the broker rejects empty values
+        // with INVALID_REQUEST.
+        var request = new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = typeof(MetadataManager).Assembly.GetName().Version?.ToString() ?? "0.0.0"
+        };
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
@@ -660,7 +674,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Validate the broker is Kafka 4.0+ by checking for ConsumerGroupHeartbeat API (KIP-848)
         if (!newApiVersions.ContainsKey(ApiKey.ConsumerGroupHeartbeat))
         {
-            throw new NotSupportedException(
+            throw new BrokerVersionException(
                 "Dekaf requires Kafka 4.0 or later. The connected broker does not support " +
                 "the ConsumerGroupHeartbeat API (introduced in Kafka 4.0). " +
                 "Please upgrade your Kafka cluster to version 4.0 or later.");

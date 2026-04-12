@@ -3487,9 +3487,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// </summary>
     private string ResolveTopicName(FetchResponseTopic topicResponse)
     {
-        return topicResponse.TopicId != Guid.Empty
-            ? _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name ?? string.Empty
-            : topicResponse.Topic ?? string.Empty;
+        if (topicResponse.TopicId != Guid.Empty)
+        {
+            var resolved = _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name;
+            if (resolved is not null)
+            {
+                return resolved;
+            }
+
+            // TopicId present but not in local metadata — fall back to topic name from response
+            LogUnknownTopicId(topicResponse.TopicId);
+            return topicResponse.Topic ?? string.Empty;
+        }
+
+        return topicResponse.Topic ?? string.Empty;
     }
 
     internal static List<FetchRequestTopic> BuildFetchResult(
@@ -4071,6 +4082,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "No leader found for {Topic}-{Partition}")]
     private partial void LogNoLeaderFound(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "TopicId {TopicId} not found in local metadata, falling back to topic name from response")]
+    private partial void LogUnknownTopicId(Guid topicId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ListOffsets error for {Topic}-{Partition}: {Error}")]
     private partial void LogListOffsetsError(string topic, int partition, ErrorCode error);
