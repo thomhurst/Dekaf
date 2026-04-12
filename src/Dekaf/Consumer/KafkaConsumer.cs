@@ -704,6 +704,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
+    /// <summary>
+    /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.
+    /// No-op when the consumer has no group coordinator (manual assignment mode).
+    /// </summary>
+    internal void RequestRejoin() => _coordinator?.RequestRejoin();
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
@@ -906,15 +911,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
+        // Materialize once: the enumerable is iterated three times (assignment removal,
+        // state cleanup, fetch buffer clear) and a forward-only sequence would silently
+        // yield zero items on the second and third passes.
+        var partitionList = partitions as IReadOnlyList<TopicPartition> ?? partitions.ToList();
+
         var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            foreach (var partition in partitions)
+            foreach (var partition in partitionList)
             {
                 _assignment.Remove(partition);
             }
-            hadPaused = RemovePartitionState(partitions);
+            hadPaused = RemovePartitionState(partitionList);
 
             PublishAssignmentSnapshot();
         }
@@ -924,7 +934,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Clear any pending fetch data for the removed partitions
-        ClearFetchBufferForPartitions(partitions);
+        ClearFetchBufferForPartitions(partitionList);
 
         if (hadPaused)
             PublishPausedSnapshot();

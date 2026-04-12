@@ -222,38 +222,10 @@ public sealed class RebalanceCleanupTests : IAsyncDisposable
                 Members = []
             }));
 
-        // Make heartbeat trigger a rebalance so the coordinator transitions to Unjoined.
-        // Returns RebalanceInProgress once (triggering re-join), then success on subsequent calls.
-        var heartbeatRebalanceTriggered = 0;
-        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
-                Arg.Any<HeartbeatRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(_ =>
-            {
-                if (Interlocked.CompareExchange(ref heartbeatRebalanceTriggered, 1, 0) == 0)
-                {
-                    return ValueTask.FromResult(new HeartbeatResponse
-                    {
-                        ErrorCode = ErrorCode.RebalanceInProgress
-                    });
-                }
-
-                return ValueTask.FromResult(new HeartbeatResponse
-                {
-                    ErrorCode = ErrorCode.None
-                });
-            });
-
-        // Poll until the heartbeat-triggered rebalance completes asynchronously
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.Elapsed < TimeSpan.FromSeconds(5))
-        {
-            await consumer.EnsureAssignmentAsync(CancellationToken.None);
-            if (consumer.Assignment.Count != 3)
-                break;
-            await Task.Delay(50);
-        }
+        // Force the coordinator to Unjoined so the next EnsureAssignmentAsync re-joins
+        // deterministically — no dependency on the heartbeat background thread's timing.
+        consumer.RequestRejoin();
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         // Assert: partition 1 was revoked — its paused state must be cleaned up
         await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
