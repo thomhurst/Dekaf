@@ -129,14 +129,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 if (syncResult.Revoked is { Count: > 0 })
                 {
-                    LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
-                    await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
+                    await InvokeRebalanceListenerAsync(
+                        "OnPartitionsRevoked", syncResult.Revoked,
+                        _rebalanceListener.OnPartitionsRevokedAsync, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (syncResult.Assigned is { Count: > 0 })
                 {
-                    LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
-                    await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
+                    await InvokeRebalanceListenerAsync(
+                        "OnPartitionsAssigned", syncResult.Assigned,
+                        _rebalanceListener.OnPartitionsAssignedAsync, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -402,72 +404,84 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask JoinGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-            .ConfigureAwait(false);
-
-        // Build subscription metadata
-        var metadata = BuildSubscriptionMetadata(topics, _assignedPartitions);
-
-        var request = new JoinGroupRequest
+        // Loop to handle MemberIdRequired (the broker assigns a memberId on the first attempt,
+        // then we retry with it). Bounded to 2 iterations: initial attempt + one retry.
+        const int maxAttempts = 2;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            GroupId = _options.GroupId!,
-            SessionTimeoutMs = _options.SessionTimeoutMs,
-            RebalanceTimeoutMs = _options.RebalanceTimeoutMs,
-            MemberId = _memberId ?? string.Empty,
-            GroupInstanceId = _options.GroupInstanceId,
-            ProtocolType = "consumer",
-            Protocols =
-            [
-                new JoinGroupRequestProtocol
+            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                .ConfigureAwait(false);
+
+            // Build subscription metadata
+            var metadata = BuildSubscriptionMetadata(topics, _assignedPartitions);
+
+            var request = new JoinGroupRequest
+            {
+                GroupId = _options.GroupId!,
+                SessionTimeoutMs = _options.SessionTimeoutMs,
+                RebalanceTimeoutMs = _options.RebalanceTimeoutMs,
+                MemberId = _memberId ?? string.Empty,
+                GroupInstanceId = _options.GroupInstanceId,
+                ProtocolType = "consumer",
+                Protocols =
+                [
+                    new JoinGroupRequestProtocol
+                    {
+                        Name = GetAssignorName(),
+                        Metadata = metadata
+                    }
+                ]
+            };
+
+            // Use negotiated API version
+            var joinGroupVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.JoinGroup,
+                JoinGroupRequest.LowestSupportedVersion,
+                JoinGroupRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
+                request,
+                joinGroupVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode == ErrorCode.MemberIdRequired)
+            {
+                // Broker assigned a memberId — retry with it on the next iteration
+                _memberId = ((JoinGroupResponse)response).MemberId;
+                LogJoinGroupMemberIdRequired(_memberId!);
+                continue;
+            }
+
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                throw new Errors.GroupException(response.ErrorCode, $"JoinGroup failed: {response.ErrorCode}")
                 {
-                    Name = GetAssignorName(),
-                    Metadata = metadata
-                }
-            ]
-        };
+                    GroupId = _options.GroupId
+                };
+            }
 
-        // Use negotiated API version
-        var joinGroupVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.JoinGroup,
-            JoinGroupRequest.LowestSupportedVersion,
-            JoinGroupRequest.HighestSupportedVersion);
+            _memberId = response.MemberId;
+            _generationId = response.GenerationId;
+            _leaderId = response.Leader;
 
-        var response = await connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
-            request,
-            joinGroupVersion,
-            cancellationToken).ConfigureAwait(false);
+            // Determine cooperative protocol from the broker-elected strategy (not the local config).
+            // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
+            var electedStrategy = ResolveAssignmentStrategy();
+            _isCooperativeProtocol = electedStrategy.IsCooperative
+                && response.ProtocolName == electedStrategy.Name;
 
-        if (response.ErrorCode == ErrorCode.MemberIdRequired)
-        {
-            // Retry with assigned member ID
-            _memberId = ((JoinGroupResponse)response).MemberId;
-            LogJoinGroupMemberIdRequired(_memberId!);
-            await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
+            // Store members list if we're the leader (need it for assignment)
+            _groupMembers = response.IsLeader ? response.Members : null;
+
+            LogJoinGroupResult(_options.GroupId!, _memberId!, _generationId, IsLeader);
             return;
         }
 
-        if (response.ErrorCode != ErrorCode.None)
+        throw new Errors.GroupException(ErrorCode.UnknownMemberId,
+            $"JoinGroup failed: broker returned MemberIdRequired on both attempts")
         {
-            throw new Errors.GroupException(response.ErrorCode, $"JoinGroup failed: {response.ErrorCode}")
-            {
-                GroupId = _options.GroupId
-            };
-        }
-
-        _memberId = response.MemberId;
-        _generationId = response.GenerationId;
-        _leaderId = response.Leader;
-
-        // Determine cooperative protocol from the broker-elected strategy (not the local config).
-        // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
-        var electedStrategy = ResolveAssignmentStrategy();
-        _isCooperativeProtocol = electedStrategy.IsCooperative
-            && response.ProtocolName == electedStrategy.Name;
-
-        // Store members list if we're the leader (need it for assignment)
-        _groupMembers = response.IsLeader ? response.Members : null;
-
-        LogJoinGroupResult(_options.GroupId!, _memberId!, _generationId, IsLeader);
+            GroupId = _options.GroupId
+        };
     }
 
     /// <summary>
@@ -652,15 +666,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         var lostPartitions = _assignedPartitions.ToList();
                         if (lostPartitions.Count > 0)
                         {
-                            try
-                            {
-                                await _rebalanceListener.OnPartitionsLostAsync(lostPartitions, CancellationToken.None)
-                                    .ConfigureAwait(false);
-                            }
-                            catch (Exception lostEx)
-                            {
-                                LogPartitionsLostCallbackError(lostEx);
-                            }
+                            await InvokeRebalanceListenerAsync(
+                                "OnPartitionsLost", lostPartitions,
+                                _rebalanceListener.OnPartitionsLostAsync, CancellationToken.None).ConfigureAwait(false);
                         }
                     }
 
@@ -677,6 +685,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     break;
                 }
             }
+        }
+    }
+
+    private async ValueTask InvokeRebalanceListenerAsync(
+        string callbackName,
+        IReadOnlyList<TopicPartition> partitions,
+        Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
+        CancellationToken cancellationToken)
+    {
+        LogRebalanceListenerCall(callbackName, partitions.Count);
+        try
+        {
+            await callback(partitions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogRebalanceListenerCallbackError(callbackName, ex);
         }
     }
 
@@ -1429,8 +1454,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
     private partial void LogCooperativeRejoin(int revokedCount);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsLost callback threw an exception")]
-    private partial void LogPartitionsLostCallbackError(Exception exception);
+    [LoggerMessage(Level = LogLevel.Error, Message = "{CallbackName} rebalance listener callback threw an exception")]
+    private partial void LogRebalanceListenerCallbackError(string callbackName, Exception exception);
 
     #endregion
 }

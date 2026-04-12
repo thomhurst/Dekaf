@@ -437,21 +437,28 @@ public enum PartitionAssignmentStrategy
 
 /// <summary>
 /// Interface for rebalance callbacks.
+/// <para>
+/// Exceptions thrown by these callbacks are caught and logged at <c>Error</c> level;
+/// they do not abort the rebalance or crash the consume loop. If your callback cannot
+/// set up required state, throw and monitor logs for the
+/// <c>{CallbackName} rebalance listener callback threw an exception</c> message,
+/// or handle the failure inside the callback itself.
+/// </para>
 /// </summary>
 public interface IRebalanceListener
 {
     /// <summary>
-    /// Called when partitions are assigned.
+    /// Called when partitions are assigned after a rebalance completes.
     /// </summary>
     ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Called when partitions are revoked.
+    /// Called when partitions are revoked during a cooperative rebalance.
     /// </summary>
     ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Called when partitions are lost (for cooperative rebalancing).
+    /// Called when partitions are lost due to an involuntary group removal (e.g., heartbeat timeout).
     /// </summary>
     ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 }
