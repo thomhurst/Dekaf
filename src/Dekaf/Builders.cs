@@ -1592,13 +1592,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     private void ValidateGroupProtocolConfig()
     {
-        if (_groupProtocol == GroupProtocol.Consumer)
-        {
-            throw new NotSupportedException(
-                "GroupProtocol.Consumer (KIP-848) is not yet implemented. " +
-                "Use GroupProtocol.Classic (the default) for consumer group coordination.");
-        }
-
         if (_groupRemoteAssignor is not null && _groupProtocol != GroupProtocol.Consumer)
         {
             throw new InvalidOperationException(

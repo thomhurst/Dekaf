@@ -12,7 +12,6 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 [Category("Consumer")]
 [SupportsKafka(400)]
-[Skip("GroupProtocol.Consumer (KIP-848) is not yet implemented")]
 public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
