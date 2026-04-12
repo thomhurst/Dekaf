@@ -464,6 +464,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
 
+                // KIP-1102: Broker signaled that client should rebootstrap immediately
+                if (response.ErrorCode == ErrorCode.RebootstrapRequired
+                    && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
+                {
+                    await TryRebootstrapAsync(topics, cancellationToken, immediate: true).ConfigureAwait(false);
+                }
+
                 return;
             }
             catch (BrokerVersionException)
@@ -494,26 +501,33 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Attempts to recover by re-resolving bootstrap server DNS to discover new broker IPs.
     /// Only triggers after the configured delay has elapsed since all brokers became unavailable.
     /// </summary>
-    internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken, bool immediate = false)
     {
-        var now = Environment.TickCount64;
-
-        // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
-        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
+        if (!immediate)
         {
-            // First time all brokers are unavailable - we just recorded the timestamp
-            LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
-            return false;
-        }
+            var now = Environment.TickCount64;
 
-        var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
-        if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
+            // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
+            if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
+            {
+                // First time all brokers are unavailable - we just recorded the timestamp
+                LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
+                return false;
+            }
+
+            var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
+            if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
+            {
+                LogRebootstrapNotYetTriggered(elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
+                return false;
+            }
+
+            LogRebootstrapTriggered(elapsedMs);
+        }
+        else
         {
-            LogRebootstrapNotYetTriggered(elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
-            return false;
+            LogBrokerInitiatedRebootstrap();
         }
-
-        LogRebootstrapTriggered(elapsedMs);
 
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
@@ -843,6 +857,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Triggering rebootstrap: re-resolving bootstrap server DNS after {ElapsedMs}ms of broker unavailability")]
     private partial void LogRebootstrapTriggered(long elapsedMs);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Broker signaled REBOOTSTRAP_REQUIRED (KIP-1102): triggering immediate rebootstrap")]
+    private partial void LogBrokerInitiatedRebootstrap();
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap DNS resolution returned no endpoints")]
     private partial void LogRebootstrapDnsNoEndpoints();
