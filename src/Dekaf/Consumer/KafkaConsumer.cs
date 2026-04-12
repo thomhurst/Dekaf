@@ -877,14 +877,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             foreach (var partition in partitions)
             {
                 _assignment.Remove(partition);
-                _paused.TryRemove(partition, out _);
-                _positions.TryRemove(partition, out _);
-                _fetchPositions.TryRemove(partition, out _);
-                _committed.TryRemove(partition, out _);
-                _watermarks.TryRemove(partition, out _);
-                _highWatermarks.TryRemove(partition, out _);
-                _eofEmitted.TryRemove(partition, out _);
             }
+            RemovePartitionState(partitions);
 
             PublishAssignmentSnapshot();
         }
@@ -2145,6 +2139,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return this;
     }
 
+    /// <summary>
+    /// Removes per-partition tracking state for the given partitions.
+    /// Returns true if any partition was in the paused set.
+    /// </summary>
+    private bool RemovePartitionState(IEnumerable<TopicPartition> partitions)
+    {
+        var hadPaused = false;
+        foreach (var partition in partitions)
+        {
+            _positions.TryRemove(partition, out _);
+            _fetchPositions.TryRemove(partition, out _);
+            _committed.TryRemove(partition, out _);
+            _highWatermarks.TryRemove(partition, out _);
+            _watermarks.TryRemove(partition, out _);
+            _eofEmitted.TryRemove(partition, out _);
+            hadPaused |= _paused.TryRemove(partition, out _);
+        }
+        return hadPaused;
+    }
+
     private void ClearFetchBuffer()
     {
         // Dispose and clear pending fetches to release pooled memory
@@ -2598,24 +2612,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
-                    var hadPaused = false;
-                    foreach (var partition in removedPartitions)
-                    {
-                        _highWatermarks.TryRemove(partition, out _);
-                        _positions.TryRemove(partition, out _);
-                        _fetchPositions.TryRemove(partition, out _);
-                        _committed.TryRemove(partition, out _);
-                        _watermarks.TryRemove(partition, out _);
-                        hadPaused |= _paused.TryRemove(partition, out _);
-                    }
-
-                    // Clean up EOF state
-                    foreach (var partition in removedPartitions)
-                    {
-                        _eofEmitted.TryRemove(partition, out _);
-                    }
-
-                    if (hadPaused)
+                    if (RemovePartitionState(removedPartitions))
                         PublishPausedSnapshot();
                 }
 
