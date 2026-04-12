@@ -129,28 +129,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 if (syncResult.Revoked is { Count: > 0 })
                 {
-                    LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
-                    try
-                    {
-                        await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        LogRebalanceListenerCallbackError("OnPartitionsRevoked", ex);
-                    }
+                    await InvokeRebalanceListenerAsync(
+                        "OnPartitionsRevoked", syncResult.Revoked,
+                        _rebalanceListener.OnPartitionsRevokedAsync, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (syncResult.Assigned is { Count: > 0 })
                 {
-                    LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
-                    try
-                    {
-                        await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        LogRebalanceListenerCallbackError("OnPartitionsAssigned", ex);
-                    }
+                    await InvokeRebalanceListenerAsync(
+                        "OnPartitionsAssigned", syncResult.Assigned,
+                        _rebalanceListener.OnPartitionsAssignedAsync, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -678,15 +666,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         var lostPartitions = _assignedPartitions.ToList();
                         if (lostPartitions.Count > 0)
                         {
-                            try
-                            {
-                                await _rebalanceListener.OnPartitionsLostAsync(lostPartitions, CancellationToken.None)
-                                    .ConfigureAwait(false);
-                            }
-                            catch (Exception lostEx)
-                            {
-                                LogPartitionsLostCallbackError(lostEx);
-                            }
+                            await InvokeRebalanceListenerAsync(
+                                "OnPartitionsLost", lostPartitions,
+                                _rebalanceListener.OnPartitionsLostAsync, CancellationToken.None).ConfigureAwait(false);
                         }
                     }
 
@@ -703,6 +685,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     break;
                 }
             }
+        }
+    }
+
+    private async ValueTask InvokeRebalanceListenerAsync(
+        string callbackName,
+        IReadOnlyList<TopicPartition> partitions,
+        Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
+        CancellationToken cancellationToken)
+    {
+        LogRebalanceListenerCall(callbackName, partitions.Count);
+        try
+        {
+            await callback(partitions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogRebalanceListenerCallbackError(callbackName, ex);
         }
     }
 
@@ -1454,9 +1453,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
     private partial void LogCooperativeRejoin(int revokedCount);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsLost callback threw an exception")]
-    private partial void LogPartitionsLostCallbackError(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "{CallbackName} rebalance listener callback threw an exception")]
     private partial void LogRebalanceListenerCallbackError(string callbackName, Exception exception);
