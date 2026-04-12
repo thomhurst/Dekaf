@@ -52,8 +52,12 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             }
         });
 
-        // Allow time for consumer to join group
-        await Task.Delay(3000);
+        // Wait for consumer to be assigned partitions before producing
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (consumer.Assignment.Count == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(200);
+        }
 
         await using var producer = await Kafka.CreateProducerAsync<string, string>(KafkaContainer.BootstrapServers);
 
