@@ -27,7 +27,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile int _generationId = -1;
     private string? _leaderId;
     private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
-    private HashSet<TopicPartition> _assignedPartitions = [];
+    // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
+    // all writes replacing the reference entirely (never in-place mutation) — verified at
+    // every assignment site: ParseAssignment (line ~524) and DisposeAsync (line ~1306).
+    private volatile HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
@@ -72,6 +75,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public bool IsLeader => _memberId is not null && _memberId == _leaderId;
     public CoordinatorState State => _state;
     public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
+
+    /// <summary>
+    /// Forces the coordinator to rejoin the group on the next
+    /// <see cref="EnsureActiveGroupAsync"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
+    /// </summary>
+    internal void RequestRejoin()
+    {
+        _state = CoordinatorState.Unjoined;
+    }
 
     /// <summary>
     /// Ensures the consumer has joined the group.
@@ -316,7 +328,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(brokers[0].NodeId, _getCoordinationConnectionIndex(), cancellationToken)
+            // Cycle through brokers on retries to avoid wasting all attempts on one slow broker.
+            var broker = brokers[attempt % brokers.Count];
+            var connection = await _connectionPool.GetConnectionByIndexAsync(broker.NodeId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
 
             // Use negotiated API version

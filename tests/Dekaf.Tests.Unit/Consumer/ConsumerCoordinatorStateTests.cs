@@ -3,7 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Producer; // TopicPartition is defined in this namespace
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using NSubstitute;
@@ -606,6 +606,131 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         }).Throws<ObjectDisposedException>();
     }
 
+    [Test]
+    public async Task FindCoordinator_CyclesThroughBrokersOnRetry()
+    {
+        // Arrange: two brokers — broker 0 returns CoordinatorNotAvailable, broker 1 succeeds.
+        // This verifies the attempt % brokers.Count cycling logic.
+        var connection0 = Substitute.For<IKafkaConnection>();
+        var connection1 = Substitute.For<IKafkaConnection>();
+
+        // Override the default connection pool mock: route by the brokerId (first arg).
+        _connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var brokerId = callInfo.ArgAt<int>(0);
+                return ValueTask.FromResult(brokerId == 1 ? connection1 : connection0);
+            });
+
+        // Seed metadata with 2 brokers
+        _metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 },
+                new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9093 }
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    Name = "test-topic",
+                    ErrorCode = ErrorCode.None,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            PartitionIndex = 0,
+                            LeaderId = 0,
+                            ErrorCode = ErrorCode.None,
+                            ReplicaNodes = [0],
+                            IsrNodes = [0]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        // Broker 0: always returns CoordinatorNotAvailable.
+        // Host must be set because the v0-v3 response path reads it before checking the error code.
+        connection0.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                ErrorCode = ErrorCode.CoordinatorNotAvailable,
+                Host = "",
+                NodeId = -1,
+                Port = -1
+            }));
+
+        // Broker 1: succeeds
+        connection1.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                ErrorCode = ErrorCode.None,
+                NodeId = 0,
+                Host = "localhost",
+                Port = 9092
+            }));
+
+        // JoinGroup/SyncGroup/Heartbeat go via the coordinator connection (NodeId 0)
+        connection0.SendAsync<JoinGroupRequest, JoinGroupResponse>(
+                Arg.Any<JoinGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new JoinGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                GenerationId = 1,
+                Leader = "member-1",
+                Members = []
+            }));
+
+        connection0.SendAsync<SyncGroupRequest, SyncGroupResponse>(
+                Arg.Any<SyncGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new SyncGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Assignment = []
+            }));
+
+        connection0.SendAsync<HeartbeatRequest, HeartbeatResponse>(
+                Arg.Any<HeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new HeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None
+            }));
+
+        var options = CreateOptions(rebalanceTimeoutMs: 10000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        // Act
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        // Assert: broker 0 received a FindCoordinator call (and failed), broker 1 also received one (and succeeded)
+        await connection0.Received().SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            Arg.Any<FindCoordinatorRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+
+        await connection1.Received().SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            Arg.Any<FindCoordinatorRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
     #endregion
 
     #region Heartbeat Error Handling and State Transitions
@@ -999,35 +1124,8 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Builds a consumer protocol assignment byte array containing the given topic-partitions.
-    /// Uses the same wire format as ConsumerCoordinator.BuildAssignmentData.
-    /// </summary>
     private static byte[] BuildAssignmentData(string topic, int[] partitions)
-    {
-        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        // Version
-        writer.WriteInt16(0);
-
-        // Topics array
-        var topicAssignments = new List<(string Topic, int[] Partitions)> { (topic, partitions) };
-        writer.WriteArray(
-            topicAssignments,
-            (ref KafkaProtocolWriter w, (string Topic, int[] Partitions) tp) =>
-            {
-                w.WriteString(tp.Topic);
-                w.WriteArray(
-                    tp.Partitions,
-                    (ref KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
-            });
-
-        // User data
-        writer.WriteBytes([]);
-
-        return buffer.WrittenSpan.ToArray();
-    }
+        => ConsumerTestHelpers.BuildAssignmentData(topic, partitions);
 
     #endregion
 }

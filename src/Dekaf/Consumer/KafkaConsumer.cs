@@ -450,7 +450,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private volatile IReadOnlySet<TopicPartition> _pausedSnapshot = new HashSet<TopicPartition>();
 
     // Pattern subscription support
-    private Func<string, bool>? _topicFilter;
+    private volatile Func<string, bool>? _topicFilter;
     private long _lastFilterRefreshTicks;
 
     // Thread-safety notes:
@@ -551,40 +551,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         IDeserializer<TValue> valueDeserializer,
         ILoggerFactory? loggerFactory = null,
         MetadataOptions? metadataOptions = null)
+        : this(options, keyDeserializer, valueDeserializer,
+            CreateInfrastructure(options, loggerFactory, metadataOptions),
+            loggerFactory)
     {
-        _options = options;
-        _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
-        _keyDeserializer = keyDeserializer;
-        _valueDeserializer = valueDeserializer;
+    }
 
-        // Derive consumer pool sizes from configuration
-        // Use 64 as default partition count estimate — covers most workloads.
-        // PendingFetchData uses a ratchet, so this only increases over time.
-        var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
-        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
-        _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
-        _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
+    /// <summary>
+    /// Internal constructor for unit testing — accepts pre-built infrastructure dependencies
+    /// so tests can inject mock <see cref="IConnectionPool"/> and <see cref="MetadataManager"/>.
+    /// </summary>
+    internal KafkaConsumer(
+        ConsumerOptions options,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILoggerFactory? loggerFactory = null)
+        : this(options, keyDeserializer, valueDeserializer,
+            (connectionPool, metadataManager),
+            loggerFactory)
+    {
+    }
 
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
-
-        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
-
-        // Initialize interceptors from options
-        if (options.Interceptors is { Count: > 0 })
-        {
-            var interceptors = new IConsumerInterceptor<TKey, TValue>[options.Interceptors.Count];
-            for (var i = 0; i < options.Interceptors.Count; i++)
-            {
-                interceptors[i] = (IConsumerInterceptor<TKey, TValue>)options.Interceptors[i];
-            }
-            _interceptors = interceptors;
-        }
-
-        // Consumer connections use the default MaxInFlightRequestsPerConnection (5).
-        // Unlike the producer, consumers don't expose this setting — fetch requests are
-        // inherently sequential per partition, so the default is appropriate.
-        _connectionPool = new ConnectionPool(
+    private static (IConnectionPool, MetadataManager) CreateInfrastructure(
+        ConsumerOptions options, ILoggerFactory? loggerFactory, MetadataOptions? metadataOptions)
+    {
+        var connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
             {
@@ -604,11 +597,53 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             connectionsPerBroker: options.ConnectionsPerBroker,
             ResponseBufferPool.Create(options.FetchMaxBytes));
 
-        _metadataManager = new MetadataManager(
-            _connectionPool,
+        var metadataManager = new MetadataManager(
+            connectionPool,
             options.BootstrapServers,
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
+
+        return (connectionPool, metadataManager);
+    }
+
+    private KafkaConsumer(
+        ConsumerOptions options,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        (IConnectionPool Pool, MetadataManager Metadata) infrastructure,
+        ILoggerFactory? loggerFactory)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+
+        _options = options;
+        _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
+        _keyDeserializer = keyDeserializer;
+        _valueDeserializer = valueDeserializer;
+
+        // Derive consumer pool sizes from configuration
+        // Use 64 as default partition count estimate — covers most workloads.
+        // PendingFetchData uses a ratchet, so this only increases over time.
+        var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
+        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
+        _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
+        _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
+
+        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
+
+        // Initialize interceptors from options
+        if (options.Interceptors is { Count: > 0 })
+        {
+            var interceptors = new IConsumerInterceptor<TKey, TValue>[options.Interceptors.Count];
+            for (var i = 0; i < options.Interceptors.Count; i++)
+            {
+                interceptors[i] = (IConsumerInterceptor<TKey, TValue>)options.Interceptors[i];
+            }
+            _interceptors = interceptors;
+        }
+
+        _connectionPool = infrastructure.Pool;
+        _metadataManager = infrastructure.Metadata;
 
         _compressionCodecs = CompressionCodecRegistry.Default;
 
@@ -669,6 +704,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
+    /// <summary>
+    /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.
+    /// No-op when the consumer has no group coordinator (manual assignment mode).
+    /// </summary>
+    internal void RequestRejoin() => _coordinator?.RequestRejoin();
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
@@ -871,17 +911,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
+        // Materialize once: the enumerable is iterated three times (assignment removal,
+        // state cleanup, fetch buffer clear) and a forward-only sequence would silently
+        // yield zero items on the second and third passes.
+        var partitionList = partitions as IReadOnlyList<TopicPartition> ?? partitions.ToList();
+
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            foreach (var partition in partitions)
+            foreach (var partition in partitionList)
             {
                 _assignment.Remove(partition);
-                _paused.TryRemove(partition, out _);
-                _positions.TryRemove(partition, out _);
-                _fetchPositions.TryRemove(partition, out _);
-                _committed.TryRemove(partition, out _);
             }
+            hadPaused = RemovePartitionState(partitionList);
 
             PublishAssignmentSnapshot();
         }
@@ -891,9 +934,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Clear any pending fetch data for the removed partitions
-        ClearFetchBufferForPartitions(partitions);
+        ClearFetchBufferForPartitions(partitionList);
 
-        PublishPausedSnapshot();
+        if (hadPaused)
+            PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -2142,6 +2186,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return this;
     }
 
+    /// <summary>
+    /// Removes per-partition tracking state for the given partitions.
+    /// Returns true if any partition was in the paused set.
+    /// </summary>
+    private bool RemovePartitionState(IEnumerable<TopicPartition> partitions)
+    {
+        var hadPaused = false;
+        foreach (var partition in partitions)
+        {
+            _positions.TryRemove(partition, out _);
+            _fetchPositions.TryRemove(partition, out _);
+            _committed.TryRemove(partition, out _);
+            _highWatermarks.TryRemove(partition, out _);
+            _watermarks.TryRemove(partition, out _);
+            _eofEmitted.TryRemove(partition, out _);
+            hadPaused |= _paused.TryRemove(partition, out _);
+        }
+        return hadPaused;
+    }
+
     private void ClearFetchBuffer()
     {
         // Dispose and clear pending fetches to release pooled memory
@@ -2465,7 +2529,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// Rate-limited to avoid excessive metadata requests (30 second interval).
     /// </summary>
     /// <returns>True if the subscription changed.</returns>
-    private async ValueTask<bool> RefreshFilteredTopicsAsync(CancellationToken cancellationToken)
+    private async ValueTask<bool> RefreshFilteredTopicsAsync(Func<string, bool> filter, CancellationToken cancellationToken)
     {
         const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
 
@@ -2484,7 +2548,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
 
         var allTopics = _metadataManager.Metadata.GetTopics();
-        var filter = _topicFilter!;
         var changed = false;
 
         // Build new subscription from matching topics
@@ -2525,8 +2588,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return changed;
     }
 
-    private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
+    internal async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
+        // Refresh pattern subscription BEFORE acquiring the lock — RefreshFilteredTopicsAsync
+        // only touches thread-safe structures (ConcurrentDictionary, volatile snapshots,
+        // MetadataManager with its own locking) and involves a network call that would block
+        // both the consume loop and prefetch loop if done under _assignmentLock.
+        // Capture to local to avoid TOCTOU: Subscribe() can set _topicFilter = null concurrently.
+        var topicFilter = _topicFilter;
+        if (topicFilter is not null)
+        {
+            await RefreshFilteredTopicsAsync(topicFilter, cancellationToken).ConfigureAwait(false);
+        }
+
         // Serialize the write path: both ConsumeAsync and PrefetchLoopAsync call this method
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
@@ -2534,12 +2608,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
-            // If a pattern filter is active, refresh the subscription from metadata
-            if (_topicFilter is not null)
-            {
-                await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
-            }
-
             if (!_subscription.IsEmpty && _coordinator is not null)
             {
                 await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
@@ -2591,18 +2659,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
-                    foreach (var partition in removedPartitions)
-                    {
-                        _highWatermarks.TryRemove(partition, out _);
-                        _positions.TryRemove(partition, out _);
-                        _fetchPositions.TryRemove(partition, out _);
-                    }
-
-                    // Clean up EOF state
-                    foreach (var partition in removedPartitions)
-                    {
-                        _eofEmitted.TryRemove(partition, out _);
-                    }
+                    if (RemovePartitionState(removedPartitions))
+                        PublishPausedSnapshot();
                 }
 
                 // Initialize positions for new partitions

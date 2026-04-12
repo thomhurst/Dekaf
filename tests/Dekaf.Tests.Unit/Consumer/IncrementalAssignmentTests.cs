@@ -228,6 +228,58 @@ public class IncrementalAssignmentTests
     }
 
     [Test]
+    public async Task GetWatermarkOffsets_ReturnsNull_WhenPartitionNeverFetched()
+    {
+        // Arrange
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Assign(
+            new TopicPartition("topic1", 0),
+            new TopicPartition("topic1", 1));
+
+        // Limitation: _watermarks is only populated by fetch responses (private path),
+        // so this test can only verify the public API returns null — it cannot inject a
+        // stale entry to prove TryRemove fires. Full regression coverage requires an
+        // integration test with a real Kafka broker.
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 0))).IsNull();
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 1))).IsNull();
+
+        // Act
+        consumer.IncrementalUnassign(new[] { new TopicPartition("topic1", 1) });
+
+        // Assert - GetWatermarkOffsets should still return null (no stale entry)
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 1))).IsNull();
+    }
+
+    [Test]
+    public async Task IncrementalUnassign_RetainsPausedStateForKeptPartitions()
+    {
+        // Arrange
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Assign(
+            new TopicPartition("topic1", 0),
+            new TopicPartition("topic1", 1),
+            new TopicPartition("topic1", 2));
+
+        consumer.Pause(new TopicPartition("topic1", 0));
+        consumer.Pause(new TopicPartition("topic1", 1));
+
+        // Act - remove only partition 1
+        consumer.IncrementalUnassign(new[] { new TopicPartition("topic1", 1) });
+
+        // Assert - partition 0 should still be paused, partition 1 should not
+        await Assert.That(consumer.Paused.Contains(new TopicPartition("topic1", 0))).IsTrue();
+        await Assert.That(consumer.Paused.Contains(new TopicPartition("topic1", 1))).IsFalse();
+    }
+
+    [Test]
     public async Task IncrementalUnassign_ClearsPositionForRemovedPartitions()
     {
         // Arrange
