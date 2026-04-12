@@ -881,6 +881,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 _positions.TryRemove(partition, out _);
                 _fetchPositions.TryRemove(partition, out _);
                 _committed.TryRemove(partition, out _);
+                _watermarks.TryRemove(partition, out _);
+                _highWatermarks.TryRemove(partition, out _);
+                _eofEmitted.TryRemove(partition, out _);
             }
 
             PublishAssignmentSnapshot();
@@ -2527,6 +2530,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
+        // Refresh pattern subscription BEFORE acquiring the lock — RefreshFilteredTopicsAsync
+        // only touches thread-safe structures (ConcurrentDictionary, volatile snapshots,
+        // MetadataManager with its own locking) and involves a network call that would block
+        // both the consume loop and prefetch loop if done under _assignmentLock.
+        if (_topicFilter is not null)
+        {
+            await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         // Serialize the write path: both ConsumeAsync and PrefetchLoopAsync call this method
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
@@ -2534,12 +2546,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
-            // If a pattern filter is active, refresh the subscription from metadata
-            if (_topicFilter is not null)
-            {
-                await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
-            }
-
             if (!_subscription.IsEmpty && _coordinator is not null)
             {
                 await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
@@ -2591,11 +2597,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
+                    var hadPaused = false;
                     foreach (var partition in removedPartitions)
                     {
                         _highWatermarks.TryRemove(partition, out _);
                         _positions.TryRemove(partition, out _);
                         _fetchPositions.TryRemove(partition, out _);
+                        _committed.TryRemove(partition, out _);
+                        _watermarks.TryRemove(partition, out _);
+                        hadPaused |= _paused.TryRemove(partition, out _);
                     }
 
                     // Clean up EOF state
@@ -2603,6 +2613,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     {
                         _eofEmitted.TryRemove(partition, out _);
                     }
+
+                    if (hadPaused)
+                        PublishPausedSnapshot();
                 }
 
                 // Initialize positions for new partitions

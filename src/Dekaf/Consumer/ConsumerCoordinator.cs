@@ -316,7 +316,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(brokers[0].NodeId, _getCoordinationConnectionIndex(), cancellationToken)
+            // Cycle through brokers on retries to avoid wasting all attempts on one slow broker.
+            var broker = brokers[attempt % brokers.Count];
+            var connection = await _connectionPool.GetConnectionByIndexAsync(broker.NodeId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
 
             // Use negotiated API version
@@ -635,7 +637,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         && _state == CoordinatorState.Stable
                         && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
                     {
-                        var lostPartitions = _assignedPartitions.ToList();
+                        // Volatile.Read ensures we see the latest reference even without _lock —
+                        // _assignedPartitions is replaced (not mutated) under _lock, and
+                        // reference assignment is atomic, so the snapshot is a stable HashSet.
+                        var lostPartitions = Volatile.Read(ref _assignedPartitions).ToList();
                         if (lostPartitions.Count > 0)
                         {
                             try
