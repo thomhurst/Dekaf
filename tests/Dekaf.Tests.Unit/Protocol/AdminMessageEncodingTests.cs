@@ -1417,8 +1417,6 @@ public class AdminMessageEncodingTests
     #region Version Flexibility Tests
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     [Arguments((short)3, true)]
     public async Task CreatePartitionsRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -1428,8 +1426,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)2, false)]
     [Arguments((short)3, true)]
     [Arguments((short)5, true)]
     public async Task ListGroupsRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -1439,8 +1435,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)4, false)]
     [Arguments((short)5, true)]
     public async Task DescribeGroupsRequest_FlexibilityDetection(short version, bool expectedFlexible)
     {
@@ -1449,8 +1443,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     public async Task DeleteGroupsRequest_FlexibilityDetection(short version, bool expectedFlexible)
     {
@@ -1459,8 +1451,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     public async Task DeleteRecordsRequest_FlexibilityDetection(short version, bool expectedFlexible)
     {
@@ -1473,8 +1463,6 @@ public class AdminMessageEncodingTests
     #region Header Version Tests
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     [Arguments((short)3, (short)2, (short)1)]
     public async Task CreatePartitionsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
@@ -1487,8 +1475,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)2, (short)1, (short)0)]
     [Arguments((short)3, (short)2, (short)1)]
     [Arguments((short)5, (short)2, (short)1)]
     public async Task ListGroupsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
@@ -1501,8 +1487,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)4, (short)1, (short)0)]
     [Arguments((short)5, (short)2, (short)1)]
     public async Task DescribeGroupsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {
@@ -1514,8 +1498,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     public async Task DeleteGroupsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {
@@ -1527,8 +1509,6 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     public async Task DeleteRecordsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {

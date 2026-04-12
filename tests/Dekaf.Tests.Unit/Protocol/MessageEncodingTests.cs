@@ -13,19 +13,6 @@ public class MessageEncodingTests
     #region ApiVersions Request Tests
 
     [Test]
-    public async Task ApiVersionsRequest_V0_EmptyBody()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        var request = new ApiVersionsRequest();
-        request.Write(ref writer, version: 0);
-
-        // v0 has no body
-        await Assert.That(buffer.WrittenCount).IsEqualTo(0);
-    }
-
-    [Test]
     public async Task ApiVersionsRequest_V3_WithClientInfo()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -54,25 +41,6 @@ public class MessageEncodingTests
     #endregion
 
     #region Metadata Request Tests
-
-    [Test]
-    public async Task MetadataRequest_V0_SingleTopic()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        var request = MetadataRequest.ForTopics("test-topic");
-        request.Write(ref writer, version: 0);
-
-        var expected = new List<byte>();
-        // Array length (INT32)
-        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 });
-        // Topic name (STRING with INT16 length prefix)
-        expected.AddRange(new byte[] { 0x00, 0x0A }); // length = 10
-        expected.AddRange("test-topic"u8.ToArray());
-
-        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
-    }
 
     [Test]
     public async Task MetadataRequest_V9_Flexible_SingleTopic()
@@ -104,20 +72,6 @@ public class MessageEncodingTests
     }
 
     [Test]
-    public async Task MetadataRequest_V1_NullTopics_FetchAll()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        var request = MetadataRequest.ForAllTopics();
-        request.Write(ref writer, version: 1);
-
-        // Null array = -1 (INT32)
-        await Assert.That(buffer.WrittenSpan.ToArray())
-            .IsEquivalentTo(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF });
-    }
-
-    [Test]
     public async Task MetadataRequest_V9_NullTopics_FetchAll()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -144,35 +98,6 @@ public class MessageEncodingTests
     #endregion
 
     #region ApiVersions Response Tests
-
-    [Test]
-    public async Task ApiVersionsResponse_V0_CanBeParsed()
-    {
-        // Construct a valid v0 response
-        var data = new List<byte>();
-        // ErrorCode (INT16)
-        data.AddRange(new byte[] { 0x00, 0x00 }); // None
-        // ApiKeys array (INT32 length + entries)
-        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x02 }); // 2 entries
-        // Entry 1: Produce (0)
-        data.AddRange(new byte[] { 0x00, 0x00 }); // ApiKey = 0
-        data.AddRange(new byte[] { 0x00, 0x00 }); // MinVersion = 0
-        data.AddRange(new byte[] { 0x00, 0x09 }); // MaxVersion = 9
-        // Entry 2: Fetch (1)
-        data.AddRange(new byte[] { 0x00, 0x01 }); // ApiKey = 1
-        data.AddRange(new byte[] { 0x00, 0x00 }); // MinVersion = 0
-        data.AddRange(new byte[] { 0x00, 0x0C }); // MaxVersion = 12
-
-        var reader = new KafkaProtocolReader(data.ToArray());
-        var response = (ApiVersionsResponse)ApiVersionsResponse.Read(ref reader, version: 0);
-
-        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(response.ApiKeys.Count).IsEqualTo(2);
-        await Assert.That(response.ApiKeys[0].ApiKey).IsEqualTo(ApiKey.Produce);
-        await Assert.That(response.ApiKeys[0].MaxVersion).IsEqualTo((short)9);
-        await Assert.That(response.ApiKeys[1].ApiKey).IsEqualTo(ApiKey.Fetch);
-        await Assert.That(response.ApiKeys[1].MaxVersion).IsEqualTo((short)12);
-    }
 
     [Test]
     public async Task ApiVersionsResponse_V3_Flexible_CanBeParsed()
@@ -206,50 +131,6 @@ public class MessageEncodingTests
     #endregion
 
     #region FindCoordinator Tests
-
-    [Test]
-    public async Task FindCoordinatorRequest_V0_EncodedCorrectly()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        var request = new FindCoordinatorRequest
-        {
-            Key = "my-group",
-            KeyType = CoordinatorType.Group
-        };
-        request.Write(ref writer, version: 0);
-
-        var expected = new List<byte>();
-        // Key (STRING with INT16 length prefix)
-        expected.AddRange(new byte[] { 0x00, 0x08 }); // length = 8
-        expected.AddRange("my-group"u8.ToArray());
-
-        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
-    }
-
-    [Test]
-    public async Task FindCoordinatorRequest_V1_WithKeyType()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        var request = new FindCoordinatorRequest
-        {
-            Key = "tx-id",
-            KeyType = CoordinatorType.Transaction
-        };
-        request.Write(ref writer, version: 1);
-
-        var expected = new List<byte>();
-        // Key (STRING)
-        expected.AddRange(new byte[] { 0x00, 0x05 }); // length = 5
-        expected.AddRange("tx-id"u8.ToArray());
-        // KeyType (INT8)
-        expected.Add(0x01); // Transaction
-
-        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
-    }
 
     [Test]
     public async Task FindCoordinatorRequest_V5_BatchFormat()
@@ -324,9 +205,6 @@ public class MessageEncodingTests
     #region Version Flexibility Tests
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
-    [Arguments((short)2, false)]
     [Arguments((short)3, true)]
     public async Task ApiVersionsRequest_FlexibilityDetection(short version, bool expectedFlexible)
     {
@@ -335,8 +213,6 @@ public class MessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)8, false)]
     [Arguments((short)9, true)]
     [Arguments((short)12, true)]
     public async Task MetadataRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -346,8 +222,6 @@ public class MessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)2, false)]
     [Arguments((short)3, true)]
     [Arguments((short)5, true)]
     public async Task FindCoordinatorRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -361,8 +235,6 @@ public class MessageEncodingTests
     #region Header Version Tests
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)2, (short)1, (short)0)]
     [Arguments((short)3, (short)2, (short)1)]
     public async Task ApiVersionsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {
@@ -374,8 +246,6 @@ public class MessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)8, (short)1, (short)0)]
     [Arguments((short)9, (short)2, (short)1)]
     public async Task MetadataRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {

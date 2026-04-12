@@ -244,18 +244,6 @@ public sealed class ConsumerBuilderEdgeCaseTests
         await Assert.That(act).Throws<ArgumentNullException>();
     }
 
-    [Test]
-    public async Task Build_WithGroupRemoteAssignor_WithoutConsumerProtocol_ThrowsInvalidOperationException()
-    {
-        var builder = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupRemoteAssignor("uniform");
-
-        var act = () => builder.Build();
-
-        await Assert.That(act).Throws<InvalidOperationException>();
-    }
-
     #endregion
 
     #region AddInterceptor Validation

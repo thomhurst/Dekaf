@@ -621,8 +621,6 @@ public class AclMessageEncodingTests
     #region Version Flexibility Tests
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     [Arguments((short)3, true)]
     public async Task DescribeAclsRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -632,8 +630,6 @@ public class AclMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     [Arguments((short)3, true)]
     public async Task CreateAclsRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -643,8 +639,6 @@ public class AclMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     [Arguments((short)3, true)]
     public async Task DeleteAclsRequest_FlexibilityDetection(short version, bool expectedFlexible)
@@ -658,8 +652,6 @@ public class AclMessageEncodingTests
     #region Header Version Tests
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     [Arguments((short)3, (short)2, (short)1)]
     public async Task DescribeAclsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
@@ -672,8 +664,6 @@ public class AclMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     [Arguments((short)3, (short)2, (short)1)]
     public async Task CreateAclsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
@@ -686,8 +676,6 @@ public class AclMessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     [Arguments((short)3, (short)2, (short)1)]
     public async Task DeleteAclsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)

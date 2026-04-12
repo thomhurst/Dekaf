@@ -258,8 +258,6 @@ public class ElectLeadersMessageTests
     #region Version Flexibility Tests
 
     [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
     [Arguments((short)2, true)]
     public async Task ElectLeadersRequest_FlexibilityDetection(short version, bool expectedFlexible)
     {
@@ -268,8 +266,6 @@ public class ElectLeadersMessageTests
     }
 
     [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
     [Arguments((short)2, (short)2, (short)1)]
     public async Task ElectLeadersRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
     {

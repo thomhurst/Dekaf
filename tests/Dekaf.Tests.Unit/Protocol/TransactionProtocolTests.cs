@@ -711,7 +711,7 @@ public sealed class TransactionProtocolTests
     public async Task InitProducerIdRequest_VersionConstants()
     {
         await Assert.That(InitProducerIdRequest.ApiKey).IsEqualTo(ApiKey.InitProducerId);
-        await Assert.That(InitProducerIdRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(InitProducerIdRequest.LowestSupportedVersion).IsEqualTo((short)2);
         await Assert.That(InitProducerIdRequest.HighestSupportedVersion).IsEqualTo((short)5);
     }
 
@@ -719,7 +719,7 @@ public sealed class TransactionProtocolTests
     public async Task AddPartitionsToTxnRequest_VersionConstants()
     {
         await Assert.That(AddPartitionsToTxnRequest.ApiKey).IsEqualTo(ApiKey.AddPartitionsToTxn);
-        await Assert.That(AddPartitionsToTxnRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(AddPartitionsToTxnRequest.LowestSupportedVersion).IsEqualTo((short)3);
         await Assert.That(AddPartitionsToTxnRequest.HighestSupportedVersion).IsEqualTo((short)4);
     }
 
@@ -727,7 +727,7 @@ public sealed class TransactionProtocolTests
     public async Task EndTxnRequest_VersionConstants()
     {
         await Assert.That(EndTxnRequest.ApiKey).IsEqualTo(ApiKey.EndTxn);
-        await Assert.That(EndTxnRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(EndTxnRequest.LowestSupportedVersion).IsEqualTo((short)3);
         await Assert.That(EndTxnRequest.HighestSupportedVersion).IsEqualTo((short)4);
     }
 
@@ -735,7 +735,7 @@ public sealed class TransactionProtocolTests
     public async Task TxnOffsetCommitRequest_VersionConstants()
     {
         await Assert.That(TxnOffsetCommitRequest.ApiKey).IsEqualTo(ApiKey.TxnOffsetCommit);
-        await Assert.That(TxnOffsetCommitRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(TxnOffsetCommitRequest.LowestSupportedVersion).IsEqualTo((short)3);
         await Assert.That(TxnOffsetCommitRequest.HighestSupportedVersion).IsEqualTo((short)4);
     }
 
@@ -743,7 +743,7 @@ public sealed class TransactionProtocolTests
     public async Task AddOffsetsToTxnRequest_VersionConstants()
     {
         await Assert.That(AddOffsetsToTxnRequest.ApiKey).IsEqualTo(ApiKey.AddOffsetsToTxn);
-        await Assert.That(AddOffsetsToTxnRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(AddOffsetsToTxnRequest.LowestSupportedVersion).IsEqualTo((short)3);
         await Assert.That(AddOffsetsToTxnRequest.HighestSupportedVersion).IsEqualTo((short)4);
     }
 
@@ -754,26 +754,22 @@ public sealed class TransactionProtocolTests
     [Test]
     public async Task InitProducerIdRequest_FlexibleVersions()
     {
-        await Assert.That(InitProducerIdRequest.IsFlexibleVersion(0)).IsFalse();
-        await Assert.That(InitProducerIdRequest.IsFlexibleVersion(1)).IsFalse();
         await Assert.That(InitProducerIdRequest.IsFlexibleVersion(2)).IsTrue();
-        await Assert.That(InitProducerIdRequest.IsFlexibleVersion(3)).IsTrue();
+        await Assert.That(InitProducerIdRequest.IsFlexibleVersion(5)).IsTrue();
     }
 
     [Test]
     public async Task AddPartitionsToTxnRequest_FlexibleVersions()
     {
-        await Assert.That(AddPartitionsToTxnRequest.IsFlexibleVersion(0)).IsFalse();
-        await Assert.That(AddPartitionsToTxnRequest.IsFlexibleVersion(2)).IsFalse();
         await Assert.That(AddPartitionsToTxnRequest.IsFlexibleVersion(3)).IsTrue();
+        await Assert.That(AddPartitionsToTxnRequest.IsFlexibleVersion(4)).IsTrue();
     }
 
     [Test]
     public async Task EndTxnRequest_FlexibleVersions()
     {
-        await Assert.That(EndTxnRequest.IsFlexibleVersion(0)).IsFalse();
-        await Assert.That(EndTxnRequest.IsFlexibleVersion(2)).IsFalse();
         await Assert.That(EndTxnRequest.IsFlexibleVersion(3)).IsTrue();
+        await Assert.That(EndTxnRequest.IsFlexibleVersion(4)).IsTrue();
     }
 
     #endregion
