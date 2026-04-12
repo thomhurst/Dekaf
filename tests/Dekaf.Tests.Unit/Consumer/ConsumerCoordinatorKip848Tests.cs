@@ -383,26 +383,19 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_UnreleasedInstanceId_Throws()
+    public async Task ConsumerProtocol_UnreleasedInstanceId_ThrowsAfterRetries()
     {
         SetupFindCoordinator();
         SetupConsumerGroupHeartbeat(errorCode: ErrorCode.UnreleasedInstanceId);
 
-        var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1");
+        var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", rebalanceTimeoutMs: 1000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
-        GroupException? caught = null;
-        try
-        {
-            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
-        }
-        catch (GroupException ex)
-        {
-            caught = ex;
-        }
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.ErrorCode).IsEqualTo(ErrorCode.UnreleasedInstanceId);
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cts.Token))
+            .ThrowsException();
     }
 
     [Test]

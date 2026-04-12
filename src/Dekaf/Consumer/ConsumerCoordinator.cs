@@ -783,6 +783,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             var startedAt = Stopwatch.GetTimestamp();
             var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
             var retryDelayMs = 200;
+            var unreleasedRetries = 0;
 
             while (_state != CoordinatorState.Stable)
             {
@@ -825,9 +826,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     _generationId = _options.GroupInstanceId is not null ? -2 : 0;
                     _state = CoordinatorState.Unjoined;
                 }
-                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnreleasedInstanceId)
+                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnreleasedInstanceId && unreleasedRetries < 5)
                 {
                     // Static member's previous session not yet released — retry with backoff
+                    unreleasedRetries++;
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
