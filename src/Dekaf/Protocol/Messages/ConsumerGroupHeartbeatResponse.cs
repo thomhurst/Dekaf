@@ -59,11 +59,10 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
         var memberEpoch = reader.ReadInt32();
         var heartbeatIntervalMs = reader.ReadInt32();
 
-        // Assignment is a nullable struct encoded with a tag-like presence indicator
-        // In the Kafka protocol, the assignment is present if the next varint is > 0
-        var assignmentPresent = reader.ReadUnsignedVarInt();
+        // Nullable non-tagged struct: single signed byte marker (-1 = null, >= 0 = present)
+        var assignmentMarker = reader.ReadInt8();
         ConsumerGroupHeartbeatAssignment? assignment = null;
-        if (assignmentPresent > 0)
+        if (assignmentMarker >= 0)
         {
             assignment = ConsumerGroupHeartbeatAssignment.Read(ref reader);
         }
@@ -104,10 +103,9 @@ public sealed class ConsumerGroupHeartbeatAssignment
 
     public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader)
     {
+        // v0 Assignment has a single field: TopicPartitions (the assigned partitions).
+        // PendingTopicPartitions does not exist in the v0 wire format.
         var assignedTopicPartitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
-
-        var pendingTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
 
         reader.SkipTaggedFields();
@@ -115,7 +113,7 @@ public sealed class ConsumerGroupHeartbeatAssignment
         return new ConsumerGroupHeartbeatAssignment
         {
             AssignedTopicPartitions = assignedTopicPartitions,
-            PendingTopicPartitions = pendingTopicPartitions
+            PendingTopicPartitions = []
         };
     }
 }
