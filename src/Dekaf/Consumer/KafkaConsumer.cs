@@ -1131,10 +1131,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    // Batch-level position flush: _positions was already updated per-message
-                    // above; _fetchPositions is updated here once per partition-fetch.
-                    // In prefetch mode, the prefetch thread already advances _fetchPositions
-                    // via UpdateFetchPositionsFromPrefetch, so we skip it here.
+                    // Batch-level position flush. In manual-commit mode _positions was
+                    // already updated per-message; in auto-commit mode this is the first
+                    // _positions write. _fetchPositions is updated here once per partition-fetch
+                    // (in prefetch mode it is managed by UpdateFetchPositionsFromPrefetch).
                     FlushConsumedPositions(pending);
 
                     // Record consumer metrics per-fetch instead of per-message.
