@@ -479,6 +479,88 @@ public sealed class ConsumerGroupHeartbeatMessageTests
         await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Response_Read_V1_WithPendingTopicPartitions_ParsesCorrectly()
+    {
+        // v1 adds PendingTopicPartitions as a positional field inside Assignment
+        var assignedTopicId = Guid.NewGuid();
+        var pendingTopicId = Guid.NewGuid();
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);                     // ThrottleTimeMs
+        writer.WriteInt16(0);                     // ErrorCode = None
+        writer.WriteUnsignedVarInt(0);            // ErrorMessage = null
+        WriteCompactNullableString(ref writer, "member-1"); // MemberId
+        writer.WriteInt32(3);                     // MemberEpoch
+        writer.WriteInt32(5000);                  // HeartbeatIntervalMs
+        writer.WriteInt8(1);                      // Assignment = present
+
+        // AssignedTopicPartitions: 1 element
+        writer.WriteUnsignedVarInt(1 + 1);
+        writer.WriteUuid(assignedTopicId);
+        writer.WriteUnsignedVarInt(1 + 1);        // Partitions: 1 element
+        writer.WriteInt32(0);                     // partition 0
+        writer.WriteUnsignedVarInt(0);            // TopicPartitions[0] tagged fields
+
+        // PendingTopicPartitions: 1 element (v1+ positional field)
+        writer.WriteUnsignedVarInt(1 + 1);
+        writer.WriteUuid(pendingTopicId);
+        writer.WriteUnsignedVarInt(1 + 1);        // Partitions: 1 element
+        writer.WriteInt32(2);                     // partition 2
+        writer.WriteUnsignedVarInt(0);            // TopicPartitions[0] tagged fields
+
+        writer.WriteUnsignedVarInt(0);            // Assignment tagged fields
+        writer.WriteUnsignedVarInt(0);            // Response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 1);
+
+        await Assert.That(response.MemberEpoch).IsEqualTo(3);
+        await Assert.That(response.Assignment).IsNotNull();
+        await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(1);
+        await Assert.That(response.Assignment.AssignedTopicPartitions[0].TopicId).IsEqualTo(assignedTopicId);
+        await Assert.That(response.Assignment.AssignedTopicPartitions[0].Partitions[0]).IsEqualTo(0);
+        await Assert.That(response.Assignment.PendingTopicPartitions.Count).IsEqualTo(1);
+        await Assert.That(response.Assignment.PendingTopicPartitions[0].TopicId).IsEqualTo(pendingTopicId);
+        await Assert.That(response.Assignment.PendingTopicPartitions[0].Partitions[0]).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Response_Read_V0_DoesNotParsePendingTopicPartitions()
+    {
+        // v0 only has AssignedTopicPartitions — PendingTopicPartitions should be empty
+        var topicId = Guid.NewGuid();
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);                     // ThrottleTimeMs
+        writer.WriteInt16(0);                     // ErrorCode = None
+        writer.WriteUnsignedVarInt(0);            // ErrorMessage = null
+        WriteCompactNullableString(ref writer, "member-1"); // MemberId
+        writer.WriteInt32(1);                     // MemberEpoch
+        writer.WriteInt32(5000);                  // HeartbeatIntervalMs
+        writer.WriteInt8(1);                      // Assignment = present
+        // AssignedTopicPartitions: 1 element
+        writer.WriteUnsignedVarInt(1 + 1);
+        writer.WriteUuid(topicId);
+        writer.WriteUnsignedVarInt(1 + 1);        // Partitions: 1 element
+        writer.WriteInt32(0);                     // partition 0
+        writer.WriteUnsignedVarInt(0);            // TopicPartitions[0] tagged fields
+        // NO PendingTopicPartitions for v0
+        writer.WriteUnsignedVarInt(0);            // Assignment tagged fields
+        writer.WriteUnsignedVarInt(0);            // Response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.Assignment).IsNotNull();
+        await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(1);
+        await Assert.That(response.Assignment.PendingTopicPartitions.Count).IsEqualTo(0);
+    }
+
     /// <summary>
     /// Helper to write a compact nullable string (varint length+1, then UTF-8 bytes; 0 for null).
     /// </summary>

@@ -64,7 +64,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
         ConsumerGroupHeartbeatAssignment? assignment = null;
         if (assignmentMarker >= 0)
         {
-            assignment = ConsumerGroupHeartbeatAssignment.Read(ref reader);
+            assignment = ConsumerGroupHeartbeatAssignment.Read(ref reader, version);
         }
 
         // Response tagged fields
@@ -101,19 +101,26 @@ public sealed class ConsumerGroupHeartbeatAssignment
     /// </summary>
     public required IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> PendingTopicPartitions { get; init; }
 
-    public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader)
+    public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader, short version)
     {
-        // v0 Assignment has a single field: TopicPartitions (the assigned partitions).
-        // PendingTopicPartitions does not exist in the v0 wire format.
         var assignedTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
+
+        // v1+ adds PendingTopicPartitions as a positional field (KIP-848 refinement).
+        // v0 only has AssignedTopicPartitions.
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> pendingTopicPartitions = [];
+        if (version >= 1)
+        {
+            pendingTopicPartitions = reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
+        }
 
         reader.SkipTaggedFields();
 
         return new ConsumerGroupHeartbeatAssignment
         {
             AssignedTopicPartitions = assignedTopicPartitions,
-            PendingTopicPartitions = []
+            PendingTopicPartitions = pendingTopicPartitions
         };
     }
 }
