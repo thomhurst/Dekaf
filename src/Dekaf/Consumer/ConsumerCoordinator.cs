@@ -130,7 +130,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         var request = new FindCoordinatorRequest
         {
-            Key = _options.GroupId!,
+            CoordinatorKeys = [_options.GroupId!],
             KeyType = CoordinatorType.Group
         };
 
@@ -156,28 +156,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 findCoordinatorVersion,
                 cancellationToken).ConfigureAwait(false);
 
-            // For v4+, coordinator info is in the Coordinators array
-            int nodeId;
-            string host;
-            int port;
-            ErrorCode errorCode;
-
-            if (response.Coordinators is { Count: > 0 })
-            {
-                var coordinator = response.Coordinators[0];
-                errorCode = coordinator.ErrorCode;
-                nodeId = coordinator.NodeId;
-                host = coordinator.Host;
-                port = coordinator.Port;
-            }
-            else
-            {
-                // v3 format
-                errorCode = response.ErrorCode;
-                nodeId = response.NodeId;
-                host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
-                port = response.Port;
-            }
+            var coordinator = response.Coordinators[0];
+            var errorCode = coordinator.ErrorCode;
+            var nodeId = coordinator.NodeId;
+            var host = coordinator.Host;
+            var port = coordinator.Port;
 
             // Retry on transient coordinator errors
             if (errorCode == ErrorCode.CoordinatorNotAvailable ||

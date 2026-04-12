@@ -7,13 +7,8 @@ namespace Dekaf.Protocol.Messages;
 public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorResponse>
 {
     public static ApiKey ApiKey => ApiKey.FindCoordinator;
-    public static short LowestSupportedVersion => 3;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 5;
-
-    /// <summary>
-    /// The key to find coordinator for (group ID or transactional ID).
-    /// </summary>
-    public required string Key { get; init; }
 
     /// <summary>
     /// The type of coordinator: 0 = group, 1 = transaction.
@@ -21,9 +16,9 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
     public CoordinatorType KeyType { get; init; } = CoordinatorType.Group;
 
     /// <summary>
-    /// Multiple keys to look up (v4+).
+    /// The keys to look up coordinators for.
     /// </summary>
-    public IReadOnlyList<string>? CoordinatorKeys { get; init; }
+    public required IReadOnlyList<string> CoordinatorKeys { get; init; }
 
     public static bool IsFlexibleVersion(short version) => true;
     public static short GetRequestHeaderVersion(short version) => 2;
@@ -31,21 +26,10 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        if (version < 4)
-        {
-            writer.WriteCompactString(Key);
-        }
-
         writer.WriteInt8((sbyte)KeyType);
-
-        if (version >= 4)
-        {
-            var keys = CoordinatorKeys ?? [Key];
-            writer.WriteCompactArray(
-                keys,
-                (ref KafkaProtocolWriter w, string k) => w.WriteCompactString(k));
-        }
-
+        writer.WriteCompactArray(
+            CoordinatorKeys,
+            (ref KafkaProtocolWriter w, string k) => w.WriteCompactString(k));
         writer.WriteEmptyTaggedFields();
     }
 }

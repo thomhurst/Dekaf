@@ -1325,7 +1325,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var request = new FindCoordinatorRequest
         {
-            Key = _options.TransactionalId!,
+            CoordinatorKeys = [_options.TransactionalId!],
             KeyType = CoordinatorType.Transaction
         };
 
@@ -1345,26 +1345,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 request, findCoordinatorVersion, cancellationToken).ConfigureAwait(false);
 
-            int nodeId;
-            string host;
-            int port;
-            ErrorCode errorCode;
-
-            if (response.Coordinators is { Count: > 0 })
-            {
-                var coordinator = response.Coordinators[0];
-                errorCode = coordinator.ErrorCode;
-                nodeId = coordinator.NodeId;
-                host = coordinator.Host;
-                port = coordinator.Port;
-            }
-            else
-            {
-                errorCode = response.ErrorCode;
-                nodeId = response.NodeId;
-                host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
-                port = response.Port;
-            }
+            var coordinator = response.Coordinators[0];
+            var errorCode = coordinator.ErrorCode;
 
             if (errorCode is ErrorCode.CoordinatorNotAvailable or ErrorCode.NotCoordinator)
             {
@@ -1384,8 +1366,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 };
             }
 
-            _transactionCoordinatorId = nodeId;
-            _connectionPool.RegisterBroker(nodeId, host, port);
+            _transactionCoordinatorId = coordinator.NodeId;
+            _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
 
             LogTransactionCoordinatorFound(_transactionCoordinatorId, _options.TransactionalId);
             return;
@@ -1643,7 +1625,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             var findCoordRequest = new FindCoordinatorRequest
             {
-                Key = consumerGroupId,
+                CoordinatorKeys = [consumerGroupId],
                 KeyType = CoordinatorType.Group
             };
 
@@ -1652,38 +1634,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     findCoordRequest, findCoordVersion, cancellationToken)
                 .ConfigureAwait(false);
 
-            int groupCoordinatorId;
-            ErrorCode findError;
+            var coord = findCoordResponse.Coordinators[0];
+            _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
 
-            if (findCoordResponse.Coordinators is { Count: > 0 })
+            if (coord.ErrorCode != ErrorCode.None)
             {
-                var coord = findCoordResponse.Coordinators[0];
-                findError = coord.ErrorCode;
-                groupCoordinatorId = coord.NodeId;
-                _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
-            }
-            else
-            {
-                findError = findCoordResponse.ErrorCode;
-                groupCoordinatorId = findCoordResponse.NodeId;
-                if (findCoordResponse.Host is not null)
-                {
-                    _connectionPool.RegisterBroker(findCoordResponse.NodeId,
-                        findCoordResponse.Host, findCoordResponse.Port);
-                }
-            }
-
-            if (findError != ErrorCode.None)
-            {
-                throw new TransactionException(findError,
-                    $"FindCoordinator for consumer group '{consumerGroupId}' failed: {findError}")
+                throw new TransactionException(coord.ErrorCode,
+                    $"FindCoordinator for consumer group '{consumerGroupId}' failed: {coord.ErrorCode}")
                 {
                     TransactionalId = _options.TransactionalId
                 };
             }
 
             // Step 3: Send TxnOffsetCommit to the group coordinator
-            var groupConnection = await _connectionPool.GetConnectionAsync(groupCoordinatorId, cancellationToken)
+            var groupConnection = await _connectionPool.GetConnectionAsync(coord.NodeId, cancellationToken)
                 .ConfigureAwait(false);
 
             var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(

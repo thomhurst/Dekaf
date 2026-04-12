@@ -102,10 +102,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(new FindCoordinatorResponse
             {
-                ErrorCode = ErrorCode.None,
-                NodeId = 0,
-                Host = "localhost",
-                Port = 9092
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = "test-group",
+                        NodeId = 0,
+                        Host = "localhost",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
             }));
     }
 

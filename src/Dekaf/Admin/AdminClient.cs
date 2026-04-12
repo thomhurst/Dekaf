@@ -1598,7 +1598,7 @@ public sealed class AdminClient : IAdminClient
 
         var request = new FindCoordinatorRequest
         {
-            Key = groupId,
+            CoordinatorKeys = [groupId],
             KeyType = CoordinatorType.Group
         };
 
@@ -1612,26 +1612,14 @@ public sealed class AdminClient : IAdminClient
             apiVersion,
             cancellationToken).ConfigureAwait(false);
 
-        // v4+ uses Coordinators array; v0-v3 uses top-level fields
-        if (apiVersion >= 4 && response.Coordinators is { Count: > 0 })
+        var coordinator = response.Coordinators[0];
+        if (coordinator.ErrorCode != Protocol.ErrorCode.None)
         {
-            var coordinator = response.Coordinators[0];
-            if (coordinator.ErrorCode != Protocol.ErrorCode.None)
-            {
-                throw new Errors.GroupException(coordinator.ErrorCode, $"FindCoordinator failed: {coordinator.ErrorCode}");
-            }
-
-            _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
-            return coordinator.NodeId;
+            throw new Errors.GroupException(coordinator.ErrorCode, $"FindCoordinator failed: {coordinator.ErrorCode}");
         }
 
-        if (response.ErrorCode != Protocol.ErrorCode.None)
-        {
-            throw new Errors.GroupException(response.ErrorCode, $"FindCoordinator failed: {response.ErrorCode}");
-        }
-
-        _connectionPool.RegisterBroker(response.NodeId, response.Host!, response.Port);
-        return response.NodeId;
+        _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
+        return coordinator.NodeId;
     }
 
     private static IReadOnlyList<TopicPartition>? ParseMemberAssignment(byte[]? assignmentBytes)

@@ -140,7 +140,7 @@ public class MessageEncodingTests
 
         var request = new FindCoordinatorRequest
         {
-            Key = "my-group",
+            CoordinatorKeys = ["my-group"],
             KeyType = CoordinatorType.Group
         };
         request.Write(ref writer, version: 5);
@@ -191,8 +191,7 @@ public class MessageEncodingTests
         var reader = new KafkaProtocolReader(data.ToArray());
         var response = (FindCoordinatorResponse)FindCoordinatorResponse.Read(ref reader, version: 4);
 
-        await Assert.That(response.Coordinators).IsNotNull();
-        await Assert.That(response.Coordinators!.Count).IsEqualTo(1);
+        await Assert.That(response.Coordinators.Count).IsEqualTo(1);
         await Assert.That(response.Coordinators[0].Key).IsEqualTo("my-group");
         await Assert.That(response.Coordinators[0].NodeId).IsEqualTo(1);
         await Assert.That(response.Coordinators[0].Host).IsEqualTo("localhost");
@@ -222,7 +221,7 @@ public class MessageEncodingTests
     }
 
     [Test]
-    [Arguments((short)3, true)]
+    [Arguments((short)4, true)]
     [Arguments((short)5, true)]
     public async Task FindCoordinatorRequest_FlexibilityDetection(short version, bool expectedFlexible)
     {

@@ -351,7 +351,6 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     [Test]
     public async Task FindCoordinator_SupportsV4Format()
     {
-        // Tests that FindCoordinator v4 format (with multiple coordinators) works
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -366,33 +365,18 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Get API versions first
-            var apiRequest = new ApiVersionsRequest();
-            var apiResponse = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                apiRequest,
-                0,
+            var request = new FindCoordinatorRequest
+            {
+                CoordinatorKeys = ["test-group"],
+                KeyType = CoordinatorType.Group
+            };
+
+            var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                request,
+                FindCoordinatorRequest.HighestSupportedVersion,
                 CancellationToken.None);
 
-            var findCoordApi = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.FindCoordinator);
-
-            // Only test if v4 is supported
-            if (findCoordApi.MaxVersion >= 4)
-            {
-                var request = new FindCoordinatorRequest
-                {
-                    Key = "test-group",
-                    KeyType = CoordinatorType.Group
-                };
-
-                var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                    request,
-                    4,
-                    CancellationToken.None);
-
-                // v4 response has Coordinators array
-                await Assert.That(response.Coordinators).IsNotNull();
-                await Assert.That(response.Coordinators!.Count).IsGreaterThan(0);
-            }
+            await Assert.That(response.Coordinators.Count).IsGreaterThan(0);
         }
         finally
         {
