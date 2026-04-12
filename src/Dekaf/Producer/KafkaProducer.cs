@@ -2468,28 +2468,28 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // check-and-increment atomic and prevent double epoch bumps.
         lock (_epochBumpLock)
         {
-        // Already bumped by another BrokerSender — return current state
-        if (_producerEpoch != expectedEpoch)
-        {
-            LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
+            // Already bumped by another BrokerSender — return current state
+            if (_producerEpoch != expectedEpoch)
+            {
+                LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
+                return (_producerId, _producerEpoch);
+            }
+
+            if (_producerEpoch == short.MaxValue)
+            {
+                throw new KafkaException(ErrorCode.UnknownServerError,
+                    "Producer epoch overflow — requires producer restart");
+            }
+
+            _producerEpoch = (short)(_producerEpoch + 1);
+            _accumulator.ProducerEpoch = _producerEpoch;
+
+            // Per-partition reset: only affected partitions restart at seq=0.
+            // Unaffected partitions continue with current sequences under new epoch.
+            _accumulator.ResetSequencesForPartitions(partitionsToReset);
+
+            LogProducerEpochBumped(_producerId, _producerEpoch);
             return (_producerId, _producerEpoch);
-        }
-
-        if (_producerEpoch == short.MaxValue)
-        {
-            throw new KafkaException(ErrorCode.UnknownServerError,
-                "Producer epoch overflow — requires producer restart");
-        }
-
-        _producerEpoch = (short)(_producerEpoch + 1);
-        _accumulator.ProducerEpoch = _producerEpoch;
-
-        // Per-partition reset: only affected partitions restart at seq=0.
-        // Unaffected partitions continue with current sequences under new epoch.
-        _accumulator.ResetSequencesForPartitions(partitionsToReset);
-
-        LogProducerEpochBumped(_producerId, _producerEpoch);
-        return (_producerId, _producerEpoch);
         } // lock (_epochBumpLock)
     }
 

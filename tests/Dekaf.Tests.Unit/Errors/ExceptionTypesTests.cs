@@ -224,6 +224,39 @@ public class ExceptionTypesTests
 
     #endregion
 
+    #region BrokerVersionException Tests
+
+    [Test]
+    public async Task BrokerVersionException_InheritsKafkaException()
+    {
+        var ex = new BrokerVersionException();
+        await Assert.That(ex).IsAssignableTo<KafkaException>();
+    }
+
+    [Test]
+    public async Task BrokerVersionException_IsNotRetriable()
+    {
+        var ex = new BrokerVersionException("old broker");
+        await Assert.That(ex.IsRetriable).IsFalse();
+    }
+
+    [Test]
+    public async Task BrokerVersionException_MessageConstructor_SetsMessage()
+    {
+        var ex = new BrokerVersionException("Dekaf requires Kafka 4.0 or later");
+        await Assert.That(ex.Message).IsEqualTo("Dekaf requires Kafka 4.0 or later");
+    }
+
+    [Test]
+    public async Task BrokerVersionException_InnerExceptionConstructor_SetsInnerException()
+    {
+        var inner = new InvalidOperationException("inner");
+        var ex = new BrokerVersionException("outer", inner);
+        await Assert.That(ex.InnerException).IsSameReferenceAs(inner);
+    }
+
+    #endregion
+
     #region AuthenticationException Tests
 
     [Test]

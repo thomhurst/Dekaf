@@ -1,5 +1,9 @@
+using Dekaf.Errors;
 using Dekaf.Metadata;
+using Dekaf.Networking;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Metadata;
 
@@ -242,5 +246,84 @@ public class MetadataManagerTests
 
         // If we get here without exceptions, thread-safety is working
         // No assertion needed - successful completion proves thread-safety
+    }
+
+    [Test]
+    public async Task InitializeAsync_BrokerWithoutConsumerGroupHeartbeat_ThrowsBrokerVersionException()
+    {
+        // Arrange: mock a connection pool that returns a connection whose ApiVersions
+        // response does NOT include ConsumerGroupHeartbeat (simulating a pre-4.0 broker)
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(ApiKey.Produce, 0, 11),
+                    new ApiVersion(ApiKey.Fetch, 0, 16),
+                    new ApiVersion(ApiKey.Metadata, 0, 12)
+                    // ConsumerGroupHeartbeat (68) is deliberately absent
+                ]
+            });
+
+        var connectionPool = Substitute.For<IConnectionPool>();
+        connectionPool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var manager = new MetadataManager(connectionPool, ["localhost:9092"]);
+
+        // Act & Assert
+        await Assert.That(async () => await manager.InitializeAsync())
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.0");
+    }
+
+    [Test]
+    public async Task InitializeAsync_BrokerWithConsumerGroupHeartbeat_DoesNotThrowBrokerVersionException()
+    {
+        // Arrange: mock a Kafka 4.0+ broker that has ConsumerGroupHeartbeat
+        var connection = Substitute.For<IKafkaConnection>();
+
+        // First call: ApiVersions — returns ConsumerGroupHeartbeat
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(ApiKey.Produce, 0, 11),
+                    new ApiVersion(ApiKey.Fetch, 12, 16),
+                    new ApiVersion(ApiKey.Metadata, 9, 12),
+                    new ApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0)
+                ]
+            });
+
+        // Second call: Metadata — returns valid metadata
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new MetadataResponse
+            {
+                Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+                Topics = []
+            });
+
+        var connectionPool = Substitute.For<IConnectionPool>();
+        connectionPool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var manager = new MetadataManager(connectionPool, ["localhost:9092"]);
+
+        // Act & Assert — should NOT throw BrokerVersionException
+        await Assert.That(async () => await manager.InitializeAsync())
+            .ThrowsNothing();
     }
 }

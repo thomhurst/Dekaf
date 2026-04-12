@@ -34,6 +34,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>> _pendingTopicFetches = new();
 
+    // ApiVersions bootstrap MUST use v3: Kafka 4.0+ requires the flexible request header (v2),
+    // but the broker always sends the ApiVersions response with header v0 regardless of version.
+    // Using a named constant prevents silent breakage if LowestSupportedVersion is bumped later.
+    private const short ApiVersionsBootstrapVersion = 3;
+
     // Rebootstrap recovery state
     private readonly List<string> _originalBootstrapHostnames;
     private long _allBrokersUnavailableSince;
@@ -629,7 +634,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            ApiVersionsRequest.LowestSupportedVersion,
+            ApiVersionsBootstrapVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)
