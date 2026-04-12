@@ -119,6 +119,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 
     /// <summary>
     /// Gets the current position (next offset to consume) for a partition.
+    /// In auto-commit mode, reflects the last fully-processed batch boundary;
+    /// for per-message accuracy, use manual commit mode.
     /// </summary>
     long? GetPosition(TopicPartition partition);
 
