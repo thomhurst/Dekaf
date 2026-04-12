@@ -6,7 +6,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ListOffsetsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ListOffsets;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => 8;
 
     /// <summary>

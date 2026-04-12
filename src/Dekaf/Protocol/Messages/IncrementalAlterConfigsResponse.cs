@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class IncrementalAlterConfigsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.IncrementalAlterConfigs;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 1;
 
     /// <summary>

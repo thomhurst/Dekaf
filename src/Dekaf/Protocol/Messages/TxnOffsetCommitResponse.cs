@@ -6,7 +6,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class TxnOffsetCommitResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.TxnOffsetCommit;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 4;
 
     /// <summary>

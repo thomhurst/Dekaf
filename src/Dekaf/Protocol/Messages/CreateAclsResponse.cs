@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class CreateAclsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.CreateAcls;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
 
     /// <summary>

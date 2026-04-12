@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
 {
     public static ApiKey ApiKey => ApiKey.ListOffsets;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => 8;
 
     /// <summary>
@@ -25,9 +25,9 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
     /// </summary>
     public required IReadOnlyList<ListOffsetsRequestTopic> Topics { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => version >= 6;
-    public static short GetRequestHeaderVersion(short version) => version >= 6 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 6 ? (short)1 : (short)0;
+    public static bool IsFlexibleVersion(short version) => true;
+    public static short GetRequestHeaderVersion(short version) => 2;
+    public static short GetResponseHeaderVersion(short version) => 1;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

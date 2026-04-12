@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DeleteRecordsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.DeleteRecords;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 2;
 
     /// <summary>

@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse>
 {
     public static ApiKey ApiKey => ApiKey.InitProducerId;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 5;
 
     /// <summary>
@@ -30,9 +30,9 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
     /// </summary>
     public short ProducerEpoch { get; init; } = -1;
 
-    public static bool IsFlexibleVersion(short version) => version >= 2;
-    public static short GetRequestHeaderVersion(short version) => version >= 2 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 2 ? (short)1 : (short)0;
+    public static bool IsFlexibleVersion(short version) => true;
+    public static short GetRequestHeaderVersion(short version) => 2;
+    public static short GetResponseHeaderVersion(short version) => 1;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

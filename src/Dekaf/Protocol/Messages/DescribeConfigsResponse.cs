@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DescribeConfigsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.DescribeConfigs;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 4;
 
     /// <summary>

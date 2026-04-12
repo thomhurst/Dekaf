@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class FindCoordinatorResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.FindCoordinator;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 5;
 
     /// <summary>
@@ -47,9 +47,7 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
-
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
         ErrorCode errorCode = ErrorCode.None;
         string? errorMessage = null;
@@ -61,14 +59,9 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
         if (version < 4)
         {
             errorCode = (ErrorCode)reader.ReadInt16();
-
-            if (version >= 1)
-            {
-                errorMessage = isFlexible ? reader.ReadCompactString() : reader.ReadString();
-            }
-
+            errorMessage = reader.ReadCompactString();
             nodeId = reader.ReadInt32();
-            host = isFlexible ? reader.ReadCompactString() : reader.ReadString();
+            host = reader.ReadCompactString();
             port = reader.ReadInt32();
         }
         else
@@ -76,10 +69,7 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
             coordinators = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => Coordinator.Read(ref r, v), version);
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new FindCoordinatorResponse
         {

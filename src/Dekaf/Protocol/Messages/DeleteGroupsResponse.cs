@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DeleteGroupsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.DeleteGroups;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 2;
 
     /// <summary>
