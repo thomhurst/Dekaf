@@ -8,7 +8,7 @@ public sealed class MetadataResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.Metadata;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 12;
+    public static short HighestSupportedVersion => 13;
 
     public int ThrottleTimeMs { get; init; }
     public required IReadOnlyList<BrokerMetadata> Brokers { get; init; }
@@ -16,6 +16,12 @@ public sealed class MetadataResponse : IKafkaResponse
     public int ControllerId { get; init; } = -1;
     public required IReadOnlyList<TopicMetadata> Topics { get; init; }
     public int ClusterAuthorizedOperations { get; init; } = int.MinValue;
+
+    /// <summary>
+    /// Top-level error code (v13+, KIP-1102). When set to <see cref="Protocol.ErrorCode.RebootstrapRequired"/>,
+    /// the client should immediately trigger a rebootstrap.
+    /// </summary>
+    public ErrorCode ErrorCode { get; init; }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -35,6 +41,12 @@ public sealed class MetadataResponse : IKafkaResponse
             clusterAuthorizedOperations = reader.ReadInt32();
         }
 
+        var errorCode = ErrorCode.None;
+        if (version >= 13)
+        {
+            errorCode = (ErrorCode)reader.ReadInt16();
+        }
+
         reader.SkipTaggedFields();
 
         return new MetadataResponse
@@ -44,7 +56,8 @@ public sealed class MetadataResponse : IKafkaResponse
             ClusterId = clusterId,
             ControllerId = controllerId,
             Topics = topics,
-            ClusterAuthorizedOperations = clusterAuthorizedOperations
+            ClusterAuthorizedOperations = clusterAuthorizedOperations,
+            ErrorCode = errorCode
         };
     }
 }
