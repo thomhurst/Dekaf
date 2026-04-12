@@ -111,7 +111,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_state == CoordinatorState.Stable)
             return;
 
-        // KIP-848: use ConsumerGroupHeartbeat API instead of JoinGroup/SyncGroup
         if (_options.GroupProtocol == GroupProtocol.Consumer)
         {
             await EnsureActiveGroupConsumerProtocolAsync(topics, cancellationToken).ConfigureAwait(false);
@@ -1349,7 +1348,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             HandleConsumerGroupHeartbeatError(response);
         }
 
-        // Update member identity
         if (response.MemberId is not null)
             _memberId = response.MemberId;
 
@@ -1362,7 +1360,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (response.HeartbeatIntervalMs > 0)
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
 
-        // Process assignment if present
         if (response.Assignment is not null)
         {
             return ProcessConsumerGroupAssignment(response.Assignment);
@@ -1411,7 +1408,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (assignedPartitions.Count == 0)
             return null;
 
-        // Group by topic name, then resolve to UUID
         var byTopic = new Dictionary<string, List<int>>();
         foreach (var tp in assignedPartitions)
         {
@@ -1468,7 +1464,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         var oldAssignment = _assignedPartitions;
 
-        // Compute revoked (in old but not new)
         List<TopicPartition>? revoked = null;
         foreach (var partition in oldAssignment)
         {
@@ -1479,7 +1474,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        // Compute assigned (in new but not old)
         List<TopicPartition>? assigned = null;
         foreach (var partition in newAssignment)
         {
@@ -1490,7 +1484,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        // Atomically replace assignment
         _assignedPartitions = newAssignment;
 
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
@@ -1579,14 +1572,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
-                catch (ObjectDisposedException)
-                {
-                    LogCoordinatorConnectionDisposed();
-                    MarkCoordinatorUnknown();
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                }
-                catch (Errors.KafkaException ex) when (ex is not Errors.GroupException && !cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (
+                    ex is ObjectDisposedException ||
+                    (ex is Errors.KafkaException ke && ke is not Errors.GroupException && !cancellationToken.IsCancellationRequested))
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
@@ -1600,7 +1588,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
 
-        // Fire rebalance listeners OUTSIDE the lock (same pattern as classic path)
         await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
 
         if (_state == CoordinatorState.Stable)
@@ -1643,46 +1630,47 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (ex is Errors.GroupException ge)
                 {
-                    if (ge.ErrorCode == ErrorCode.FencedMemberEpoch)
+                    switch (ge.ErrorCode)
                     {
-                        // Reset generation so next EnsureActiveGroup sends MemberEpoch=0 (or -2 for static)
-                        _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                        _state = CoordinatorState.Unjoined;
-                        break;
-                    }
+                        case ErrorCode.FencedMemberEpoch:
+                            // Reset generation so next EnsureActiveGroup sends MemberEpoch=0 (or -2 for static)
+                            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
+                            _state = CoordinatorState.Unjoined;
+                            break;
 
-                    if (ge.ErrorCode == ErrorCode.UnknownMemberId)
-                    {
-                        if (_rebalanceListener is not null)
-                        {
-                            var lost = _assignedPartitions.ToList();
-                            if (lost.Count > 0)
+                        case ErrorCode.UnknownMemberId:
+                            if (_rebalanceListener is not null)
                             {
-                                await InvokeRebalanceListenerAsync(
-                                    "OnPartitionsLost", lost,
-                                    _rebalanceListener.OnPartitionsLostAsync,
-                                    CancellationToken.None).ConfigureAwait(false);
+                                var lost = _assignedPartitions.ToList();
+                                if (lost.Count > 0)
+                                {
+                                    await InvokeRebalanceListenerAsync(
+                                        "OnPartitionsLost", lost,
+                                        _rebalanceListener.OnPartitionsLostAsync,
+                                        CancellationToken.None).ConfigureAwait(false);
+                                }
                             }
-                        }
 
-                        ResetMemberState();
-                        break;
+                            ResetMemberState();
+                            break;
+
+                        case ErrorCode.UnreleasedInstanceId:
+                        case ErrorCode.UnsupportedAssignor:
+                            _state = CoordinatorState.Unjoined;
+                            break;
+
+                        case var c when IsRetriableCoordinatorError(c):
+                            MarkCoordinatorUnknown();
+                            break;
+
+                        default:
+                            continue; // Unrecognized group error — continue heartbeating
                     }
 
-                    if (IsRetriableCoordinatorError(ge.ErrorCode))
-                    {
-                        MarkCoordinatorUnknown();
-                        break;
-                    }
-
-                    if (ge.ErrorCode is ErrorCode.UnreleasedInstanceId or ErrorCode.UnsupportedAssignor)
-                    {
-                        _state = CoordinatorState.Unjoined;
-                        break;
-                    }
+                    break;
                 }
 
-                // Unknown error — continue heartbeating
+                // Non-group error — continue heartbeating
             }
         }
     }
@@ -1761,7 +1749,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_coordinatorId < 0)
             return;
 
-        // KIP-848: leave via ConsumerGroupHeartbeat with MemberEpoch=-1
         if (_options.GroupProtocol == GroupProtocol.Consumer)
         {
             await LeaveGroupConsumerProtocolAsync(cancellationToken).ConfigureAwait(false);
