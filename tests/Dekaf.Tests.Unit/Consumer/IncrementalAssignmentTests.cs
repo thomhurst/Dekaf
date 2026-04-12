@@ -228,7 +228,7 @@ public class IncrementalAssignmentTests
     }
 
     [Test]
-    public async Task IncrementalUnassign_ClearsWatermarkOffsetsForRemovedPartitions()
+    public async Task GetWatermarkOffsets_ReturnsNull_WhenPartitionNeverFetched()
     {
         // Arrange
         await using var consumer = new KafkaConsumer<string, string>(
