@@ -8,7 +8,7 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
 {
     public static ApiKey ApiKey => ApiKey.Metadata;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 12;
+    public static short HighestSupportedVersion => 13;
 
     /// <summary>
     /// Topics to fetch metadata for. Null means all topics.
@@ -46,7 +46,12 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
         }
 
         writer.WriteBoolean(AllowAutoTopicCreation);
-        writer.WriteBoolean(IncludeClusterAuthorizedOperations);
+
+        if (version <= 10)
+        {
+            writer.WriteBoolean(IncludeClusterAuthorizedOperations);
+        }
+
         writer.WriteBoolean(IncludeTopicAuthorizedOperations);
 
         writer.WriteEmptyTaggedFields();
