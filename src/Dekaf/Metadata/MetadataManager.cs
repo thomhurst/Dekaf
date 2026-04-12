@@ -580,6 +580,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 _metadata.Update(response, mergeTopics: topics is not null);
 
+                // Surface the condition where the new broker also wants a rebootstrap —
+                // we stop here to prevent an infinite loop, but log it for operators.
+                if (response.ErrorCode == ErrorCode.RebootstrapRequired)
+                {
+                    LogRebootstrapChainSuppressed();
+                }
+
                 foreach (var broker in response.Brokers)
                 {
                     _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
@@ -879,6 +886,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Broker signaled REBOOTSTRAP_REQUIRED (KIP-1102): triggering immediate rebootstrap")]
     private partial void LogBrokerInitiatedRebootstrap();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap: new broker also returned REBOOTSTRAP_REQUIRED — suppressing chained rebootstrap to prevent infinite loop")]
+    private partial void LogRebootstrapChainSuppressed();
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap DNS resolution returned no endpoints")]
     private partial void LogRebootstrapDnsNoEndpoints();
