@@ -251,8 +251,6 @@ public class MetadataManagerTests
     [Test]
     public async Task InitializeAsync_BrokerWithoutConsumerGroupHeartbeat_ThrowsBrokerVersionException()
     {
-        // Arrange: mock a connection pool that returns a connection whose ApiVersions
-        // response does NOT include ConsumerGroupHeartbeat (simulating a pre-4.0 broker)
         var connection = Substitute.For<IKafkaConnection>();
         connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(),
@@ -266,7 +264,6 @@ public class MetadataManagerTests
                     new ApiVersion(ApiKey.Produce, 0, 11),
                     new ApiVersion(ApiKey.Fetch, 0, 16),
                     new ApiVersion(ApiKey.Metadata, 0, 12)
-                    // ConsumerGroupHeartbeat (68) is deliberately absent
                 ]
             });
 
@@ -276,7 +273,6 @@ public class MetadataManagerTests
 
         var manager = new MetadataManager(connectionPool, ["localhost:9092"]);
 
-        // Act & Assert
         await Assert.That(async () => await manager.InitializeAsync())
             .Throws<BrokerVersionException>()
             .WithMessageContaining("Kafka 4.0");
@@ -285,10 +281,8 @@ public class MetadataManagerTests
     [Test]
     public async Task InitializeAsync_BrokerWithConsumerGroupHeartbeat_DoesNotThrowBrokerVersionException()
     {
-        // Arrange: mock a Kafka 4.0+ broker that has ConsumerGroupHeartbeat
         var connection = Substitute.For<IKafkaConnection>();
 
-        // First call: ApiVersions — returns ConsumerGroupHeartbeat
         connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(),
                 Arg.Any<short>(),
@@ -305,7 +299,6 @@ public class MetadataManagerTests
                 ]
             });
 
-        // Second call: Metadata — returns valid metadata
         connection.SendAsync<MetadataRequest, MetadataResponse>(
                 Arg.Any<MetadataRequest>(),
                 Arg.Any<short>(),
@@ -322,7 +315,6 @@ public class MetadataManagerTests
 
         var manager = new MetadataManager(connectionPool, ["localhost:9092"]);
 
-        // Act & Assert — should NOT throw BrokerVersionException
         await Assert.That(async () => await manager.InitializeAsync())
             .ThrowsNothing();
     }
