@@ -9,7 +9,7 @@ using NSubstitute;
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
-/// Unit tests for KIP-848 (GroupProtocol.Consumer) coordinator path.
+/// Unit tests for KIP-848 consumer group coordinator path.
 /// Verifies the ConsumerGroupHeartbeat-based state machine, assignment handling,
 /// error recovery, leave, and static membership.
 /// </summary>
@@ -87,7 +87,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     {
         BootstrapServers = ["localhost:9092"],
         GroupId = groupId,
-        GroupProtocol = GroupProtocol.Consumer,
         GroupRemoteAssignor = groupRemoteAssignor,
         GroupInstanceId = groupInstanceId,
         RebalanceListener = rebalanceListener,
