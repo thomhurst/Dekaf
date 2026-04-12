@@ -125,26 +125,26 @@ public sealed class GroupProtocolConfigTests
     }
 
     [Test]
-    public async Task WithGroupProtocol_Consumer_ThenBuild_Succeeds()
+    public async Task WithGroupProtocol_Consumer_ThenBuild_ThrowsNotSupported()
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        var act = () => Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupProtocol(GroupProtocol.Consumer)
             .Build();
 
-        await Assert.That(consumer).IsNotNull();
+        await Assert.That(act).Throws<NotSupportedException>();
     }
 
     [Test]
-    public async Task WithGroupProtocol_Consumer_WithRemoteAssignor_ThenBuild_Succeeds()
+    public async Task WithGroupProtocol_Consumer_WithRemoteAssignor_ThenBuild_ThrowsNotSupported()
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        var act = () => Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithGroupRemoteAssignor("uniform")
             .Build();
 
-        await Assert.That(consumer).IsNotNull();
+        await Assert.That(act).Throws<NotSupportedException>();
     }
 
     [Test]
@@ -185,15 +185,15 @@ public sealed class GroupProtocolConfigTests
     }
 
     [Test]
-    public async Task Build_WithGroupRemoteAssignor_WithConsumerProtocol_Succeeds()
+    public async Task Build_WithGroupRemoteAssignor_WithConsumerProtocol_ThrowsNotSupported()
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        var act = () => Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithGroupRemoteAssignor("uniform")
             .Build();
 
-        await Assert.That(consumer).IsNotNull();
+        await Assert.That(act).Throws<NotSupportedException>();
     }
 
     #endregion
@@ -201,9 +201,9 @@ public sealed class GroupProtocolConfigTests
     #region Builder Chaining
 
     [Test]
-    public async Task FullChain_WithConsumerProtocol_Succeeds()
+    public async Task FullChain_WithConsumerProtocol_ThrowsNotSupported()
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        var act = () => Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("my-group")
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -211,7 +211,7 @@ public sealed class GroupProtocolConfigTests
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
 
-        await Assert.That(consumer).IsNotNull();
+        await Assert.That(act).Throws<NotSupportedException>();
     }
 
     [Test]

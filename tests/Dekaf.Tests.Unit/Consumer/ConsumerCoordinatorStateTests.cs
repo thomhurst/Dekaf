@@ -895,7 +895,7 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
     }
 
     [Test]
-    public async Task EnsureActiveGroupAsync_RebalanceListenerThrows_PropagatesException()
+    public async Task EnsureActiveGroupAsync_RebalanceListenerThrows_DoesNotPropagateException()
     {
         var listener = Substitute.For<IRebalanceListener>();
         listener.OnPartitionsAssignedAsync(
@@ -913,12 +913,12 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         var options = CreateOptions(rebalanceListener: listener);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
-        // The listener throws, which should propagate to the caller
-        await Assert.That(async () =>
-        {
-            await coordinator.EnsureActiveGroupAsync(
-                new HashSet<string> { "test-topic" }, CancellationToken.None);
-        }).Throws<InvalidOperationException>();
+        // The listener throws, but the coordinator catches and logs it (consistent with
+        // OnPartitionsLost handling). The group should still reach Stable state.
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
     }
 
     [Test]
