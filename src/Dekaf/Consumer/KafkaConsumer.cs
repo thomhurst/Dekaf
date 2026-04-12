@@ -1000,6 +1000,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
                 var hasInterceptors = _interceptors is not null;
                 var rawTrackingEnabled = _rawRecordTrackingEnabled;
+                var manualCommit = _options.OffsetCommitMode == OffsetCommitMode.Manual;
 
                 while (_pendingFetches.Count > 0)
                 {
@@ -1089,10 +1090,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                             pending.TrackConsumed(offset, messageBytes);
 
-                            // Update consumed position per-message so GetPosition()/CommitAsync()
-                            // reflect the latest message the app has seen, even mid-batch.
-                            // Required for manual commit and graceful shutdown patterns.
-                            _positions[pending.TopicPartition] = offset + 1;
+                            // Manual-commit: update _positions per-message so GetPosition()/
+                            // CommitAsync() reflect the latest message mid-batch.
+                            // Auto-commit: skip per-message write (~60-100ns ConcurrentDictionary
+                            // cost); _positions is flushed once per batch in FlushConsumedPositions().
+                            if (manualCommit)
+                                _positions[pending.TopicPartition] = offset + 1;
 
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
