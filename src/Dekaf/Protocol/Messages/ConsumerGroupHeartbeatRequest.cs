@@ -59,8 +59,6 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
     /// </summary>
     public IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? TopicPartitions { get; init; }
 
-    // ConsumerGroupHeartbeat is only v0, which is always flexible
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteCompactString(GroupId);

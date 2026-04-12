@@ -53,11 +53,9 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         });
 
         // Wait for consumer to be assigned partitions before producing
-        var deadline = DateTime.UtcNow.AddSeconds(20);
-        while (consumer.Assignment.Count == 0 && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(200);
-        }
+        await WaitForConditionAsync(
+            () => consumer.Assignment.Count > 0,
+            TimeSpan.FromSeconds(20));
 
         await using var producer = await Kafka.CreateProducerAsync<string, string>(KafkaContainer.BootstrapServers);
 
