@@ -403,6 +403,115 @@ public sealed class ConsumerGroupHeartbeatMessageTests
 
     #endregion
 
+    #region Response Wire Format Parsing
+
+    [Test]
+    public async Task Response_Read_NullAssignment_ParsesCorrectly()
+    {
+        // Nullable non-tagged struct fields use a single signed byte marker:
+        // -1 (0xFF) = null, >= 0 (e.g., 0x01) = present
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);                     // ThrottleTimeMs
+        writer.WriteInt16(0);                     // ErrorCode = None
+        writer.WriteUnsignedVarInt(0);            // ErrorMessage = null (compact nullable string)
+        WriteCompactNullableString(ref writer, "member-1"); // MemberId
+        writer.WriteInt32(1);                     // MemberEpoch
+        writer.WriteInt32(5000);                  // HeartbeatIntervalMs
+        writer.WriteInt8(-1);                     // Assignment = null (signed byte marker)
+        writer.WriteUnsignedVarInt(0);            // Response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.ErrorMessage).IsNull();
+        await Assert.That(response.MemberId).IsEqualTo("member-1");
+        await Assert.That(response.MemberEpoch).IsEqualTo(1);
+        await Assert.That(response.HeartbeatIntervalMs).IsEqualTo(5000);
+        await Assert.That(response.Assignment).IsNull();
+    }
+
+    [Test]
+    public async Task Response_Read_WithAssignment_ParsesCorrectly()
+    {
+        var topicId = Guid.NewGuid();
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);                     // ThrottleTimeMs
+        writer.WriteInt16(0);                     // ErrorCode = None
+        writer.WriteUnsignedVarInt(0);            // ErrorMessage = null
+        WriteCompactNullableString(ref writer, "member-1"); // MemberId
+        writer.WriteInt32(1);                     // MemberEpoch
+        writer.WriteInt32(5000);                  // HeartbeatIntervalMs
+        writer.WriteInt8(1);                      // Assignment = present (signed byte marker)
+        // TopicPartitions compact array: 1 element
+        writer.WriteUnsignedVarInt(1 + 1);
+        writer.WriteUuid(topicId);
+        writer.WriteUnsignedVarInt(1 + 1);        // Partitions: 1 element
+        writer.WriteInt32(0);                     // partition 0
+        writer.WriteUnsignedVarInt(0);            // TopicPartitions[0] tagged fields
+        writer.WriteUnsignedVarInt(0);            // Assignment tagged fields
+        writer.WriteUnsignedVarInt(0);            // Response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.MemberId).IsEqualTo("member-1");
+        await Assert.That(response.MemberEpoch).IsEqualTo(1);
+        await Assert.That(response.HeartbeatIntervalMs).IsEqualTo(5000);
+        await Assert.That(response.Assignment).IsNotNull();
+        await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(1);
+        await Assert.That(response.Assignment.AssignedTopicPartitions[0].TopicId).IsEqualTo(topicId);
+        await Assert.That(response.Assignment.AssignedTopicPartitions[0].Partitions.Count).IsEqualTo(1);
+        await Assert.That(response.Assignment.AssignedTopicPartitions[0].Partitions[0]).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Response_Read_EmptyAssignment_ParsesCorrectly()
+    {
+        // Assignment struct is present but TopicPartitions array is empty
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);                     // ThrottleTimeMs
+        writer.WriteInt16(0);                     // ErrorCode = None
+        writer.WriteUnsignedVarInt(0);            // ErrorMessage = null
+        WriteCompactNullableString(ref writer, "member-1"); // MemberId
+        writer.WriteInt32(1);                     // MemberEpoch
+        writer.WriteInt32(5000);                  // HeartbeatIntervalMs
+        writer.WriteInt8(1);                      // Assignment = present (signed byte marker)
+        writer.WriteUnsignedVarInt(0 + 1);        // TopicPartitions: empty compact array
+        writer.WriteUnsignedVarInt(0);            // Assignment tagged fields
+        writer.WriteUnsignedVarInt(0);            // Response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.Assignment).IsNotNull();
+        await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Helper to write a compact nullable string (varint length+1, then UTF-8 bytes; 0 for null).
+    /// </summary>
+    private static void WriteCompactNullableString(ref KafkaProtocolWriter writer, string? value)
+    {
+        if (value is null)
+        {
+            writer.WriteUnsignedVarInt(0);
+            return;
+        }
+        writer.WriteCompactString(value);
+    }
+
+    #endregion
+
     #region Assignment
 
     [Test]

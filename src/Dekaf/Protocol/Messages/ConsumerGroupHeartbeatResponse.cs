@@ -59,11 +59,10 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
         var memberEpoch = reader.ReadInt32();
         var heartbeatIntervalMs = reader.ReadInt32();
 
-        // Assignment is a nullable struct encoded with a tag-like presence indicator
-        // In the Kafka protocol, the assignment is present if the next varint is > 0
-        var assignmentPresent = reader.ReadUnsignedVarInt();
+        // Nullable non-tagged struct: single signed byte marker (-1 = null, >= 0 = present)
+        var assignmentMarker = reader.ReadInt8();
         ConsumerGroupHeartbeatAssignment? assignment = null;
-        if (assignmentPresent > 0)
+        if (assignmentMarker >= 0)
         {
             assignment = ConsumerGroupHeartbeatAssignment.Read(ref reader);
         }
