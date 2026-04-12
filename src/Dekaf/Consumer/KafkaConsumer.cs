@@ -1089,11 +1089,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                             pending.TrackConsumed(offset, messageBytes);
 
-                            // Update consumed position per-message so GetPosition()/CommitAsync()
-                            // reflect the latest message the app has seen, even mid-batch.
-                            // Required for manual commit and graceful shutdown patterns.
-                            _positions[pending.TopicPartition] = offset + 1;
-
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
                             if (hasInterceptors)
@@ -1128,14 +1123,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    // Batch-level fetch position update (once per partition-fetch, not per message).
+                    // Batch-level position updates (once per partition-fetch, not per message).
+                    // _positions is deferred here to avoid a ConcurrentDictionary write per
+                    // message (~60-100ns each). Auto-commit reads _positions periodically
+                    // (every 5s), so batch-granularity is sufficient. On early break, the
+                    // finally block below flushes _positions from LastYieldedOffset.
                     // _fetchPositions controls where the next fetch request starts from.
                     // In prefetch mode, the prefetch thread already advances _fetchPositions
                     // via UpdateFetchPositionsFromPrefetch — including for faulted fetches,
                     // since _fetchPositions was set at prefetch time before the fault occurred.
-                    if (pending.LastYieldedOffset >= 0 && !_prefetchEnabled)
+                    if (pending.LastYieldedOffset >= 0)
                     {
-                        _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        _positions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                        }
                     }
 
                     // Record consumer metrics per-fetch instead of per-message.
@@ -1161,15 +1165,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Ensure activity is disposed if caller breaks out of enumeration early
                 previousActivity?.Dispose();
 
-                // Flush fetch position and metrics for any partially-iterated pending fetch.
+                // Flush positions and metrics for any partially-iterated pending fetch.
                 // Only relevant when the caller breaks early or an exception propagates;
                 // on normal loop exit _pendingFetches is empty and this is a no-op.
-                // _positions is already up-to-date (written per-message above).
                 if (_pendingFetches.Count > 0)
                 {
                     var current = _pendingFetches.Peek();
-                    if (current.LastYieldedOffset >= 0 && !_prefetchEnabled)
-                        _fetchPositions[current.TopicPartition] = current.LastYieldedOffset + 1;
+                    if (current.LastYieldedOffset >= 0)
+                    {
+                        _positions[current.TopicPartition] = current.LastYieldedOffset + 1;
+
+                        if (!_prefetchEnabled)
+                            _fetchPositions[current.TopicPartition] = current.LastYieldedOffset + 1;
+                    }
 
                     if (metricsEnabled && current.MessageCount > 0)
                         EmitFetchMetrics(current);
