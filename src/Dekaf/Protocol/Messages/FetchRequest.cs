@@ -14,9 +14,7 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 0;
-    // Note: Fetch v13+ requires TopicId (UUID) which we don't track yet.
-    // Limiting to v12 until TopicId support is implemented.
-    public static short HighestSupportedVersion => 12;
+    public static short HighestSupportedVersion => 16;
 
     /// <summary>
     /// Cluster ID (v12+).

@@ -1771,7 +1771,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             foreach (var topicResponse in response.Responses)
             {
-                var topic = topicResponse.Topic ?? string.Empty;
+                var topic = topicResponse.TopicId != Guid.Empty
+                    ? _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name ?? string.Empty
+                    : topicResponse.Topic ?? string.Empty;
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
                 foreach (var partitionResponse in topicResponse.Partitions)
@@ -3190,7 +3192,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             foreach (var topicResponse in response.Responses)
             {
-                var topic = topicResponse.Topic ?? string.Empty;
+                var topic = topicResponse.TopicId != Guid.Empty
+                    ? _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name ?? string.Empty
+                    : topicResponse.Topic ?? string.Empty;
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
                 foreach (var partitionResponse in topicResponse.Partitions)
@@ -3429,7 +3433,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // Each broker task gets its own FetchRequestPartition objects so that
             // concurrent calls cannot mutate offsets visible to another task.
             // This allocates per fetch cycle (per-batch), not per-message.
-            return BuildFetchResult(cachedDict, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes);
+            return BuildFetchResult(cachedDict, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes, _metadataManager.Metadata);
         }
 
         // Cache miss (or subrange): build fresh structure with TopicPartition stored alongside
@@ -3459,7 +3463,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Build result with fresh copies so the caller owns its own FetchRequestPartition
         // instances. The cached dict stores templates; each caller gets independent copies
         // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
-        var result = BuildFetchResult(topicPartitions, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes);
+        var result = BuildFetchResult(topicPartitions, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes, _metadataManager.Metadata);
 
         // Update cache (first writer wins to avoid overwriting fresher data) — only for full-list case
         if (isFullList)
@@ -3488,7 +3492,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     internal static List<FetchRequestTopic> BuildFetchResult(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
         ConcurrentDictionary<TopicPartition, long> fetchPositions,
-        int? adaptivePartitionMaxBytes = null)
+        int? adaptivePartitionMaxBytes = null,
+        ClusterMetadata? clusterMetadata = null)
     {
         var result = new List<FetchRequestTopic>(templateDict.Count);
 
@@ -3513,6 +3518,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             result.Add(new FetchRequestTopic
             {
                 Topic = kvp.Key,
+                TopicId = clusterMetadata?.GetTopic(kvp.Key)?.TopicId ?? Guid.Empty,
                 Partitions = partitionList
             });
         }
