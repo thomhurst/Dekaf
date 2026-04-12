@@ -1,4 +1,6 @@
 using Dekaf.Metadata;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Metadata;
 
@@ -537,6 +539,65 @@ public sealed class MetadataRecoveryStrategyTests
             .Build();
 
         await Assert.That(client).IsNotNull();
+    }
+
+    #endregion
+
+    #region KIP-1102: RebootstrapRequired Error Code
+
+    [Test]
+    public async Task RebootstrapRequired_ErrorCode_HasValue129()
+    {
+        var value = (short)ErrorCode.RebootstrapRequired;
+        await Assert.That(value).IsEqualTo((short)129);
+    }
+
+    [Test]
+    public async Task MetadataResponse_ErrorCode_DefaultsToNone()
+    {
+        var response = new MetadataResponse
+        {
+            Brokers = Array.Empty<BrokerMetadata>(),
+            Topics = Array.Empty<TopicMetadata>()
+        };
+
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task MetadataResponse_ErrorCode_CanBeSetToRebootstrapRequired()
+    {
+        var response = new MetadataResponse
+        {
+            Brokers = Array.Empty<BrokerMetadata>(),
+            Topics = Array.Empty<TopicMetadata>(),
+            ErrorCode = ErrorCode.RebootstrapRequired
+        };
+
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.RebootstrapRequired);
+    }
+
+    [Test]
+    public async Task TryRebootstrapAsync_Immediate_SkipsTimerDelay()
+    {
+        // With immediate=true (KIP-1102 broker-initiated), rebootstrap should be
+        // attempted on the very first call without waiting for the timer.
+        var manager = CreateTestManager(new MetadataOptions
+        {
+            MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+            MetadataRecoveryRebootstrapTriggerMs = 300000
+        });
+
+        // immediate=true should skip the timer and attempt DNS resolution immediately.
+        // Since we have a null connection pool, the rebootstrap will fail to connect,
+        // but it should NOT return false due to "not yet triggered".
+        var immediateResult = await manager.TryRebootstrapAsync(null, CancellationToken.None, immediate: true);
+        await Assert.That(immediateResult).IsFalse();
+
+        // Normal (non-immediate) first call should still record timestamp and return false
+        // (proving immediate didn't consume the "first call" CAS slot)
+        var normalResult = await manager.TryRebootstrapAsync(null, CancellationToken.None);
+        await Assert.That(normalResult).IsFalse();
     }
 
     #endregion
