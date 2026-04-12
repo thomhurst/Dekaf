@@ -134,7 +134,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
                 break;
             }
-            catch (Exception ex) when (attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (ex is not BrokerVersionException && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
             {
                 LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
                 await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);

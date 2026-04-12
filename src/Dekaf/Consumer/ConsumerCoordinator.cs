@@ -601,8 +601,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Atomically snapshot and clear the subscription-changed flag to prevent a race where
         // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
         // but this heartbeat clears the flag after sending the old topics.
+        // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
+        // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
         var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
-        var subscribedTopics = subscriptionChanged ? _subscribedTopics?.ToList() : null;
+        var subscribedTopics = (isInitial || subscriptionChanged) ? _subscribedTopics?.ToList() : null;
 
         var request = new ConsumerGroupHeartbeatRequest
         {
@@ -839,6 +841,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     _generationId = _options.GroupInstanceId is not null ? -2 : 0;
                     _state = CoordinatorState.Unjoined;
+                }
+                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnreleasedInstanceId)
+                {
+                    // Static member's previous session not yet released — retry with backoff
+                    LogRetriableCoordinatorError(ex.ErrorCode);
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
