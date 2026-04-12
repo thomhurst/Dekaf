@@ -1511,6 +1511,9 @@ public class PrefetchPipelineRunnerTests
         var completeCalled = false;
         var fetchCount = 0;
         var loggedErrors = new List<Exception>();
+        // Deterministic cancellation: cancel as soon as the faulted fetch is queued,
+        // instead of relying on a time-based CTS that may exceed CI runner capacity.
+        using var cts = new CancellationTokenSource();
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -1525,9 +1528,10 @@ public class PrefetchPipelineRunnerTests
             },
             ensureAssignment: ct =>
             {
-                // Cancel after first iteration to trigger disposal path
+                // Cancel deterministically after the faulted fetch is queued
                 if (fetchCount >= 2)
-                    ct.ThrowIfCancellationRequested();
+                    cts.Cancel();
+                ct.ThrowIfCancellationRequested();
                 return ValueTask.CompletedTask;
             },
             assignmentCount: 1,
@@ -1536,7 +1540,6 @@ public class PrefetchPipelineRunnerTests
             onComplete: _ => completeCalled = true,
             logError: ex => loggedErrors.Add(ex));
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
         // Exception from in-flight fetch was observed (logged), not leaked

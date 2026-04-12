@@ -403,7 +403,9 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
                 ErrorCode = ErrorCode.None
             }));
 
-        var options = CreateOptions();
+        // Use a shorter rebalance timeout: the test only needs 1 retry (~200ms delay),
+        // but on slow CI runners (threadpool starvation) the default 30s can be exceeded.
+        var options = CreateOptions(rebalanceTimeoutMs: 10000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
@@ -580,7 +582,9 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
                 ErrorCode = ErrorCode.None
             }));
 
-        var options = CreateOptions();
+        // Use a shorter rebalance timeout: the test only needs 1 retry (~200ms delay),
+        // but on slow CI runners (threadpool starvation) the default 30s can be exceeded.
+        var options = CreateOptions(rebalanceTimeoutMs: 10000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
