@@ -286,7 +286,10 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
     [Test]
     public async Task StaticMember_DuplicateInstanceId_FencingBehavior()
     {
-        // Arrange - two consumers with the same group.instance.id should cause fencing
+        // Tests that a second consumer with the same GroupInstanceId can take over
+        // after the first consumer leaves. In KIP-848, the broker returns
+        // UnreleasedInstanceId until the previous session is released, so we
+        // dispose consumer1 before consumer2 joins to simulate a clean handoff.
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         var groupId = $"static-fencing-{Guid.NewGuid():N}";
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
@@ -308,8 +311,8 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             }, CancellationToken.None);
         }
 
-        // First consumer with static membership
-        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
+        // First consumer with static membership — consume, then dispose to release the instance ID
+        var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-1")
             .WithGroupId(groupId)
@@ -325,22 +328,8 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var result = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         await Assert.That(result).IsNotNull();
 
-        // Second consumer with the same group.instance.id should either:
-        // 1. Fence the first consumer and take over, or
-        // 2. Throw an exception itself
-        // In Kafka, the second JoinGroup with the same instance ID will fence the first consumer.
-        // The second consumer should successfully join, replacing the first.
-        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("static-consumer-2")
-            .WithGroupId(groupId)
-            .WithGroupInstanceId(instanceId)
-            .WithSessionTimeout(TimeSpan.FromSeconds(30))
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
-
-        consumer2.Subscribe(topic);
+        // Dispose consumer1 so the broker releases the instance ID
+        await consumer1.DisposeAsync();
 
         // Produce more messages for consumer2
         for (var p = 0; p < 2; p++)
@@ -354,7 +343,19 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             }, CancellationToken.None);
         }
 
-        // The second consumer should be able to consume (it fences the first)
+        // Second consumer with the same group.instance.id should rejoin successfully
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("static-consumer-2")
+            .WithGroupId(groupId)
+            .WithGroupInstanceId(instanceId)
+            .WithSessionTimeout(TimeSpan.FromSeconds(30))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer2.Subscribe(topic);
+
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var result2 = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
         await Assert.That(result2).IsNotNull();
