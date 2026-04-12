@@ -478,7 +478,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         throw new Errors.GroupException(ErrorCode.UnknownMemberId,
-            $"JoinGroup failed: broker returned MemberIdRequired on every attempt")
+            $"JoinGroup failed: broker returned MemberIdRequired on both attempts")
         {
             GroupId = _options.GroupId
         };
@@ -1454,7 +1454,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
     private partial void LogCooperativeRejoin(int revokedCount);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "{CallbackName} rebalance listener callback threw an exception")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "{CallbackName} rebalance listener callback threw an exception")]
     private partial void LogRebalanceListenerCallbackError(string callbackName, Exception exception);
 
     #endregion
