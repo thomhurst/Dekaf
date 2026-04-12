@@ -575,6 +575,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
 
+        var version = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.ConsumerGroupHeartbeat,
+            ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
+            ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
+
+        // KIP-1082: v2+ uses client-generated UUID v4 instead of empty string for new members.
+        // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
+        // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
+        // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
+        if (_memberId is null && version >= 2)
+            _memberId = Guid.NewGuid().ToString();
+
         var memberId = _memberId ?? string.Empty;
 
         // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
@@ -607,11 +619,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
             TopicPartitions = ownedTopicPartitions
         };
-
-        var version = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ConsumerGroupHeartbeat,
-            ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
-            ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
         var response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             request, version, cancellationToken).ConfigureAwait(false);

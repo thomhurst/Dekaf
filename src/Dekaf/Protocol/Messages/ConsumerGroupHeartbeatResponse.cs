@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 2;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -27,8 +27,8 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
     public string? ErrorMessage { get; init; }
 
     /// <summary>
-    /// The member ID assigned by the coordinator.
-    /// Only set when the member first joins the group (MemberEpoch == 0).
+    /// The member ID. For v0: assigned by the coordinator on first join.
+    /// For v2+ (KIP-1082): echoes the client-generated UUID v4 back.
     /// </summary>
     public string? MemberId { get; init; }
 

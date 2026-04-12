@@ -123,9 +123,9 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Request_HighestSupportedVersion_Is0()
+    public async Task Request_HighestSupportedVersion_Is2()
     {
-        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)2);
     }
 
     #endregion
@@ -295,9 +295,9 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Response_HighestSupportedVersion_Is0()
+    public async Task Response_HighestSupportedVersion_Is2()
     {
-        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)2);
     }
 
     #endregion

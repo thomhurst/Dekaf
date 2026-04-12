@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 2;
 
     /// <summary>
     /// The group ID.
@@ -17,7 +17,8 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
     public required string GroupId { get; init; }
 
     /// <summary>
-    /// The member ID. Empty string for new members joining the group.
+    /// The member ID. For v0: empty string for new members (server-assigned).
+    /// For v2+ (KIP-1082): client-generated UUID v4 sent on the first heartbeat.
     /// </summary>
     public required string MemberId { get; init; }
 
