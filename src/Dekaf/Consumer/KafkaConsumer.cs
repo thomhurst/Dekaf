@@ -1771,9 +1771,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             foreach (var topicResponse in response.Responses)
             {
-                var topic = topicResponse.TopicId != Guid.Empty
-                    ? _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name ?? string.Empty
-                    : topicResponse.Topic ?? string.Empty;
+                var topic = ResolveTopicName(topicResponse);
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
                 foreach (var partitionResponse in topicResponse.Partitions)
@@ -3192,9 +3190,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             foreach (var topicResponse in response.Responses)
             {
-                var topic = topicResponse.TopicId != Guid.Empty
-                    ? _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name ?? string.Empty
-                    : topicResponse.Topic ?? string.Empty;
+                var topic = ResolveTopicName(topicResponse);
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
                 foreach (var partitionResponse in topicResponse.Partitions)
@@ -3489,6 +3485,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// cannot observe each other's offset values.
     /// Allocation is per fetch cycle (per-batch), not per-message.
     /// </summary>
+    private string ResolveTopicName(FetchResponseTopic topicResponse)
+    {
+        return topicResponse.TopicId != Guid.Empty
+            ? _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name ?? string.Empty
+            : topicResponse.Topic ?? string.Empty;
+    }
+
     internal static List<FetchRequestTopic> BuildFetchResult(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
         ConcurrentDictionary<TopicPartition, long> fetchPositions,
@@ -3729,7 +3732,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             try
             {
-                await _coordinator.LeaveGroupAsync("Consumer closing gracefully", cancellationToken).ConfigureAwait(false);
+                await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
                 LogLeftConsumerGroup();
             }
             catch (Exception ex)

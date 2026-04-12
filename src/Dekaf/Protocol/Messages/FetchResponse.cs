@@ -537,10 +537,7 @@ public readonly record struct AbortedTransaction
         var producerId = reader.ReadInt64();
         var firstOffset = reader.ReadInt64();
 
-        if (version >= 12)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new AbortedTransaction
         {

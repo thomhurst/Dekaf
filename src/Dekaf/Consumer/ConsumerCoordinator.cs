@@ -170,7 +170,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
             else
             {
-                // v0-v3 format
+                // v3 format
                 errorCode = response.ErrorCode;
                 nodeId = response.NodeId;
                 host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
@@ -437,7 +437,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     offsetFetchVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                // Check top-level error (v2-v7)
+                // Check top-level error (v6-v7)
                 if (response.ErrorCode != ErrorCode.None)
                 {
                     throw new GroupException(response.ErrorCode,
@@ -449,7 +449,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 var result = new Dictionary<TopicPartition, long>();
 
-                // v0-v7: Topics field
+                // v6-v7: Topics field
                 if (response.Topics is not null)
                 {
                     foreach (var topic in response.Topics)
@@ -1011,9 +1011,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Leaves the consumer group gracefully.
     /// </summary>
-    /// <param name="reason">Optional reason for leaving the group.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    public async ValueTask LeaveGroupAsync(string? reason = null, CancellationToken cancellationToken = default)
+    public async ValueTask LeaveGroupAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return;
