@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -6,7 +5,6 @@ using Dekaf.Networking;
 using Dekaf.Retry;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Producer;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Consumer;
@@ -25,11 +23,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile int _coordinatorId = -1;
     private volatile string? _memberId;
     private volatile int _generationId = -1;
-    private string? _leaderId;
-    private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
     // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
     // all writes replacing the reference entirely (never in-place mutation) — verified at
-    // every assignment site: ParseAssignment() and DisposeAsync().
+    // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
     private volatile HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _heartbeatGuard = new();
@@ -41,16 +37,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _commitLock = new(1, 1);
     private readonly Dictionary<string, List<int>> _fetchTopicGroups = new();
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
-    // These are only used within _lock-protected methods, so no additional synchronization needed:
-    private readonly Dictionary<string, int> _topicPartitionCounts = new();
-    private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-    private volatile bool _isCooperativeProtocol;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
-    // KIP-848 (GroupProtocol.Consumer) state
+    // KIP-848 consumer protocol state
     private volatile int _heartbeatIntervalMs;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile IReadOnlySet<string>? _subscribedTopics;
@@ -78,7 +70,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     public string? MemberId => _memberId;
     public int GenerationId => _generationId;
-    public bool IsLeader => _memberId is not null && _memberId == _leaderId;
     public CoordinatorState State => _state;
     public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
 
@@ -104,194 +95,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
-        // Fast path: if already stable, nothing to do. This is the common case on every
-        // ConsumeAsync iteration after the initial join. CRITICAL: we must NOT call
-        // StartHeartbeatAsync here — doing so would cancel and restart the heartbeat on every
-        // poll (~100ms), preventing it from ever surviving the 3s delay to actually send.
         if (_state == CoordinatorState.Stable)
             return;
 
-        if (_options.GroupProtocol == GroupProtocol.Consumer)
-        {
-            await EnsureActiveGroupConsumerProtocolAsync(topics, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        // Cooperative rebalancing may require multiple rounds (KIP-429):
-        // Round 1 identifies partitions to transfer, round 2 assigns them.
-        // Cap at 2 rounds to prevent unbounded looping if the assignor has a bug.
-        const int maxCooperativeRounds = 2;
-        var cooperativeRound = 0;
-        var needsCooperativeRound = false;
-        SyncGroupResult syncResult;
-
-        do
-        {
-            needsCooperativeRound = false;
-            syncResult = await RunJoinSyncCycleAsync(topics, cancellationToken).ConfigureAwait(false);
-
-            // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock.
-            // If the listener calls back into the consumer (e.g., commit, seek), it would
-            // otherwise deadlock trying to acquire _lock or other coordinator locks.
-            // The lists were captured as independent snapshots inside the lock (in SyncGroupAsync),
-            // so they are safe to use here even if a concurrent heartbeat failure mutates _assignedPartitions.
-            // Listeners fire between cooperative rounds so that OnPartitionsRevoked can commit
-            // offsets for revoked partitions before round 2 reassigns them.
-            if (_rebalanceListener is not null)
-            {
-                if (syncResult.Revoked is { Count: > 0 })
-                {
-                    await InvokeRebalanceListenerAsync(
-                        "OnPartitionsRevoked", syncResult.Revoked,
-                        _rebalanceListener.OnPartitionsRevokedAsync, cancellationToken).ConfigureAwait(false);
-                }
-
-                if (syncResult.Assigned is { Count: > 0 })
-                {
-                    await InvokeRebalanceListenerAsync(
-                        "OnPartitionsAssigned", syncResult.Assigned,
-                        _rebalanceListener.OnPartitionsAssignedAsync, cancellationToken).ConfigureAwait(false);
-                }
-            }
-
-            // Cooperative protocol: if partitions were revoked, trigger another round
-            // so the revoked partitions can be assigned to their new owners.
-            // Writing _state outside _lock is safe here: _state is volatile, and a concurrent
-            // heartbeat seeing Unjoined will simply skip OnPartitionsLost (guarded by _state == Stable)
-            // and trigger a rejoin — which is the correct behavior during a cooperative rebalance.
-            if (syncResult.Revoked is { Count: > 0 } && _isCooperativeProtocol
-                && ++cooperativeRound < maxCooperativeRounds)
-            {
-                LogCooperativeRejoin(syncResult.Revoked.Count);
-                needsCooperativeRound = true;
-                _state = CoordinatorState.Unjoined;
-            }
-        }
-        while (needsCooperativeRound);
-
-        // Start heartbeat AFTER the cooperative rebalance loop completes — not between rounds.
-        // Starting a heartbeat between rounds causes a connection death spiral: the heartbeat
-        // gets REBALANCE_IN_PROGRESS (correct, since round 2 hasn't happened yet), exits its loop,
-        // and the JoinGroup for round 2 becomes the only pending request on the connection. With
-        // no heartbeat keeping the connection alive, the receive loop times out after 30s, killing
-        // both the connection and the pending JoinGroup.
-        // TOCTOU note: _state could change between lock release and this check (e.g., a concurrent
-        // heartbeat failure could set it back to Unjoined). This is benign: worst case we start a
-        // redundant heartbeat that gets cleaned up on the next rebalance via StartHeartbeatAsync's
-        // serialized old-heartbeat teardown.
-        if (_state == CoordinatorState.Stable)
-        {
-            await StartHeartbeatAsync().ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Runs one JoinGroup + SyncGroup cycle, acquiring the lock for the duration.
-    /// </summary>
-    private async ValueTask<SyncGroupResult> RunJoinSyncCycleAsync(
-        IReadOnlySet<string> topics,
-        CancellationToken cancellationToken)
-    {
-        SyncGroupResult syncResult = default;
-
-        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (_state == CoordinatorState.Stable)
-                return syncResult;
-
-            LogEnsureActiveGroupStarted(_options.GroupId!, _state);
-            var startedAt = Stopwatch.GetTimestamp();
-            var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
-            var retryDelayMs = 200;
-
-            while (_state != CoordinatorState.Stable)
-            {
-                if (Stopwatch.GetElapsedTime(startedAt) > rebalanceTimeout)
-                {
-                    var configured = rebalanceTimeout;
-                    var elapsed = Stopwatch.GetElapsedTime(startedAt);
-                    throw new KafkaTimeoutException(
-                        TimeoutKind.Rebalance,
-                        elapsed,
-                        configured,
-                        $"Failed to join group '{_options.GroupId}' within rebalance timeout ({_options.RebalanceTimeoutMs}ms)");
-                }
-
-                try
-                {
-                    // Find coordinator if unknown
-                    if (_coordinatorId < 0)
-                    {
-                        await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                    }
-
-                    // Join group
-                    _state = CoordinatorState.Joining;
-                    LogCoordinatorStateTransition(CoordinatorState.Joining);
-                    await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
-
-                    // Sync group - returns partition changes for rebalance listener
-                    _state = CoordinatorState.Syncing;
-                    LogCoordinatorStateTransition(CoordinatorState.Syncing);
-                    syncResult = await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
-
-                    _state = CoordinatorState.Stable;
-
-                    // Record rebalance duration (~3ns no-op when no listener)
-                    Diagnostics.DekafMetrics.RebalanceDuration.Record(
-                        Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
-                        new System.Diagnostics.TagList
-                            { { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId } });
-
-                    LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
-                }
-                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.RebalanceInProgress)
-                {
-                    // SyncGroup returned RebalanceInProgress — the group is mid-rebalance
-                    // (e.g., cooperative round 2 is needed, or another member joined concurrently).
-                    // Loop back to JoinGroup to re-enter the rebalance.
-                    LogRetriableCoordinatorError(ex.ErrorCode);
-                    _state = CoordinatorState.Unjoined;
-                }
-                catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
-                {
-                    // Coordinator has changed, is unavailable, or still loading - mark unknown and retry
-                    LogRetriableCoordinatorError(ex.ErrorCode);
-
-                    MarkCoordinatorUnknown();
-
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                }
-                catch (ObjectDisposedException)
-                {
-                    // Connection was disposed (e.g., broker closed it or receive timeout) - reconnect
-                    LogCoordinatorConnectionDisposed();
-
-                    MarkCoordinatorUnknown();
-
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                }
-                catch (Errors.KafkaException ex) when (ex is not Errors.GroupException && cancellationToken is { IsCancellationRequested: false })
-                {
-                    // Connection-level failure (receive timeout, connection reset) - reconnect
-                    LogCoordinatorConnectionDisposed();
-
-                    MarkCoordinatorUnknown();
-
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                }
-            }
-        }
-        finally
-        {
-            _lock.Release();
-        }
-
-        return syncResult;
+        await EnsureActiveGroupConsumerProtocolAsync(topics, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -308,17 +115,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private static bool IsRetriableCoordinatorError(ErrorCode? errorCode) =>
         errorCode is ErrorCode.NotCoordinator
-            or ErrorCode.CoordinatorNotAvailable
-            or ErrorCode.CoordinatorLoadInProgress;
-
-    /// <summary>
-    /// Returns true if the error code indicates a rejoin is needed.
-    /// </summary>
-    private static bool IsRejoinNeededError(ErrorCode? errorCode) =>
-        errorCode is ErrorCode.RebalanceInProgress
-            or ErrorCode.UnknownMemberId
-            or ErrorCode.IllegalGeneration
-            or ErrorCode.NotCoordinator
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
 
@@ -414,181 +210,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         };
     }
 
-    private async ValueTask JoinGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
-    {
-        // Loop to handle MemberIdRequired (the broker assigns a memberId on the first attempt,
-        // then we retry with it). Bounded to 2 iterations: initial attempt + one retry.
-        const int maxAttempts = 2;
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-                .ConfigureAwait(false);
-
-            // Build subscription metadata
-            var metadata = BuildSubscriptionMetadata(topics, _assignedPartitions);
-
-            var request = new JoinGroupRequest
-            {
-                GroupId = _options.GroupId!,
-                SessionTimeoutMs = _options.SessionTimeoutMs,
-                RebalanceTimeoutMs = _options.RebalanceTimeoutMs,
-                MemberId = _memberId ?? string.Empty,
-                GroupInstanceId = _options.GroupInstanceId,
-                ProtocolType = "consumer",
-                Protocols =
-                [
-                    new JoinGroupRequestProtocol
-                    {
-                        Name = GetAssignorName(),
-                        Metadata = metadata
-                    }
-                ]
-            };
-
-            // Use negotiated API version
-            var joinGroupVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.JoinGroup,
-                JoinGroupRequest.LowestSupportedVersion,
-                JoinGroupRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
-                request,
-                joinGroupVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            if (response.ErrorCode == ErrorCode.MemberIdRequired)
-            {
-                // Broker assigned a memberId — retry with it on the next iteration
-                _memberId = ((JoinGroupResponse)response).MemberId;
-                LogJoinGroupMemberIdRequired(_memberId!);
-                continue;
-            }
-
-            if (response.ErrorCode != ErrorCode.None)
-            {
-                throw new Errors.GroupException(response.ErrorCode, $"JoinGroup failed: {response.ErrorCode}")
-                {
-                    GroupId = _options.GroupId
-                };
-            }
-
-            _memberId = response.MemberId;
-            _generationId = response.GenerationId;
-            _leaderId = response.Leader;
-
-            // Determine cooperative protocol from the broker-elected strategy (not the local config).
-            // In mixed-strategy groups or rolling upgrades, the broker elects one protocol for all members.
-            var electedStrategy = ResolveAssignmentStrategy();
-            _isCooperativeProtocol = electedStrategy.IsCooperative
-                && response.ProtocolName == electedStrategy.Name;
-
-            // Store members list if we're the leader (need it for assignment)
-            _groupMembers = response.IsLeader ? response.Members : null;
-
-            LogJoinGroupResult(_options.GroupId!, _memberId!, _generationId, IsLeader);
-            return;
-        }
-
-        throw new Errors.GroupException(ErrorCode.UnknownMemberId,
-            $"JoinGroup failed: broker returned MemberIdRequired on both attempts")
-        {
-            GroupId = _options.GroupId
-        };
-    }
-
-    /// <summary>
-    /// Result of SyncGroup containing partition changes for rebalance listener notification.
-    /// </summary>
-    private readonly record struct SyncGroupResult(
-        IReadOnlyList<TopicPartition>? Revoked,
-        IReadOnlyList<TopicPartition>? Assigned);
-
-    private async ValueTask<SyncGroupResult> SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
-    {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-            .ConfigureAwait(false);
-
-        // Only leader sends assignments
-        var assignments = Array.Empty<SyncGroupRequestAssignment>();
-
-        if (IsLeader && _groupMembers is not null)
-        {
-            assignments = await ComputeAssignmentsAsync(topics, _groupMembers, cancellationToken)
-                .ConfigureAwait(false);
-            LogLeaderComputedAssignments(assignments.Length);
-        }
-
-        var request = new SyncGroupRequest
-        {
-            GroupId = _options.GroupId!,
-            GenerationId = _generationId,
-            MemberId = _memberId!,
-            GroupInstanceId = _options.GroupInstanceId,
-            ProtocolType = "consumer",  // Must match JoinGroup protocol type
-            ProtocolName = GetAssignorName(),  // Must match JoinGroup protocol name
-            Assignments = assignments
-        };
-
-        // Use negotiated API version
-        var syncGroupVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.SyncGroup,
-            SyncGroupRequest.LowestSupportedVersion,
-            SyncGroupRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
-            request,
-            syncGroupVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        if (response.ErrorCode != ErrorCode.None)
-        {
-            throw new Errors.GroupException(response.ErrorCode, $"SyncGroup failed: {response.ErrorCode}")
-            {
-                GroupId = _options.GroupId
-            };
-        }
-
-        // Parse assignment
-        var oldAssignment = _assignedPartitions;
-        _assignedPartitions = ParseAssignment(response.Assignment);
-
-        if (_logger.IsEnabled(LogLevel.Debug))
-        {
-            var partitions = string.Join(", ", _assignedPartitions);
-            LogReceivedAssignment(partitions);
-        }
-
-        // Always compute revoked and assigned partitions — the cooperative rebalance
-        // round 2 logic depends on knowing what was revoked, regardless of whether
-        // a rebalance listener is configured. Listener notifications are gated separately
-        // in EnsureActiveGroupAsync.
-        // Compute without LINQ to avoid allocations
-        List<TopicPartition>? revoked = null;
-        foreach (var partition in oldAssignment)
-        {
-            if (!_assignedPartitions.Contains(partition))
-            {
-                revoked ??= [];
-                revoked.Add(partition);
-            }
-        }
-
-        List<TopicPartition>? assigned = null;
-        foreach (var partition in _assignedPartitions)
-        {
-            if (!oldAssignment.Contains(partition))
-            {
-                assigned ??= [];
-                assigned.Add(partition);
-            }
-        }
-
-        return new SyncGroupResult(revoked, assigned);
-    }
-
-    private ValueTask StartHeartbeatAsync()
-        => StartHeartbeatCoreAsync(HeartbeatLoopAsync, _options.HeartbeatIntervalMs);
-
     /// <summary>
     /// Serializes heartbeat loop starts to prevent concurrent callers from orphaning a loop.
     /// Without this guard, two threads exiting EnsureActiveGroupAsync simultaneously could both
@@ -634,77 +255,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
-    {
-        // PeriodicTimer instead of Task.Delay: resilient to thread pool starvation on
-        // CPU-constrained machines where Task.Delay continuations can be delayed indefinitely.
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(_options.HeartbeatIntervalMs));
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-                    break;
-
-                await SendHeartbeatAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                LogHeartbeatFailed(ex);
-
-                if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
-                {
-                    // RebalanceInProgress: another member joined/left; we need to rejoin.
-                    // DON'T exit the heartbeat loop — keep sending heartbeats to keep the
-                    // coordination connection alive. The consumer's poll loop will call
-                    // EnsureActiveGroupAsync when it sees _state == Unjoined, which drives
-                    // the actual JoinGroup/SyncGroup cycle. If we exit the heartbeat loop,
-                    // the JoinGroup becomes the only pending request on the connection and
-                    // the 30s receive timeout kills it.
-                    if (ge.ErrorCode == ErrorCode.RebalanceInProgress)
-                    {
-                        _state = CoordinatorState.Unjoined;
-                        continue;
-                    }
-
-                    // Cooperative protocol: fire OnPartitionsLost for involuntary loss.
-                    // Guard with _state == Stable: during a cooperative two-round rebalance, the
-                    // stale heartbeat from round 1 may get ILLEGAL_GENERATION when the group moves
-                    // to round 2's generation. That's an expected transition, not involuntary loss.
-                    if (_isCooperativeProtocol && _rebalanceListener is not null
-                        && _state == CoordinatorState.Stable
-                        && ge.ErrorCode is ErrorCode.UnknownMemberId or ErrorCode.IllegalGeneration)
-                    {
-                        var lostPartitions = _assignedPartitions.ToList();
-                        if (lostPartitions.Count > 0)
-                        {
-                            await InvokeRebalanceListenerAsync(
-                                "OnPartitionsLost", lostPartitions,
-                                _rebalanceListener.OnPartitionsLostAsync, CancellationToken.None).ConfigureAwait(false);
-                        }
-                    }
-
-                    // Mark coordinator unknown if it's a coordinator error
-                    if (IsRetriableCoordinatorError(ge.ErrorCode))
-                    {
-                        MarkCoordinatorUnknown();
-                    }
-                    else
-                    {
-                        _state = CoordinatorState.Unjoined;
-                    }
-
-                    break;
-                }
-            }
-        }
-    }
-
     private async ValueTask InvokeRebalanceListenerAsync(
         string callbackName,
         IReadOnlyList<TopicPartition> partitions,
@@ -719,39 +269,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LogRebalanceListenerCallbackError(callbackName, ex);
-        }
-    }
-
-    private async ValueTask SendHeartbeatAsync(CancellationToken cancellationToken)
-    {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-            .ConfigureAwait(false);
-
-        var request = new HeartbeatRequest
-        {
-            GroupId = _options.GroupId!,
-            GenerationId = _generationId,
-            MemberId = _memberId!,
-            GroupInstanceId = _options.GroupInstanceId
-        };
-
-        // Use negotiated API version
-        var heartbeatVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.Heartbeat,
-            HeartbeatRequest.LowestSupportedVersion,
-            HeartbeatRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
-            request,
-            heartbeatVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        if (response.ErrorCode != ErrorCode.None)
-        {
-            throw new Errors.GroupException(response.ErrorCode, $"Heartbeat failed: {response.ErrorCode}")
-            {
-                GroupId = _options.GroupId
-            };
         }
     }
 
@@ -1012,242 +529,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _fetchLock.Release();
         }
     }
-
-    internal static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics, IReadOnlySet<TopicPartition> ownedPartitions)
-    {
-        var topicList = new List<string>(topics.Count);
-        foreach (var topic in topics)
-        {
-            topicList.Add(topic);
-        }
-
-        // Group owned partitions by topic, sorted for deterministic wire format
-        var ownedByTopic = new SortedDictionary<string, List<int>>(StringComparer.Ordinal);
-        foreach (var tp in ownedPartitions)
-        {
-            if (!ownedByTopic.TryGetValue(tp.Topic, out var partitions))
-            {
-                partitions = [];
-                ownedByTopic[tp.Topic] = partitions;
-            }
-            partitions.Add(tp.Partition);
-        }
-
-        // Sort partition IDs within each topic for deterministic wire format
-        foreach (var list in ownedByTopic.Values)
-            list.Sort();
-
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        writer.WriteInt16(1); // Version 1
-        writer.WriteArray(
-            topicList,
-            (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
-        writer.WriteBytes([]); // User data
-
-        // v1: owned partitions array — SortedDictionary provides deterministic key order
-        writer.WriteArray(
-            ownedByTopic,
-            static (ref KafkaProtocolWriter w, KeyValuePair<string, List<int>> entry) =>
-            {
-                w.WriteString(entry.Key);
-                w.WriteArray(entry.Value, static (ref KafkaProtocolWriter w2, int p) => w2.WriteInt32(p));
-            });
-
-        return buffer.WrittenSpan.ToArray();
-    }
-
-    private static HashSet<TopicPartition> ParseAssignment(byte[] data)
-    {
-        if (data.Length == 0)
-            return [];
-
-        var result = new HashSet<TopicPartition>();
-        var reader = new KafkaProtocolReader(data);
-
-        var version = reader.ReadInt16();
-        var topics = reader.ReadArray((ref KafkaProtocolReader r) =>
-        {
-            var topic = r.ReadString()!;
-            var partitions = r.ReadArray((ref KafkaProtocolReader r2) => r2.ReadInt32());
-            return (topic, partitions);
-        });
-
-        foreach (var (topic, partitions) in topics)
-        {
-            foreach (var partition in partitions)
-            {
-                result.Add(new TopicPartition(topic, partition));
-            }
-        }
-
-        return result;
-    }
-
-    private string GetAssignorName() => ResolveAssignmentStrategy().Name;
-
-    private IPartitionAssignmentStrategy ResolveAssignmentStrategy()
-    {
-        if (_options.CustomPartitionAssignmentStrategy is not null)
-            return _options.CustomPartitionAssignmentStrategy;
-
-        return _options.PartitionAssignmentStrategy switch
-        {
-            PartitionAssignmentStrategy.Range => PartitionAssignors.Range,
-            PartitionAssignmentStrategy.RoundRobin => PartitionAssignors.RoundRobin,
-            PartitionAssignmentStrategy.Sticky => PartitionAssignors.Sticky,
-            PartitionAssignmentStrategy.CooperativeSticky => PartitionAssignors.CooperativeSticky,
-            _ => PartitionAssignors.Range
-        };
-    }
-
-    private async ValueTask<SyncGroupRequestAssignment[]> ComputeAssignmentsAsync(
-        IReadOnlySet<string> topics,
-        IReadOnlyList<JoinGroupResponseMember> members,
-        CancellationToken cancellationToken)
-    {
-        // Get partition info for all subscribed topics using pooled dictionary
-        _topicPartitionCounts.Clear();
-        foreach (var topic in topics)
-        {
-            var topicInfo = await _metadataManager.GetTopicMetadataAsync(topic, cancellationToken)
-                .ConfigureAwait(false);
-            if (topicInfo is not null && topicInfo.PartitionCount > 0)
-            {
-                _topicPartitionCounts[topic] = topicInfo.PartitionCount;
-            }
-        }
-
-        // Build ConsumerGroupMember list from JoinGroupResponseMember
-        var groupMembers = new List<ConsumerGroupMember>(members.Count);
-        foreach (var member in members)
-        {
-            var (subscribedTopics, memberOwned) = ParseSubscriptionMetadata(member.Metadata);
-            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, memberOwned, member.Metadata));
-        }
-
-        // Delegate to the resolved strategy
-        var strategy = ResolveAssignmentStrategy();
-        var strategyAssignments = strategy.Assign(groupMembers, _topicPartitionCounts);
-
-        // Build SyncGroupRequestAssignment for each member
-        var result = new List<SyncGroupRequestAssignment>(members.Count);
-        foreach (var member in members)
-        {
-            IReadOnlyList<TopicPartition> partitions = strategyAssignments.TryGetValue(member.MemberId, out var assigned)
-                ? assigned
-                : [];
-
-            var assignmentBytes = BuildAssignmentData(partitions);
-            result.Add(new SyncGroupRequestAssignment
-            {
-                MemberId = member.MemberId,
-                Assignment = assignmentBytes
-            });
-
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                var partitionList = string.Join(", ", partitions);
-                LogAssignedPartitionsToMember(partitions.Count, member.MemberId, partitionList);
-            }
-        }
-
-        return result.ToArray();
-    }
-
-    internal static (HashSet<string> Topics, IReadOnlyCollection<TopicPartition> OwnedPartitions) ParseSubscriptionMetadata(byte[] data)
-    {
-        if (data.Length == 0)
-            return ([], Array.Empty<TopicPartition>());
-
-        var topics = new HashSet<string>();
-        var reader = new KafkaProtocolReader(data);
-
-        var version = reader.ReadInt16();
-        var topicArray = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadString()!);
-
-        foreach (var topic in topicArray)
-        {
-            topics.Add(topic);
-        }
-
-        // Read past userData (bytes with int32 length prefix)
-        _ = reader.ReadBytes();
-
-        if (version >= 1 && reader.Remaining > 0)
-        {
-            var ownedPartitions = new HashSet<TopicPartition>();
-            var ownedTopics = reader.ReadArray((ref KafkaProtocolReader r) =>
-            {
-                var topic = r.ReadString()!;
-                var partitions = r.ReadArray((ref KafkaProtocolReader r2) => r2.ReadInt32());
-                return (topic, partitions);
-            });
-
-            foreach (var (topic, partitions) in ownedTopics)
-            {
-                foreach (var partition in partitions)
-                {
-                    ownedPartitions.Add(new TopicPartition(topic, partition));
-                }
-            }
-
-            return (topics, ownedPartitions);
-        }
-
-        return (topics, Array.Empty<TopicPartition>());
-    }
-
-    private byte[] BuildAssignmentData(IReadOnlyList<TopicPartition> partitions)
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        // Group partitions by topic using pooled dictionary
-        // Clear existing Lists before clearing the dictionary to reuse List instances
-        foreach (var list in _assignmentByTopic.Values)
-        {
-            list.Clear();
-        }
-
-        foreach (var p in partitions)
-        {
-            if (!_assignmentByTopic.TryGetValue(p.Topic, out var list))
-            {
-                list = new List<int>();
-                _assignmentByTopic[p.Topic] = list;
-            }
-            list.Add(p.Partition);
-        }
-
-        // Convert to list for the writer
-        var topicAssignments = new List<(string Topic, List<int> Partitions)>(_assignmentByTopic.Count);
-        foreach (var kvp in _assignmentByTopic)
-        {
-            topicAssignments.Add((kvp.Key, kvp.Value));
-        }
-
-        // Write assignment format
-        writer.WriteInt16(0); // Version
-
-        // Write topics array
-        writer.WriteArray(
-            topicAssignments,
-            (ref KafkaProtocolWriter w, (string Topic, List<int> Partitions) tp) =>
-            {
-                w.WriteString(tp.Topic); // Topic name
-                w.WriteArray(
-                    tp.Partitions,
-                    (ref KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
-            });
-
-        writer.WriteBytes([]); // User data
-
-        return buffer.WrittenSpan.ToArray();
-    }
-
-    #region KIP-848 Consumer Protocol
 
     private readonly record struct ConsumerHeartbeatResult(
         bool AssignmentChanged,
@@ -1727,8 +1008,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    #endregion
-
     /// <summary>
     /// Leaves the consumer group gracefully.
     /// </summary>
@@ -1747,99 +1026,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_coordinatorId < 0)
             return;
 
-        if (_options.GroupProtocol == GroupProtocol.Consumer)
-        {
-            await LeaveGroupConsumerProtocolAsync(cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        try
-        {
-            await RetryHelper.WithRetryAsync(async () =>
-            {
-                var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-                    .ConfigureAwait(false);
-
-                // Get negotiated API version
-                var leaveGroupVersion = _metadataManager.GetNegotiatedApiVersion(
-                    ApiKey.LeaveGroup,
-                    LeaveGroupRequest.LowestSupportedVersion,
-                    LeaveGroupRequest.HighestSupportedVersion);
-
-                LeaveGroupRequest request;
-
-                if (leaveGroupVersion >= 3)
-                {
-                    // v3+: use members array
-                    request = new LeaveGroupRequest
-                    {
-                        GroupId = _options.GroupId,
-                        Members =
-                        [
-                            new LeaveGroupRequestMember
-                            {
-                                MemberId = _memberId,
-                                GroupInstanceId = _options.GroupInstanceId,
-                                Reason = reason
-                            }
-                        ]
-                    };
-                }
-                else
-                {
-                    // v0-v2: use single member ID
-                    request = new LeaveGroupRequest
-                    {
-                        GroupId = _options.GroupId,
-                        MemberId = _memberId
-                    };
-                }
-
-                var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
-                    request,
-                    leaveGroupVersion,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (response.ErrorCode != ErrorCode.None)
-                {
-                    if (response.ErrorCode.IsRetriable())
-                    {
-                        throw new GroupException(response.ErrorCode,
-                            $"LeaveGroup failed: {response.ErrorCode}")
-                        {
-                            GroupId = _options.GroupId
-                        };
-                    }
-                    LogLeaveGroupFailed(response.ErrorCode);
-                }
-                else
-                {
-                    LogSuccessfullyLeftGroup(_options.GroupId!);
-                }
-            // LeaveGroup is best-effort during shutdown; cap retries to 1 to avoid blocking disposal
-            // for up to ~1.8s during coordinator failover.
-            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync, maxRetries: 1).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            LogLeaveGroupRequestFailed(ex);
-        }
-
-        // Stop heartbeat BEFORE resetting state to prevent the heartbeat loop from reading
-        // null _memberId / -1 _generationId, and to prevent EnsureActiveGroupAsync from starting
-        // a new join while the old heartbeat loop is still alive.
-        await StopHeartbeatAsync().ConfigureAwait(false);
-
-        // Reset state under lock to prevent races with EnsureActiveGroupAsync
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            ResetMemberState();
-        }
-        finally
-        {
-            _lock.Release();
-        }
+        await LeaveGroupConsumerProtocolAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1908,20 +1095,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Found coordinator {NodeId} for group {GroupId}")]
     private partial void LogFoundCoordinator(int nodeId, string groupId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Joined group {GroupId}, member={MemberId}, generation={Generation}, isLeader={IsLeader}")]
-    private partial void LogJoinGroupResult(string groupId, string memberId, int generation, bool isLeader);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Leader computed {Count} assignments")]
-    private partial void LogLeaderComputedAssignments(int count);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Received assignment: {Partitions}")]
-    private partial void LogReceivedAssignment(string partitions);
-
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Assigned {Count} partitions to member {MemberId}: {Partitions}")]
-    private partial void LogAssignedPartitionsToMember(int count, string memberId, string partitions);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
     private partial void LogLeaveGroupFailed(ErrorCode errorCode);
@@ -1941,9 +1116,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Rebalance listener {CallbackName}: {PartitionCount} partitions")]
     private partial void LogRebalanceListenerCall(string callbackName, int partitionCount);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "JoinGroup: MemberIdRequired, assigned memberId={MemberId}")]
-    private partial void LogJoinGroupMemberIdRequired(string memberId);
-
     [LoggerMessage(Level = LogLevel.Debug, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
     private partial void LogHeartbeatStarted(int intervalMs);
 
@@ -1952,9 +1124,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Cooperative rebalance: {RevokedCount} partitions revoked, triggering second round")]
-    private partial void LogCooperativeRejoin(int revokedCount);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "{CallbackName} rebalance listener callback threw an exception")]
     private partial void LogRebalanceListenerCallbackError(string callbackName, Exception exception);
@@ -1978,6 +1147,5 @@ public enum CoordinatorState
 {
     Unjoined,
     Joining,
-    Syncing,
     Stable
 }
