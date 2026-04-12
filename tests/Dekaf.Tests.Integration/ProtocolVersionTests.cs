@@ -174,11 +174,8 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
             var apiResponse = await SendApiVersionsAsync(connection);
 
-            var consumerGroupHeartbeat = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.ConsumerGroupHeartbeat);
-
             // Kafka 4.0+ must support ConsumerGroupHeartbeat (KIP-848)
-            await Assert.That(consumerGroupHeartbeat).IsNotNull();
-            await Assert.That((int)consumerGroupHeartbeat.MaxVersion).IsGreaterThanOrEqualTo(0);
+            await Assert.That(apiResponse.ApiKeys.Any(k => k.ApiKey == ApiKey.ConsumerGroupHeartbeat)).IsTrue();
         }
         finally
         {
