@@ -395,7 +395,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await Assert.That(async () =>
                 await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cts.Token))
-            .ThrowsException();
+            .ThrowsException()
+            .OfType<KafkaTimeoutException>();
     }
 
     [Test]
