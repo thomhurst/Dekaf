@@ -559,6 +559,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     _metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
+                // Intentionally does not re-check response.ErrorCode for RebootstrapRequired
+                // to prevent infinite recursion when the new broker also signals rebootstrap.
                 _metadata.Update(response, mergeTopics: topics is not null);
 
                 foreach (var broker in response.Brokers)
