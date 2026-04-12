@@ -3,7 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Producer; // TopicPartition is defined in this namespace
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using NSubstitute;
@@ -1124,35 +1124,8 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Builds a consumer protocol assignment byte array containing the given topic-partitions.
-    /// Uses the same wire format as ConsumerCoordinator.BuildAssignmentData.
-    /// </summary>
     private static byte[] BuildAssignmentData(string topic, int[] partitions)
-    {
-        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        // Version
-        writer.WriteInt16(0);
-
-        // Topics array
-        var topicAssignments = new List<(string Topic, int[] Partitions)> { (topic, partitions) };
-        writer.WriteArray(
-            topicAssignments,
-            (ref KafkaProtocolWriter w, (string Topic, int[] Partitions) tp) =>
-            {
-                w.WriteString(tp.Topic);
-                w.WriteArray(
-                    tp.Partitions,
-                    (ref KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
-            });
-
-        // User data
-        writer.WriteBytes([]);
-
-        return buffer.WrittenSpan.ToArray();
-    }
+        => ConsumerTestHelpers.BuildAssignmentData(topic, partitions);
 
     #endregion
 }

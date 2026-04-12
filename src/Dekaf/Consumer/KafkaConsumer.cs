@@ -551,40 +551,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         IDeserializer<TValue> valueDeserializer,
         ILoggerFactory? loggerFactory = null,
         MetadataOptions? metadataOptions = null)
+        : this(options, keyDeserializer, valueDeserializer,
+            CreateInfrastructure(options, loggerFactory, metadataOptions),
+            loggerFactory)
     {
-        _options = options;
-        _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
-        _keyDeserializer = keyDeserializer;
-        _valueDeserializer = valueDeserializer;
+    }
 
-        // Derive consumer pool sizes from configuration
-        // Use 64 as default partition count estimate — covers most workloads.
-        // PendingFetchData uses a ratchet, so this only increases over time.
-        var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
-        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
-        _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
-        _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
+    /// <summary>
+    /// Internal constructor for unit testing — accepts pre-built infrastructure dependencies
+    /// so tests can inject mock <see cref="IConnectionPool"/> and <see cref="MetadataManager"/>.
+    /// </summary>
+    internal KafkaConsumer(
+        ConsumerOptions options,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILoggerFactory? loggerFactory = null)
+        : this(options, keyDeserializer, valueDeserializer,
+            (connectionPool, metadataManager),
+            loggerFactory)
+    {
+    }
 
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
-
-        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
-
-        // Initialize interceptors from options
-        if (options.Interceptors is { Count: > 0 })
-        {
-            var interceptors = new IConsumerInterceptor<TKey, TValue>[options.Interceptors.Count];
-            for (var i = 0; i < options.Interceptors.Count; i++)
-            {
-                interceptors[i] = (IConsumerInterceptor<TKey, TValue>)options.Interceptors[i];
-            }
-            _interceptors = interceptors;
-        }
-
-        // Consumer connections use the default MaxInFlightRequestsPerConnection (5).
-        // Unlike the producer, consumers don't expose this setting — fetch requests are
-        // inherently sequential per partition, so the default is appropriate.
-        _connectionPool = new ConnectionPool(
+    private static (IConnectionPool, MetadataManager) CreateInfrastructure(
+        ConsumerOptions options, ILoggerFactory? loggerFactory, MetadataOptions? metadataOptions)
+    {
+        var connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
             {
@@ -604,11 +597,53 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             connectionsPerBroker: options.ConnectionsPerBroker,
             ResponseBufferPool.Create(options.FetchMaxBytes));
 
-        _metadataManager = new MetadataManager(
-            _connectionPool,
+        var metadataManager = new MetadataManager(
+            connectionPool,
             options.BootstrapServers,
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
+
+        return (connectionPool, metadataManager);
+    }
+
+    private KafkaConsumer(
+        ConsumerOptions options,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        (IConnectionPool Pool, MetadataManager Metadata) infrastructure,
+        ILoggerFactory? loggerFactory)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+
+        _options = options;
+        _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
+        _keyDeserializer = keyDeserializer;
+        _valueDeserializer = valueDeserializer;
+
+        // Derive consumer pool sizes from configuration
+        // Use 64 as default partition count estimate — covers most workloads.
+        // PendingFetchData uses a ratchet, so this only increases over time.
+        var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
+        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
+        _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
+        _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
+
+        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
+
+        // Initialize interceptors from options
+        if (options.Interceptors is { Count: > 0 })
+        {
+            var interceptors = new IConsumerInterceptor<TKey, TValue>[options.Interceptors.Count];
+            for (var i = 0; i < options.Interceptors.Count; i++)
+            {
+                interceptors[i] = (IConsumerInterceptor<TKey, TValue>)options.Interceptors[i];
+            }
+            _interceptors = interceptors;
+        }
+
+        _connectionPool = infrastructure.Pool;
+        _metadataManager = infrastructure.Metadata;
 
         _compressionCodecs = CompressionCodecRegistry.Default;
 
@@ -871,6 +906,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
@@ -878,7 +914,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 _assignment.Remove(partition);
             }
-            RemovePartitionState(partitions);
+            hadPaused = RemovePartitionState(partitions);
 
             PublishAssignmentSnapshot();
         }
@@ -890,7 +926,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Clear any pending fetch data for the removed partitions
         ClearFetchBufferForPartitions(partitions);
 
-        PublishPausedSnapshot();
+        if (hadPaused)
+            PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
         return this;
@@ -2541,7 +2578,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return changed;
     }
 
-    private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
+    internal async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
         // Refresh pattern subscription BEFORE acquiring the lock — RefreshFilteredTopicsAsync
         // only touches thread-safe structures (ConcurrentDictionary, volatile snapshots,
