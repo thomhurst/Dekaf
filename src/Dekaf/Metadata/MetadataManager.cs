@@ -84,14 +84,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
     public ClusterMetadata Metadata => _metadata;
 
     /// <summary>
-    /// Returns true if API version negotiation has been performed.
-    /// </summary>
-    public bool HasNegotiatedVersions => !_brokerApiVersions.IsEmpty;
-
-    /// <summary>
     /// Returns true if the broker reported support for the given API key during version negotiation.
     /// </summary>
     public bool HasApiKey(ApiKey apiKey) => _brokerApiVersions.ContainsKey(apiKey);
+
+    /// <summary>
+    /// Seeds a broker API version entry. Internal — used by unit tests to bypass negotiation.
+    /// </summary>
+    internal void SetApiVersion(ApiKey apiKey, short minVersion, short maxVersion)
+    {
+        _brokerApiVersions[apiKey] = (minVersion, maxVersion);
+        _negotiatedVersionCache.Clear();
+    }
 
     /// <summary>
     /// Gets the negotiated API version for the specified API key.

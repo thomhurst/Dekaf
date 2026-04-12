@@ -241,6 +241,9 @@ public sealed class ForgottenTopic
 
     /// <summary>
     /// Topic ID (v13+).
+    /// Callers must populate this from ClusterMetadata when fetch session support is added.
+    /// The UUID must match the one used in FetchRequestTopic.TopicId, or the broker
+    /// returns UNKNOWN_TOPIC_ID (error 100) for the forgotten partition.
     /// </summary>
     public Guid TopicId { get; init; }
 

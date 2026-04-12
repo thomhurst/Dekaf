@@ -34,6 +34,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         _metadataManager = new MetadataManager(_connectionPool, ["localhost:9092"]);
 
+        // Seed broker API versions so the ConsumerGroupHeartbeat version guard passes
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        _metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+
         // Seed cluster metadata with a broker and topic (including TopicId for UUID resolution)
         _metadataManager.Metadata.Update(new MetadataResponse
         {
@@ -162,6 +166,35 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             PendingTopicPartitions = []
         };
     }
+
+    #region Broker Version Guard
+
+    [Test]
+    public async Task ConsumerProtocol_BrokerWithoutConsumerGroupHeartbeat_ThrowsBrokerVersionException()
+    {
+        // Create a MetadataManager without ConsumerGroupHeartbeat API seeded
+        var noHeartbeatManager = new MetadataManager(_connectionPool, ["localhost:9092"]);
+        noHeartbeatManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        // Deliberately NOT setting ConsumerGroupHeartbeat
+
+        noHeartbeatManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
+            Topics = []
+        });
+
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, noHeartbeatManager);
+
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.0");
+
+        await noHeartbeatManager.DisposeAsync();
+    }
+
+    #endregion
 
     #region Initial Join Tests
 

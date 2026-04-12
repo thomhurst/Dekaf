@@ -775,7 +775,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IReadOnlySet<string> topics,
         CancellationToken cancellationToken)
     {
-        if (_metadataManager.HasNegotiatedVersions && !_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
+        if (!_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
         {
             throw new BrokerVersionException(
                 "The connected Kafka broker does not support the ConsumerGroupHeartbeat API " +
