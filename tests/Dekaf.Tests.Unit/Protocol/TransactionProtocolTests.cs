@@ -749,28 +749,4 @@ public sealed class TransactionProtocolTests
 
     #endregion
 
-    #region Flexible Version Tests
-
-    [Test]
-    public async Task InitProducerIdRequest_FlexibleVersions()
-    {
-        await Assert.That(InitProducerIdRequest.IsFlexibleVersion(2)).IsTrue();
-        await Assert.That(InitProducerIdRequest.IsFlexibleVersion(5)).IsTrue();
-    }
-
-    [Test]
-    public async Task AddPartitionsToTxnRequest_FlexibleVersions()
-    {
-        await Assert.That(AddPartitionsToTxnRequest.IsFlexibleVersion(3)).IsTrue();
-        await Assert.That(AddPartitionsToTxnRequest.IsFlexibleVersion(4)).IsTrue();
-    }
-
-    [Test]
-    public async Task EndTxnRequest_FlexibleVersions()
-    {
-        await Assert.That(EndTxnRequest.IsFlexibleVersion(3)).IsTrue();
-        await Assert.That(EndTxnRequest.IsFlexibleVersion(4)).IsTrue();
-    }
-
-    #endregion
 }

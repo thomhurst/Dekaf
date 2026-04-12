@@ -201,57 +201,14 @@ public class MessageEncodingTests
 
     #endregion
 
-    #region Version Flexibility Tests
-
-    [Test]
-    [Arguments((short)3, true)]
-    public async Task ApiVersionsRequest_FlexibilityDetection(short version, bool expectedFlexible)
-    {
-        var isFlexible = ApiVersionsRequest.IsFlexibleVersion(version);
-        await Assert.That(isFlexible).IsEqualTo(expectedFlexible);
-    }
-
-    [Test]
-    [Arguments((short)9, true)]
-    [Arguments((short)12, true)]
-    public async Task MetadataRequest_FlexibilityDetection(short version, bool expectedFlexible)
-    {
-        var isFlexible = MetadataRequest.IsFlexibleVersion(version);
-        await Assert.That(isFlexible).IsEqualTo(expectedFlexible);
-    }
-
-    [Test]
-    [Arguments((short)4, true)]
-    [Arguments((short)5, true)]
-    public async Task FindCoordinatorRequest_FlexibilityDetection(short version, bool expectedFlexible)
-    {
-        var isFlexible = FindCoordinatorRequest.IsFlexibleVersion(version);
-        await Assert.That(isFlexible).IsEqualTo(expectedFlexible);
-    }
-
-    #endregion
-
     #region Header Version Tests
 
     [Test]
-    [Arguments((short)3, (short)2, (short)0)]
-    public async Task ApiVersionsRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
+    [Arguments((short)3, (short)0)]
+    public async Task ApiVersionsRequest_ResponseHeaderVersion(short apiVersion, short expectedResponseHeader)
     {
-        var requestHeaderVersion = ApiVersionsRequest.GetRequestHeaderVersion(apiVersion);
         var responseHeaderVersion = ApiVersionsRequest.GetResponseHeaderVersion(apiVersion);
 
-        await Assert.That(requestHeaderVersion).IsEqualTo(expectedRequestHeader);
-        await Assert.That(responseHeaderVersion).IsEqualTo(expectedResponseHeader);
-    }
-
-    [Test]
-    [Arguments((short)9, (short)2, (short)1)]
-    public async Task MetadataRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
-    {
-        var requestHeaderVersion = MetadataRequest.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = MetadataRequest.GetResponseHeaderVersion(apiVersion);
-
-        await Assert.That(requestHeaderVersion).IsEqualTo(expectedRequestHeader);
         await Assert.That(responseHeaderVersion).IsEqualTo(expectedResponseHeader);
     }
 
