@@ -126,7 +126,16 @@ public enum ErrorCode : short
     UnknownSubscriptionId = 117,
     TelemetryTooLarge = 118,
     InvalidRegistration = 119,
-    NotMemberOfTenant = 120
+    NotMemberOfTenant = 120,
+    InvalidRecordState = 121,
+    ShareSessionNotFound = 122,
+    InvalidShareSessionEpoch = 123,
+    FencedStateEpoch = 124,
+    InvalidVoterKey = 125,
+    DuplicateVoter = 126,
+    VoterNotFound = 127,
+    InvalidRegularExpression = 128,
+    RebootstrapRequired = 129
 }
 
 /// <summary>
