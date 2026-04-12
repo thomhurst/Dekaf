@@ -240,9 +240,10 @@ public class IncrementalAssignmentTests
             new TopicPartition("topic1", 0),
             new TopicPartition("topic1", 1));
 
-        // Watermark offsets are not set via public API (they come from fetch responses),
-        // so after IncrementalUnassign the cache entry should be absent.
-        // Verify baseline: no watermarks cached for either partition.
+        // Limitation: _watermarks is only populated by fetch responses (private path),
+        // so this test can only verify the public API returns null — it cannot inject a
+        // stale entry to prove TryRemove fires. Full regression coverage requires an
+        // integration test with a real Kafka broker.
         await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 0))).IsNull();
         await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition("topic1", 1))).IsNull();
 

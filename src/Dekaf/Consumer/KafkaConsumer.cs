@@ -450,7 +450,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private volatile IReadOnlySet<TopicPartition> _pausedSnapshot = new HashSet<TopicPartition>();
 
     // Pattern subscription support
-    private Func<string, bool>? _topicFilter;
+    private volatile Func<string, bool>? _topicFilter;
     private long _lastFilterRefreshTicks;
 
     // Thread-safety notes:
