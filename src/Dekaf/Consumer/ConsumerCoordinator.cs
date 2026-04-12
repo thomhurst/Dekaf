@@ -1310,12 +1310,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
             : _generationId;
 
-        // Build owned topic partitions for acknowledgment (not sent on initial join)
-        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions = null;
-        if (!isInitial)
-        {
-            ownedTopicPartitions = BuildOwnedTopicPartitions(_assignedPartitions);
-        }
+        // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
+        // which is invalid when there's no previous state.
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions =
+            isInitial ? [] : BuildOwnedTopicPartitions(_assignedPartitions);
 
         // Atomically snapshot and clear the subscription-changed flag to prevent a race where
         // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
