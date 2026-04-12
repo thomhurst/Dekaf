@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -491,6 +490,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         SetupFindCoordinator();
 
         var callCount = 0;
+        var fencingProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ConsumerGroupHeartbeatRequest? lastRequest = null;
 
         _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
@@ -501,33 +501,37 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             {
                 var count = Interlocked.Increment(ref callCount);
                 Volatile.Write(ref lastRequest, ci.Arg<ConsumerGroupHeartbeatRequest>());
-                return count switch
+
+                if (count == 1)
                 {
-                    // Initial join succeeds with short heartbeat interval
-                    1 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                     {
                         ErrorCode = ErrorCode.None,
                         MemberId = "member-1",
                         MemberEpoch = 5,
                         HeartbeatIntervalMs = 100
-                    }),
-                    // Heartbeat loop fires: fenced
-                    2 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    });
+                }
+
+                if (count == 2)
+                {
+                    fencingProcessed.TrySetResult();
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                     {
                         ErrorCode = ErrorCode.FencedMemberEpoch,
                         ErrorMessage = "Fenced",
                         MemberEpoch = 0,
                         HeartbeatIntervalMs = 5000
-                    }),
-                    // Rejoin succeeds
-                    _ => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
-                    {
-                        ErrorCode = ErrorCode.None,
-                        MemberId = "member-1",
-                        MemberEpoch = 6,
-                        HeartbeatIntervalMs = 60000
-                    })
-                };
+                    });
+                }
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 6,
+                    HeartbeatIntervalMs = 60000
+                });
             });
 
         var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 100);
@@ -538,10 +542,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.GenerationId).IsEqualTo(5);
 
-        // Wait for heartbeat loop to fire and get fenced
-        var sw = Stopwatch.StartNew();
-        while (coordinator.State == CoordinatorState.Stable && sw.Elapsed < TimeSpan.FromSeconds(5))
-            await Task.Delay(50);
+        // Wait for heartbeat loop to process the fencing response (deterministic signal)
+        await fencingProcessed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Brief yield to let the heartbeat loop complete its state transition after the mock returns
+        await Task.Delay(50);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         // With fix: _generationId reset to 0 by fencing handler (not stale 5)
@@ -565,6 +569,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         SetupFindCoordinator();
 
         var callCount = 0;
+        var fencingProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ConsumerGroupHeartbeatRequest? lastRequest = null;
 
         _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
@@ -575,33 +580,37 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             {
                 var count = Interlocked.Increment(ref callCount);
                 Volatile.Write(ref lastRequest, ci.Arg<ConsumerGroupHeartbeatRequest>());
-                return count switch
+
+                if (count == 1)
                 {
-                    // Initial join succeeds with short heartbeat interval
-                    1 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                     {
                         ErrorCode = ErrorCode.None,
                         MemberId = "member-1",
                         MemberEpoch = 3,
                         HeartbeatIntervalMs = 100
-                    }),
-                    // Heartbeat loop fires: fenced
-                    2 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    });
+                }
+
+                if (count == 2)
+                {
+                    fencingProcessed.TrySetResult();
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                     {
                         ErrorCode = ErrorCode.FencedMemberEpoch,
                         ErrorMessage = "Fenced",
                         MemberEpoch = 0,
                         HeartbeatIntervalMs = 5000
-                    }),
-                    // Rejoin succeeds
-                    _ => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
-                    {
-                        ErrorCode = ErrorCode.None,
-                        MemberId = "member-1",
-                        MemberEpoch = 4,
-                        HeartbeatIntervalMs = 60000
-                    })
-                };
+                    });
+                }
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 4,
+                    HeartbeatIntervalMs = 60000
+                });
             });
 
         var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", heartbeatIntervalMs: 100);
@@ -612,10 +621,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.GenerationId).IsEqualTo(3);
 
-        // Wait for heartbeat loop to fire and get fenced
-        var sw = Stopwatch.StartNew();
-        while (coordinator.State == CoordinatorState.Stable && sw.Elapsed < TimeSpan.FromSeconds(5))
-            await Task.Delay(50);
+        // Wait for heartbeat loop to process the fencing response (deterministic signal)
+        await fencingProcessed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Brief yield to let the heartbeat loop complete its state transition after the mock returns
+        await Task.Delay(50);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         // With fix: _generationId reset to -2 for static member (triggers MemberEpoch=-2 on rejoin)
@@ -629,6 +638,50 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(rejoinReq!.MemberEpoch).IsEqualTo(-2);
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
         await Assert.That(coordinator.GenerationId).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_UnknownMemberId_InJoinPath_ResetsAndRetries()
+    {
+        SetupFindCoordinator();
+
+        var callCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                callCount++;
+                return callCount switch
+                {
+                    // First: UnknownMemberId (broker forgot this member)
+                    1 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.UnknownMemberId,
+                        ErrorMessage = "Unknown member",
+                        MemberEpoch = 0,
+                        HeartbeatIntervalMs = 5000
+                    }),
+                    // Second: successful fresh join
+                    _ => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-2",
+                        MemberEpoch = 1,
+                        HeartbeatIntervalMs = 5000
+                    })
+                };
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+        await Assert.That(callCount).IsEqualTo(2);
     }
 
     #endregion

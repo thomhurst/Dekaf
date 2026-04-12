@@ -1566,6 +1566,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     _generationId = _options.GroupInstanceId is not null ? -2 : 0;
                     _state = CoordinatorState.Unjoined;
                 }
+                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
+                {
+                    // Broker forgot this member (e.g. broker restart after fencing) — full reset and retry
+                    LogRetriableCoordinatorError(ex.ErrorCode);
+                    ResetMemberState();
+                }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
