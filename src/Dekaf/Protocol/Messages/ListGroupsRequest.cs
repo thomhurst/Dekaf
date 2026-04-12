@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ListGroupsRequest : IKafkaRequest<ListGroupsResponse>
 {
     public static ApiKey ApiKey => ApiKey.ListGroups;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 5;
 
     /// <summary>
@@ -19,10 +19,6 @@ public sealed class ListGroupsRequest : IKafkaRequest<ListGroupsResponse>
     /// Filter groups by type (v5+). Null means no filter.
     /// </summary>
     public IReadOnlyList<string>? TypesFilter { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => version >= 3;
-    public static short GetRequestHeaderVersion(short version) => version >= 3 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 3 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

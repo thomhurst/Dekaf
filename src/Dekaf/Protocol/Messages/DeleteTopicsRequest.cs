@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DeleteTopicsRequest : IKafkaRequest<DeleteTopicsResponse>
 {
     public static ApiKey ApiKey => ApiKey.DeleteTopics;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 6;
 
     /// <summary>
@@ -25,10 +25,6 @@ public sealed class DeleteTopicsRequest : IKafkaRequest<DeleteTopicsResponse>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
     public int TimeoutMs { get; init; } = 30000;
-
-    public static bool IsFlexibleVersion(short version) => version >= 4;
-    public static short GetRequestHeaderVersion(short version) => version >= 4 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 4 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

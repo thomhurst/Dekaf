@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class AddOffsetsToTxnRequest : IKafkaRequest<AddOffsetsToTxnResponse>
 {
     public static ApiKey ApiKey => ApiKey.AddOffsetsToTxn;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 4;
 
     /// <summary>
@@ -29,10 +29,6 @@ public sealed class AddOffsetsToTxnRequest : IKafkaRequest<AddOffsetsToTxnRespon
     /// The consumer group ID whose offsets should be included in the transaction.
     /// </summary>
     public required string GroupId { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => version >= 3;
-    public static short GetRequestHeaderVersion(short version) => version >= 3 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 3 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

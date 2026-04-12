@@ -1,5 +1,9 @@
+using Dekaf.Errors;
 using Dekaf.Metadata;
+using Dekaf.Networking;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Metadata;
 
@@ -243,4 +247,5 @@ public class MetadataManagerTests
         // If we get here without exceptions, thread-safety is working
         // No assertion needed - successful completion proves thread-safety
     }
+
 }

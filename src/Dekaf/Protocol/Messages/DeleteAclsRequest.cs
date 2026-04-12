@@ -7,17 +7,13 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DeleteAclsRequest : IKafkaRequest<DeleteAclsResponse>
 {
     public static ApiKey ApiKey => ApiKey.DeleteAcls;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
 
     /// <summary>
     /// The filters to use when deleting ACLs.
     /// </summary>
     public required IReadOnlyList<DeleteAclsFilter> Filters { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => version >= 2;
-    public static short GetRequestHeaderVersion(short version) => version >= 2 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 2 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

@@ -6,7 +6,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class OffsetFetchResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.OffsetFetch;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => 9;
 
     /// <summary>
@@ -31,9 +31,7 @@ public sealed class OffsetFetchResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 6;
-
-        var throttleTimeMs = version >= 3 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<OffsetFetchResponseTopic>? topics = null;
         var errorCode = ErrorCode.None;
@@ -41,24 +39,15 @@ public sealed class OffsetFetchResponse : IKafkaResponse
 
         if (version < 8)
         {
-            topics = isFlexible
-                ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version)
-                : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version);
-
-            if (version >= 2)
-            {
-                errorCode = (ErrorCode)reader.ReadInt16();
-            }
+            topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version);
+            errorCode = (ErrorCode)reader.ReadInt16();
         }
         else
         {
             groups = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseGroup.Read(ref r, v), version);
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new OffsetFetchResponse
         {
@@ -80,18 +69,10 @@ public sealed class OffsetFetchResponseTopic
 
     public static OffsetFetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 6;
+        var name = reader.ReadCompactNonNullableString();
+        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v), version);
 
-        var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
-
-        var partitions = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v), version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new OffsetFetchResponseTopic
         {
@@ -114,20 +95,13 @@ public sealed class OffsetFetchResponsePartition
 
     public static OffsetFetchResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 6;
-
         var partitionIndex = reader.ReadInt32();
         var committedOffset = reader.ReadInt64();
-
-        var committedLeaderEpoch = version >= 5 ? reader.ReadInt32() : -1;
-
-        var metadata = isFlexible ? reader.ReadCompactString() : reader.ReadString();
+        var committedLeaderEpoch = reader.ReadInt32();
+        var metadata = reader.ReadCompactString();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new OffsetFetchResponsePartition
         {

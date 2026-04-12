@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class CreatePartitionsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.CreatePartitions;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
 
     /// <summary>

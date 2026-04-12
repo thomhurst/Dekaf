@@ -296,6 +296,25 @@ public sealed class TransactionException : KafkaException
 }
 
 /// <summary>
+/// Exception thrown when the connected Kafka broker does not meet the minimum version requirements.
+/// This is a non-retriable, permanent error — retrying against the same cluster will not help.
+/// </summary>
+public sealed class BrokerVersionException : KafkaException
+{
+    public BrokerVersionException() : base()
+    {
+    }
+
+    public BrokerVersionException(string message) : base(message)
+    {
+    }
+
+    public BrokerVersionException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
 /// Exception thrown when authentication fails.
 /// </summary>
 public sealed class AuthenticationException : KafkaException

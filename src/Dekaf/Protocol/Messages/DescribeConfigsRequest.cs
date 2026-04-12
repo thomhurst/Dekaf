@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DescribeConfigsRequest : IKafkaRequest<DescribeConfigsResponse>
 {
     public static ApiKey ApiKey => ApiKey.DescribeConfigs;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 4;
 
     /// <summary>
@@ -24,10 +24,6 @@ public sealed class DescribeConfigsRequest : IKafkaRequest<DescribeConfigsRespon
     /// True if we should include configuration documentation (v3+).
     /// </summary>
     public bool IncludeDocumentation { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => version >= 4;
-    public static short GetRequestHeaderVersion(short version) => version >= 4 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 4 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

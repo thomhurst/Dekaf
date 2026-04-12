@@ -13,10 +13,8 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
     private static readonly FetchRequestPool s_pool = new();
 
     public static ApiKey ApiKey => ApiKey.Fetch;
-    public static short LowestSupportedVersion => 0;
-    // Note: Fetch v13+ requires TopicId (UUID) which we don't track yet.
-    // Limiting to v12 until TopicId support is implemented.
-    public static short HighestSupportedVersion => 12;
+    public static short LowestSupportedVersion => 12;
+    public static short HighestSupportedVersion => 16;
 
     /// <summary>
     /// Cluster ID (v12+).
@@ -110,14 +108,8 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
         }
     }
 
-    public static bool IsFlexibleVersion(short version) => version >= 12;
-    public static short GetRequestHeaderVersion(short version) => version >= 12 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 12 ? (short)1 : (short)0;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 12;
-
         if (version >= 15)
         {
             ReplicaState?.Write(ref writer, version);
@@ -129,69 +121,24 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 
         writer.WriteInt32(MaxWaitMs);
         writer.WriteInt32(MinBytes);
+        writer.WriteInt32(MaxBytes);
+        writer.WriteInt8((sbyte)IsolationLevel);
+        writer.WriteInt32(SessionId);
+        writer.WriteInt32(SessionEpoch);
 
-        if (version >= 3)
-        {
-            writer.WriteInt32(MaxBytes);
-        }
+        writer.WriteCompactArray(
+            Topics,
+            static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
+            version);
 
-        if (version >= 4)
-        {
-            writer.WriteInt8((sbyte)IsolationLevel);
-        }
+        var forgottenTopics = ForgottenTopicsData ?? [];
+        writer.WriteCompactArray(
+            forgottenTopics,
+            static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
+            version);
 
-        if (version >= 7)
-        {
-            writer.WriteInt32(SessionId);
-            writer.WriteInt32(SessionEpoch);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-
-        if (version >= 7)
-        {
-            var forgottenTopics = ForgottenTopicsData ?? [];
-            if (isFlexible)
-            {
-                writer.WriteCompactArray(
-                    forgottenTopics,
-                    static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
-                    version);
-            }
-            else
-            {
-                writer.WriteArray(
-                    forgottenTopics,
-                    static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
-                    version);
-            }
-        }
-
-        if (version >= 11)
-        {
-            if (isFlexible)
-                writer.WriteCompactString(RackId ?? string.Empty);
-            else
-                writer.WriteString(RackId ?? string.Empty);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteCompactString(RackId ?? string.Empty);
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -217,39 +164,21 @@ public sealed class FetchRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 12;
-
         if (version >= 13)
         {
             writer.WriteUuid(TopicId);
         }
         else
         {
-            if (isFlexible)
-                writer.WriteCompactString(Topic);
-            else
-                writer.WriteString(Topic);
+            writer.WriteCompactString(Topic);
         }
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            Partitions,
+            static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -290,33 +219,13 @@ public sealed class FetchRequestPartition
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 12;
-
         writer.WriteInt32(Partition);
-
-        if (version >= 9)
-        {
-            writer.WriteInt32(CurrentLeaderEpoch);
-        }
-
+        writer.WriteInt32(CurrentLeaderEpoch);
         writer.WriteInt64(FetchOffset);
-
-        if (version >= 12)
-        {
-            writer.WriteInt32(LastFetchedEpoch);
-        }
-
-        if (version >= 5)
-        {
-            writer.WriteInt64(LogStartOffset);
-        }
-
+        writer.WriteInt32(LastFetchedEpoch);
+        writer.WriteInt64(LogStartOffset);
         writer.WriteInt32(PartitionMaxBytes);
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -332,6 +241,9 @@ public sealed class ForgottenTopic
 
     /// <summary>
     /// Topic ID (v13+).
+    /// Callers must populate this from ClusterMetadata when fetch session support is added.
+    /// The UUID must match the one used in FetchRequestTopic.TopicId, or the broker
+    /// returns UNKNOWN_TOPIC_ID (error 100) for the forgotten partition.
     /// </summary>
     public Guid TopicId { get; init; }
 
@@ -342,37 +254,20 @@ public sealed class ForgottenTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 12;
-
         if (version >= 13)
         {
             writer.WriteUuid(TopicId);
         }
         else
         {
-            if (isFlexible)
-                writer.WriteCompactString(Topic);
-            else
-                writer.WriteString(Topic);
+            writer.WriteCompactString(Topic);
         }
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
+        writer.WriteCompactArray(
+            Partitions,
+            (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 

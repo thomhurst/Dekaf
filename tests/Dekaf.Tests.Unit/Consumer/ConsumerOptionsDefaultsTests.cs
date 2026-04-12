@@ -117,13 +117,6 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task PartitionAssignmentStrategy_DefaultsTo_CooperativeSticky()
-    {
-        var options = CreateOptions();
-        await Assert.That(options.PartitionAssignmentStrategy).IsEqualTo(PartitionAssignmentStrategy.CooperativeSticky);
-    }
-
-    [Test]
     public async Task IsolationLevel_DefaultsTo_ReadUncommitted()
     {
         var options = CreateOptions();

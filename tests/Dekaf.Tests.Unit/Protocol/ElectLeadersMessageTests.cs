@@ -255,30 +255,4 @@ public class ElectLeadersMessageTests
 
     #endregion
 
-    #region Version Flexibility Tests
-
-    [Test]
-    [Arguments((short)0, false)]
-    [Arguments((short)1, false)]
-    [Arguments((short)2, true)]
-    public async Task ElectLeadersRequest_FlexibilityDetection(short version, bool expectedFlexible)
-    {
-        var isFlexible = ElectLeadersRequest.IsFlexibleVersion(version);
-        await Assert.That(isFlexible).IsEqualTo(expectedFlexible);
-    }
-
-    [Test]
-    [Arguments((short)0, (short)1, (short)0)]
-    [Arguments((short)1, (short)1, (short)0)]
-    [Arguments((short)2, (short)2, (short)1)]
-    public async Task ElectLeadersRequest_HeaderVersions(short apiVersion, short expectedRequestHeader, short expectedResponseHeader)
-    {
-        var requestHeaderVersion = ElectLeadersRequest.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = ElectLeadersRequest.GetResponseHeaderVersion(apiVersion);
-
-        await Assert.That(requestHeaderVersion).IsEqualTo(expectedRequestHeader);
-        await Assert.That(responseHeaderVersion).IsEqualTo(expectedResponseHeader);
-    }
-
-    #endregion
 }

@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class FindCoordinatorResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.FindCoordinator;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 5;
 
     /// <summary>
@@ -16,79 +16,20 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
     public int ThrottleTimeMs { get; init; }
 
     /// <summary>
-    /// Error code (v0-v3).
+    /// Coordinator responses.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
-
-    /// <summary>
-    /// Error message (v1-v3).
-    /// </summary>
-    public string? ErrorMessage { get; init; }
-
-    /// <summary>
-    /// Coordinator node ID (v0-v3).
-    /// </summary>
-    public int NodeId { get; init; }
-
-    /// <summary>
-    /// Coordinator host (v0-v3).
-    /// </summary>
-    public string? Host { get; init; }
-
-    /// <summary>
-    /// Coordinator port (v0-v3).
-    /// </summary>
-    public int Port { get; init; }
-
-    /// <summary>
-    /// Coordinator responses (v4+).
-    /// </summary>
-    public IReadOnlyList<Coordinator>? Coordinators { get; init; }
+    public required IReadOnlyList<Coordinator> Coordinators { get; init; }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
+        var throttleTimeMs = reader.ReadInt32();
+        var coordinators = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => Coordinator.Read(ref r, v), version);
 
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
-
-        ErrorCode errorCode = ErrorCode.None;
-        string? errorMessage = null;
-        var nodeId = -1;
-        string? host = null;
-        var port = -1;
-        IReadOnlyList<Coordinator>? coordinators = null;
-
-        if (version < 4)
-        {
-            errorCode = (ErrorCode)reader.ReadInt16();
-
-            if (version >= 1)
-            {
-                errorMessage = isFlexible ? reader.ReadCompactString() : reader.ReadString();
-            }
-
-            nodeId = reader.ReadInt32();
-            host = isFlexible ? reader.ReadCompactString() : reader.ReadString();
-            port = reader.ReadInt32();
-        }
-        else
-        {
-            coordinators = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => Coordinator.Read(ref r, v), version);
-        }
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new FindCoordinatorResponse
         {
             ThrottleTimeMs = throttleTimeMs,
-            ErrorCode = errorCode,
-            ErrorMessage = errorMessage,
-            NodeId = nodeId,
-            Host = host,
-            Port = port,
             Coordinators = coordinators
         };
     }

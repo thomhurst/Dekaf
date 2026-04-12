@@ -788,7 +788,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _clientId;
     private string? _groupId;
     private string? _groupInstanceId;
-    private GroupProtocol _groupProtocol = GroupProtocol.Classic;
     private string? _groupRemoteAssignor;
     private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
@@ -821,8 +820,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private readonly List<string> _topicsToSubscribe = [];
     private TimeSpan? _metadataMaxAge;
     private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
-    private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
-    private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
     private int _prefetchPipelineDepth = 3;
     private int _connectionsPerBroker = 2;
@@ -862,55 +859,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the consumer group protocol to use for group coordination.
-    /// </summary>
-    /// <param name="groupProtocol">The group protocol to use.</param>
-    /// <remarks>
-    /// <list type="bullet">
-    /// <item><description><see cref="GroupProtocol.Classic"/>: Traditional JoinGroup/SyncGroup/Heartbeat protocol (default)</description></item>
-    /// <item><description><see cref="GroupProtocol.Consumer"/>: KIP-848 ConsumerGroupHeartbeat protocol (Kafka 4.0+)</description></item>
-    /// </list>
-    /// </remarks>
-    public ConsumerBuilder<TKey, TValue> WithGroupProtocol(GroupProtocol groupProtocol)
-    {
-        _groupProtocol = groupProtocol;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the server-side partition assignor for the Consumer group protocol (KIP-848).
+    /// Sets the server-side partition assignor for KIP-848 group coordination.
     /// Common values are "uniform" and "range".
     /// </summary>
     /// <param name="assignor">The server-side assignor name.</param>
     /// <remarks>
-    /// This setting is only applicable when using <see cref="GroupProtocol.Consumer"/>.
     /// When not set, the broker uses its default assignor.
     /// </remarks>
     public ConsumerBuilder<TKey, TValue> WithGroupRemoteAssignor(string assignor)
     {
         _groupRemoteAssignor = assignor ?? throw new ArgumentNullException(nameof(assignor));
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the partition assignment strategy for the classic consumer group protocol.
-    /// </summary>
-    /// <param name="strategy">The built-in assignment strategy to use.</param>
-    public ConsumerBuilder<TKey, TValue> WithPartitionAssignmentStrategy(PartitionAssignmentStrategy strategy)
-    {
-        _partitionAssignmentStrategy = strategy;
-        _customPartitionAssignmentStrategy = null;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets a custom partition assignment strategy implementation.
-    /// When set, this takes precedence over the enum-based <see cref="WithPartitionAssignmentStrategy(PartitionAssignmentStrategy)"/>.
-    /// </summary>
-    /// <param name="strategy">The custom partition assignment strategy to use.</param>
-    public ConsumerBuilder<TKey, TValue> WithPartitionAssignmentStrategy(IPartitionAssignmentStrategy strategy)
-    {
-        _customPartitionAssignmentStrategy = strategy ?? throw new ArgumentNullException(nameof(strategy));
         return this;
     }
 
@@ -1512,8 +1470,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
             keyDeserializer = (IDeserializer<TKey>)(object)new CachingStringKeyDeserializer(stringSerde);
         }
 
-        ValidateGroupProtocolConfig();
-
         if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
@@ -1525,7 +1481,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ClientId = _clientId,
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
-            GroupProtocol = _groupProtocol,
             GroupRemoteAssignor = _groupRemoteAssignor,
             OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
@@ -1537,8 +1492,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,
-            PartitionAssignmentStrategy = _partitionAssignmentStrategy,
-            CustomPartitionAssignmentStrategy = _customPartitionAssignmentStrategy,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
@@ -1588,16 +1541,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
         }
 
         return consumer;
-    }
-
-    private void ValidateGroupProtocolConfig()
-    {
-        if (_groupRemoteAssignor is not null && _groupProtocol != GroupProtocol.Consumer)
-        {
-            throw new InvalidOperationException(
-                "GroupRemoteAssignor can only be set when using GroupProtocol.Consumer. " +
-                "Call WithGroupProtocol(GroupProtocol.Consumer) to use server-side assignment.");
-        }
     }
 
     private static IDeserializer<T> GetDefaultDeserializer<T>()

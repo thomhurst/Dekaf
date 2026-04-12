@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DescribeAclsRequest : IKafkaRequest<DescribeAclsResponse>
 {
     public static ApiKey ApiKey => ApiKey.DescribeAcls;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
 
     /// <summary>
@@ -44,10 +44,6 @@ public sealed class DescribeAclsRequest : IKafkaRequest<DescribeAclsResponse>
     /// The permission type to filter on.
     /// </summary>
     public sbyte PermissionType { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => version >= 2;
-    public static short GetRequestHeaderVersion(short version) => version >= 2 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 2 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

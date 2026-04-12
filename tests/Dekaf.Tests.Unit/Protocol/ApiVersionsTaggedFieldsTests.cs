@@ -238,23 +238,4 @@ public sealed class ApiVersionsTaggedFieldsTests
         await Assert.That(response.ZkMigrationReady).IsFalse();
     }
 
-    [Test]
-    public async Task V0_NoTaggedFields()
-    {
-        // v0 has no tagged fields at all
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        // ErrorCode
-        writer.WriteInt16(0);
-        // ApiKeys array (empty)
-        writer.WriteInt32(0);
-
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var response = (ApiVersionsResponse)ApiVersionsResponse.Read(ref reader, version: 0);
-
-        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(response.SupportedFeatures).IsNull();
-        await Assert.That(response.FinalizedFeaturesEpoch).IsEqualTo(-1L);
-    }
 }

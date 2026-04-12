@@ -13,11 +13,23 @@ namespace Dekaf.Tests.Integration;
 [Category("Admin")]
 public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    private static async Task<ApiVersionsResponse> SendApiVersionsAsync(IKafkaConnection connection)
+    {
+        var request = new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf-test",
+            ClientSoftwareVersion = "1.0.0"
+        };
+        return await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            request,
+            ApiVersionsRequest.HighestSupportedVersion,
+            CancellationToken.None);
+    }
+
     [Test]
     public async Task ApiVersions_SuccessfullyNegotiates()
     {
         // This test verifies that ApiVersions request works and returns supported API versions
-        // Arrange
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -32,12 +44,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Act - send ApiVersions v0 (most compatible)
-            var request = new ApiVersionsRequest();
-            var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                request,
-                0,
-                CancellationToken.None);
+            var response = await SendApiVersionsAsync(connection);
 
             // Assert
             await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
@@ -49,9 +56,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             await Assert.That(apiKeyIds.Contains(ApiKey.Fetch)).IsTrue();
             await Assert.That(apiKeyIds.Contains(ApiKey.Metadata)).IsTrue();
             await Assert.That(apiKeyIds.Contains(ApiKey.FindCoordinator)).IsTrue();
-            await Assert.That(apiKeyIds.Contains(ApiKey.JoinGroup)).IsTrue();
-            await Assert.That(apiKeyIds.Contains(ApiKey.SyncGroup)).IsTrue();
-            await Assert.That(apiKeyIds.Contains(ApiKey.Heartbeat)).IsTrue();
+            await Assert.That(apiKeyIds.Contains(ApiKey.ConsumerGroupHeartbeat)).IsTrue();
         }
         finally
         {
@@ -62,7 +67,6 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     [Test]
     public async Task Metadata_SupportsExpectedVersions()
     {
-        // Arrange
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -77,12 +81,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Get API versions
-            var apiRequest = new ApiVersionsRequest();
-            var apiResponse = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                apiRequest,
-                0,
-                CancellationToken.None);
+            var apiResponse = await SendApiVersionsAsync(connection);
 
             var metadataApi = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.Metadata);
 
@@ -99,7 +98,6 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     [Test]
     public async Task Produce_SupportsExpectedVersions()
     {
-        // Arrange
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -114,12 +112,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Get API versions
-            var apiRequest = new ApiVersionsRequest();
-            var apiResponse = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                apiRequest,
-                0,
-                CancellationToken.None);
+            var apiResponse = await SendApiVersionsAsync(connection);
 
             var produceApi = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.Produce);
 
@@ -135,7 +128,6 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     [Test]
     public async Task Fetch_SupportsExpectedVersions()
     {
-        // Arrange
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -150,12 +142,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Get API versions
-            var apiRequest = new ApiVersionsRequest();
-            var apiResponse = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                apiRequest,
-                0,
-                CancellationToken.None);
+            var apiResponse = await SendApiVersionsAsync(connection);
 
             var fetchApi = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.Fetch);
 
@@ -169,9 +156,8 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
-    public async Task GroupProtocol_SupportsExpectedVersions()
+    public async Task GroupProtocol_SupportsKip848ConsumerGroupHeartbeat()
     {
-        // Arrange
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -186,23 +172,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Get API versions
-            var apiRequest = new ApiVersionsRequest();
-            var apiResponse = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                apiRequest,
-                0,
-                CancellationToken.None);
+            var apiResponse = await SendApiVersionsAsync(connection);
 
-            var joinGroup = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.JoinGroup);
-            var syncGroup = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.SyncGroup);
-            var heartbeat = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.Heartbeat);
-            var leaveGroup = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.LeaveGroup);
-
-            // Assert - should support modern group protocol
-            await Assert.That((int)joinGroup.MaxVersion).IsGreaterThanOrEqualTo(5);
-            await Assert.That((int)syncGroup.MaxVersion).IsGreaterThanOrEqualTo(3);
-            await Assert.That((int)heartbeat.MaxVersion).IsGreaterThanOrEqualTo(3);
-            await Assert.That((int)leaveGroup.MaxVersion).IsGreaterThanOrEqualTo(3);
+            // Kafka 4.0+ must support ConsumerGroupHeartbeat (KIP-848)
+            await Assert.That(apiResponse.ApiKeys.Any(k => k.ApiKey == ApiKey.ConsumerGroupHeartbeat)).IsTrue();
         }
         finally
         {
@@ -378,7 +351,6 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     [Test]
     public async Task FindCoordinator_SupportsV4Format()
     {
-        // Tests that FindCoordinator v4 format (with multiple coordinators) works
         var connectionOptions = new ConnectionOptions
         {
             RequestTimeout = TimeSpan.FromSeconds(30)
@@ -393,33 +365,18 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
 
-            // Get API versions first
-            var apiRequest = new ApiVersionsRequest();
-            var apiResponse = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                apiRequest,
-                0,
+            var request = new FindCoordinatorRequest
+            {
+                Key = "test-group",
+                KeyType = CoordinatorType.Group
+            };
+
+            var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                request,
+                FindCoordinatorRequest.HighestSupportedVersion,
                 CancellationToken.None);
 
-            var findCoordApi = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.FindCoordinator);
-
-            // Only test if v4 is supported
-            if (findCoordApi.MaxVersion >= 4)
-            {
-                var request = new FindCoordinatorRequest
-                {
-                    Key = "test-group",
-                    KeyType = CoordinatorType.Group
-                };
-
-                var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                    request,
-                    4,
-                    CancellationToken.None);
-
-                // v4 response has Coordinators array
-                await Assert.That(response.Coordinators).IsNotNull();
-                await Assert.That(response.Coordinators!.Count).IsGreaterThan(0);
-            }
+            await Assert.That(response.Coordinators.Count).IsGreaterThan(0);
         }
         finally
         {

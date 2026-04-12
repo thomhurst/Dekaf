@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class CreateTopicsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.CreateTopics;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 5;
     public static short HighestSupportedVersion => 7;
 
     /// <summary>

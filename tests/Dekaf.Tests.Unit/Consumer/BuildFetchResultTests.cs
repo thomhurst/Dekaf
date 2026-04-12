@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
+using Dekaf.Metadata;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -11,6 +13,20 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// </summary>
 public class BuildFetchResultTests
 {
+    private static (Dictionary<string, List<(FetchRequestPartition, TopicPartition)>> Template, TopicPartition Tp)
+        CreateSinglePartitionTemplate(string topic = "topic-a", int partition = 0)
+    {
+        var tp = new TopicPartition(topic, partition);
+        var dict = new Dictionary<string, List<(FetchRequestPartition, TopicPartition)>>
+        {
+            [topic] =
+            [
+                (new FetchRequestPartition { Partition = partition, FetchOffset = 0, PartitionMaxBytes = 1_048_576 }, tp)
+            ]
+        };
+        return (dict, tp);
+    }
+
     [Test]
     public async Task BuildFetchResult_ReturnsFreshPartitionObjects_NotSharedReferences()
     {
@@ -90,20 +106,61 @@ public class BuildFetchResultTests
     [Test]
     public async Task BuildFetchResult_MissingPosition_DefaultsToZero()
     {
-        var tp0 = new TopicPartition("topic-a", 0);
+        var (templateDict, _) = CreateSinglePartitionTemplate();
         var fetchPositions = new ConcurrentDictionary<TopicPartition, long>();
-        // tp0 not added to fetchPositions
-
-        var templateDict = new Dictionary<string, List<(FetchRequestPartition, TopicPartition)>>
-        {
-            ["topic-a"] =
-            [
-                (new FetchRequestPartition { Partition = 0, FetchOffset = 0, PartitionMaxBytes = 1_048_576 }, tp0)
-            ]
-        };
 
         var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions);
 
         await Assert.That(result[0].Partitions[0].FetchOffset).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task BuildFetchResult_WithClusterMetadata_PopulatesTopicId()
+    {
+        var topicId = Guid.NewGuid();
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 42 };
+
+        var clusterMetadata = new ClusterMetadata();
+        clusterMetadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    Name = "topic-a",
+                    TopicId = topicId,
+                    ErrorCode = ErrorCode.None,
+                    Partitions = [new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }]
+                }
+            ]
+        });
+
+        var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions, clusterMetadata: clusterMetadata);
+
+        await Assert.That(result[0].TopicId).IsEqualTo(topicId);
+    }
+
+    [Test]
+    public async Task BuildFetchResult_WithClusterMetadata_TopicNotInMetadata_ReturnsEmptyGuid()
+    {
+        var (templateDict, tp0) = CreateSinglePartitionTemplate("unknown-topic");
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 0 };
+
+        var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions, clusterMetadata: new ClusterMetadata());
+
+        await Assert.That(result[0].TopicId).IsEqualTo(Guid.Empty);
+    }
+
+    [Test]
+    public async Task BuildFetchResult_NullClusterMetadata_ReturnsEmptyGuid()
+    {
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 0 };
+
+        var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions, clusterMetadata: null);
+
+        await Assert.That(result[0].TopicId).IsEqualTo(Guid.Empty);
     }
 }

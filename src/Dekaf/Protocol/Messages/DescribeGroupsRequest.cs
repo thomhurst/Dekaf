@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class DescribeGroupsRequest : IKafkaRequest<DescribeGroupsResponse>
 {
     public static ApiKey ApiKey => ApiKey.DescribeGroups;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 5;
     public static short HighestSupportedVersion => 5;
 
     /// <summary>
@@ -19,10 +19,6 @@ public sealed class DescribeGroupsRequest : IKafkaRequest<DescribeGroupsResponse
     /// Whether to include authorized operations (v3+).
     /// </summary>
     public bool IncludeAuthorizedOperations { get; init; }
-
-    public static bool IsFlexibleVersion(short version) => version >= 5;
-    public static short GetRequestHeaderVersion(short version) => version >= 5 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 5 ? (short)1 : (short)0;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

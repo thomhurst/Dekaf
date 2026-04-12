@@ -6,7 +6,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class OffsetCommitResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.OffsetCommit;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 8;
     public static short HighestSupportedVersion => 9;
 
     /// <summary>
@@ -21,18 +21,10 @@ public sealed class OffsetCommitResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 8;
+        var throttleTimeMs = reader.ReadInt32();
+        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v), version);
 
-        var throttleTimeMs = version >= 3 ? reader.ReadInt32() : 0;
-
-        var topics = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v), version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new OffsetCommitResponse
         {
@@ -52,18 +44,10 @@ public sealed class OffsetCommitResponseTopic
 
     public static OffsetCommitResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 8;
+        var name = reader.ReadCompactNonNullableString();
+        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version);
 
-        var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
-
-        var partitions = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new OffsetCommitResponseTopic
         {
@@ -83,15 +67,10 @@ public sealed class OffsetCommitResponsePartition
 
     public static OffsetCommitResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 8;
-
         var partitionIndex = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new OffsetCommitResponsePartition
         {

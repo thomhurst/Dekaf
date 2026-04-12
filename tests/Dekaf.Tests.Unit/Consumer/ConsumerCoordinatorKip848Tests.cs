@@ -9,7 +9,7 @@ using NSubstitute;
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
-/// Unit tests for KIP-848 (GroupProtocol.Consumer) coordinator path.
+/// Unit tests for KIP-848 consumer group coordinator path.
 /// Verifies the ConsumerGroupHeartbeat-based state machine, assignment handling,
 /// error recovery, leave, and static membership.
 /// </summary>
@@ -33,6 +33,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             .Returns(ValueTask.FromResult(_connection));
 
         _metadataManager = new MetadataManager(_connectionPool, ["localhost:9092"]);
+
+        // Seed broker API versions so the ConsumerGroupHeartbeat version guard passes
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        _metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
 
         // Seed cluster metadata with a broker and topic (including TopicId for UUID resolution)
         _metadataManager.Metadata.Update(new MetadataResponse
@@ -87,7 +91,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     {
         BootstrapServers = ["localhost:9092"],
         GroupId = groupId,
-        GroupProtocol = GroupProtocol.Consumer,
         GroupRemoteAssignor = groupRemoteAssignor,
         GroupInstanceId = groupInstanceId,
         RebalanceListener = rebalanceListener,
@@ -103,10 +106,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(new FindCoordinatorResponse
             {
-                ErrorCode = ErrorCode.None,
-                NodeId = 0,
-                Host = "localhost",
-                Port = 9092
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = "test-group",
+                        NodeId = 0,
+                        Host = "localhost",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
             }));
     }
 
@@ -156,6 +166,35 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             PendingTopicPartitions = []
         };
     }
+
+    #region Broker Version Guard
+
+    [Test]
+    public async Task ConsumerProtocol_BrokerWithoutConsumerGroupHeartbeat_ThrowsBrokerVersionException()
+    {
+        // Create a MetadataManager without ConsumerGroupHeartbeat API seeded
+        var noHeartbeatManager = new MetadataManager(_connectionPool, ["localhost:9092"]);
+        noHeartbeatManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        // Deliberately NOT setting ConsumerGroupHeartbeat
+
+        noHeartbeatManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
+            Topics = []
+        });
+
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, noHeartbeatManager);
+
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.0");
+
+        await noHeartbeatManager.DisposeAsync();
+    }
+
+    #endregion
 
     #region Initial Join Tests
 
@@ -377,26 +416,19 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_UnreleasedInstanceId_Throws()
+    public async Task ConsumerProtocol_UnreleasedInstanceId_ThrowsAfterRetries()
     {
         SetupFindCoordinator();
         SetupConsumerGroupHeartbeat(errorCode: ErrorCode.UnreleasedInstanceId);
 
-        var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1");
+        var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", rebalanceTimeoutMs: 1000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
-        GroupException? caught = null;
-        try
-        {
-            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
-        }
-        catch (GroupException ex)
-        {
-            caught = ex;
-        }
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.ErrorCode).IsEqualTo(ErrorCode.UnreleasedInstanceId);
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cts.Token))
+            .Throws<KafkaTimeoutException>();
     }
 
     [Test]

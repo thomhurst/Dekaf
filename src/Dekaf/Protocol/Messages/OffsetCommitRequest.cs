@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class OffsetCommitRequest : IKafkaRequest<OffsetCommitResponse>
 {
     public static ApiKey ApiKey => ApiKey.OffsetCommit;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 8;
     public static short HighestSupportedVersion => 9;
 
     /// <summary>
@@ -40,61 +40,19 @@ public sealed class OffsetCommitRequest : IKafkaRequest<OffsetCommitResponse>
     /// </summary>
     public required IReadOnlyList<OffsetCommitRequestTopic> Topics { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => version >= 8;
-    public static short GetRequestHeaderVersion(short version) => version >= 8 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 8 ? (short)1 : (short)0;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 8;
+        writer.WriteCompactString(GroupId);
+        writer.WriteInt32(GenerationIdOrMemberEpoch);
+        writer.WriteCompactString(MemberId ?? string.Empty);
+        writer.WriteCompactNullableString(GroupInstanceId);
 
-        if (isFlexible)
-            writer.WriteCompactString(GroupId);
-        else
-            writer.WriteString(GroupId);
+        writer.WriteCompactArray(
+            Topics,
+            static (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
+            version);
 
-        if (version >= 1)
-        {
-            writer.WriteInt32(GenerationIdOrMemberEpoch);
-
-            if (isFlexible)
-                writer.WriteCompactString(MemberId ?? string.Empty);
-            else
-                writer.WriteString(MemberId ?? string.Empty);
-        }
-
-        if (version >= 7)
-        {
-            if (isFlexible)
-                writer.WriteCompactNullableString(GroupInstanceId);
-            else
-                writer.WriteString(GroupInstanceId);
-        }
-
-        if (version >= 2 && version <= 4)
-        {
-            writer.WriteInt64(RetentionTimeMs);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -108,32 +66,14 @@ public sealed class OffsetCommitRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 8;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactArray(
+            Partitions,
+            static (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -150,29 +90,10 @@ public sealed class OffsetCommitRequestPartition
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 8;
-
         writer.WriteInt32(PartitionIndex);
         writer.WriteInt64(CommittedOffset);
-
-        if (version >= 6)
-        {
-            writer.WriteInt32(CommittedLeaderEpoch);
-        }
-
-        if (version == 1)
-        {
-            writer.WriteInt64(CommitTimestamp);
-        }
-
-        if (isFlexible)
-            writer.WriteCompactNullableString(CommittedMetadata);
-        else
-            writer.WriteString(CommittedMetadata);
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteInt32(CommittedLeaderEpoch);
+        writer.WriteCompactNullableString(CommittedMetadata);
+        writer.WriteEmptyTaggedFields();
     }
 }

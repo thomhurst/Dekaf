@@ -18,19 +18,6 @@ public class ScramCredentialMessageTests
     }
 
     [Test]
-    public async Task DescribeUserScramCredentialsRequest_IsFlexibleVersion()
-    {
-        await Assert.That(DescribeUserScramCredentialsRequest.IsFlexibleVersion(0)).IsTrue();
-    }
-
-    [Test]
-    public async Task DescribeUserScramCredentialsRequest_HeaderVersions()
-    {
-        await Assert.That(DescribeUserScramCredentialsRequest.GetRequestHeaderVersion(0)).IsEqualTo((short)2);
-        await Assert.That(DescribeUserScramCredentialsRequest.GetResponseHeaderVersion(0)).IsEqualTo((short)1);
-    }
-
-    [Test]
     public async Task DescribeUserScramCredentialsRequest_NullUsers_EncodesCorrectly()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -223,19 +210,6 @@ public class ScramCredentialMessageTests
     public async Task AlterUserScramCredentialsRequest_HasCorrectApiKey()
     {
         await Assert.That(AlterUserScramCredentialsRequest.ApiKey).IsEqualTo(ApiKey.AlterUserScramCredentials);
-    }
-
-    [Test]
-    public async Task AlterUserScramCredentialsRequest_IsFlexibleVersion()
-    {
-        await Assert.That(AlterUserScramCredentialsRequest.IsFlexibleVersion(0)).IsTrue();
-    }
-
-    [Test]
-    public async Task AlterUserScramCredentialsRequest_HeaderVersions()
-    {
-        await Assert.That(AlterUserScramCredentialsRequest.GetRequestHeaderVersion(0)).IsEqualTo((short)2);
-        await Assert.That(AlterUserScramCredentialsRequest.GetResponseHeaderVersion(0)).IsEqualTo((short)1);
     }
 
     [Test]

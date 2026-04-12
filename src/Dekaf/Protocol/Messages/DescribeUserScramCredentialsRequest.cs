@@ -15,10 +15,6 @@ public sealed class DescribeUserScramCredentialsRequest : IKafkaRequest<Describe
     /// </summary>
     public IReadOnlyList<UserName>? Users { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => true;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         // Users: COMPACT_NULLABLE_ARRAY

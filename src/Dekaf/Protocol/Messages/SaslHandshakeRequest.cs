@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class SaslHandshakeRequest : IKafkaRequest<SaslHandshakeResponse>
 {
     public static ApiKey ApiKey => ApiKey.SaslHandshake;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 1;
 
     /// <summary>

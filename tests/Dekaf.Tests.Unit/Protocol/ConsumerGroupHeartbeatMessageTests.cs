@@ -128,24 +128,6 @@ public sealed class ConsumerGroupHeartbeatMessageTests
         await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)0);
     }
 
-    [Test]
-    public async Task Request_IsAlwaysFlexible()
-    {
-        await Assert.That(ConsumerGroupHeartbeatRequest.IsFlexibleVersion(0)).IsTrue();
-    }
-
-    [Test]
-    public async Task Request_RequestHeaderVersion_Is2()
-    {
-        await Assert.That(ConsumerGroupHeartbeatRequest.GetRequestHeaderVersion(0)).IsEqualTo((short)2);
-    }
-
-    [Test]
-    public async Task Request_ResponseHeaderVersion_Is1()
-    {
-        await Assert.That(ConsumerGroupHeartbeatRequest.GetResponseHeaderVersion(0)).IsEqualTo((short)1);
-    }
-
     #endregion
 
     #region Request Encoding

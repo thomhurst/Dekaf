@@ -34,6 +34,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>> _pendingTopicFetches = new();
 
+    // ApiVersions bootstrap MUST use v3: Kafka 4.0+ requires the flexible request header (v2),
+    // but the broker always sends the ApiVersions response with header v0 regardless of version.
+    // Using a named constant prevents silent breakage if LowestSupportedVersion is bumped later.
+    private const short ApiVersionsBootstrapVersion = 3;
+
     // Rebootstrap recovery state
     private readonly List<string> _originalBootstrapHostnames;
     private long _allBrokersUnavailableSince;
@@ -77,6 +82,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Gets the current cluster metadata.
     /// </summary>
     public ClusterMetadata Metadata => _metadata;
+
+    /// <summary>
+    /// Returns true if the broker reported support for the given API key during version negotiation.
+    /// </summary>
+    public bool HasApiKey(ApiKey apiKey) => _brokerApiVersions.ContainsKey(apiKey);
+
+    /// <summary>
+    /// Seeds a broker API version entry. Internal — used by unit tests to bypass negotiation.
+    /// </summary>
+    internal void SetApiVersion(ApiKey apiKey, short minVersion, short maxVersion)
+    {
+        _brokerApiVersions[apiKey] = (minVersion, maxVersion);
+        _negotiatedVersionCache.Clear();
+    }
 
     /// <summary>
     /// Gets the negotiated API version for the specified API key.
@@ -129,7 +148,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
                 break;
             }
-            catch (Exception ex) when (attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (ex is not BrokerVersionException && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
             {
                 LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
                 await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
@@ -447,6 +466,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return;
             }
+            catch (BrokerVersionException)
+            {
+                throw; // Permanent error — do not retry against another broker
+            }
             catch (Exception ex)
             {
                 LogMetadataRefreshFailed(ex, host, port);
@@ -538,6 +561,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return true;
             }
+            catch (BrokerVersionException)
+            {
+                throw; // Permanent error — do not retry against another broker
+            }
             catch (Exception ex)
             {
                 LogRebootstrapEndpointFailed(ex, host, port);
@@ -608,13 +635,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
     {
-        // Use ApiVersions v0 for bootstrapping - it's the most compatible
-        // and doesn't require flexible protocol support
-        var request = new ApiVersionsRequest();
+        // Use ApiVersions v3 for bootstrapping — Kafka 4.0+ is required,
+        // and the request/response header versions must match the flexible protocol
+        // format that ApiVersionsRequest declares for v3.
+        // ClientSoftwareName/Version are mandatory for v3 — the broker rejects empty values
+        // with INVALID_REQUEST.
+        var request = new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = typeof(MetadataManager).Assembly.GetName().Version?.ToString() ?? "0.0.0"
+        };
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            0, // Use v0 for maximum compatibility during bootstrap
+            ApiVersionsBootstrapVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)

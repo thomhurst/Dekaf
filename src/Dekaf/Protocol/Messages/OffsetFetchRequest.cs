@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
 {
     public static ApiKey ApiKey => ApiKey.OffsetFetch;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => 9;
 
     /// <summary>
@@ -30,40 +30,19 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
     /// </summary>
     public bool RequireStable { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => version >= 6;
-    public static short GetRequestHeaderVersion(short version) => version >= 6 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 6 ? (short)1 : (short)0;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 6;
-
         if (version < 8)
         {
-            if (isFlexible)
-                writer.WriteCompactString(GroupId);
-            else
-                writer.WriteString(GroupId);
+            writer.WriteCompactString(GroupId);
 
             if (Topics is null)
             {
-                if (isFlexible)
-                    writer.WriteUnsignedVarInt(0);
-                else if (version >= 2)
-                    writer.WriteInt32(-1);
-                else
-                    writer.WriteInt32(0);
-            }
-            else if (isFlexible)
-            {
-                writer.WriteCompactArray(
-                    Topics,
-                    static (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t, short v) => t.Write(ref w, v),
-                    version);
+                writer.WriteUnsignedVarInt(0);
             }
             else
             {
-                writer.WriteArray(
+                writer.WriteCompactArray(
                     Topics,
                     static (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t, short v) => t.Write(ref w, v),
                     version);
@@ -93,10 +72,7 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
             writer.WriteBoolean(RequireStable);
         }
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -110,30 +86,13 @@ public sealed class OffsetFetchRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 6;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactArray(
+            PartitionIndexes,
+            (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                PartitionIndexes,
-                (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
-        else
-        {
-            writer.WriteArray(
-                PartitionIndexes,
-                (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 

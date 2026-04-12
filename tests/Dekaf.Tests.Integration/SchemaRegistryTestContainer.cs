@@ -63,7 +63,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Kafka container...");
 
         // Start Kafka with network alias
-        _kafkaContainer = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
+        _kafkaContainer = new KafkaBuilder("apache/kafka:4.0.1")
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
@@ -84,7 +84,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Schema Registry container...");
 
         // Start Schema Registry connected to Kafka via network
-        _schemaRegistryContainer = new ContainerBuilder("confluentinc/cp-schema-registry:7.5.0")
+        _schemaRegistryContainer = new ContainerBuilder("confluentinc/cp-schema-registry:7.9.0")
             .WithNetwork(_network)
             .WithNetworkAliases("schema-registry")
             .WithPortBinding(8081, true)

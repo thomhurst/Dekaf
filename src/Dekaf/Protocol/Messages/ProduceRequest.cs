@@ -10,7 +10,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
 {
     public static ApiKey ApiKey => ApiKey.Produce;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 9;
     public static short HighestSupportedVersion => 11;
 
     /// <summary>
@@ -36,44 +36,18 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
     /// </summary>
     public IReadOnlyList<ProduceRequestTopicData> TopicData { get; internal set; } = [];
 
-    public static bool IsFlexibleVersion(short version) => version >= 9;
-    public static short GetRequestHeaderVersion(short version) => version >= 9 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 9 ? (short)1 : (short)0;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 9;
-
-        if (version >= 3)
-        {
-            if (isFlexible)
-                writer.WriteCompactNullableString(TransactionalId);
-            else
-                writer.WriteString(TransactionalId);
-        }
-
+        writer.WriteCompactNullableString(TransactionalId);
         writer.WriteInt16(Acks);
         writer.WriteInt32(TimeoutMs);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                TopicData,
-                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                TopicData,
-                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            TopicData,
+            static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -94,32 +68,14 @@ public sealed class ProduceRequestTopicData
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 9;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactArray(
+            PartitionData,
+            static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                PartitionData,
-                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                PartitionData,
-                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -170,8 +126,6 @@ public sealed class ProduceRequestPartitionData
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 9;
-
         writer.WriteInt32(Index);
 
         // Serialize records to a thread-local buffer to avoid per-partition allocation
@@ -181,20 +135,9 @@ public sealed class ProduceRequestPartitionData
             batch.Write(recordsBuffer, Compression, CompressionCodecs);
         }
 
-        if (isFlexible)
-        {
-            // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
-            writer.WriteCompactNullableBytes(recordsBuffer.WrittenSpan, isNull: false);
-        }
-        else
-        {
-            // RECORDS uses NULLABLE_BYTES encoding
-            writer.WriteNullableBytes(recordsBuffer.WrittenSpan, isNull: false);
-        }
+        // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
+        writer.WriteCompactNullableBytes(recordsBuffer.WrittenSpan, isNull: false);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

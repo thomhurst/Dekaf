@@ -51,17 +51,9 @@ public sealed class ConsumerOptions
     public string? GroupInstanceId { get; init; }
 
     /// <summary>
-    /// The consumer group protocol to use for group coordination.
-    /// Default is <see cref="GroupProtocol.Classic"/> for backward compatibility.
-    /// Set to <see cref="GroupProtocol.Consumer"/> to use the KIP-848 protocol (Kafka 4.0+).
-    /// </summary>
-    public GroupProtocol GroupProtocol { get; init; } = GroupProtocol.Classic;
-
-    /// <summary>
-    /// The server-side partition assignor to use when <see cref="GroupProtocol"/> is
-    /// <see cref="GroupProtocol.Consumer"/>. Common values are "uniform" and "range".
+    /// The server-side partition assignor for KIP-848 group coordination.
+    /// Common values are "uniform" and "range".
     /// When null, the broker uses its default assignor.
-    /// This setting is only applicable with the Consumer group protocol (KIP-848).
     /// </summary>
     public string? GroupRemoteAssignor { get; init; }
 
@@ -125,18 +117,6 @@ public sealed class ConsumerOptions
     /// Rebalance timeout in milliseconds.
     /// </summary>
     public int RebalanceTimeoutMs { get; init; } = 60000;
-
-    /// <summary>
-    /// Partition assignment strategy.
-    /// </summary>
-    public PartitionAssignmentStrategy PartitionAssignmentStrategy { get; init; } =
-        PartitionAssignmentStrategy.CooperativeSticky;
-
-    /// <summary>
-    /// Custom partition assignment strategy instance. When set, this takes precedence over
-    /// <see cref="PartitionAssignmentStrategy"/>.
-    /// </summary>
-    public IPartitionAssignmentStrategy? CustomPartitionAssignmentStrategy { get; init; }
 
     /// <summary>
     /// Isolation level for transactional reads.
@@ -368,27 +348,6 @@ public sealed class ConsumerOptions
 }
 
 /// <summary>
-/// Specifies the consumer group protocol to use for group coordination.
-/// </summary>
-public enum GroupProtocol
-{
-    /// <summary>
-    /// Classic consumer group protocol using JoinGroup/SyncGroup/Heartbeat APIs.
-    /// This is the traditional protocol used in Kafka versions prior to 4.0.
-    /// Partition assignment is performed client-side by the group leader.
-    /// </summary>
-    Classic,
-
-    /// <summary>
-    /// New consumer group protocol introduced in KIP-848 (Kafka 4.0+).
-    /// Uses the ConsumerGroupHeartbeat API for group coordination.
-    /// Partition assignment is performed server-side by the group coordinator,
-    /// providing up to 20x faster rebalancing.
-    /// </summary>
-    Consumer
-}
-
-/// <summary>
 /// Auto offset reset behavior.
 /// </summary>
 public enum AutoOffsetReset
@@ -407,32 +366,6 @@ public enum AutoOffsetReset
     /// Throw exception if no offset is found.
     /// </summary>
     None
-}
-
-/// <summary>
-/// Partition assignment strategies.
-/// </summary>
-public enum PartitionAssignmentStrategy
-{
-    /// <summary>
-    /// Range assignor.
-    /// </summary>
-    Range,
-
-    /// <summary>
-    /// Round-robin assignor.
-    /// </summary>
-    RoundRobin,
-
-    /// <summary>
-    /// Sticky assignor.
-    /// </summary>
-    Sticky,
-
-    /// <summary>
-    /// Cooperative sticky assignor (incremental rebalance).
-    /// </summary>
-    CooperativeSticky
 }
 
 /// <summary>

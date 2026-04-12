@@ -165,8 +165,7 @@ public class ConsumerConcurrencyTests
         var validTransitions = new Dictionary<CoordinatorState, CoordinatorState[]>
         {
             [CoordinatorState.Unjoined] = [CoordinatorState.Joining],
-            [CoordinatorState.Joining] = [CoordinatorState.Syncing, CoordinatorState.Unjoined],
-            [CoordinatorState.Syncing] = [CoordinatorState.Stable, CoordinatorState.Unjoined],
+            [CoordinatorState.Joining] = [CoordinatorState.Stable, CoordinatorState.Unjoined],
             [CoordinatorState.Stable] = [CoordinatorState.Unjoined]
         };
 

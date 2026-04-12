@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class MetadataResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.Metadata;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 9;
     public static short HighestSupportedVersion => 12;
 
     public int ThrottleTimeMs { get; init; }
@@ -19,25 +19,15 @@ public sealed class MetadataResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
+        var throttleTimeMs = reader.ReadInt32();
 
-        var throttleTimeMs = version >= 3 ? reader.ReadInt32() : 0;
+        var brokers = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v), version);
 
-        var brokers = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v), version);
+        var clusterId = reader.ReadCompactString();
 
-        string? clusterId = null;
-        if (version >= 2)
-        {
-            clusterId = isFlexible ? reader.ReadCompactString() : reader.ReadString();
-        }
+        var controllerId = reader.ReadInt32();
 
-        var controllerId = version >= 1 ? reader.ReadInt32() : -1;
-
-        var topics = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version);
+        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version);
 
         var clusterAuthorizedOperations = int.MinValue;
         if (version >= 8 && version <= 10)
@@ -45,10 +35,7 @@ public sealed class MetadataResponse : IKafkaResponse
             clusterAuthorizedOperations = reader.ReadInt32();
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new MetadataResponse
         {
@@ -74,22 +61,12 @@ public sealed class BrokerMetadata
 
     public static BrokerMetadata Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
         var nodeId = reader.ReadInt32();
-        var host = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
+        var host = reader.ReadCompactNonNullableString();
         var port = reader.ReadInt32();
+        var rack = reader.ReadCompactString();
 
-        string? rack = null;
-        if (version >= 1)
-        {
-            rack = isFlexible ? reader.ReadCompactString() : reader.ReadString();
-        }
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new BrokerMetadata
         {
@@ -115,10 +92,8 @@ public sealed class TopicMetadata
 
     public static TopicMetadata Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
-        var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
+        var name = reader.ReadCompactNonNullableString();
 
         var topicId = Guid.Empty;
         if (version >= 10)
@@ -126,22 +101,13 @@ public sealed class TopicMetadata
             topicId = reader.ReadUuid();
         }
 
-        var isInternal = version >= 1 && reader.ReadBoolean();
+        var isInternal = reader.ReadBoolean();
 
-        var partitions = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v), version);
 
-        var topicAuthorizedOperations = int.MinValue;
-        if (version >= 8)
-        {
-            topicAuthorizedOperations = reader.ReadInt32();
-        }
+        var topicAuthorizedOperations = reader.ReadInt32();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new TopicMetadata
         {
@@ -170,38 +136,16 @@ public sealed class PartitionMetadata
 
     public static PartitionMetadata Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
         var partitionIndex = reader.ReadInt32();
         var leaderId = reader.ReadInt32();
+        var leaderEpoch = reader.ReadInt32();
 
-        var leaderEpoch = -1;
-        if (version >= 7)
-        {
-            leaderEpoch = reader.ReadInt32();
-        }
+        var replicaNodes = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
+        var isrNodes = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
+        var offlineReplicas = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
 
-        var replicaNodes = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32())
-            : reader.ReadArray((ref KafkaProtocolReader r) => r.ReadInt32());
-
-        var isrNodes = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32())
-            : reader.ReadArray((ref KafkaProtocolReader r) => r.ReadInt32());
-
-        int[]? offlineReplicas = null;
-        if (version >= 5)
-        {
-            offlineReplicas = isFlexible
-                ? reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32())
-                : reader.ReadArray((ref KafkaProtocolReader r) => r.ReadInt32());
-        }
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new PartitionMetadata
         {

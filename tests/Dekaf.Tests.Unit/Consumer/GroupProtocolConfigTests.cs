@@ -3,7 +3,7 @@ using Dekaf.Consumer;
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>
-/// Tests for GroupProtocol enum and ConsumerOptions configuration related to KIP-848.
+/// Tests for ConsumerOptions configuration related to KIP-848.
 /// </summary>
 public sealed class GroupProtocolConfigTests
 {
@@ -12,40 +12,7 @@ public sealed class GroupProtocolConfigTests
         BootstrapServers = ["localhost:9092"]
     };
 
-    #region GroupProtocol Enum
-
-    [Test]
-    public async Task GroupProtocol_HasClassicValue()
-    {
-        var protocol = GroupProtocol.Classic;
-        await Assert.That(protocol).IsEqualTo(GroupProtocol.Classic);
-    }
-
-    [Test]
-    public async Task GroupProtocol_HasConsumerValue()
-    {
-        var protocol = GroupProtocol.Consumer;
-        await Assert.That(protocol).IsEqualTo(GroupProtocol.Consumer);
-    }
-
-    [Test]
-    public async Task GroupProtocol_ClassicAndConsumer_AreDifferent()
-    {
-        GroupProtocol classic = GroupProtocol.Classic;
-        GroupProtocol consumer = GroupProtocol.Consumer;
-        await Assert.That(classic).IsNotEqualTo(consumer);
-    }
-
-    #endregion
-
     #region ConsumerOptions Defaults
-
-    [Test]
-    public async Task GroupProtocol_DefaultsTo_Classic()
-    {
-        var options = CreateOptions();
-        await Assert.That(options.GroupProtocol).IsEqualTo(GroupProtocol.Classic);
-    }
 
     [Test]
     public async Task GroupRemoteAssignor_DefaultsTo_Null()
@@ -56,18 +23,7 @@ public sealed class GroupProtocolConfigTests
 
     #endregion
 
-    #region ConsumerOptions with Consumer Protocol
-
-    [Test]
-    public async Task GroupProtocol_CanBeSetTo_Consumer()
-    {
-        var options = new ConsumerOptions
-        {
-            BootstrapServers = ["localhost:9092"],
-            GroupProtocol = GroupProtocol.Consumer
-        };
-        await Assert.That(options.GroupProtocol).IsEqualTo(GroupProtocol.Consumer);
-    }
+    #region ConsumerOptions with Remote Assignor
 
     [Test]
     public async Task GroupRemoteAssignor_CanBeSetTo_Uniform()
@@ -75,7 +31,6 @@ public sealed class GroupProtocolConfigTests
         var options = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            GroupProtocol = GroupProtocol.Consumer,
             GroupRemoteAssignor = "uniform"
         };
         await Assert.That(options.GroupRemoteAssignor).IsEqualTo("uniform");
@@ -87,7 +42,6 @@ public sealed class GroupProtocolConfigTests
         var options = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            GroupProtocol = GroupProtocol.Consumer,
             GroupRemoteAssignor = "range"
         };
         await Assert.That(options.GroupRemoteAssignor).IsEqualTo("range");
@@ -98,14 +52,6 @@ public sealed class GroupProtocolConfigTests
     #region Builder Methods
 
     [Test]
-    public async Task WithGroupProtocol_ReturnsSameBuilder()
-    {
-        var builder = Kafka.CreateConsumer<string, string>();
-        var result = builder.WithGroupProtocol(GroupProtocol.Consumer);
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    [Test]
     public async Task WithGroupRemoteAssignor_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
@@ -114,33 +60,10 @@ public sealed class GroupProtocolConfigTests
     }
 
     [Test]
-    public async Task WithGroupProtocol_Classic_ThenBuild_Succeeds()
+    public async Task WithGroupRemoteAssignor_ThenBuild_Succeeds()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithGroupProtocol(GroupProtocol.Classic)
-            .Build();
-
-        await Assert.That(consumer).IsNotNull();
-    }
-
-    [Test]
-    public async Task WithGroupProtocol_Consumer_ThenBuild_Succeeds()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupProtocol(GroupProtocol.Consumer)
-            .Build();
-
-        await Assert.That(consumer).IsNotNull();
-    }
-
-    [Test]
-    public async Task WithGroupProtocol_Consumer_WithRemoteAssignor_ThenBuild_Succeeds()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithGroupRemoteAssignor("uniform")
             .Build();
 
@@ -159,54 +82,14 @@ public sealed class GroupProtocolConfigTests
 
     #endregion
 
-    #region Validation
-
-    [Test]
-    public async Task Build_WithGroupRemoteAssignor_WithoutConsumerProtocol_Throws()
-    {
-        var act = () => Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupRemoteAssignor("uniform")
-            .Build();
-
-        await Assert.That(act).Throws<InvalidOperationException>();
-    }
-
-    [Test]
-    public async Task Build_WithGroupRemoteAssignor_WithClassicProtocol_Throws()
-    {
-        var act = () => Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupProtocol(GroupProtocol.Classic)
-            .WithGroupRemoteAssignor("uniform")
-            .Build();
-
-        await Assert.That(act).Throws<InvalidOperationException>();
-    }
-
-    [Test]
-    public async Task Build_WithGroupRemoteAssignor_WithConsumerProtocol_Succeeds()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupProtocol(GroupProtocol.Consumer)
-            .WithGroupRemoteAssignor("uniform")
-            .Build();
-
-        await Assert.That(consumer).IsNotNull();
-    }
-
-    #endregion
-
     #region Builder Chaining
 
     [Test]
-    public async Task FullChain_WithConsumerProtocol_Succeeds()
+    public async Task FullChain_WithRemoteAssignor_Succeeds()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("my-group")
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithGroupRemoteAssignor("uniform")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -215,12 +98,11 @@ public sealed class GroupProtocolConfigTests
     }
 
     [Test]
-    public async Task FullChain_WithClassicProtocol_Succeeds()
+    public async Task FullChain_WithoutRemoteAssignor_Succeeds()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("my-group")
-            .WithGroupProtocol(GroupProtocol.Classic)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
 

@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ListGroupsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ListGroups;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 5;
 
     /// <summary>

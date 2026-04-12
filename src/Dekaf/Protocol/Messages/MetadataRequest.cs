@@ -7,7 +7,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
 {
     public static ApiKey ApiKey => ApiKey.Metadata;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 9;
     public static short HighestSupportedVersion => 12;
 
     /// <summary>
@@ -30,54 +30,26 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
     /// </summary>
     public bool IncludeTopicAuthorizedOperations { get; init; }
 
-    public static bool IsFlexibleVersion(short version) => version >= 9;
-    public static short GetRequestHeaderVersion(short version) => version >= 9 ? (short)2 : (short)1;
-    public static short GetResponseHeaderVersion(short version) => version >= 9 ? (short)1 : (short)0;
-
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 9;
-
         if (Topics is null)
         {
             // Null array means fetch all topics
-            if (isFlexible)
-                writer.WriteUnsignedVarInt(0); // 0 means null for compact nullable arrays
-            else if (version >= 1)
-                writer.WriteInt32(-1);
-            else
-                writer.WriteInt32(0); // v0 doesn't support null, use empty
+            writer.WriteUnsignedVarInt(0); // 0 means null for compact nullable arrays
         }
-        else if (isFlexible)
+        else
         {
             writer.WriteCompactArray(
                 Topics,
                 static (ref KafkaProtocolWriter w, MetadataRequestTopic t, short v) => t.Write(ref w, v),
                 version);
         }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, MetadataRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
 
-        if (version >= 4)
-        {
-            writer.WriteBoolean(AllowAutoTopicCreation);
-        }
+        writer.WriteBoolean(AllowAutoTopicCreation);
+        writer.WriteBoolean(IncludeClusterAuthorizedOperations);
+        writer.WriteBoolean(IncludeTopicAuthorizedOperations);
 
-        if (version >= 8)
-        {
-            writer.WriteBoolean(IncludeClusterAuthorizedOperations);
-            writer.WriteBoolean(IncludeTopicAuthorizedOperations);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 
     /// <summary>
@@ -139,21 +111,12 @@ public sealed class MetadataRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 9;
-
         if (version >= 10)
         {
             writer.WriteUuid(TopicId ?? Guid.Empty);
         }
 
-        if (isFlexible)
-        {
-            writer.WriteCompactNullableString(Name);
-            writer.WriteEmptyTaggedFields();
-        }
-        else
-        {
-            writer.WriteString(Name);
-        }
+        writer.WriteCompactNullableString(Name);
+        writer.WriteEmptyTaggedFields();
     }
 }

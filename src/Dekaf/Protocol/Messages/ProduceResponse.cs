@@ -10,7 +10,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ProduceResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.Produce;
-    public static short LowestSupportedVersion => 0;
+    public static short LowestSupportedVersion => 9;
     public static short HighestSupportedVersion => 11;
 
     private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
@@ -36,11 +36,7 @@ public sealed class ProduceResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
-        var topicCount = isFlexible
-            ? reader.ReadUnsignedVarInt() - 1
-            : reader.ReadInt32();
+        var topicCount = reader.ReadUnsignedVarInt() - 1;
 
         var response = Volatile.Read(ref s_pool).Rent();
 
@@ -54,12 +50,9 @@ public sealed class ProduceResponse : IKafkaResponse
         }
 
         response.TopicCount = Math.Max(topicCount, 0);
-        response.ThrottleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        response.ThrottleTimeMs = reader.ReadInt32();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return response;
     }
@@ -142,13 +135,9 @@ public struct ProduceResponseTopicData
     /// </summary>
     internal void ReadInto(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
+        Name = reader.ReadCompactNonNullableString();
 
-        Name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
-
-        var partitionCount = isFlexible
-            ? reader.ReadUnsignedVarInt() - 1
-            : reader.ReadInt32();
+        var partitionCount = reader.ReadUnsignedVarInt() - 1;
 
         PartitionCount = Math.Max(partitionCount, 0);
 
@@ -161,10 +150,7 @@ public struct ProduceResponseTopicData
                 PartitionResponses[i] = ProduceResponsePartitionData.Read(ref reader, version);
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
     }
 }
 
@@ -214,31 +200,16 @@ public readonly struct ProduceResponsePartitionData
 
     public static ProduceResponsePartitionData Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
         var index = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
         var baseOffset = reader.ReadInt64();
+        var logAppendTimeMs = reader.ReadInt64();
+        var logStartOffset = reader.ReadInt64();
 
-        var logAppendTimeMs = version >= 2 ? reader.ReadInt64() : -1;
-        var logStartOffset = version >= 5 ? reader.ReadInt64() : -1;
+        var recordErrors = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version);
+        var errorMessage = reader.ReadCompactString();
 
-        BatchIndexAndErrorMessage[]? recordErrors = null;
-        string? errorMessage = null;
-
-        if (version >= 8)
-        {
-            recordErrors = isFlexible
-                ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version)
-                : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version);
-
-            errorMessage = isFlexible ? reader.ReadCompactString() : reader.ReadString();
-        }
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new ProduceResponsePartitionData
         {
@@ -271,15 +242,10 @@ public readonly struct BatchIndexAndErrorMessage
 
     public static BatchIndexAndErrorMessage Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 9;
-
         var batchIndex = reader.ReadInt32();
-        var errorMessage = isFlexible ? reader.ReadCompactString() : reader.ReadString();
+        var errorMessage = reader.ReadCompactString();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new BatchIndexAndErrorMessage
         {

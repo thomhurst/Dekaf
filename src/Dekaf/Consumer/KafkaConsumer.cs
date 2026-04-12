@@ -1771,7 +1771,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             foreach (var topicResponse in response.Responses)
             {
-                var topic = topicResponse.Topic ?? string.Empty;
+                var topic = ResolveTopicName(topicResponse);
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
                 foreach (var partitionResponse in topicResponse.Partitions)
@@ -3190,7 +3190,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             foreach (var topicResponse in response.Responses)
             {
-                var topic = topicResponse.Topic ?? string.Empty;
+                var topic = ResolveTopicName(topicResponse);
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
                 foreach (var partitionResponse in topicResponse.Partitions)
@@ -3429,7 +3429,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // Each broker task gets its own FetchRequestPartition objects so that
             // concurrent calls cannot mutate offsets visible to another task.
             // This allocates per fetch cycle (per-batch), not per-message.
-            return BuildFetchResult(cachedDict, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes);
+            return BuildFetchResult(cachedDict, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes, _metadataManager.Metadata);
         }
 
         // Cache miss (or subrange): build fresh structure with TopicPartition stored alongside
@@ -3459,7 +3459,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Build result with fresh copies so the caller owns its own FetchRequestPartition
         // instances. The cached dict stores templates; each caller gets independent copies
         // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
-        var result = BuildFetchResult(topicPartitions, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes);
+        var result = BuildFetchResult(topicPartitions, _fetchPositions, _adaptiveFetchSizer?.CurrentPartitionFetchBytes, _metadataManager.Metadata);
 
         // Update cache (first writer wins to avoid overwriting fresher data) — only for full-list case
         if (isFullList)
@@ -3485,10 +3485,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// cannot observe each other's offset values.
     /// Allocation is per fetch cycle (per-batch), not per-message.
     /// </summary>
+    private string ResolveTopicName(FetchResponseTopic topicResponse)
+    {
+        if (topicResponse.TopicId != Guid.Empty)
+        {
+            var resolved = _metadataManager.Metadata.GetTopic(topicResponse.TopicId)?.Name;
+            if (resolved is not null)
+            {
+                return resolved;
+            }
+
+            // TopicId present but not in local metadata — fall back to topic name from response
+            LogUnknownTopicId(topicResponse.TopicId);
+            return topicResponse.Topic ?? string.Empty;
+        }
+
+        return topicResponse.Topic ?? string.Empty;
+    }
+
     internal static List<FetchRequestTopic> BuildFetchResult(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
         ConcurrentDictionary<TopicPartition, long> fetchPositions,
-        int? adaptivePartitionMaxBytes = null)
+        int? adaptivePartitionMaxBytes = null,
+        ClusterMetadata? clusterMetadata = null)
     {
         var result = new List<FetchRequestTopic>(templateDict.Count);
 
@@ -3513,6 +3532,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             result.Add(new FetchRequestTopic
             {
                 Topic = kvp.Key,
+                TopicId = clusterMetadata?.GetTopic(kvp.Key)?.TopicId ?? Guid.Empty,
                 Partitions = partitionList
             });
         }
@@ -3723,7 +3743,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             try
             {
-                await _coordinator.LeaveGroupAsync("Consumer closing gracefully", cancellationToken).ConfigureAwait(false);
+                await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
                 LogLeftConsumerGroup();
             }
             catch (Exception ex)
@@ -4062,6 +4082,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "No leader found for {Topic}-{Partition}")]
     private partial void LogNoLeaderFound(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "TopicId {TopicId} not found in local metadata, falling back to topic name from response")]
+    private partial void LogUnknownTopicId(Guid topicId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ListOffsets error for {Topic}-{Partition}: {Error}")]
     private partial void LogListOffsetsError(string topic, int partition, ErrorCode error);

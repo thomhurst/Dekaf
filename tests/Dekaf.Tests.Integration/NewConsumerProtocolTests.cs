@@ -5,7 +5,7 @@ using Dekaf.Serialization;
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
-/// Integration tests for the KIP-848 consumer group protocol (GroupProtocol.Consumer).
+/// Integration tests for the KIP-848 consumer group protocol.
 /// This protocol uses the ConsumerGroupHeartbeat API for server-side partition assignment,
 /// providing faster rebalancing compared to the classic JoinGroup/SyncGroup protocol.
 /// Requires Kafka 4.0+.
@@ -37,7 +37,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -78,7 +77,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -125,7 +123,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -172,7 +169,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(6000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -201,7 +197,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -248,7 +243,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -294,7 +288,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(15000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -322,7 +315,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -361,7 +353,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithGroupRemoteAssignor("uniform")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -409,7 +400,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -458,7 +448,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -505,7 +494,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -558,7 +546,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithGroupInstanceId(instanceId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
@@ -587,7 +574,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithGroupInstanceId(instanceId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
@@ -628,7 +614,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -682,7 +667,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
-            .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
