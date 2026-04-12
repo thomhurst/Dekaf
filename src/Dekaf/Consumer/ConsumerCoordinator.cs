@@ -52,7 +52,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     // KIP-848 (GroupProtocol.Consumer) state
     private volatile int _heartbeatIntervalMs;
-    private volatile bool _subscriptionChanged;
+    private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile IReadOnlySet<string>? _subscribedTopics;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
@@ -1303,12 +1303,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
 
-        var memberEpoch = isInitial ? 0 : _generationId;
         var memberId = _memberId ?? string.Empty;
 
-        // Static membership: use MemberEpoch=-2 to rejoin after fencing
-        if (isInitial && _options.GroupInstanceId is not null && memberId.Length > 0)
-            memberEpoch = -2;
+        // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
+        // or the current epoch for steady-state heartbeats
+        var memberEpoch = isInitial
+            ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
+            : _generationId;
 
         // Build owned topic partitions for acknowledgment (not sent on initial join)
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions = null;
@@ -1317,6 +1318,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ownedTopicPartitions = BuildOwnedTopicPartitions(_assignedPartitions);
         }
 
+        // Atomically snapshot and clear the subscription-changed flag to prevent a race where
+        // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
+        // but this heartbeat clears the flag after sending the old topics.
+        var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
+        var subscribedTopics = subscriptionChanged ? _subscribedTopics?.ToList() : null;
+
         var request = new ConsumerGroupHeartbeatRequest
         {
             GroupId = _options.GroupId!,
@@ -1324,7 +1331,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             MemberEpoch = memberEpoch,
             InstanceId = _options.GroupInstanceId,
             RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
-            SubscribedTopicNames = _subscriptionChanged ? _subscribedTopics?.ToList() : null,
+            SubscribedTopicNames = subscribedTopics,
             ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
             TopicPartitions = ownedTopicPartitions
         };
@@ -1351,8 +1358,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogMemberEpochUpdated(response.MemberEpoch);
             _generationId = response.MemberEpoch;
         }
-
-        _subscriptionChanged = false;
 
         if (response.HeartbeatIntervalMs > 0)
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
@@ -1505,7 +1510,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         _subscribedTopics = topics;
-        _subscriptionChanged = true;
+        Interlocked.Exchange(ref _subscriptionChanged, 1);
 
         ConsumerHeartbeatResult heartbeatResult = default;
 
@@ -1556,8 +1561,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
                 {
-                    // Stale epoch — retry join
+                    // Stale epoch — reset generation so next attempt sends MemberEpoch=0 (or -2 for static members)
                     LogRetriableCoordinatorError(ex.ErrorCode);
+                    _generationId = _options.GroupInstanceId is not null ? -2 : 0;
                     _state = CoordinatorState.Unjoined;
                 }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
@@ -1633,6 +1639,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     if (ge.ErrorCode == ErrorCode.FencedMemberEpoch)
                     {
+                        // Reset generation so next EnsureActiveGroup sends MemberEpoch=0 (or -2 for static)
+                        _generationId = _options.GroupInstanceId is not null ? -2 : 0;
                         _state = CoordinatorState.Unjoined;
                         break;
                     }
