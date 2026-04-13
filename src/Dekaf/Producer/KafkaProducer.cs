@@ -2043,11 +2043,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (!needsRegistration)
             return;
 
-        // TV2: broker registers partitions implicitly on first Produce request.
-        // Local tracking (above) is still needed for SendOffsetsToTransaction.
-        if (_currentTransactionUsesTV2)
-            return;
-
         await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
             .ConfigureAwait(false);
     }

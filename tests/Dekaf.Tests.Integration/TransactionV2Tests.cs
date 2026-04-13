@@ -5,7 +5,7 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Integration tests for KIP-890 Transactions V2 behavior.
-/// TV2 features (implicit AddPartitionsToTxn, EndTxn epoch bump, skip post-abort InitProducerId)
+/// TV2 features (EndTxn epoch bump, skip post-abort InitProducerId)
 /// are automatically active when connected to Kafka 4.0+ brokers that support transaction.version >= 2.
 /// </summary>
 [Category("Transaction")]
