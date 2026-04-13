@@ -4,6 +4,11 @@ namespace Dekaf.ShareConsumer;
 /// Interface for Kafka share consumer (KIP-932).
 /// Share consumers provide queue-semantics consumption with record-level acknowledgement.
 /// Records are acquired with locks and must be acknowledged (accepted, released, or rejected).
+/// <para>
+/// <b>Thread safety:</b> This interface is not thread-safe. All methods — <see cref="Subscribe"/>,
+/// <see cref="Unsubscribe"/>, <see cref="PollAsync"/>, <see cref="Acknowledge"/>, and
+/// <see cref="CommitAsync"/> — must be called from the same thread or with external synchronization.
+/// </para>
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>

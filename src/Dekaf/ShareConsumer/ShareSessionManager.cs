@@ -1,15 +1,17 @@
-using System.Collections.Concurrent;
-
 namespace Dekaf.ShareConsumer;
 
 /// <summary>
 /// Tracks share fetch session state per broker.
 /// Share sessions allow incremental fetch requests (only sending changes)
 /// after the initial full request, reducing wire overhead.
+/// <para>
+/// Thread-safety: This class is designed for single-threaded access from the consumer's
+/// poll loop. All methods must be called from the same thread as <see cref="KafkaShareConsumer{TKey,TValue}.PollAsync"/>.
+/// </para>
 /// </summary>
 internal sealed class ShareSessionManager
 {
-    private readonly ConcurrentDictionary<int, int> _sessionEpochs = new();
+    private readonly Dictionary<int, int> _sessionEpochs = new();
 
     /// <summary>
     /// Gets the current session epoch for a broker.
@@ -25,7 +27,7 @@ internal sealed class ShareSessionManager
     /// </summary>
     internal void IncrementEpoch(int brokerId)
     {
-        _sessionEpochs.AddOrUpdate(brokerId, 1, static (_, current) => current + 1);
+        _sessionEpochs[brokerId] = _sessionEpochs.GetValueOrDefault(brokerId, 0) + 1;
     }
 
     /// <summary>
@@ -34,7 +36,7 @@ internal sealed class ShareSessionManager
     /// </summary>
     internal void ResetSession(int brokerId)
     {
-        _sessionEpochs.TryRemove(brokerId, out _);
+        _sessionEpochs.Remove(brokerId);
     }
 
     /// <summary>

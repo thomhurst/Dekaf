@@ -402,13 +402,22 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     _state = CoordinatorState.Joining;
                     LogCoordinatorStateTransition(CoordinatorState.Joining);
 
-                    await SendShareGroupHeartbeatAsync(
+                    var gotAssignment = await SendShareGroupHeartbeatAsync(
                         isInitial: _memberEpoch <= 0,
                         cancellationToken).ConfigureAwait(false);
 
-                    _state = CoordinatorState.Stable;
-
-                    LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch);
+                    if (gotAssignment && _assignedPartitions.Count > 0)
+                    {
+                        _state = CoordinatorState.Stable;
+                        LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch);
+                    }
+                    else
+                    {
+                        // Broker accepted us but hasn't assigned partitions yet.
+                        // Wait before re-sending heartbeat.
+                        LogWaitingForAssignment();
+                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 catch (GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
                 {
@@ -477,6 +486,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     switch (ge.ErrorCode)
                     {
                         case ErrorCode.FencedMemberEpoch:
+                            // No lock needed: these writes are idempotent resets.
+                            // The next EnsureActiveGroupAsync (which holds _lock) will
+                            // see the Unjoined state and trigger a fresh join.
                             _memberEpoch = 0;
                             _state = CoordinatorState.Unjoined;
                             break;
@@ -663,6 +675,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: member epoch updated to {MemberEpoch}")]
     private partial void LogMemberEpochUpdated(int memberEpoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: waiting for partition assignment")]
+    private partial void LogWaitingForAssignment();
 
     #endregion
 }

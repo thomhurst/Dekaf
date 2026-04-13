@@ -55,8 +55,19 @@ public sealed class DescribeShareGroupOffsetsRequestGroup
     {
         var groupId = reader.ReadCompactNonNullableString();
 
-        var topics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeShareGroupOffsetsRequestTopic.Read(ref r));
+        // Topics is nullable: null = describe all topics, empty = no topics.
+        // ReadCompactArray cannot distinguish null from empty, so read the length manually.
+        var topicsLength = reader.ReadUnsignedVarInt() - 1;
+        IReadOnlyList<DescribeShareGroupOffsetsRequestTopic>? topics = null;
+        if (topicsLength >= 0)
+        {
+            var topicsList = new DescribeShareGroupOffsetsRequestTopic[topicsLength];
+            for (int i = 0; i < topicsLength; i++)
+            {
+                topicsList[i] = DescribeShareGroupOffsetsRequestTopic.Read(ref reader);
+            }
+            topics = topicsList;
+        }
 
         reader.SkipTaggedFields();
 

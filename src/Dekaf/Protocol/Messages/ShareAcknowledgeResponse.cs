@@ -134,16 +134,9 @@ public sealed class ShareAcknowledgeResponsePartition
         var errorCode = (ErrorCode)reader.ReadInt16();
         var errorMessage = reader.ReadCompactString();
 
-        // CurrentLeader is non-nullable — always present inline (no marker byte)
-        var leaderId = reader.ReadInt32();
-        var leaderEpoch = reader.ReadInt32();
-        reader.SkipTaggedFields();
-
-        var currentLeader = new ShareAcknowledgeLeaderIdAndEpoch
-        {
-            LeaderId = leaderId,
-            LeaderEpoch = leaderEpoch
-        };
+        // CurrentLeader is non-nullable — always present inline (no marker byte).
+        // It has its own tagged fields, so Read handles SkipTaggedFields internally.
+        var currentLeader = ShareAcknowledgeLeaderIdAndEpoch.Read(ref reader);
 
         reader.SkipTaggedFields();
 

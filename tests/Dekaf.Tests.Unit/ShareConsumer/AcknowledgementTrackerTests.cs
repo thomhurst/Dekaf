@@ -294,4 +294,35 @@ public class AcknowledgementTrackerTests
         await Assert.That(batch.AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Release);
         await Assert.That(batch.AcknowledgeTypes[2]).IsEqualTo((byte)AcknowledgeType.Accept);
     }
+
+    [Test]
+    public async Task RequeueAcks_PreservesNewerExplicitAckOverRequeued()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        // Track and flush initial records (all Accept by default)
+        tracker.TrackDeliveredRecords(tp, 10, 12);
+        var flushed = tracker.Flush();
+
+        // Simulate: new records delivered for same offsets (e.g., redelivery after failed commit)
+        tracker.TrackDeliveredRecords(tp, 10, 12);
+        // User explicitly rejects offset 11
+        tracker.Acknowledge(tp, 11, AcknowledgeType.Reject);
+
+        // Now re-queue the stale flushed data (all Accept) — TryAdd should NOT overwrite
+        // the newer Reject that was set after the flush
+        tracker.RequeueAcks(flushed);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+
+        var batch = result[tp][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(12);
+        await Assert.That(batch.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+        // The explicit Reject should survive — TryAdd preserves the existing entry
+        await Assert.That(batch.AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Reject);
+        await Assert.That(batch.AcknowledgeTypes[2]).IsEqualTo((byte)AcknowledgeType.Accept);
+    }
 }

@@ -37,6 +37,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     private int _closed;
     private int _disposed;
     private readonly bool _ownsInfrastructure;
+    private volatile Task? _pendingReleaseTask;
 
     internal KafkaShareConsumer(
         ShareConsumerOptions options,
@@ -442,6 +443,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             }
         }
 
+        // Await any pending release task from Unsubscribe before tearing down infrastructure
+        if (_pendingReleaseTask is { } releaseTask)
+        {
+            try
+            {
+                await releaseTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort — exceptions already logged inside the task
+            }
+        }
+
         await _coordinator.DisposeAsync().ConfigureAwait(false);
 
         if (_ownsInfrastructure)
@@ -486,8 +500,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             ShareAcknowledgeRequest.LowestSupportedVersion,
             ShareAcknowledgeRequest.HighestSupportedVersion);
 
-        // Send synchronously in the background — best effort, don't block the caller
-        _ = Task.Run(async () =>
+        // Send in the background — best effort, don't block the synchronous caller.
+        // Store the task so DisposeAsync can await it before tearing down the connection pool.
+        _pendingReleaseTask = Task.Run(async () =>
         {
             foreach (var (brokerId, acks) in acksByBroker)
             {
