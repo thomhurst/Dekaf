@@ -124,9 +124,9 @@ public sealed class ShareAcknowledgeResponsePartition
     public string? ErrorMessage { get; init; }
 
     /// <summary>
-    /// The current leader for this partition, or null if unknown.
+    /// The current leader information. Always present inline in the response.
     /// </summary>
-    public ShareAcknowledgeLeaderIdAndEpoch? CurrentLeader { get; init; }
+    public required ShareAcknowledgeLeaderIdAndEpoch CurrentLeader { get; init; }
 
     public static ShareAcknowledgeResponsePartition Read(ref KafkaProtocolReader reader)
     {
@@ -134,12 +134,16 @@ public sealed class ShareAcknowledgeResponsePartition
         var errorCode = (ErrorCode)reader.ReadInt16();
         var errorMessage = reader.ReadCompactString();
 
-        var leaderMarker = reader.ReadInt8();
-        ShareAcknowledgeLeaderIdAndEpoch? currentLeader = null;
-        if (leaderMarker >= 0)
+        // CurrentLeader is non-nullable — always present inline (no marker byte)
+        var leaderId = reader.ReadInt32();
+        var leaderEpoch = reader.ReadInt32();
+        reader.SkipTaggedFields();
+
+        var currentLeader = new ShareAcknowledgeLeaderIdAndEpoch
         {
-            currentLeader = ShareAcknowledgeLeaderIdAndEpoch.Read(ref reader);
-        }
+            LeaderId = leaderId,
+            LeaderEpoch = leaderEpoch
+        };
 
         reader.SkipTaggedFields();
 

@@ -1592,23 +1592,27 @@ public sealed class AdminClient : IAdminClient
                 ShareGroupDescribeRequest.LowestSupportedVersion,
                 ShareGroupDescribeRequest.HighestSupportedVersion);
 
-            var result = new Dictionary<string, ShareGroupDescription>();
-
-            foreach (var (coordinatorId, groups) in groupsByCoordinator)
+            // Fan out ShareGroupDescribe requests to all coordinators in parallel
+            var describeResponses = await Task.WhenAll(groupsByCoordinator.Select(async kvp =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var connection = await _connectionPool.GetConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
 
                 var request = new ShareGroupDescribeRequest
                 {
-                    GroupIds = groups,
+                    GroupIds = kvp.Value,
                     IncludeAuthorizedOperations = true
                 };
 
-                var response = await connection.SendAsync<ShareGroupDescribeRequest, ShareGroupDescribeResponse>(
+                return await connection.SendAsync<ShareGroupDescribeRequest, ShareGroupDescribeResponse>(
                     request,
                     apiVersion,
                     cancellationToken).ConfigureAwait(false);
+            })).ConfigureAwait(false);
 
+            var result = new Dictionary<string, ShareGroupDescription>();
+
+            foreach (var response in describeResponses)
+            {
                 foreach (var group in response.Groups)
                 {
                     if (group.ErrorCode != Protocol.ErrorCode.None)
@@ -1636,7 +1640,7 @@ public sealed class AdminClient : IAdminClient
                             ClientId = m.ClientId,
                             ClientHost = m.ClientHost,
                             SubscribedTopicNames = m.SubscribedTopicNames,
-                            Assignment = m.Assignment?.TopicPartitions
+                            Assignment = m.Assignment.TopicPartitions
                                 .SelectMany(tp => tp.Partitions.Select(p =>
                                     new TopicPartition(tp.TopicName ?? string.Empty, p)))
                                 .ToList()

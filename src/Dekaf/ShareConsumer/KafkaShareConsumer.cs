@@ -154,9 +154,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
     public IKafkaShareConsumer<TKey, TValue> Unsubscribe()
     {
+        // Release any pending acks back to the group so other members can claim them,
+        // rather than waiting for the broker's acquisition lock timeout to expire.
+        if (_ackTracker.HasPending)
+        {
+            ReleasePendingAcks();
+        }
+
         _subscriptionSnapshot = new HashSet<string>();
         _sessionManager.ResetAll();
-        _ackTracker.Flush(); // Discard pending acks
         return this;
     }
 
@@ -166,120 +172,156 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         ThrowIfDisposed();
         ThrowIfNotInitialized();
 
-        if (_subscriptionSnapshot.Count == 0)
-            yield break;
-
-        // Ensure we're part of the share group
-        await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
-        _assignmentSnapshot = _coordinator.Assignment;
-
-        var assignment = _assignmentSnapshot;
-        if (assignment.Count == 0)
-            yield break;
-
-        // Flush pending acks from previous poll as inline acknowledgements with the fetch
-        var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
-
-        // Group assigned partitions by leader broker
-        var partitionsByBroker = GroupPartitionsByLeader(assignment);
-
-        var recordCount = 0;
-
-        foreach (var (brokerId, partitions) in partitionsByBroker)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            if (recordCount >= _options.MaxPollRecords)
-                break;
+            if (_subscriptionSnapshot.Count == 0)
+                yield break;
 
-            var shareFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.ShareFetch,
-                ShareFetchRequest.LowestSupportedVersion,
-                ShareFetchRequest.HighestSupportedVersion);
+            // Ensure we're part of the share group
+            await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken)
+                .ConfigureAwait(false);
+            _assignmentSnapshot = _coordinator.Assignment;
 
-            var topics = BuildShareFetchTopics(partitions, pendingAcks, shareFetchVersion);
-            var sessionEpoch = _sessionManager.GetSessionEpoch(brokerId);
-
-            var request = new ShareFetchRequest
-            {
-                GroupId = _options.GroupId,
-                MemberId = _coordinator.MemberId!,
-                ShareSessionEpoch = sessionEpoch,
-                MaxWaitMs = _options.FetchMaxWaitMs,
-                MinBytes = _options.FetchMinBytes,
-                MaxBytes = _options.FetchMaxBytes,
-                Topics = topics
-            };
-
-            ShareFetchResponse response;
-            try
-            {
-                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
-                    .ConfigureAwait(false);
-                response = (ShareFetchResponse)await connection
-                    .SendAsync<ShareFetchRequest, ShareFetchResponse>(
-                        request, shareFetchVersion, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                LogFetchFailed(brokerId, ex);
-                _sessionManager.ResetSession(brokerId);
+            var assignment = _assignmentSnapshot;
+            if (assignment.Count == 0)
                 continue;
-            }
 
-            // Handle top-level errors
-            if (response.ErrorCode != ErrorCode.None)
+            // Flush pending acks from previous poll as inline acknowledgements with the fetch
+            var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
+
+            // Group assigned partitions by leader broker
+            var partitionsByBroker = GroupPartitionsByLeader(assignment);
+
+            var recordCount = 0;
+
+            foreach (var (brokerId, partitions) in partitionsByBroker)
             {
-                LogFetchTopLevelError(response.ErrorCode, response.ErrorMessage);
-                if (response.ErrorCode == ErrorCode.ShareSessionNotFound ||
-                    response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
+                if (recordCount >= _options.MaxPollRecords)
+                    break;
+
+                var shareFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                    ApiKey.ShareFetch,
+                    ShareFetchRequest.LowestSupportedVersion,
+                    ShareFetchRequest.HighestSupportedVersion);
+
+                var topics = BuildShareFetchTopics(partitions, pendingAcks, shareFetchVersion);
+                var sessionEpoch = _sessionManager.GetSessionEpoch(brokerId);
+
+                var maxRecords = shareFetchVersion >= 1 ? _options.MaxPollRecords : 0;
+
+                var request = new ShareFetchRequest
                 {
+                    GroupId = _options.GroupId,
+                    MemberId = _coordinator.MemberId!,
+                    ShareSessionEpoch = sessionEpoch,
+                    MaxWaitMs = _options.FetchMaxWaitMs,
+                    MinBytes = _options.FetchMinBytes,
+                    MaxBytes = _options.FetchMaxBytes,
+                    MaxRecords = maxRecords,
+                    BatchSize = maxRecords,
+                    Topics = topics
+                };
+
+                ShareFetchResponse response;
+                try
+                {
+                    var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+                        .ConfigureAwait(false);
+                    response = (ShareFetchResponse)await connection
+                        .SendAsync<ShareFetchRequest, ShareFetchResponse>(
+                            request, shareFetchVersion, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    LogFetchFailed(brokerId, ex);
                     _sessionManager.ResetSession(brokerId);
-                }
-                continue;
-            }
-
-            // Successful fetch — advance session epoch
-            _sessionManager.IncrementEpoch(brokerId);
-
-            // Process partition responses
-            foreach (var topicResponse in response.Responses)
-            {
-                var topicInfo = _metadataManager.Metadata.GetTopic(topicResponse.TopicId);
-                if (topicInfo is null)
                     continue;
+                }
 
-                foreach (var partition in topicResponse.Partitions)
+                // Handle top-level errors
+                if (response.ErrorCode != ErrorCode.None)
                 {
-                    if (partition.ErrorCode != ErrorCode.None)
+                    LogFetchTopLevelError(response.ErrorCode, response.ErrorMessage);
+                    if (response.ErrorCode == ErrorCode.ShareSessionNotFound ||
+                        response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                     {
-                        LogPartitionFetchError(topicInfo.Name, partition.PartitionIndex, partition.ErrorCode);
-                        continue;
+                        _sessionManager.ResetSession(brokerId);
                     }
+                    continue;
+                }
 
-                    if (partition.RecordBytes.IsEmpty || partition.AcquiredRecords.Count == 0)
+                // Check whether any partition in this response has acquired records.
+                // We must advance the session epoch BEFORE yielding so that even if
+                // the caller breaks from the async enumerable (disposing the iterator),
+                // the epoch is already correct for a subsequent ShareAcknowledge/CommitAsync.
+                // Without this, the session epoch stays at 0 while the broker expects 1,
+                // causing InvalidShareSessionEpoch on the next request.
+                var hasAcquiredRecords = false;
+                for (var ti = 0; ti < response.Responses.Count && !hasAcquiredRecords; ti++)
+                {
+                    var respPartitions = response.Responses[ti].Partitions;
+                    for (var pi = 0; pi < respPartitions.Count; pi++)
+                    {
+                        var p = respPartitions[pi];
+                        if (p.ErrorCode == ErrorCode.None && !p.RecordBytes.IsEmpty &&
+                            p.AcquiredRecords.Count > 0)
+                        {
+                            hasAcquiredRecords = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hasAcquiredRecords)
+                {
+                    _sessionManager.IncrementEpoch(brokerId);
+                }
+
+                // Process partition responses
+                foreach (var topicResponse in response.Responses)
+                {
+                    var topicInfo = _metadataManager.Metadata.GetTopic(topicResponse.TopicId);
+                    if (topicInfo is null)
                         continue;
 
-                    // Parse all records from this partition eagerly (KafkaProtocolReader is a
-                    // ref struct and cannot be preserved across yield boundaries)
-                    var parsed = ParsePartitionRecords(
-                        topicInfo, partition, _options.MaxPollRecords - recordCount);
-
-                    var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
-
-                    foreach (var result in parsed)
+                    foreach (var partition in topicResponse.Partitions)
                     {
-                        if (recordCount >= _options.MaxPollRecords)
-                            break;
+                        if (partition.ErrorCode != ErrorCode.None)
+                        {
+                            LogPartitionFetchError(topicInfo.Name, partition.PartitionIndex,
+                                partition.ErrorCode);
+                            continue;
+                        }
 
-                        // Track only records actually yielded to the consumer so we don't
-                        // silently acknowledge offsets truncated by MaxPollRecords.
-                        _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
+                        if (partition.RecordBytes.IsEmpty || partition.AcquiredRecords.Count == 0)
+                            continue;
 
-                        recordCount++;
-                        yield return result;
+                        // Parse all records from this partition eagerly (KafkaProtocolReader is a
+                        // ref struct and cannot be preserved across yield boundaries)
+                        var parsed = ParsePartitionRecords(
+                            topicInfo, partition, _options.MaxPollRecords - recordCount);
+
+                        var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+
+                        foreach (var result in parsed)
+                        {
+                            if (recordCount >= _options.MaxPollRecords)
+                                break;
+
+                            // Track only records actually yielded to the consumer so we don't
+                            // silently acknowledge offsets truncated by MaxPollRecords.
+                            _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
+
+                            recordCount++;
+                            yield return result;
+                        }
                     }
                 }
             }
+
+            // If this poll round returned nothing, the broker's MaxWaitMs already
+            // provided back-pressure. No additional client-side delay needed.
         }
     }
 
@@ -410,6 +452,58 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         _initLock.Dispose();
     }
 
+    /// <summary>
+    /// Overrides all pending acks to Release and sends them via ShareAcknowledge.
+    /// Best-effort — errors are logged but not thrown.
+    /// </summary>
+    private void ReleasePendingAcks()
+    {
+        var pending = _ackTracker.Flush();
+        if (pending.Count == 0)
+            return;
+
+        // Override all ack types to Release so the broker redelivers to other members
+        var released = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
+        foreach (var (tp, batches) in pending)
+        {
+            var releasedBatches = new List<AcknowledgementBatchData>(batches.Count);
+            foreach (var batch in batches)
+            {
+                var types = new byte[batch.AcknowledgeTypes.Length];
+                Array.Fill(types, (byte)AcknowledgeType.Release);
+                releasedBatches.Add(new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, types));
+            }
+            released[tp] = releasedBatches;
+        }
+
+        // Best-effort send — fire and forget since Unsubscribe is synchronous
+        var acksByBroker = GroupAcksByLeader(released);
+        if (acksByBroker.Count == 0)
+            return;
+
+        var shareAckVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.ShareAcknowledge,
+            ShareAcknowledgeRequest.LowestSupportedVersion,
+            ShareAcknowledgeRequest.HighestSupportedVersion);
+
+        // Send synchronously in the background — best effort, don't block the caller
+        _ = Task.Run(async () =>
+        {
+            foreach (var (brokerId, acks) in acksByBroker)
+            {
+                try
+                {
+                    await SendAcknowledgeAsync(brokerId, acks, shareAckVersion, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LogAcknowledgeRequestFailed(brokerId, ex);
+                }
+            }
+        });
+    }
+
     private async ValueTask CloseShareSessionsAsync(CancellationToken cancellationToken)
     {
         var assignment = _assignmentSnapshot;
@@ -435,6 +529,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 MaxWaitMs = 0,
                 MinBytes = 0,
                 MaxBytes = 0,
+                MaxRecords = shareFetchVersion >= 1 ? 1 : 0,
                 Topics = topics
             };
 
@@ -469,24 +564,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             Topics = topics
         };
 
-        try
-        {
-            var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
-                .ConfigureAwait(false);
+        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+            .ConfigureAwait(false);
 
-            var response = (ShareAcknowledgeResponse)await connection
-                .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
-                    request, shareAckVersion, cancellationToken)
-                .ConfigureAwait(false);
+        var response = (ShareAcknowledgeResponse)await connection
+            .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
+                request, shareAckVersion, cancellationToken)
+            .ConfigureAwait(false);
 
-            if (response.ErrorCode != ErrorCode.None)
-            {
-                LogAcknowledgeFailed(response.ErrorCode, response.ErrorMessage);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        if (response.ErrorCode != ErrorCode.None)
         {
-            LogAcknowledgeRequestFailed(brokerId, ex);
+            throw new KafkaException(response.ErrorCode,
+                $"ShareAcknowledge failed for broker {brokerId}: {response.ErrorCode} - {response.ErrorMessage}");
         }
     }
 
@@ -787,9 +876,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ShareFetch partition error: {Topic}-{Partition}: {ErrorCode}")]
     private partial void LogPartitionFetchError(string topic, int partition, ErrorCode errorCode);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "ShareAcknowledge failed: {ErrorCode} - {ErrorMessage}")]
-    private partial void LogAcknowledgeFailed(ErrorCode errorCode, string? errorMessage);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ShareAcknowledge request failed for broker {BrokerId}")]
     private partial void LogAcknowledgeRequestFailed(int brokerId, Exception exception);

@@ -57,7 +57,8 @@ internal sealed class AcknowledgementTracker
     /// <returns>Per-TopicPartition acknowledgement batches for the wire format.</returns>
     internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush()
     {
-        // Swap to a fresh dictionary so new acks after this point don't interfere
+        // Swap to a fresh dictionary so any new acks after this point go into a fresh
+        // bucket — avoids the per-partition TryRemove race of the snapshot-and-remove pattern.
         var old = _pendingAcks;
         _pendingAcks = new Dictionary<TopicPartition, SortedList<long, AcknowledgeType>>();
 
@@ -94,6 +95,9 @@ internal sealed class AcknowledgementTracker
                 for (int i = 0; i < batch.AcknowledgeTypes.Length; i++)
                 {
                     var offset = batch.FirstOffset + i;
+                    // TryAdd intentionally: preserve any explicit acknowledgement the user set
+                    // after the flush. A newer Acknowledge() call takes priority over re-queued
+                    // stale acks from a failed CommitAsync.
                     offsets.TryAdd(offset, (AcknowledgeType)batch.AcknowledgeTypes[i]);
                 }
             }

@@ -31,6 +31,8 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
 
     /// <summary>
     /// Unsubscribes from all topics and leaves the share group.
+    /// Any pending unacknowledged records are released back to the group (best-effort)
+    /// so other members can claim them without waiting for the acquisition lock to expire.
     /// </summary>
     IKafkaShareConsumer<TKey, TValue> Unsubscribe();
 
@@ -48,6 +50,11 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// <summary>
     /// Sets the acknowledgement type for a specific record.
     /// If not called, records default to <see cref="AcknowledgeType.Accept"/>.
+    /// <para>
+    /// <b>Warning:</b> You must call this before the next <see cref="PollAsync"/> or
+    /// <see cref="CommitAsync"/>. Any records not explicitly acknowledged are implicitly
+    /// accepted — there is no way to release or reject them after that point.
+    /// </para>
     /// </summary>
     /// <param name="record">The record to acknowledge.</param>
     /// <param name="type">The acknowledgement type. Defaults to Accept.</param>

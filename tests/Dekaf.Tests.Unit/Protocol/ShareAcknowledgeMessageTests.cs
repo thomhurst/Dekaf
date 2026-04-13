@@ -306,15 +306,17 @@ public sealed class ShareAcknowledgeMessageTests
     }
 
     [Test]
-    public async Task Response_Partition_CurrentLeader_CanBeNull()
+    public async Task Response_Partition_CurrentLeader_DefaultsToUnknown()
     {
         var partition = new ShareAcknowledgeResponsePartition
         {
             PartitionIndex = 0,
-            ErrorCode = ErrorCode.None
+            ErrorCode = ErrorCode.None,
+            CurrentLeader = new ShareAcknowledgeLeaderIdAndEpoch()
         };
 
-        await Assert.That(partition.CurrentLeader).IsNull();
+        await Assert.That(partition.CurrentLeader.LeaderId).IsEqualTo(-1);
+        await Assert.That(partition.CurrentLeader.LeaderEpoch).IsEqualTo(-1);
     }
 
     [Test]
@@ -417,13 +419,17 @@ public sealed class ShareAcknowledgeMessageTests
         writer.WriteInt32(0);              // PartitionIndex
         writer.WriteInt16(0);              // ErrorCode = None
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // Partition[0] tagged fields
         // Partition[1] - error
         writer.WriteInt32(1);              // PartitionIndex
         writer.WriteInt16(6);              // ErrorCode = NotLeaderOrFollower
         WriteCompactNullableString(ref writer, "Not the leader"); // ErrorMessage
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // Partition[1] tagged fields
         writer.WriteUnsignedVarInt(0);     // Topic[0] tagged fields
         // NodeEndpoints: empty
@@ -464,9 +470,8 @@ public sealed class ShareAcknowledgeMessageTests
         writer.WriteInt32(0);              // PartitionIndex
         writer.WriteInt16(0);              // ErrorCode
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
-        writer.WriteInt8(1);               // CurrentLeader = present
-        writer.WriteInt32(2);              // LeaderId
-        writer.WriteInt32(10);             // LeaderEpoch
+        writer.WriteInt32(2);              // CurrentLeader.LeaderId
+        writer.WriteInt32(10);             // CurrentLeader.LeaderEpoch
         writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // Partition tagged fields
         writer.WriteUnsignedVarInt(0);     // Topic tagged fields
@@ -477,13 +482,12 @@ public sealed class ShareAcknowledgeMessageTests
         var response = (ShareAcknowledgeResponse)ShareAcknowledgeResponse.Read(ref reader, version: 1);
 
         var partition = response.Responses[0].Partitions[0];
-        await Assert.That(partition.CurrentLeader).IsNotNull();
-        await Assert.That(partition.CurrentLeader!.LeaderId).IsEqualTo(2);
+        await Assert.That(partition.CurrentLeader.LeaderId).IsEqualTo(2);
         await Assert.That(partition.CurrentLeader.LeaderEpoch).IsEqualTo(10);
     }
 
     [Test]
-    public async Task Response_Read_WithNullCurrentLeader_ParsesCorrectly()
+    public async Task Response_Read_WithDefaultCurrentLeader_ParsesCorrectly()
     {
         var topicId = Guid.NewGuid();
 
@@ -501,7 +505,9 @@ public sealed class ShareAcknowledgeMessageTests
         writer.WriteInt32(0);              // PartitionIndex
         writer.WriteInt16(0);              // ErrorCode
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // Partition tagged fields
         writer.WriteUnsignedVarInt(0);     // Topic tagged fields
         writer.WriteUnsignedVarInt(0 + 1); // NodeEndpoints: empty
@@ -511,7 +517,8 @@ public sealed class ShareAcknowledgeMessageTests
         var response = (ShareAcknowledgeResponse)ShareAcknowledgeResponse.Read(ref reader, version: 1);
 
         var partition = response.Responses[0].Partitions[0];
-        await Assert.That(partition.CurrentLeader).IsNull();
+        await Assert.That(partition.CurrentLeader.LeaderId).IsEqualTo(-1);
+        await Assert.That(partition.CurrentLeader.LeaderEpoch).IsEqualTo(-1);
     }
 
     [Test]
