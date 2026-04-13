@@ -1544,7 +1544,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return consumer;
     }
 
-    internal static IDeserializer<T> GetDefaultDeserializer<T>()
+    private static IDeserializer<T> GetDefaultDeserializer<T>()
     {
         if (typeof(T) == typeof(string))
             return (IDeserializer<T>)(object)Serializers.String;
@@ -1817,8 +1817,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
         ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
 
-        var keyDeserializer = _keyDeserializer ?? ConsumerBuilder<TKey, TValue>.GetDefaultDeserializer<TKey>();
-        var valueDeserializer = _valueDeserializer ?? ConsumerBuilder<TKey, TValue>.GetDefaultDeserializer<TValue>();
+        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
+        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
 
         var options = new ShareConsumerOptions
         {
@@ -1858,4 +1858,23 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return consumer;
     }
 
+    private static IDeserializer<T> GetDefaultDeserializer<T>()
+    {
+        if (typeof(T) == typeof(string))
+            return (IDeserializer<T>)(object)Serializers.String;
+        if (typeof(T) == typeof(byte[]))
+            return (IDeserializer<T>)(object)Serializers.ByteArray;
+        if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+            return (IDeserializer<T>)(object)Serializers.RawBytes;
+        if (typeof(T) == typeof(int))
+            return (IDeserializer<T>)(object)Serializers.Int32;
+        if (typeof(T) == typeof(long))
+            return (IDeserializer<T>)(object)Serializers.Int64;
+        if (typeof(T) == typeof(Guid))
+            return (IDeserializer<T>)(object)Serializers.Guid;
+        if (typeof(T) == typeof(Ignore))
+            return (IDeserializer<T>)(object)Serializers.Ignore;
+
+        throw new InvalidOperationException($"No default deserializer for type {typeof(T)}. Please specify a deserializer.");
+    }
 }

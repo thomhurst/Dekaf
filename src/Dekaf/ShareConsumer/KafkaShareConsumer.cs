@@ -204,21 +204,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             // Group assigned partitions by leader broker
             var partitionsByBroker = GroupPartitionsByLeader(assignment);
 
-            var recordCount = 0;
+            var shareFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.ShareFetch,
+                ShareFetchRequest.LowestSupportedVersion,
+                ShareFetchRequest.HighestSupportedVersion);
+
+            // Send fetch requests to all brokers concurrently. Session epochs are per-broker
+            // and independent, so parallelism is safe. This avoids waiting for each broker's
+            // MaxWaitMs sequentially when partitions span multiple brokers.
+            var fetchTasks = new List<Task<(int BrokerId, ShareFetchResponse? Response)>>(
+                partitionsByBroker.Count);
 
             foreach (var (brokerId, partitions) in partitionsByBroker)
             {
-                if (recordCount >= _options.MaxPollRecords)
-                    break;
-
-                var shareFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-                    ApiKey.ShareFetch,
-                    ShareFetchRequest.LowestSupportedVersion,
-                    ShareFetchRequest.HighestSupportedVersion);
-
                 var topics = BuildShareFetchTopics(partitions, pendingAcks, shareFetchVersion);
                 var sessionEpoch = _sessionManager.GetSessionEpoch(brokerId);
-
                 var maxRecords = shareFetchVersion >= 1 ? _options.MaxPollRecords : 0;
 
                 var request = new ShareFetchRequest
@@ -234,22 +234,23 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                     Topics = topics
                 };
 
-                ShareFetchResponse response;
-                try
-                {
-                    var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
-                        .ConfigureAwait(false);
-                    response = (ShareFetchResponse)await connection
-                        .SendAsync<ShareFetchRequest, ShareFetchResponse>(
-                            request, shareFetchVersion, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    LogFetchFailed(brokerId, ex);
-                    _sessionManager.ResetSession(brokerId);
+                fetchTasks.Add(SendShareFetchAsync(brokerId, request, shareFetchVersion, cancellationToken));
+            }
+
+            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+
+            // Process responses sequentially — yielding records and tracking acks
+            var recordCount = 0;
+
+            foreach (var fetchTask in fetchTasks)
+            {
+                if (recordCount >= _options.MaxPollRecords)
+                    break;
+
+                var (brokerId, response) = fetchTask.Result;
+
+                if (response is null)
                     continue;
-                }
 
                 // Handle top-level errors
                 if (response.ErrorCode != ErrorCode.None)
@@ -540,6 +541,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 }
             }
         });
+    }
+
+    private async Task<(int BrokerId, ShareFetchResponse? Response)> SendShareFetchAsync(
+        int brokerId, ShareFetchRequest request, short version, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+                .ConfigureAwait(false);
+            var response = (ShareFetchResponse)await connection
+                .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
+                .ConfigureAwait(false);
+            return (brokerId, response);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogFetchFailed(brokerId, ex);
+            _sessionManager.ResetSession(brokerId);
+            return (brokerId, null);
+        }
     }
 
     private async ValueTask CloseShareSessionsAsync(CancellationToken cancellationToken)
