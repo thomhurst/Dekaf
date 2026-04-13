@@ -1532,6 +1532,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (response.ErrorCode == ErrorCode.None)
             {
+                // TV2 (v4+): broker returns bumped ProducerId/Epoch in EndTxn response.
+                // Apply them so the next transaction uses the new identity without
+                // a separate InitProducerId round-trip.
+                if (_currentTransactionUsesTV2 && response.ProducerId >= 0)
+                {
+                    _producerId = response.ProducerId;
+                    _producerEpoch = response.ProducerEpoch;
+                    _accumulator.ProducerId = _producerId;
+                    _accumulator.ProducerEpoch = _producerEpoch;
+                    _accumulator.ResetSequenceNumbers();
+                }
+
                 return;
             }
 
@@ -3120,10 +3132,13 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         {
             await _producer.EndTransactionAsync(committed: false, cancellationToken).ConfigureAwait(false);
 
-            // After abort, the broker bumps the epoch (KIP-360). Re-initialize the
-            // producer ID to get the new epoch; otherwise the next transaction will
-            // fail with InvalidProducerIdMapping.
-            await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
+            // TV1: broker doesn't return bumped epoch in EndTxn, so we must call
+            // InitProducerId to get it (KIP-360).
+            // TV2: EndTxn v4 response already contained the bumped epoch — skip.
+            if (!_producer._currentTransactionUsesTV2)
+            {
+                await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             _aborted = true;
         }
