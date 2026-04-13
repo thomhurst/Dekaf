@@ -1571,11 +1571,14 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<string, ShareGroupDescription>>(async () =>
         {
-            // Find coordinator for each group and batch groups by coordinator
+            // Find coordinators for all groups in parallel
+            var coordinatorTasks = groupIdList
+                .Select(async g => (GroupId: g, CoordinatorId: await FindGroupCoordinatorAsync(g, cancellationToken).ConfigureAwait(false)));
+            var coordinatorResults = await Task.WhenAll(coordinatorTasks).ConfigureAwait(false);
+
             var groupsByCoordinator = new Dictionary<int, List<string>>();
-            foreach (var groupId in groupIdList)
+            foreach (var (groupId, coordinatorId) in coordinatorResults)
             {
-                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
                 if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
                 {
                     groups = [];

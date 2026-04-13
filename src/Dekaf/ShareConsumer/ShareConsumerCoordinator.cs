@@ -492,9 +492,15 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         default:
                             continue;
                     }
-
-                    break;
                 }
+                else
+                {
+                    // Network errors, ObjectDisposedException, etc. — mark coordinator
+                    // unknown so EnsureActiveGroupAsync re-discovers on next poll.
+                    MarkCoordinatorUnknown();
+                }
+
+                break;
             }
         }
     }

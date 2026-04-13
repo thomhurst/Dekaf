@@ -290,7 +290,6 @@ public sealed class ShareGroupMemberDescription
 public sealed class ListShareGroupsOptions
 {
     public IReadOnlyList<string>? States { get; init; }
-    public int TimeoutMs { get; init; } = 30000;
 }
 
 /// <summary>

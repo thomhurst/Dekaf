@@ -1,21 +1,28 @@
-using System.Collections.Concurrent;
-
 namespace Dekaf.ShareConsumer;
 
 /// <summary>
 /// Tracks per-record acknowledgement state between polls and builds wire-format
 /// acknowledgement batches for ShareFetch (inline acks) or ShareAcknowledge requests.
+/// <para>
+/// Thread-safety: This class is designed for single-threaded access from the consumer's
+/// poll loop. <see cref="TrackDeliveredRecords"/>, <see cref="Acknowledge"/>, and
+/// <see cref="Flush"/> must all be called from the same thread (the PollAsync caller).
+/// </para>
 /// </summary>
 internal sealed class AcknowledgementTracker
 {
-    private readonly ConcurrentDictionary<TopicPartition, SortedList<long, AcknowledgeType>> _pendingAcks = new();
+    private Dictionary<TopicPartition, SortedList<long, AcknowledgeType>> _pendingAcks = new();
 
     /// <summary>
     /// Tracks records delivered by a poll. All records default to Accept.
     /// </summary>
     internal void TrackDeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
-        SortedList<long, AcknowledgeType> offsets = _pendingAcks.GetOrAdd(tp, static _ => new SortedList<long, AcknowledgeType>());
+        if (!_pendingAcks.TryGetValue(tp, out var offsets))
+        {
+            offsets = new SortedList<long, AcknowledgeType>();
+            _pendingAcks[tp] = offsets;
+        }
 
         for (long offset = firstOffset; offset <= lastOffset; offset++)
         {
@@ -28,7 +35,7 @@ internal sealed class AcknowledgementTracker
     /// </summary>
     internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type)
     {
-        if (_pendingAcks.TryGetValue(tp, out SortedList<long, AcknowledgeType>? offsets))
+        if (_pendingAcks.TryGetValue(tp, out var offsets))
         {
             if (offsets.ContainsKey(offset))
             {
@@ -40,21 +47,24 @@ internal sealed class AcknowledgementTracker
     /// <summary>
     /// Whether there are any pending acknowledgements.
     /// </summary>
-    internal bool HasPending => !_pendingAcks.IsEmpty;
+    internal bool HasPending => _pendingAcks.Count > 0;
 
     /// <summary>
     /// Flushes all pending acknowledgements, building wire-format batches.
-    /// Clears tracked state after flush.
+    /// Atomically swaps the pending dictionary so no acks can be lost.
     /// </summary>
     /// <returns>Per-TopicPartition acknowledgement batches for the wire format.</returns>
     internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush()
     {
+        // Atomic swap — any concurrent reads see the new empty dictionary immediately
+        var old = _pendingAcks;
+        _pendingAcks = new Dictionary<TopicPartition, SortedList<long, AcknowledgeType>>();
+
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> result = new();
 
-        // Snapshot and clear atomically per partition
-        foreach (TopicPartition tp in _pendingAcks.Keys.ToArray())
+        foreach (var (tp, offsets) in old)
         {
-            if (_pendingAcks.TryRemove(tp, out SortedList<long, AcknowledgeType>? offsets) && offsets.Count > 0)
+            if (offsets.Count > 0)
             {
                 result[tp] = BuildBatches(offsets);
             }

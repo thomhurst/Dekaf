@@ -29,7 +29,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
 
-    private readonly HashSet<string> _subscription = [];
     private volatile IReadOnlySet<string> _subscriptionSnapshot = new HashSet<string>();
     private volatile IReadOnlySet<TopicPartition> _assignmentSnapshot = new HashSet<TopicPartition>();
 
@@ -149,18 +148,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
     public IKafkaShareConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
-        _subscription.Clear();
-        foreach (var topic in topics)
-        {
-            _subscription.Add(topic);
-        }
-        _subscriptionSnapshot = new HashSet<string>(_subscription);
+        _subscriptionSnapshot = new HashSet<string>(topics);
         return this;
     }
 
     public IKafkaShareConsumer<TKey, TValue> Unsubscribe()
     {
-        _subscription.Clear();
         _subscriptionSnapshot = new HashSet<string>();
         _sessionManager.ResetAll();
         _ackTracker.Flush(); // Discard pending acks
@@ -173,7 +166,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         ThrowIfDisposed();
         ThrowIfNotInitialized();
 
-        if (_subscription.Count == 0)
+        if (_subscriptionSnapshot.Count == 0)
             yield break;
 
         // Ensure we're part of the share group
@@ -271,13 +264,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                     var parsed = ParsePartitionRecords(
                         topicInfo, partition, _options.MaxPollRecords - recordCount);
 
+                    // Track delivered records per acquired range (amortized per-batch)
+                    // rather than per individual record to minimize dictionary lookups.
+                    if (parsed.Count > 0)
+                    {
+                        var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+                        foreach (var acquired in partition.AcquiredRecords)
+                        {
+                            _ackTracker.TrackDeliveredRecords(tp, acquired.FirstOffset, acquired.LastOffset);
+                        }
+                    }
+
                     foreach (var result in parsed)
                     {
                         if (recordCount >= _options.MaxPollRecords)
                             break;
-
-                        var tp = new TopicPartition(result.Topic, result.Partition);
-                        _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
 
                         recordCount++;
                         yield return result;

@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace Dekaf.ShareConsumer;
 
 /// <summary>
@@ -6,6 +8,11 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 public enum AcknowledgeType : byte
 {
+    /// <summary>
+    /// Internal wire protocol value for gap records. Do not use directly —
+    /// gap records are never delivered to consumers.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
     Gap = 0,
     Accept = 1,
     Release = 2,
