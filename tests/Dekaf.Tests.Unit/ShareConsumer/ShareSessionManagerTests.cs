@@ -58,7 +58,8 @@ public class ShareSessionManagerTests
     [Test]
     public async Task CloseEpoch_ReturnsMinusOne()
     {
-        await Assert.That(ShareSessionManager.CloseEpoch).IsEqualTo(-1);
+        var closeEpoch = ShareSessionManager.CloseEpoch;
+        await Assert.That(closeEpoch).IsEqualTo(-1);
     }
 
     [Test]
