@@ -82,6 +82,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
+    internal bool _currentTransactionUsesTV2;
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
     // Always initialized but only actively used for idempotent producers. Non-idempotent producers
@@ -1185,6 +1186,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         _transactionState = TransactionState.InTransaction;
+        _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion("transaction.version") >= 2;
         lock (_partitionsInTransactionLock)
         {
             _partitionsInTransaction.Clear();
@@ -2028,11 +2030,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             needsRegistration = _partitionsInTransaction.Add(topicPartition);
         }
 
-        if (needsRegistration)
-        {
-            await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
-                .ConfigureAwait(false);
-        }
+        if (!needsRegistration)
+            return;
+
+        // TV2: broker registers partitions implicitly on first Produce request.
+        // Local tracking (above) is still needed for SendOffsetsToTransaction.
+        if (_currentTransactionUsesTV2)
+            return;
+
+        await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
