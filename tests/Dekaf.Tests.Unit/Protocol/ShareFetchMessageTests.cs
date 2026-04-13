@@ -435,16 +435,18 @@ public sealed class ShareFetchMessageTests
     }
 
     [Test]
-    public async Task Response_Partition_CurrentLeader_CanBeNull()
+    public async Task Response_Partition_CurrentLeader_DefaultsToUnknown()
     {
         var partition = new ShareFetchResponsePartition
         {
             PartitionIndex = 0,
             ErrorCode = ErrorCode.None,
+            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
             AcquiredRecords = []
         };
 
-        await Assert.That(partition.CurrentLeader).IsNull();
+        await Assert.That(partition.CurrentLeader.LeaderId).IsEqualTo(-1);
+        await Assert.That(partition.CurrentLeader.LeaderEpoch).IsEqualTo(-1);
     }
 
     [Test]
@@ -453,6 +455,7 @@ public sealed class ShareFetchMessageTests
         var partition = new ShareFetchResponsePartition
         {
             PartitionIndex = 0,
+            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
             AcquiredRecords = []
         };
 
@@ -593,7 +596,9 @@ public sealed class ShareFetchMessageTests
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
         writer.WriteInt16(0);              // AcknowledgeErrorCode = None
         writer.WriteUnsignedVarInt(0);     // AcknowledgeErrorMessage = null
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId (default)
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch (default)
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // RecordBytes = null (length+1=0)
         // AcquiredRecords: 1 element
         writer.WriteUnsignedVarInt(1 + 1);
@@ -618,7 +623,9 @@ public sealed class ShareFetchMessageTests
         await Assert.That(partition.PartitionIndex).IsEqualTo(0);
         await Assert.That(partition.ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(partition.AcknowledgeErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(partition.CurrentLeader).IsNull();
+        await Assert.That(partition.CurrentLeader).IsNotNull();
+        await Assert.That(partition.CurrentLeader!.LeaderId).IsEqualTo(-1);
+        await Assert.That(partition.CurrentLeader.LeaderEpoch).IsEqualTo(-1);
         await Assert.That(partition.RecordBytes.Length).IsEqualTo(0);
         await Assert.That(partition.AcquiredRecords.Count).IsEqualTo(1);
         await Assert.That(partition.AcquiredRecords[0].FirstOffset).IsEqualTo(0L);
@@ -647,9 +654,8 @@ public sealed class ShareFetchMessageTests
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
         writer.WriteInt16(0);              // AcknowledgeErrorCode
         writer.WriteUnsignedVarInt(0);     // AcknowledgeErrorMessage = null
-        writer.WriteInt8(1);               // CurrentLeader = present
-        writer.WriteInt32(3);              // LeaderId
-        writer.WriteInt32(7);              // LeaderEpoch
+        writer.WriteInt32(3);              // CurrentLeader.LeaderId
+        writer.WriteInt32(7);              // CurrentLeader.LeaderEpoch
         writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // RecordBytes = null
         writer.WriteUnsignedVarInt(0 + 1); // AcquiredRecords: empty
@@ -689,7 +695,9 @@ public sealed class ShareFetchMessageTests
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
         writer.WriteInt16(0);              // AcknowledgeErrorCode
         writer.WriteUnsignedVarInt(0);     // AcknowledgeErrorMessage = null
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId (default)
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch (default)
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         // RecordBytes: 5 bytes (length+1 = 6)
         writer.WriteUnsignedVarInt(recordData.Length + 1);
         writer.WriteRawBytes(recordData);
@@ -729,7 +737,9 @@ public sealed class ShareFetchMessageTests
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
         writer.WriteInt16(75);             // AcknowledgeErrorCode (non-zero)
         WriteCompactNullableString(ref writer, "Invalid acknowledgement"); // AcknowledgeErrorMessage
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId (default)
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch (default)
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // RecordBytes = null
         writer.WriteUnsignedVarInt(0 + 1); // AcquiredRecords: empty
         writer.WriteUnsignedVarInt(0);     // Partition tagged fields
@@ -806,7 +816,9 @@ public sealed class ShareFetchMessageTests
         writer.WriteUnsignedVarInt(0);     // ErrorMessage = null
         writer.WriteInt16(0);              // AcknowledgeErrorCode
         writer.WriteUnsignedVarInt(0);     // AcknowledgeErrorMessage = null
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId (default)
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch (default)
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // RecordBytes = null
         // AcquiredRecords: 3 elements
         writer.WriteUnsignedVarInt(3 + 1);
@@ -866,7 +878,9 @@ public sealed class ShareFetchMessageTests
         WriteCompactNullableString(ref writer, "Not the leader"); // ErrorMessage
         writer.WriteInt16(0);              // AcknowledgeErrorCode
         writer.WriteUnsignedVarInt(0);     // AcknowledgeErrorMessage = null
-        writer.WriteInt8(-1);              // CurrentLeader = null
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderId (default)
+        writer.WriteInt32(-1);             // CurrentLeader.LeaderEpoch (default)
+        writer.WriteUnsignedVarInt(0);     // CurrentLeader tagged fields
         writer.WriteUnsignedVarInt(0);     // RecordBytes = null
         writer.WriteUnsignedVarInt(0 + 1); // AcquiredRecords: empty
         writer.WriteUnsignedVarInt(0);     // Partition tagged fields
