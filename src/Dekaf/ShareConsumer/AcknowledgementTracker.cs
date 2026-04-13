@@ -56,7 +56,7 @@ internal sealed class AcknowledgementTracker
     /// <returns>Per-TopicPartition acknowledgement batches for the wire format.</returns>
     internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush()
     {
-        // Atomic swap — any concurrent reads see the new empty dictionary immediately
+        // Swap to a fresh dictionary so new acks after this point don't interfere
         var old = _pendingAcks;
         _pendingAcks = new Dictionary<TopicPartition, SortedList<long, AcknowledgeType>>();
 

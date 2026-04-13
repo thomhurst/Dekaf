@@ -264,21 +264,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                     var parsed = ParsePartitionRecords(
                         topicInfo, partition, _options.MaxPollRecords - recordCount);
 
-                    // Track delivered records per acquired range (amortized per-batch)
-                    // rather than per individual record to minimize dictionary lookups.
-                    if (parsed.Count > 0)
-                    {
-                        var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
-                        foreach (var acquired in partition.AcquiredRecords)
-                        {
-                            _ackTracker.TrackDeliveredRecords(tp, acquired.FirstOffset, acquired.LastOffset);
-                        }
-                    }
+                    var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
 
                     foreach (var result in parsed)
                     {
                         if (recordCount >= _options.MaxPollRecords)
                             break;
+
+                        // Track only records actually yielded to the consumer so we don't
+                        // silently acknowledge offsets truncated by MaxPollRecords.
+                        _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
 
                         recordCount++;
                         yield return result;
