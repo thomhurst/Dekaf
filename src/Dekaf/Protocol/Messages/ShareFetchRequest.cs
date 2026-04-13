@@ -97,8 +97,8 @@ public sealed class ShareFetchRequest : IKafkaRequest<ShareFetchResponse>
             static (ref KafkaProtocolWriter w, ShareFetchRequestTopic tp, short v) => tp.Write(ref w, v),
             version);
 
-        writer.WriteCompactNullableArray(
-            ForgottenTopicsData,
+        writer.WriteCompactArray(
+            ForgottenTopicsData ?? [],
             static (ref KafkaProtocolWriter w, ShareFetchForgottenTopic ft) => ft.Write(ref w));
 
         writer.WriteEmptyTaggedFields();
@@ -176,8 +176,8 @@ public sealed class ShareFetchRequestPartition
             writer.WriteInt32(PartitionMaxBytes);
         }
 
-        writer.WriteCompactNullableArray(
-            AcknowledgementBatches,
+        writer.WriteCompactArray(
+            AcknowledgementBatches ?? [],
             static (ref KafkaProtocolWriter w, ShareFetchAcknowledgementBatch b) => b.Write(ref w));
 
         writer.WriteEmptyTaggedFields();
@@ -193,17 +193,8 @@ public sealed class ShareFetchRequestPartition
             partitionMaxBytes = reader.ReadInt32();
         }
 
-        var ackBatchLength = reader.ReadUnsignedVarInt() - 1;
-        IReadOnlyList<ShareFetchAcknowledgementBatch>? acknowledgementBatches = null;
-        if (ackBatchLength > 0)
-        {
-            var batches = new ShareFetchAcknowledgementBatch[ackBatchLength];
-            for (var i = 0; i < ackBatchLength; i++)
-            {
-                batches[i] = ShareFetchAcknowledgementBatch.Read(ref reader);
-            }
-            acknowledgementBatches = batches;
-        }
+        var acknowledgementBatches = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => ShareFetchAcknowledgementBatch.Read(ref r));
 
         reader.SkipTaggedFields();
 

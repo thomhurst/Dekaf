@@ -137,9 +137,9 @@ public sealed class ShareFetchResponsePartition
     public string? AcknowledgeErrorMessage { get; init; }
 
     /// <summary>
-    /// The current leader information, or null if not available.
+    /// The current leader information. Always present inline in the response.
     /// </summary>
-    public ShareFetchLeaderIdAndEpoch? CurrentLeader { get; init; }
+    public required ShareFetchLeaderIdAndEpoch CurrentLeader { get; init; }
 
     /// <summary>
     /// Raw record batch bytes. Use the protocol Records decoder to parse.
@@ -159,21 +159,16 @@ public sealed class ShareFetchResponsePartition
         var acknowledgeErrorCode = (ErrorCode)reader.ReadInt16();
         var acknowledgeErrorMessage = reader.ReadCompactString();
 
-        // Nullable non-tagged struct: single signed byte marker (-1 = null, >= 0 = present)
-        var currentLeaderMarker = reader.ReadInt8();
-        ShareFetchLeaderIdAndEpoch? currentLeader = null;
-        if (currentLeaderMarker >= 0)
-        {
-            var leaderId = reader.ReadInt32();
-            var leaderEpoch = reader.ReadInt32();
-            reader.SkipTaggedFields();
+        // CurrentLeader is non-nullable — always present inline (no marker byte)
+        var leaderId = reader.ReadInt32();
+        var leaderEpoch = reader.ReadInt32();
+        reader.SkipTaggedFields();
 
-            currentLeader = new ShareFetchLeaderIdAndEpoch
-            {
-                LeaderId = leaderId,
-                LeaderEpoch = leaderEpoch
-            };
-        }
+        var currentLeader = new ShareFetchLeaderIdAndEpoch
+        {
+            LeaderId = leaderId,
+            LeaderEpoch = leaderEpoch
+        };
 
         // COMPACT_RECORDS: length+1 encoded as unsigned varint, 0 = null
         var recordsLength = reader.ReadUnsignedVarInt() - 1;

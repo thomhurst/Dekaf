@@ -359,8 +359,7 @@ public sealed class ShareGroupDescribeMessageTests
         // SubscribedTopicNames: 1 element
         writer.WriteUnsignedVarInt(1 + 1);
         writer.WriteCompactString("topic-1");
-        // Assignment = present
-        writer.WriteInt8(0);
+        // Assignment (inline, no marker byte)
         // Assignment.TopicPartitions: 1 element
         writer.WriteUnsignedVarInt(1 + 1);
         writer.WriteUuid(topicId);
@@ -399,7 +398,7 @@ public sealed class ShareGroupDescribeMessageTests
     }
 
     [Test]
-    public async Task Response_Read_MemberWithNullAssignment_ParsesCorrectly()
+    public async Task Response_Read_MemberWithEmptyAssignment_ParsesCorrectly()
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
@@ -423,7 +422,9 @@ public sealed class ShareGroupDescribeMessageTests
         writer.WriteCompactString("client-1");
         writer.WriteCompactString("/127.0.0.1");
         writer.WriteUnsignedVarInt(0 + 1);             // SubscribedTopicNames: empty
-        writer.WriteInt8(-1);                          // Assignment = null
+        // Assignment (inline, no marker byte)
+        writer.WriteUnsignedVarInt(0 + 1);             // Assignment.TopicPartitions: empty compact array
+        writer.WriteUnsignedVarInt(0);                 // Assignment tagged fields
         writer.WriteUnsignedVarInt(0);                 // Member[0] tagged fields
         writer.WriteInt32(-2147483648);                // AuthorizedOperations
         writer.WriteUnsignedVarInt(0);                 // Group[0] tagged fields
@@ -433,7 +434,7 @@ public sealed class ShareGroupDescribeMessageTests
         var response = (ShareGroupDescribeResponse)ShareGroupDescribeResponse.Read(ref reader, version: 1);
 
         var member = response.Groups[0].Members[0];
-        await Assert.That(member.Assignment).IsNull();
+        await Assert.That(member.Assignment.TopicPartitions.Count).IsEqualTo(0);
         await Assert.That(member.SubscribedTopicNames.Count).IsEqualTo(0);
     }
 
@@ -487,7 +488,10 @@ public sealed class ShareGroupDescribeMessageTests
             ClientId = "client-1",
             ClientHost = "/10.0.0.1",
             SubscribedTopicNames = ["topic-a", "topic-b"],
-            Assignment = null
+            Assignment = new ShareGroupDescribeAssignment
+            {
+                TopicPartitions = []
+            }
         };
         original.Write(ref writer);
 
@@ -500,7 +504,7 @@ public sealed class ShareGroupDescribeMessageTests
         await Assert.That(deserialized.ClientId).IsEqualTo("client-1");
         await Assert.That(deserialized.ClientHost).IsEqualTo("/10.0.0.1");
         await Assert.That(deserialized.SubscribedTopicNames.Count).IsEqualTo(2);
-        await Assert.That(deserialized.Assignment).IsNull();
+        await Assert.That(deserialized.Assignment.TopicPartitions.Count).IsEqualTo(0);
     }
 
     [Test]

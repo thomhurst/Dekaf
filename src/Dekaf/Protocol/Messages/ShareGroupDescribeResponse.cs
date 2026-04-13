@@ -175,9 +175,9 @@ public sealed class ShareGroupDescribeMember
     public required IReadOnlyList<string> SubscribedTopicNames { get; init; }
 
     /// <summary>
-    /// The assignment for this member, or null if there is no assignment.
+    /// The assignment for this member.
     /// </summary>
-    public ShareGroupDescribeAssignment? Assignment { get; init; }
+    public required ShareGroupDescribeAssignment Assignment { get; init; }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -191,16 +191,7 @@ public sealed class ShareGroupDescribeMember
             SubscribedTopicNames,
             static (ref KafkaProtocolWriter w, string topic) => w.WriteCompactString(topic));
 
-        // Nullable non-tagged struct: single signed byte marker (-1 = null, >= 0 = present)
-        if (Assignment is not null)
-        {
-            writer.WriteInt8(0);
-            Assignment.Write(ref writer);
-        }
-        else
-        {
-            writer.WriteInt8(-1);
-        }
+        Assignment.Write(ref writer);
 
         writer.WriteEmptyTaggedFields();
     }
@@ -216,13 +207,7 @@ public sealed class ShareGroupDescribeMember
         var subscribedTopicNames = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty);
 
-        // Nullable non-tagged struct: single signed byte marker (-1 = null, >= 0 = present)
-        var assignmentMarker = reader.ReadInt8();
-        ShareGroupDescribeAssignment? assignment = null;
-        if (assignmentMarker >= 0)
-        {
-            assignment = ShareGroupDescribeAssignment.Read(ref reader);
-        }
+        var assignment = ShareGroupDescribeAssignment.Read(ref reader);
 
         reader.SkipTaggedFields();
 
