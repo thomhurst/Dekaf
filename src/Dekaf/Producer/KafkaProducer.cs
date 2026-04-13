@@ -82,7 +82,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
-    internal bool _currentTransactionUsesTV2;
+    internal volatile bool _currentTransactionUsesTV2;
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
     // Always initialized but only actively used for idempotent producers. Non-idempotent producers
@@ -146,6 +146,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         public byte[]? KeySerializationBuffer;
         public byte[]? ValueSerializationBuffer;
     }
+
+    private const string TransactionVersionFeature = "transaction.version";
 
     // Default sizes match typical key/value sizes to avoid growth in common cases
     private const int DefaultKeyBufferSize = 512;
@@ -1186,7 +1188,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         _transactionState = TransactionState.InTransaction;
-        _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion("transaction.version") >= 2;
+        _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
         lock (_partitionsInTransactionLock)
         {
             _partitionsInTransaction.Clear();
@@ -1296,7 +1298,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 };
             }
 
-            // Success — update PID/epoch
             _producerId = response.ProducerId;
             _producerEpoch = response.ProducerEpoch;
 
