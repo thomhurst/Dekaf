@@ -113,8 +113,7 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         consumer.Subscribe(topic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
 
         await Assert.That(consumed).IsNotNull();
         await Assert.That(consumed!.Value.Value).IsEqualTo("committed-value");
@@ -167,8 +166,7 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         consumer.Subscribe(topic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
 
         await Assert.That(consumed).IsNotNull();
         await Assert.That(consumed!.Value.Value).IsEqualTo("final-value");

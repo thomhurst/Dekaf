@@ -1536,6 +1536,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // TV2 (v4+): broker returns bumped ProducerId/Epoch in EndTxn response.
                 // Apply them so the next transaction uses the new identity without
                 // a separate InitProducerId round-trip.
+                // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
+                // drains all in-flight batches, so no BrokerSender is active.
                 if (_currentTransactionUsesTV2 && response.ProducerId >= 0)
                 {
                     _producerId = response.ProducerId;
