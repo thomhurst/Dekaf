@@ -541,6 +541,72 @@ public sealed class TransactionProtocolTests
         await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
     }
 
+    [Test]
+    public async Task EndTxnResponse_V4_WithEpochBump_ReadsCorrectly()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        // ThrottleTimeMs
+        writer.WriteInt32(10);
+        // ErrorCode = None
+        writer.WriteInt16(0);
+        // Tagged fields: 2 fields
+        writer.WriteUnsignedVarInt(2);
+        // Tag 0: ProducerId (INT64 = 8 bytes)
+        writer.WriteUnsignedVarInt(0); // tag
+        writer.WriteUnsignedVarInt(8); // size
+        writer.WriteInt64(42L);
+        // Tag 1: ProducerEpoch (INT16 = 2 bytes)
+        writer.WriteUnsignedVarInt(1); // tag
+        writer.WriteUnsignedVarInt(2); // size
+        writer.WriteInt16(7);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (EndTxnResponse)EndTxnResponse.Read(ref reader, version: 4);
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(10);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.ProducerId).IsEqualTo(42L);
+        await Assert.That(response.ProducerEpoch).IsEqualTo((short)7);
+    }
+
+    [Test]
+    public async Task EndTxnResponse_V4_NoTaggedFields_DefaultsToMinusOne()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);
+        writer.WriteInt16(0);
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (EndTxnResponse)EndTxnResponse.Read(ref reader, version: 4);
+
+        await Assert.That(response.ProducerId).IsEqualTo(-1L);
+        await Assert.That(response.ProducerEpoch).IsEqualTo((short)-1);
+    }
+
+    [Test]
+    public async Task EndTxnResponse_V3_BackwardCompatible_NoEpochFields()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(25);
+        writer.WriteInt16((short)ErrorCode.InvalidTxnState);
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (EndTxnResponse)EndTxnResponse.Read(ref reader, version: 3);
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(25);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(response.ProducerId).IsEqualTo(-1L);
+        await Assert.That(response.ProducerEpoch).IsEqualTo((short)-1);
+    }
+
     #endregion
 
     #region TxnOffsetCommit Tests

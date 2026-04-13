@@ -82,6 +82,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
+    internal volatile bool _currentTransactionUsesTV2;
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
     // Always initialized but only actively used for idempotent producers. Non-idempotent producers
@@ -145,6 +146,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         public byte[]? KeySerializationBuffer;
         public byte[]? ValueSerializationBuffer;
     }
+
+    private const string TransactionVersionFeature = "transaction.version";
 
     // Default sizes match typical key/value sizes to avoid growth in common cases
     private const int DefaultKeyBufferSize = 512;
@@ -1185,6 +1188,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         _transactionState = TransactionState.InTransaction;
+        _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
         lock (_partitionsInTransactionLock)
         {
             _partitionsInTransaction.Clear();
@@ -1294,7 +1298,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 };
             }
 
-            // Success — update PID/epoch
             _producerId = response.ProducerId;
             _producerEpoch = response.ProducerEpoch;
 
@@ -1530,46 +1533,57 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (response.ErrorCode == ErrorCode.None)
             {
+                // TV2 (v4+): broker returns bumped ProducerId/Epoch in EndTxn response.
+                // Apply them so the next transaction uses the new identity without
+                // a separate InitProducerId round-trip.
+                // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
+                // drains all in-flight batches, so no BrokerSender is active.
+                if (_currentTransactionUsesTV2 && response.ProducerId >= 0)
+                {
+                    _producerId = response.ProducerId;
+                    _producerEpoch = response.ProducerEpoch;
+                    _accumulator.ProducerId = _producerId;
+                    _accumulator.ProducerEpoch = _producerEpoch;
+                    _accumulator.ResetSequenceNumbers();
+                }
+
                 return;
             }
 
-            if (response.ErrorCode == ErrorCode.ProducerFenced ||
-                response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
+            var classification = TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2);
+
+            switch (classification)
             {
-                _transactionState = TransactionState.FatalError;
-                throw new TransactionException(response.ErrorCode,
-                    $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                case TransactionErrorClassification.Fatal:
+                    _transactionState = TransactionState.FatalError;
+                    throw new TransactionException(response.ErrorCode,
+                        $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
+
+                case TransactionErrorClassification.Retriable:
+                    if (response.ErrorCode == ErrorCode.NotCoordinator)
+                    {
+                        LogEndTxnNotCoordinator(attempt + 1, maxRetries);
+                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                        await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    continue;
+
+                default: // Abortable or unknown
+                    throw new TransactionException(response.ErrorCode,
+                        $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
             }
-
-            if (response.ErrorCode is ErrorCode.CoordinatorLoadInProgress
-                or ErrorCode.CoordinatorNotAvailable
-                or ErrorCode.ConcurrentTransactions)
-            {
-                LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                continue;
-            }
-
-            if (response.ErrorCode == ErrorCode.NotCoordinator)
-            {
-                LogEndTxnNotCoordinator(attempt + 1, maxRetries);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            throw new TransactionException(response.ErrorCode,
-                $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
-            {
-                TransactionalId = _options.TransactionalId
-            };
         }
 
         throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
@@ -2028,11 +2042,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             needsRegistration = _partitionsInTransaction.Add(topicPartition);
         }
 
-        if (needsRegistration)
-        {
-            await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
-                .ConfigureAwait(false);
-        }
+        if (!needsRegistration)
+            return;
+
+        await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
@@ -3113,10 +3127,13 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         {
             await _producer.EndTransactionAsync(committed: false, cancellationToken).ConfigureAwait(false);
 
-            // After abort, the broker bumps the epoch (KIP-360). Re-initialize the
-            // producer ID to get the new epoch; otherwise the next transaction will
-            // fail with InvalidProducerIdMapping.
-            await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
+            // TV1: broker doesn't return bumped epoch in EndTxn, so we must call
+            // InitProducerId to get it (KIP-360).
+            // TV2: EndTxn v4 response already contained the bumped epoch — skip.
+            if (!_producer._currentTransactionUsesTV2)
+            {
+                await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             _aborted = true;
         }
