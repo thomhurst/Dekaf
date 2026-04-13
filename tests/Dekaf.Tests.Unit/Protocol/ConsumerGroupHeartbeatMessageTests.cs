@@ -123,9 +123,9 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Request_HighestSupportedVersion_Is2()
+    public async Task Request_HighestSupportedVersion_Is1()
     {
-        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)2);
+        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)1);
     }
 
     #endregion
@@ -194,6 +194,31 @@ public sealed class ConsumerGroupHeartbeatMessageTests
         request.Write(ref writer, version: 0);
 
         await Assert.That(buffer.WrittenCount).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Request_Write_V1_IncludesSubscribedTopicRegex()
+    {
+        // v1 adds SubscribedTopicRegex as a positional field.
+        // Verify that v1 writes more bytes than v0 for the same request content.
+        var request = new ConsumerGroupHeartbeatRequest
+        {
+            GroupId = "test",
+            MemberId = "member-1",
+            MemberEpoch = 0,
+            SubscribedTopicNames = ["my-topic"]
+        };
+
+        var v0Buffer = new ArrayBufferWriter<byte>();
+        var v0Writer = new KafkaProtocolWriter(v0Buffer);
+        request.Write(ref v0Writer, version: 0);
+
+        var v1Buffer = new ArrayBufferWriter<byte>();
+        var v1Writer = new KafkaProtocolWriter(v1Buffer);
+        request.Write(ref v1Writer, version: 1);
+
+        // v1 should be larger due to the extra SubscribedTopicRegex field (null → 1 byte varint)
+        await Assert.That(v1Buffer.WrittenCount).IsGreaterThan(v0Buffer.WrittenCount);
     }
 
     #endregion
@@ -295,9 +320,9 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Response_HighestSupportedVersion_Is2()
+    public async Task Response_HighestSupportedVersion_Is1()
     {
-        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)2);
+        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)1);
     }
 
     #endregion
@@ -480,10 +505,10 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Response_Read_V2_SameWireFormatAsV0_ParsesCorrectly()
+    public async Task Response_Read_V1_SameWireFormatAsV0_ParsesCorrectly()
     {
-        // v2 (KIP-1082) is semantic-only — wire format is identical to v0.
-        // There is no v1 in the spec. PendingTopicPartitions is NOT a positional field.
+        // v1 (KIP-1082) is semantic-only for the response — wire format is identical to v0.
+        // PendingTopicPartitions is NOT a positional field in any version.
         var topicId = Guid.NewGuid();
 
         var buffer = new ArrayBufferWriter<byte>();
@@ -506,7 +531,7 @@ public sealed class ConsumerGroupHeartbeatMessageTests
         writer.WriteUnsignedVarInt(0);            // Response tagged fields
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 2);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 1);
 
         await Assert.That(response.MemberId).IsEqualTo("client-generated-uuid");
         await Assert.That(response.MemberEpoch).IsEqualTo(1);

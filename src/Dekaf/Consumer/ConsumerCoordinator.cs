@@ -580,11 +580,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
             ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
-        // KIP-1082: v2+ uses client-generated UUID v4 instead of empty string for new members.
+        // KIP-1082: v1+ uses client-generated UUID v4 instead of empty string for new members.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
         // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
         // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
-        if (_memberId is null && version >= 2)
+        if (_memberId is null && version >= 1)
             _memberId = Guid.NewGuid().ToString();
 
         var memberId = _memberId ?? string.Empty;

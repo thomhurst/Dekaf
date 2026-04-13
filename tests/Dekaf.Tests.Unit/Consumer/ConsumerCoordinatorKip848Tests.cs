@@ -743,10 +743,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     #region KIP-1082 Client-Generated Member ID Tests
 
     [Test]
-    public async Task ConsumerProtocol_V2_InitialJoin_SendsClientGeneratedUuid()
+    public async Task ConsumerProtocol_V1_InitialJoin_SendsClientGeneratedUuid()
     {
-        // Broker supports v2 — client should generate a UUID, not send empty string
-        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
+        // Broker supports v1 — client should generate a UUID, not send empty string
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
         SetupFindCoordinator();
 
         ConsumerGroupHeartbeatRequest? capturedRequest = null;
@@ -760,7 +760,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
-                    MemberId = capturedRequest.MemberId, // v2: broker echoes client-generated ID
+                    MemberId = capturedRequest.MemberId, // v1: broker echoes client-generated ID
                     MemberEpoch = 1,
                     HeartbeatIntervalMs = 5000
                 });
@@ -811,10 +811,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_V2_AfterUnknownMemberId_GeneratesNewUuid()
+    public async Task ConsumerProtocol_V1_AfterUnknownMemberId_GeneratesNewUuid()
     {
         // After UnknownMemberId reset, a fresh UUID should be generated (not reuse old one)
-        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
         SetupFindCoordinator();
 
         var requests = new List<ConsumerGroupHeartbeatRequest>();
@@ -883,10 +883,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_V2_AfterFencedMemberEpoch_ReusesSameMemberId()
+    public async Task ConsumerProtocol_V1_AfterFencedMemberEpoch_ReusesSameMemberId()
     {
         // After FencedMemberEpoch, the member ID should be preserved (same member, just stale epoch)
-        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
         SetupFindCoordinator();
 
         var requests = new List<ConsumerGroupHeartbeatRequest>();
@@ -952,10 +952,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_V2_MemberIdStoredOnCoordinator()
+    public async Task ConsumerProtocol_V1_MemberIdStoredOnCoordinator()
     {
         // The client-generated UUID should be exposed as the coordinator's MemberId
-        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
         SetupFindCoordinator();
 
         ConsumerGroupHeartbeatRequest? capturedRequest = null;

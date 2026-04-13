@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 2;
+    public static short HighestSupportedVersion => 1;
 
     /// <summary>
     /// The group ID.
@@ -18,7 +18,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
 
     /// <summary>
     /// The member ID. For v0: empty string for new members (server-assigned).
-    /// For v2+ (KIP-1082): client-generated UUID v4 sent on the first heartbeat.
+    /// For v1+ (KIP-1082): client-generated UUID v4 sent on the first heartbeat.
     /// </summary>
     public required string MemberId { get; init; }
 
@@ -50,6 +50,12 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
     public IReadOnlyList<string>? SubscribedTopicNames { get; init; }
 
     /// <summary>
+    /// The subscribed topic regex pattern for regex-based subscriptions (v1+ only).
+    /// Null if not used or unchanged since the last heartbeat.
+    /// </summary>
+    public string? SubscribedTopicRegex { get; init; }
+
+    /// <summary>
     /// The server-side assignor to use. Null to use the broker default.
     /// </summary>
     public string? ServerAssignor { get; init; }
@@ -75,6 +81,12 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
             {
                 w.WriteCompactString(topic);
             });
+
+        // v1+ adds SubscribedTopicRegex as a positional field (KIP-1082).
+        if (version >= 1)
+        {
+            writer.WriteCompactNullableString(SubscribedTopicRegex);
+        }
 
         writer.WriteCompactNullableString(ServerAssignor);
 

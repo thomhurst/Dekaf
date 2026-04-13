@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 2;
+    public static short HighestSupportedVersion => 1;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -28,7 +28,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
 
     /// <summary>
     /// The member ID. For v0: assigned by the coordinator on first join.
-    /// For v2+ (KIP-1082): echoes the client-generated UUID v4 back.
+    /// For v1+ (KIP-1082): echoes the client-generated UUID v4 back.
     /// </summary>
     public string? MemberId { get; init; }
 
@@ -103,8 +103,8 @@ public sealed class ConsumerGroupHeartbeatAssignment
 
     public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader, short version)
     {
-        // The wire format for Assignment is identical across v0 and v2 (there is no v1 — KIP-1082
-        // is a semantic-only change). Only AssignedTopicPartitions is a positional field.
+        // The wire format for Assignment is identical across v0 and v1 (KIP-1082 is a
+        // semantic-only change for the response). Only AssignedTopicPartitions is a positional field.
         // PendingTopicPartitions is not present as a positional field in any version.
         var assignedTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
