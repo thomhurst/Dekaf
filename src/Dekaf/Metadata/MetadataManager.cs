@@ -27,6 +27,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
+    private volatile IReadOnlyList<FinalizedFeature>? _finalizedFeatures;
     private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
     private CancellationTokenSource? _backgroundRefreshCts;
@@ -131,6 +132,24 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Cache it (benign race - same value computed)
         _negotiatedVersionCache.TryAdd(cacheKey, negotiated);
         return negotiated;
+    }
+
+    /// <summary>
+    /// Returns the max finalized version for a broker feature, or 0 if the feature is not present.
+    /// </summary>
+    internal short GetFinalizedFeatureVersion(string featureName)
+    {
+        var features = _finalizedFeatures;
+        if (features is null)
+            return 0;
+
+        foreach (var feature in features)
+        {
+            if (feature.Name == featureName)
+                return feature.MaxVersionLevel;
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -732,6 +751,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // Set metadata version last (acts as a signal that negotiation is complete)
         _metadataApiVersion = newMetadataVersion;
+
+        _finalizedFeatures = response.FinalizedFeatures;
 
         LogNegotiatedApiVersion(_metadataApiVersion);
     }
