@@ -260,6 +260,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
+                        // Note: _ackTracker may still hold pending acks from the now-invalid session.
+                        // On next CommitAsync those acks will be sent with epoch 0 (new session).
+                        // The broker will reject them if the old record locks have expired, which is
+                        // safe — CommitAsync will re-queue the failed acks for retry.
                     }
                     continue;
                 }
@@ -576,6 +580,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             ShareFetchRequest.LowestSupportedVersion,
             ShareFetchRequest.HighestSupportedVersion);
 
+        // Send close requests to all brokers in parallel — these are fire-and-forget
+        // with MaxWaitMs=0, so there's no reason to wait for each sequentially.
+        var closeTasks = new List<Task>(partitionsByBroker.Count);
+
         foreach (var (brokerId, partitions) in partitionsByBroker)
         {
             var topics = BuildShareFetchTopics(partitions, pendingAcks: null, shareFetchVersion);
@@ -592,17 +600,25 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 Topics = topics
             };
 
-            try
-            {
-                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
-                    .ConfigureAwait(false);
-                await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
-                    request, shareFetchVersion, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Best-effort session close
-            }
+            closeTasks.Add(CloseSessionForBrokerAsync(brokerId, request, shareFetchVersion, cancellationToken));
+        }
+
+        await Task.WhenAll(closeTasks).ConfigureAwait(false);
+    }
+
+    private async Task CloseSessionForBrokerAsync(
+        int brokerId, ShareFetchRequest request, short version, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+                .ConfigureAwait(false);
+            await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
+                request, version, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort session close
         }
     }
 
