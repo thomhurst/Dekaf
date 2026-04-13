@@ -505,7 +505,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             break;
 
                         default:
-                            continue;
+                            // Unknown or non-retriable group error — the broker may have
+                            // invalidated our session. Mark coordinator unknown and break
+                            // so EnsureActiveGroupAsync re-discovers on next poll.
+                            MarkCoordinatorUnknown();
+                            break;
                     }
                 }
                 else

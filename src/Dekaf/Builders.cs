@@ -1573,7 +1573,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 {
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
-    private string _groupId = null!;
+    private string? _groupId;
     private string? _rackId;
     private int _fetchMinBytes = 1;
     private int _fetchMaxBytes = 52428800;
@@ -1815,8 +1815,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
-        if (string.IsNullOrEmpty(_groupId))
-            throw new InvalidOperationException("Group ID must be specified for share consumers. Call WithGroupId() before Build().");
+        ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
 
         var keyDeserializer = _keyDeserializer ?? ConsumerBuilder<TKey, TValue>.GetDefaultDeserializer<TKey>();
         var valueDeserializer = _valueDeserializer ?? ConsumerBuilder<TKey, TValue>.GetDefaultDeserializer<TValue>();

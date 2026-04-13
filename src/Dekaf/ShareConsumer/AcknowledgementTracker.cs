@@ -11,22 +11,24 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed class AcknowledgementTracker
 {
-    private Dictionary<TopicPartition, SortedList<long, AcknowledgeType>> _pendingAcks = new();
+    private Dictionary<TopicPartition, List<(long Offset, AcknowledgeType Type)>> _pendingAcks = new();
 
     /// <summary>
     /// Tracks records delivered by a poll. All records default to Accept.
+    /// KIP-932 guarantees records within a partition arrive in offset order,
+    /// so appending is O(1) amortized.
     /// </summary>
     internal void TrackDeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
         if (!_pendingAcks.TryGetValue(tp, out var offsets))
         {
-            offsets = new SortedList<long, AcknowledgeType>();
+            offsets = new List<(long Offset, AcknowledgeType Type)>();
             _pendingAcks[tp] = offsets;
         }
 
         for (long offset = firstOffset; offset <= lastOffset; offset++)
         {
-            offsets[offset] = AcknowledgeType.Accept;
+            offsets.Add((offset, AcknowledgeType.Accept));
         }
     }
 
@@ -36,13 +38,21 @@ internal sealed class AcknowledgementTracker
     /// </summary>
     internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type)
     {
-        if (!_pendingAcks.TryGetValue(tp, out var offsets) || !offsets.ContainsKey(offset))
+        if (!_pendingAcks.TryGetValue(tp, out var offsets))
         {
             throw new InvalidOperationException(
                 $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
         }
 
-        offsets[offset] = type;
+        // Linear scan — acceptable since Acknowledge is user-driven, not hot path.
+        var idx = offsets.FindLastIndex(e => e.Offset == offset);
+        if (idx < 0)
+        {
+            throw new InvalidOperationException(
+                $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
+        }
+
+        offsets[idx] = (offset, type);
     }
 
     /// <summary>
@@ -60,7 +70,7 @@ internal sealed class AcknowledgementTracker
         // Swap to a fresh dictionary so any new acks after this point go into a fresh
         // bucket — avoids the per-partition TryRemove race of the snapshot-and-remove pattern.
         var old = _pendingAcks;
-        _pendingAcks = new Dictionary<TopicPartition, SortedList<long, AcknowledgeType>>();
+        _pendingAcks = new Dictionary<TopicPartition, List<(long Offset, AcknowledgeType Type)>>();
 
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> result = new();
 
@@ -86,7 +96,7 @@ internal sealed class AcknowledgementTracker
         {
             if (!_pendingAcks.TryGetValue(tp, out var offsets))
             {
-                offsets = new SortedList<long, AcknowledgeType>();
+                offsets = new List<(long Offset, AcknowledgeType Type)>();
                 _pendingAcks[tp] = offsets;
             }
 
@@ -95,20 +105,24 @@ internal sealed class AcknowledgementTracker
                 for (int i = 0; i < batch.AcknowledgeTypes.Length; i++)
                 {
                     var offset = batch.FirstOffset + i;
-                    // TryAdd intentionally: preserve any explicit acknowledgement the user set
-                    // after the flush. A newer Acknowledge() call takes priority over re-queued
-                    // stale acks from a failed CommitAsync.
-                    offsets.TryAdd(offset, (AcknowledgeType)batch.AcknowledgeTypes[i]);
+                    // TryAdd: preserve any explicit acknowledgement the user set after the flush.
+                    // A newer Acknowledge() call takes priority over re-queued stale acks
+                    // from a failed CommitAsync.
+                    if (offsets.FindLastIndex(e => e.Offset == offset) < 0)
+                    {
+                        offsets.Add((offset, (AcknowledgeType)batch.AcknowledgeTypes[i]));
+                    }
                 }
             }
         }
     }
 
     /// <summary>
-    /// Builds wire-format acknowledgement batches from a sorted offset map.
+    /// Builds wire-format acknowledgement batches from an offset list.
     /// Groups consecutive offsets into batches with per-record AcknowledgeTypes arrays.
+    /// Input is assumed to be in offset order (guaranteed by KIP-932 delivery order).
     /// </summary>
-    private static List<AcknowledgementBatchData> BuildBatches(SortedList<long, AcknowledgeType> offsets)
+    private static List<AcknowledgementBatchData> BuildBatches(List<(long Offset, AcknowledgeType Type)> offsets)
     {
         List<AcknowledgementBatchData> batches = [];
 
@@ -117,14 +131,14 @@ internal sealed class AcknowledgementTracker
             return batches;
         }
 
-        long batchStart = offsets.Keys[0];
+        long batchStart = offsets[0].Offset;
         long previousOffset = batchStart;
-        List<byte> currentTypes = [(byte)offsets.Values[0]];
+        List<byte> currentTypes = [(byte)offsets[0].Type];
 
         for (int i = 1; i < offsets.Count; i++)
         {
-            long offset = offsets.Keys[i];
-            AcknowledgeType type = offsets.Values[i];
+            long offset = offsets[i].Offset;
+            AcknowledgeType type = offsets[i].Type;
 
             if (offset == previousOffset + 1)
             {
