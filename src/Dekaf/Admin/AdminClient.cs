@@ -1676,10 +1676,8 @@ public sealed class AdminClient : IAdminClient
                 TypesFilter = apiVersion >= 5 ? ["share"] : null
             };
 
-            var seenGroupIds = new HashSet<string>();
-            var result = new List<GroupListing>();
-
-            foreach (var broker in brokers)
+            // Fan out to all brokers in parallel
+            var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
                 var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
 
@@ -1694,6 +1692,15 @@ public sealed class AdminClient : IAdminClient
                         $"ListShareGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
                 }
 
+                return response;
+            })).ConfigureAwait(false);
+
+            // Merge and deduplicate results
+            var seenGroupIds = new HashSet<string>();
+            var result = new List<GroupListing>();
+
+            foreach (var response in responses)
+            {
                 foreach (var group in response.Groups)
                 {
                     // Filter to share groups only (client-side for pre-v5 brokers)

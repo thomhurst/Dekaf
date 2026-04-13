@@ -64,29 +64,20 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
-    public async Task Acknowledge_UnknownOffset_IsIgnored()
+    public async Task Acknowledge_UnknownOffset_Throws()
     {
         var tracker = new AcknowledgementTracker();
         var tp = new TopicPartition("topic1", 0);
 
         tracker.TrackDeliveredRecords(tp, 10, 12);
 
-        // Acknowledge an offset that was never tracked
-        tracker.Acknowledge(tp, 99, AcknowledgeType.Reject);
-
-        var result = tracker.Flush();
-        var batch = result[tp][0];
-
-        // All remain Accept
-        await Assert.That(batch.AcknowledgeTypes.Length).IsEqualTo(3);
-        foreach (byte ackType in batch.AcknowledgeTypes)
-        {
-            await Assert.That(ackType).IsEqualTo((byte)AcknowledgeType.Accept);
-        }
+        // Acknowledge an offset that was never tracked — should throw
+        await Assert.That(() => tracker.Acknowledge(tp, 99, AcknowledgeType.Reject))
+            .Throws<InvalidOperationException>();
     }
 
     [Test]
-    public async Task Acknowledge_UnknownPartition_IsIgnored()
+    public async Task Acknowledge_UnknownPartition_Throws()
     {
         var tracker = new AcknowledgementTracker();
         var tp = new TopicPartition("topic1", 0);
@@ -94,12 +85,9 @@ public class AcknowledgementTrackerTests
 
         tracker.TrackDeliveredRecords(tp, 10, 12);
 
-        // Acknowledge on a partition that was never tracked
-        tracker.Acknowledge(unknownTp, 10, AcknowledgeType.Reject);
-
-        var result = tracker.Flush();
-        await Assert.That(result).ContainsKey(tp);
-        await Assert.That(result.ContainsKey(unknownTp)).IsFalse();
+        // Acknowledge on a partition that was never tracked — should throw
+        await Assert.That(() => tracker.Acknowledge(unknownTp, 10, AcknowledgeType.Reject))
+            .Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -277,5 +265,33 @@ public class AcknowledgementTrackerTests
 
         // Last ack wins
         await Assert.That(result[tp][0].AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Reject);
+    }
+
+    [Test]
+    public async Task RequeueAcks_RestoresFlushDataBackIntoTracker()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 10, 12);
+        tracker.Acknowledge(tp, 11, AcknowledgeType.Release);
+
+        var flushed = tracker.Flush();
+        await Assert.That(tracker.HasPending).IsFalse();
+
+        // Re-queue the flushed data
+        tracker.RequeueAcks(flushed);
+        await Assert.That(tracker.HasPending).IsTrue();
+
+        // Flush again — should produce the same batches
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+
+        var batch = result[tp][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(12);
+        await Assert.That(batch.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(batch.AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Release);
+        await Assert.That(batch.AcknowledgeTypes[2]).IsEqualTo((byte)AcknowledgeType.Accept);
     }
 }

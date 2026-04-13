@@ -312,9 +312,38 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             ShareAcknowledgeRequest.LowestSupportedVersion,
             ShareAcknowledgeRequest.HighestSupportedVersion);
 
-        var ackTasks = acksByBroker.Select(kvp => SendAcknowledgeAsync(
-            kvp.Key, kvp.Value, shareAckVersion, cancellationToken));
-        await Task.WhenAll(ackTasks).ConfigureAwait(false);
+        // Send to all brokers in parallel, collecting per-broker results
+        var results = await Task.WhenAll(acksByBroker.Select(async kvp =>
+        {
+            try
+            {
+                await SendAcknowledgeAsync(kvp.Key, kvp.Value, shareAckVersion, cancellationToken)
+                    .ConfigureAwait(false);
+                return (Acks: kvp.Value, Error: (Exception?)null);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return (Acks: kvp.Value, Error: ex);
+            }
+        })).ConfigureAwait(false);
+
+        // Re-queue failed partitions so they can be retried on the next commit
+        Exception? firstError = null;
+        foreach (var (acks, error) in results)
+        {
+            if (error is null)
+                continue;
+
+            firstError ??= error;
+            _ackTracker.RequeueAcks(acks);
+        }
+
+        if (firstError is not null)
+        {
+            throw new KafkaException(
+                $"CommitAsync partially failed — failed partitions have been re-queued for retry",
+                firstError);
+        }
     }
 
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)

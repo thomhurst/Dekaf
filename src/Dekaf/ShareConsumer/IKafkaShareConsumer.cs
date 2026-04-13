@@ -36,7 +36,12 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
 
     /// <summary>
     /// Polls for records from the share group. Returns an async enumerable of acquired records.
-    /// Unacknowledged records from the previous poll are implicitly accepted.
+    /// <para>
+    /// <b>Important:</b> Any records from the previous poll that were not explicitly acknowledged
+    /// via <see cref="Acknowledge"/> are implicitly accepted (per the KIP-932 specification).
+    /// If you intend to release or reject records, you must call <see cref="Acknowledge"/> before
+    /// the next <see cref="PollAsync"/> or <see cref="CommitAsync"/> call.
+    /// </para>
     /// </summary>
     IAsyncEnumerable<ShareConsumeResult<TKey, TValue>> PollAsync(CancellationToken cancellationToken = default);
 

@@ -32,16 +32,17 @@ internal sealed class AcknowledgementTracker
 
     /// <summary>
     /// Sets an explicit acknowledgement type for a specific record.
+    /// Throws if the record was not delivered by the current poll.
     /// </summary>
     internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type)
     {
-        if (_pendingAcks.TryGetValue(tp, out var offsets))
+        if (!_pendingAcks.TryGetValue(tp, out var offsets) || !offsets.ContainsKey(offset))
         {
-            if (offsets.ContainsKey(offset))
-            {
-                offsets[offset] = type;
-            }
+            throw new InvalidOperationException(
+                $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
         }
+
+        offsets[offset] = type;
     }
 
     /// <summary>
@@ -71,6 +72,32 @@ internal sealed class AcknowledgementTracker
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Re-queues previously flushed acknowledgement data back into the tracker.
+    /// Used when CommitAsync partially fails — the failed partitions' acks are
+    /// restored so the next commit can retry them.
+    /// </summary>
+    internal void RequeueAcks(Dictionary<TopicPartition, List<AcknowledgementBatchData>> acks)
+    {
+        foreach (var (tp, batches) in acks)
+        {
+            if (!_pendingAcks.TryGetValue(tp, out var offsets))
+            {
+                offsets = new SortedList<long, AcknowledgeType>();
+                _pendingAcks[tp] = offsets;
+            }
+
+            foreach (var batch in batches)
+            {
+                for (int i = 0; i < batch.AcknowledgeTypes.Length; i++)
+                {
+                    var offset = batch.FirstOffset + i;
+                    offsets.TryAdd(offset, (AcknowledgeType)batch.AcknowledgeTypes[i]);
+                }
+            }
+        }
     }
 
     /// <summary>
