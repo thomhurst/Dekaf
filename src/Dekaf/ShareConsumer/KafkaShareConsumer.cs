@@ -29,6 +29,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
 
+    // ThreadStatic reusable SerializationContext to avoid per-record allocations in ParsePartitionRecords.
+    // Matches the pattern used by ConsumeResult<TKey, TValue> in the regular consumer.
+    [ThreadStatic]
+    private static SerializationContext t_serializationContext;
+
     private volatile IReadOnlySet<string> _subscriptionSnapshot = new HashSet<string>();
     private volatile IReadOnlySet<TopicPartition> _assignmentSnapshot = new HashSet<TopicPartition>();
 
@@ -185,7 +190,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
             var assignment = _assignmentSnapshot;
             if (assignment.Count == 0)
+            {
+                // No partitions assigned (e.g. rebalance removed them while state is Stable).
+                // Delay to avoid a spin-loop — reuse FetchMaxWaitMs as the broker's natural
+                // back-pressure is absent when no fetch request is issued.
+                await Task.Delay(_options.FetchMaxWaitMs, cancellationToken).ConfigureAwait(false);
                 continue;
+            }
 
             // Flush pending acks from previous poll as inline acknowledgements with the fetch
             var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
@@ -506,8 +517,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
         // Send in the background — best effort, don't block the synchronous caller.
         // Store the task so DisposeAsync can await it before tearing down the connection pool.
+        // Chain after any prior release task so DisposeAsync only needs to await the latest reference.
+        var prior = _pendingReleaseTask;
         _pendingReleaseTask = Task.Run(async () =>
         {
+            if (prior is not null)
+            {
+                try { await prior.ConfigureAwait(false); }
+                catch { /* already logged inside the prior task */ }
+            }
+
             foreach (var (brokerId, acks) in acksByBroker)
             {
                 try
@@ -662,23 +681,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 if (deliveryCount < 0)
                     continue;
 
-                var keyContext = new SerializationContext
-                {
-                    Topic = topicInfo.Name,
-                    Component = SerializationComponent.Key
-                };
+                t_serializationContext.Topic = topicInfo.Name;
+                t_serializationContext.Component = SerializationComponent.Key;
                 var key = record.IsKeyNull
                     ? default
-                    : _keyDeserializer.Deserialize(record.Key, keyContext);
+                    : _keyDeserializer.Deserialize(record.Key, t_serializationContext);
 
-                var valueContext = new SerializationContext
-                {
-                    Topic = topicInfo.Name,
-                    Component = SerializationComponent.Value
-                };
+                t_serializationContext.Component = SerializationComponent.Value;
                 var value = record.IsValueNull
                     ? default!
-                    : _valueDeserializer.Deserialize(record.Value, valueContext);
+                    : _valueDeserializer.Deserialize(record.Value, t_serializationContext);
 
                 Header[]? headers = null;
                 if (record.Headers is not null && record.HeaderCount > 0)
