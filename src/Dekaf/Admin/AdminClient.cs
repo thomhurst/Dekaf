@@ -1825,6 +1825,8 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        // Hoisted outside WithRetryAsync intentionally: derived purely from the caller's
+        // immutable input, safe to reuse across retries.
         var topicData = offsets
             .GroupBy(o => o.TopicPartition.Topic)
             .Select(g => new AlterShareGroupOffsetsRequestTopic

@@ -8,6 +8,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ShareAcknowledgeRequest : IKafkaRequest<ShareAcknowledgeResponse>
 {
     public static ApiKey ApiKey => ApiKey.ShareAcknowledge;
+    // v0 was removed after Kafka 4.0 early access; v1 is the minimum GA version (KIP-932).
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 

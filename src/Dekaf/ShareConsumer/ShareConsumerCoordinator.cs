@@ -378,6 +378,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             LogEnsureActiveGroupStarted(_options.GroupId, _state);
             var startedAt = Stopwatch.GetTimestamp();
+            // Reuse SessionTimeoutMs as the client-side join deadline. This is the broker's
+            // inactivity timeout (default 45s), not a dedicated join timeout — but it provides
+            // a reasonable upper bound for how long we should wait for an assignment.
             var timeout = TimeSpan.FromMilliseconds(_options.SessionTimeoutMs);
             var retryDelayMs = 200;
 

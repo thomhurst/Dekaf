@@ -437,6 +437,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 await CloseAsync(cts.Token).ConfigureAwait(false);
             }
+            catch (OperationCanceledException)
+            {
+                LogDisposeCloseTimedOut();
+            }
             catch
             {
                 // Best-effort close during dispose
@@ -903,6 +907,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to close share sessions")]
     private partial void LogCloseSessionsFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful close timed out after 30s during dispose — broker may be unreachable")]
+    private partial void LogDisposeCloseTimedOut();
 
     #endregion
 }
