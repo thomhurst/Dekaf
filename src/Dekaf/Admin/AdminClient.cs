@@ -1640,8 +1640,8 @@ public sealed class AdminClient : IAdminClient
                             ClientId = m.ClientId,
                             ClientHost = m.ClientHost,
                             SubscribedTopicNames = m.SubscribedTopicNames,
-                            Assignment = m.Assignment.TopicPartitions
-                                .SelectMany(tp => tp.Partitions.Select(p =>
+                            Assignment = m.Assignment?.TopicPartitions
+                                ?.SelectMany(tp => tp.Partitions.Select(p =>
                                     new TopicPartition(tp.TopicName ?? string.Empty, p)))
                                 .ToList()
                         }).ToList()
