@@ -80,5 +80,12 @@ public enum ApiKey : short
     PushTelemetry = 72,
     AssignReplicasToDirs = 73,
     ListClientMetricsResources = 74,
-    DescribeTopicPartitions = 75
+    DescribeTopicPartitions = 75,
+    ShareGroupHeartbeat = 76,
+    ShareGroupDescribe = 77,
+    ShareFetch = 78,
+    ShareAcknowledge = 79,
+    DescribeShareGroupOffsets = 90,
+    AlterShareGroupOffsets = 91,
+    DeleteShareGroupOffsets = 92
 }

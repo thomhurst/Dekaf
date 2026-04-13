@@ -8,6 +8,7 @@ using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
+using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf;
@@ -1538,6 +1539,320 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (_topicsToSubscribe.Count > 0)
         {
             consumer.Subscribe(_topicsToSubscribe.ToArray());
+        }
+
+        return consumer;
+    }
+
+    private static IDeserializer<T> GetDefaultDeserializer<T>()
+    {
+        if (typeof(T) == typeof(string))
+            return (IDeserializer<T>)(object)Serializers.String;
+        if (typeof(T) == typeof(byte[]))
+            return (IDeserializer<T>)(object)Serializers.ByteArray;
+        if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+            return (IDeserializer<T>)(object)Serializers.RawBytes;
+        if (typeof(T) == typeof(int))
+            return (IDeserializer<T>)(object)Serializers.Int32;
+        if (typeof(T) == typeof(long))
+            return (IDeserializer<T>)(object)Serializers.Int64;
+        if (typeof(T) == typeof(Guid))
+            return (IDeserializer<T>)(object)Serializers.Guid;
+        if (typeof(T) == typeof(Ignore))
+            return (IDeserializer<T>)(object)Serializers.Ignore;
+
+        throw new InvalidOperationException($"No default deserializer for type {typeof(T)}. Please specify a deserializer.");
+    }
+}
+
+/// <summary>
+/// Builder for configuring and creating Kafka share consumers (KIP-932).
+/// Share consumers provide queue-semantics with record-level acknowledgement.
+/// </summary>
+public sealed class ShareConsumerBuilder<TKey, TValue>
+{
+    private IReadOnlyList<string> _bootstrapServers = [];
+    private string? _clientId;
+    private string? _groupId;
+    private string? _rackId;
+    private int _fetchMinBytes = 1;
+    private int _fetchMaxBytes = 52428800;
+    private int _maxPartitionFetchBytes = 1048576;
+    private int _fetchMaxWaitMs = 200;
+    private int _maxPollRecords = 500;
+    private int _sessionTimeoutMs = 45000;
+    private int _heartbeatIntervalMs = 3000;
+    private int _requestTimeoutMs = 30000;
+    private bool _useTls;
+    private TlsConfig? _tlsConfig;
+    private SaslMechanism _saslMechanism = SaslMechanism.None;
+    private string? _saslUsername;
+    private string? _saslPassword;
+    private GssapiConfig? _gssapiConfig;
+    private OAuthBearerConfig? _oauthConfig;
+    private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
+    private IDeserializer<TKey>? _keyDeserializer;
+    private IDeserializer<TValue>? _valueDeserializer;
+    private ILoggerFactory? _loggerFactory;
+    private int _socketSendBufferBytes;
+    private int _socketReceiveBufferBytes;
+    private int _connectionsPerBroker = 2;
+    private IRetryPolicy? _retryPolicy;
+    private readonly List<string> _topicsToSubscribe = [];
+
+    public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
+    {
+        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
+    {
+        _bootstrapServers = [..servers];
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithClientId(string clientId)
+    {
+        _clientId = clientId;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithGroupId(string groupId)
+    {
+        _groupId = groupId;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithRackId(string rackId)
+    {
+        _rackId = rackId;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithFetchMinBytes(int fetchMinBytes)
+    {
+        _fetchMinBytes = fetchMinBytes;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithFetchMaxBytes(int fetchMaxBytes)
+    {
+        _fetchMaxBytes = fetchMaxBytes;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithMaxPartitionFetchBytes(int maxPartitionFetchBytes)
+    {
+        _maxPartitionFetchBytes = maxPartitionFetchBytes;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithFetchMaxWaitMs(int fetchMaxWaitMs)
+    {
+        _fetchMaxWaitMs = fetchMaxWaitMs;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithMaxPollRecords(int maxPollRecords)
+    {
+        _maxPollRecords = maxPollRecords;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSessionTimeoutMs(int sessionTimeoutMs)
+    {
+        _sessionTimeoutMs = sessionTimeoutMs;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithHeartbeatIntervalMs(int heartbeatIntervalMs)
+    {
+        _heartbeatIntervalMs = heartbeatIntervalMs;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithRequestTimeoutMs(int requestTimeoutMs)
+    {
+        _requestTimeoutMs = requestTimeoutMs;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithTls(bool useTls = true)
+    {
+        _useTls = useTls;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithTlsConfig(TlsConfig tlsConfig)
+    {
+        _tlsConfig = tlsConfig;
+        _useTls = true;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.Plain;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScram256(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScram512(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithGssapiConfig(GssapiConfig config)
+    {
+        _saslMechanism = SaslMechanism.Gssapi;
+        _gssapiConfig = config;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearer(OAuthBearerConfig config)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = config;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerTokenProvider(Func<CancellationToken, ValueTask<OAuthBearerToken>> provider)
+    {
+        _oauthTokenProvider = provider;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
+    {
+        _socketSendBufferBytes = bytes;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
+    {
+        _socketReceiveBufferBytes = bytes;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
+    {
+        _keyDeserializer = deserializer;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithValueDeserializer(IDeserializer<TValue> deserializer)
+    {
+        _valueDeserializer = deserializer;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithLoggerFactory(ILoggerFactory loggerFactory)
+    {
+        _loggerFactory = loggerFactory;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
+    {
+        _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
+    {
+        _retryPolicy = retryPolicy;
+        return this;
+    }
+
+    /// <summary>
+    /// Subscribes the share consumer to the specified topic when built.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> SubscribeTo(string topic)
+    {
+        _topicsToSubscribe.Add(topic);
+        return this;
+    }
+
+    /// <summary>
+    /// Subscribes the share consumer to the specified topics when built.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> SubscribeTo(params string[] topics)
+    {
+        _topicsToSubscribe.AddRange(topics);
+        return this;
+    }
+
+    public async ValueTask<IKafkaShareConsumer<TKey, TValue>> BuildAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var consumer = Build();
+        try
+        {
+            await consumer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return consumer;
+        }
+        catch
+        {
+            await consumer.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public IKafkaShareConsumer<TKey, TValue> Build()
+    {
+        if (_bootstrapServers.Count == 0)
+            throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
+        ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
+
+        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
+        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
+
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = _bootstrapServers,
+            ClientId = _clientId,
+            GroupId = _groupId,
+            RackId = _rackId,
+            FetchMinBytes = _fetchMinBytes,
+            FetchMaxBytes = _fetchMaxBytes,
+            MaxPartitionFetchBytes = _maxPartitionFetchBytes,
+            FetchMaxWaitMs = _fetchMaxWaitMs,
+            MaxPollRecords = _maxPollRecords,
+            SessionTimeoutMs = _sessionTimeoutMs,
+            HeartbeatIntervalMs = _heartbeatIntervalMs,
+            RequestTimeoutMs = _requestTimeoutMs,
+            UseTls = _useTls,
+            TlsConfig = _tlsConfig,
+            SaslMechanism = _saslMechanism,
+            SaslUsername = _saslUsername,
+            SaslPassword = _saslPassword,
+            GssapiConfig = _gssapiConfig,
+            OAuthBearerConfig = _oauthConfig,
+            OAuthBearerTokenProvider = _oauthTokenProvider,
+            SocketSendBufferBytes = _socketSendBufferBytes,
+            SocketReceiveBufferBytes = _socketReceiveBufferBytes,
+            ConnectionsPerBroker = _connectionsPerBroker,
+            RetryPolicy = _retryPolicy
+        };
+
+        var consumer = new KafkaShareConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
+
+        if (_topicsToSubscribe.Count > 0)
+        {
+            consumer.Subscribe([.. _topicsToSubscribe]);
         }
 
         return consumer;

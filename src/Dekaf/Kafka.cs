@@ -3,6 +3,7 @@ namespace Dekaf;
 using Admin;
 using Consumer;
 using Producer;
+using ShareConsumer;
 
 /// <summary>
 /// Main entry point for creating Kafka clients.
@@ -140,6 +141,70 @@ public static class Kafka
         params string[] topics)
     {
         var consumer = await new ConsumerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithGroupId(groupId)
+            .SubscribeTo(topics)
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return consumer;
+    }
+
+    /// <summary>
+    /// Creates a share consumer builder.
+    /// </summary>
+    public static ShareConsumerBuilder<TKey, TValue> CreateShareConsumer<TKey, TValue>()
+    {
+        return new ShareConsumerBuilder<TKey, TValue>();
+    }
+
+    /// <summary>
+    /// Creates a share consumer with the specified bootstrap servers and group ID.
+    /// </summary>
+    public static IKafkaShareConsumer<TKey, TValue> CreateShareConsumer<TKey, TValue>(string bootstrapServers, string groupId)
+    {
+        return new ShareConsumerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithGroupId(groupId)
+            .Build();
+    }
+
+    /// <summary>
+    /// Creates a share consumer with the specified bootstrap servers, group ID, and topic subscriptions.
+    /// </summary>
+    public static IKafkaShareConsumer<TKey, TValue> CreateShareConsumer<TKey, TValue>(string bootstrapServers, string groupId, params string[] topics)
+    {
+        return new ShareConsumerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithGroupId(groupId)
+            .SubscribeTo(topics)
+            .Build();
+    }
+
+    /// <summary>
+    /// Creates and initializes a share consumer with the specified bootstrap servers and group ID.
+    /// </summary>
+    public static ValueTask<IKafkaShareConsumer<TKey, TValue>> CreateShareConsumerAsync<TKey, TValue>(
+        string bootstrapServers,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        return new ShareConsumerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithGroupId(groupId)
+            .BuildAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates and initializes a share consumer with the specified bootstrap servers, group ID, and topic subscriptions.
+    /// </summary>
+    public static async ValueTask<IKafkaShareConsumer<TKey, TValue>> CreateShareConsumerAsync<TKey, TValue>(
+        string bootstrapServers,
+        string groupId,
+        CancellationToken cancellationToken,
+        params string[] topics)
+    {
+        var consumer = await new ShareConsumerBuilder<TKey, TValue>()
             .WithBootstrapServers(bootstrapServers)
             .WithGroupId(groupId)
             .SubscribeTo(topics)

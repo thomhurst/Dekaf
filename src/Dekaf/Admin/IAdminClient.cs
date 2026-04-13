@@ -204,6 +204,53 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes share groups.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists share groups across the cluster.
+    /// </summary>
+    ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
+        ListShareGroupsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes share group offsets.
+    /// </summary>
+    /// <param name="groupId">The share group ID.</param>
+    /// <param name="partitions">The partitions to describe offsets for, or null for all.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alters share group offsets.
+    /// </summary>
+    /// <param name="groupId">The share group ID.</param>
+    /// <param name="offsets">The offsets to set.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask AlterShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<ShareGroupOffsetAlteration> offsets,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes share group offsets for the specified topics.
+    /// </summary>
+    /// <param name="groupId">The share group ID.</param>
+    /// <param name="topics">The topic names to delete offsets for.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask DeleteShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<string> topics,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the cluster metadata.
     /// </summary>
     ClusterMetadata Metadata { get; }
