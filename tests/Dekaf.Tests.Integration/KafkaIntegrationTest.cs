@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 [ClassDataSource<KafkaContainer40>(Shared = SharedType.PerTestSession)]
 [ClassDataSource<KafkaContainer41>(Shared = SharedType.PerTestSession)]
+[ClassDataSource<KafkaContainer42>(Shared = SharedType.PerTestSession)]
 public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer)
 {
     public KafkaTestContainer KafkaContainer { get; } = kafkaTestContainer;
