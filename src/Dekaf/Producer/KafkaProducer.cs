@@ -1547,43 +1547,40 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
 
-            if (response.ErrorCode == ErrorCode.ProducerFenced ||
-                response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
+            var classification = TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2);
+
+            switch (classification)
             {
-                _transactionState = TransactionState.FatalError;
-                throw new TransactionException(response.ErrorCode,
-                    $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                case TransactionErrorClassification.Fatal:
+                    _transactionState = TransactionState.FatalError;
+                    throw new TransactionException(response.ErrorCode,
+                        $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
+
+                case TransactionErrorClassification.Retriable:
+                    if (response.ErrorCode == ErrorCode.NotCoordinator)
+                    {
+                        LogEndTxnNotCoordinator(attempt + 1, maxRetries);
+                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                        await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    continue;
+
+                default: // Abortable or unknown
+                    throw new TransactionException(response.ErrorCode,
+                        $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
             }
-
-            if (response.ErrorCode is ErrorCode.CoordinatorLoadInProgress
-                or ErrorCode.CoordinatorNotAvailable
-                or ErrorCode.ConcurrentTransactions)
-            {
-                LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                continue;
-            }
-
-            if (response.ErrorCode == ErrorCode.NotCoordinator)
-            {
-                LogEndTxnNotCoordinator(attempt + 1, maxRetries);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            throw new TransactionException(response.ErrorCode,
-                $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
-            {
-                TransactionalId = _options.TransactionalId
-            };
         }
 
         throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
