@@ -1561,6 +1561,372 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var groupIdList = groupIds.ToList();
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, ShareGroupDescription>>(async () =>
+        {
+            // Find coordinator for each group and batch groups by coordinator
+            var groupsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var groupId in groupIdList)
+            {
+                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
+                {
+                    groups = [];
+                    groupsByCoordinator[coordinatorId] = groups;
+                }
+                groups.Add(groupId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ShareGroupDescribe,
+                ShareGroupDescribeRequest.LowestSupportedVersion,
+                ShareGroupDescribeRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<string, ShareGroupDescription>();
+
+            foreach (var (coordinatorId, groups) in groupsByCoordinator)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+                var request = new ShareGroupDescribeRequest
+                {
+                    GroupIds = groups,
+                    IncludeAuthorizedOperations = true
+                };
+
+                var response = await connection.SendAsync<ShareGroupDescribeRequest, ShareGroupDescribeResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var group in response.Groups)
+                {
+                    if (group.ErrorCode != Protocol.ErrorCode.None)
+                    {
+                        throw new Errors.GroupException(group.ErrorCode,
+                            $"DescribeShareGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                        {
+                            GroupId = group.GroupId
+                        };
+                    }
+
+                    result[group.GroupId] = new ShareGroupDescription
+                    {
+                        GroupId = group.GroupId,
+                        GroupState = group.GroupState,
+                        GroupEpoch = group.GroupEpoch,
+                        AssignmentEpoch = group.AssignmentEpoch,
+                        AssignorName = group.AssignorName,
+                        AuthorizedOperations = group.AuthorizedOperations,
+                        Members = group.Members.Select(m => new ShareGroupMemberDescription
+                        {
+                            MemberId = m.MemberId,
+                            RackId = m.RackId,
+                            MemberEpoch = m.MemberEpoch,
+                            ClientId = m.ClientId,
+                            ClientHost = m.ClientHost,
+                            SubscribedTopicNames = m.SubscribedTopicNames,
+                            Assignment = m.Assignment?.TopicPartitions
+                                .SelectMany(tp => tp.Partitions.Select(p =>
+                                    new TopicPartition(tp.TopicName ?? string.Empty, p)))
+                                .ToList()
+                        }).ToList()
+                    };
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
+        ListShareGroupsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new ListShareGroupsOptions();
+
+        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
+        {
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new InvalidOperationException("No brokers available");
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListGroups,
+                ListGroupsRequest.LowestSupportedVersion,
+                ListGroupsRequest.HighestSupportedVersion);
+
+            var request = new ListGroupsRequest
+            {
+                StatesFilter = apiVersion >= 4 ? opts.States : null,
+                TypesFilter = apiVersion >= 5 ? ["share"] : null
+            };
+
+            var seenGroupIds = new HashSet<string>();
+            var result = new List<GroupListing>();
+
+            foreach (var broker in brokers)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+
+                var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"ListShareGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
+                }
+
+                foreach (var group in response.Groups)
+                {
+                    // Filter to share groups only (client-side for pre-v5 brokers)
+                    if (apiVersion < 5 && !string.Equals(group.GroupType, "share", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (!seenGroupIds.Add(group.GroupId))
+                        continue;
+
+                    // Client-side state filtering if broker doesn't support v4+
+                    if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
+                    {
+                        if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
+                            continue;
+                    }
+
+                    result.Add(new GroupListing
+                    {
+                        GroupId = group.GroupId,
+                        ProtocolType = group.ProtocolType,
+                        State = group.GroupState
+                    });
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var partitionList = partitions?.ToList();
+
+        return await WithRetryAsync<IReadOnlyList<ShareGroupOffsetDescription>>(async () =>
+        {
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+            // Build topics filter from partitions list, or null for all
+            IReadOnlyList<DescribeShareGroupOffsetsRequestTopic>? requestTopics = null;
+            if (partitionList is { Count: > 0 })
+            {
+                requestTopics = partitionList
+                    .GroupBy(tp => tp.Topic)
+                    .Select(g => new DescribeShareGroupOffsetsRequestTopic
+                    {
+                        TopicName = g.Key,
+                        Partitions = g.Select(tp => tp.Partition).ToList()
+                    })
+                    .ToList();
+            }
+
+            var request = new DescribeShareGroupOffsetsRequest
+            {
+                Groups =
+                [
+                    new DescribeShareGroupOffsetsRequestGroup
+                    {
+                        GroupId = groupId,
+                        Topics = requestTopics
+                    }
+                ]
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeShareGroupOffsets,
+                DescribeShareGroupOffsetsRequest.LowestSupportedVersion,
+                DescribeShareGroupOffsetsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<DescribeShareGroupOffsetsRequest, DescribeShareGroupOffsetsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var result = new List<ShareGroupOffsetDescription>();
+
+            foreach (var group in response.Groups)
+            {
+                if (group.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new Errors.GroupException(group.ErrorCode,
+                        $"DescribeShareGroupOffsets failed for group '{group.GroupId}': {group.ErrorCode}")
+                    {
+                        GroupId = group.GroupId
+                    };
+                }
+
+                foreach (var topic in group.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        result.Add(new ShareGroupOffsetDescription
+                        {
+                            TopicPartition = new TopicPartition(topic.TopicName, partition.PartitionIndex),
+                            StartOffset = partition.StartOffset,
+                            LeaderEpoch = partition.LeaderEpoch,
+                            Lag = partition.Lag,
+                            ErrorCode = partition.ErrorCode,
+                            ErrorMessage = partition.ErrorMessage
+                        });
+                    }
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask AlterShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<ShareGroupOffsetAlteration> offsets,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var topicData = offsets
+            .GroupBy(o => o.TopicPartition.Topic)
+            .Select(g => new AlterShareGroupOffsetsRequestTopic
+            {
+                TopicName = g.Key,
+                Partitions = g.Select(o => new AlterShareGroupOffsetsRequestPartition
+                {
+                    PartitionIndex = o.TopicPartition.Partition,
+                    StartOffset = o.StartOffset
+                }).ToList()
+            })
+            .ToList();
+
+        await WithRetryAsync(async () =>
+        {
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+            var request = new AlterShareGroupOffsetsRequest
+            {
+                GroupId = groupId,
+                Topics = topicData
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterShareGroupOffsets,
+                AlterShareGroupOffsetsRequest.LowestSupportedVersion,
+                AlterShareGroupOffsetsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<AlterShareGroupOffsetsRequest, AlterShareGroupOffsetsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new Errors.GroupException(response.ErrorCode,
+                    $"AlterShareGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
+
+            foreach (var topic in response.Responses)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.ErrorCode != Protocol.ErrorCode.None)
+                    {
+                        throw new Errors.GroupException(partition.ErrorCode,
+                            $"AlterShareGroupOffsets failed for group '{groupId}', " +
+                            $"topic '{topic.TopicName}', partition {partition.PartitionIndex}: {partition.ErrorCode}")
+                        {
+                            GroupId = groupId
+                        };
+                    }
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask DeleteShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<string> topics,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var topicData = topics
+            .Select(t => new DeleteShareGroupOffsetsRequestTopic { TopicName = t })
+            .ToList();
+
+        await WithRetryAsync(async () =>
+        {
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+            var request = new DeleteShareGroupOffsetsRequest
+            {
+                GroupId = groupId,
+                Topics = topicData
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DeleteShareGroupOffsets,
+                DeleteShareGroupOffsetsRequest.LowestSupportedVersion,
+                DeleteShareGroupOffsetsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new Errors.GroupException(response.ErrorCode,
+                    $"DeleteShareGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
+
+            foreach (var topic in response.Responses)
+            {
+                if (topic.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new Errors.GroupException(topic.ErrorCode,
+                        $"DeleteShareGroupOffsets failed for group '{groupId}', topic '{topic.TopicName}': {topic.ErrorCode}")
+                    {
+                        GroupId = groupId
+                    };
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (_metadataManager.Metadata.LastRefreshed == default)

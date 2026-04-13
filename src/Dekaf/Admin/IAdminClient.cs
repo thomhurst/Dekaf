@@ -204,9 +204,115 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes share groups.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists share groups across the cluster.
+    /// </summary>
+    ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
+        ListShareGroupsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes share group offsets.
+    /// </summary>
+    /// <param name="groupId">The share group ID.</param>
+    /// <param name="partitions">The partitions to describe offsets for, or null for all.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alters share group offsets.
+    /// </summary>
+    /// <param name="groupId">The share group ID.</param>
+    /// <param name="offsets">The offsets to set.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask AlterShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<ShareGroupOffsetAlteration> offsets,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes share group offsets for the specified topics.
+    /// </summary>
+    /// <param name="groupId">The share group ID.</param>
+    /// <param name="topics">The topic names to delete offsets for.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask DeleteShareGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<string> topics,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the cluster metadata.
     /// </summary>
     ClusterMetadata Metadata { get; }
+}
+
+/// <summary>
+/// Share group description.
+/// </summary>
+public sealed class ShareGroupDescription
+{
+    public required string GroupId { get; init; }
+    public required string GroupState { get; init; }
+    public int GroupEpoch { get; init; }
+    public int AssignmentEpoch { get; init; }
+    public string? AssignorName { get; init; }
+    public required IReadOnlyList<ShareGroupMemberDescription> Members { get; init; }
+    public int AuthorizedOperations { get; init; }
+}
+
+/// <summary>
+/// Share group member description.
+/// </summary>
+public sealed class ShareGroupMemberDescription
+{
+    public required string MemberId { get; init; }
+    public string? RackId { get; init; }
+    public int MemberEpoch { get; init; }
+    public required string ClientId { get; init; }
+    public required string ClientHost { get; init; }
+    public required IReadOnlyList<string> SubscribedTopicNames { get; init; }
+    public IReadOnlyList<TopicPartition>? Assignment { get; init; }
+}
+
+/// <summary>
+/// Options for ListShareGroups.
+/// </summary>
+public sealed class ListShareGroupsOptions
+{
+    public IReadOnlyList<string>? States { get; init; }
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Description of a share group's offset for a partition.
+/// </summary>
+public sealed class ShareGroupOffsetDescription
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public long StartOffset { get; init; }
+    public int LeaderEpoch { get; init; }
+    public long Lag { get; init; } = -1;
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Specification for altering a share group offset.
+/// </summary>
+public sealed class ShareGroupOffsetAlteration
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public required long StartOffset { get; init; }
 }
 
 /// <summary>
