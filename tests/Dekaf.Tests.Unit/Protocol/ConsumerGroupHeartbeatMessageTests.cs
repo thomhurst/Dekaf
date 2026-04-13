@@ -123,9 +123,9 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Request_HighestSupportedVersion_Is0()
+    public async Task Request_HighestSupportedVersion_Is1()
     {
-        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)1);
     }
 
     #endregion
@@ -194,6 +194,31 @@ public sealed class ConsumerGroupHeartbeatMessageTests
         request.Write(ref writer, version: 0);
 
         await Assert.That(buffer.WrittenCount).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Request_Write_V1_IncludesSubscribedTopicRegex()
+    {
+        // v1 adds SubscribedTopicRegex as a positional field.
+        // Verify that v1 writes more bytes than v0 for the same request content.
+        var request = new ConsumerGroupHeartbeatRequest
+        {
+            GroupId = "test",
+            MemberId = "member-1",
+            MemberEpoch = 0,
+            SubscribedTopicNames = ["my-topic"]
+        };
+
+        var v0Buffer = new ArrayBufferWriter<byte>();
+        var v0Writer = new KafkaProtocolWriter(v0Buffer);
+        request.Write(ref v0Writer, version: 0);
+
+        var v1Buffer = new ArrayBufferWriter<byte>();
+        var v1Writer = new KafkaProtocolWriter(v1Buffer);
+        request.Write(ref v1Writer, version: 1);
+
+        // v1 should be larger due to the extra SubscribedTopicRegex field (null → 1 byte varint)
+        await Assert.That(v1Buffer.WrittenCount).IsGreaterThan(v0Buffer.WrittenCount);
     }
 
     #endregion
@@ -295,9 +320,9 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Response_HighestSupportedVersion_Is0()
+    public async Task Response_HighestSupportedVersion_Is1()
     {
-        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)1);
     }
 
     #endregion
@@ -477,6 +502,43 @@ public sealed class ConsumerGroupHeartbeatMessageTests
 
         await Assert.That(response.Assignment).IsNotNull();
         await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Response_Read_V1_SameWireFormatAsV0_ParsesCorrectly()
+    {
+        // v1 (KIP-1082) is semantic-only for the response — wire format is identical to v0.
+        // PendingTopicPartitions is NOT a positional field in any version.
+        var topicId = Guid.NewGuid();
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);                     // ThrottleTimeMs
+        writer.WriteInt16(0);                     // ErrorCode = None
+        writer.WriteUnsignedVarInt(0);            // ErrorMessage = null
+        WriteCompactNullableString(ref writer, "client-generated-uuid"); // MemberId (echoed)
+        writer.WriteInt32(1);                     // MemberEpoch
+        writer.WriteInt32(5000);                  // HeartbeatIntervalMs
+        writer.WriteInt8(1);                      // Assignment = present
+        // AssignedTopicPartitions: 1 element (same layout as v0)
+        writer.WriteUnsignedVarInt(1 + 1);
+        writer.WriteUuid(topicId);
+        writer.WriteUnsignedVarInt(1 + 1);        // Partitions: 1 element
+        writer.WriteInt32(0);                     // partition 0
+        writer.WriteUnsignedVarInt(0);            // TopicPartitions[0] tagged fields
+        writer.WriteUnsignedVarInt(0);            // Assignment tagged fields
+        writer.WriteUnsignedVarInt(0);            // Response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ConsumerGroupHeartbeatResponse)ConsumerGroupHeartbeatResponse.Read(ref reader, version: 1);
+
+        await Assert.That(response.MemberId).IsEqualTo("client-generated-uuid");
+        await Assert.That(response.MemberEpoch).IsEqualTo(1);
+        await Assert.That(response.Assignment).IsNotNull();
+        await Assert.That(response.Assignment!.AssignedTopicPartitions.Count).IsEqualTo(1);
+        await Assert.That(response.Assignment.AssignedTopicPartitions[0].TopicId).IsEqualTo(topicId);
+        await Assert.That(response.Assignment.PendingTopicPartitions.Count).IsEqualTo(0);
     }
 
     /// <summary>

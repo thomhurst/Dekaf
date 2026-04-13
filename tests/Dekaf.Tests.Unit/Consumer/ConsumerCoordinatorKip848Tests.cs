@@ -424,7 +424,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", rebalanceTimeoutMs: 1000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // Generous safety net — the 1s rebalance timeout is the mechanism under test.
+        // On slow CI runners with thread pool starvation, Task.Delay overshoots and a tight
+        // CTS fires before the rebalance timeout check, causing TaskCanceledException.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await Assert.That(async () =>
                 await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cts.Token))
@@ -733,6 +736,252 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.InstanceId == "static-instance-1"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
+    #region KIP-1082 Client-Generated Member ID Tests
+
+    [Test]
+    public async Task ConsumerProtocol_V1_InitialJoin_SendsClientGeneratedUuid()
+    {
+        // Broker supports v1 — client should generate a UUID, not send empty string
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        ConsumerGroupHeartbeatRequest? capturedRequest = null;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = capturedRequest.MemberId, // v1: broker echoes client-generated ID
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 5000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.MemberId).IsNotEmpty();
+        // Must be a valid UUID v4
+        await Assert.That(Guid.TryParse(capturedRequest.MemberId, out _)).IsTrue();
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_V0_InitialJoin_SendsEmptyMemberId()
+    {
+        // Broker supports only v0 — client must send empty string (server-assigned ID)
+        // _metadataManager already seeded with v0 in constructor
+        SetupFindCoordinator();
+
+        ConsumerGroupHeartbeatRequest? capturedRequest = null;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "server-assigned-id",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 5000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.MemberId).IsEqualTo(string.Empty);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_V1_AfterUnknownMemberId_GeneratesNewUuid()
+    {
+        // After UnknownMemberId reset, a fresh UUID should be generated (not reuse old one)
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        var callCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var req = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                requests.Add(req);
+                callCount++;
+
+                return callCount switch
+                {
+                    // First: success
+                    1 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = req.MemberId,
+                        MemberEpoch = 1,
+                        HeartbeatIntervalMs = 60000
+                    }),
+                    // Second: UnknownMemberId (broker forgot this member)
+                    2 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.UnknownMemberId,
+                        ErrorMessage = "Unknown member",
+                        MemberEpoch = 0,
+                        HeartbeatIntervalMs = 5000
+                    }),
+                    // Third: fresh join with new UUID
+                    _ => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = req.MemberId,
+                        MemberEpoch = 2,
+                        HeartbeatIntervalMs = 60000
+                    })
+                };
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+
+        // First join succeeds
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        var firstUuid = requests[0].MemberId;
+
+        // Force Unjoined so EnsureActiveGroupAsync re-enters the join path.
+        // The join path will hit UnknownMemberId, which calls ResetMemberState(),
+        // then retries with a fresh UUID.
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+
+        // The third request (after reset) should have a different UUID
+        await Assert.That(requests).Count().IsGreaterThanOrEqualTo(3);
+        var thirdUuid = requests[2].MemberId;
+
+        await Assert.That(firstUuid).IsNotEmpty();
+        await Assert.That(thirdUuid).IsNotEmpty();
+        await Assert.That(thirdUuid).IsNotEqualTo(firstUuid);
+        await Assert.That(Guid.TryParse(thirdUuid, out _)).IsTrue();
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_V1_AfterFencedMemberEpoch_ReusesSameMemberId()
+    {
+        // After FencedMemberEpoch, the member ID should be preserved (same member, just stale epoch)
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        var callCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var req = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                requests.Add(req);
+                callCount++;
+
+                if (callCount == 1)
+                {
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = req.MemberId,
+                        MemberEpoch = 5,
+                        HeartbeatIntervalMs = 60000
+                    });
+                }
+
+                if (callCount == 2)
+                {
+                    // FencedMemberEpoch — member exists but epoch is stale
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.FencedMemberEpoch,
+                        ErrorMessage = "Fenced",
+                        MemberEpoch = 0,
+                        HeartbeatIntervalMs = 5000
+                    });
+                }
+
+                // Rejoin succeeds
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = req.MemberId,
+                    MemberEpoch = 6,
+                    HeartbeatIntervalMs = 60000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+
+        // First join
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        var firstUuid = requests[0].MemberId;
+
+        // Force Unjoined so EnsureActiveGroupAsync re-enters the join path
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+
+        // After fencing, the rejoin should use the SAME member ID
+        var rejoinUuid = requests[^1].MemberId;
+        await Assert.That(rejoinUuid).IsEqualTo(firstUuid);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_V1_MemberIdStoredOnCoordinator()
+    {
+        // The client-generated UUID should be exposed as the coordinator's MemberId
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        ConsumerGroupHeartbeatRequest? capturedRequest = null;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = capturedRequest.MemberId,
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 5000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.MemberId).IsEqualTo(capturedRequest!.MemberId);
+        await Assert.That(Guid.TryParse(coordinator.MemberId, out _)).IsTrue();
     }
 
     #endregion

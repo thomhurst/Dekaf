@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 1;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -27,8 +27,8 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
     public string? ErrorMessage { get; init; }
 
     /// <summary>
-    /// The member ID assigned by the coordinator.
-    /// Only set when the member first joins the group (MemberEpoch == 0).
+    /// The member ID. For v0: assigned by the coordinator on first join.
+    /// For v1+ (KIP-1082): echoes the client-generated UUID v4 back.
     /// </summary>
     public string? MemberId { get; init; }
 
@@ -64,7 +64,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
         ConsumerGroupHeartbeatAssignment? assignment = null;
         if (assignmentMarker >= 0)
         {
-            assignment = ConsumerGroupHeartbeatAssignment.Read(ref reader);
+            assignment = ConsumerGroupHeartbeatAssignment.Read(ref reader, version);
         }
 
         // Response tagged fields
@@ -101,10 +101,11 @@ public sealed class ConsumerGroupHeartbeatAssignment
     /// </summary>
     public required IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> PendingTopicPartitions { get; init; }
 
-    public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader)
+    public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader, short version)
     {
-        // v0 Assignment has a single field: TopicPartitions (the assigned partitions).
-        // PendingTopicPartitions does not exist in the v0 wire format.
+        // The wire format for Assignment is identical across v0 and v1 (KIP-1082 is a
+        // semantic-only change for the response). Only AssignedTopicPartitions is a positional field.
+        // PendingTopicPartitions is not present as a positional field in any version.
         var assignedTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
 
