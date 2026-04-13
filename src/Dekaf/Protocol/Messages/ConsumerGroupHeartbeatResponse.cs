@@ -103,24 +103,18 @@ public sealed class ConsumerGroupHeartbeatAssignment
 
     public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader, short version)
     {
+        // The wire format for Assignment is identical across v0 and v2 (there is no v1 — KIP-1082
+        // is a semantic-only change). Only AssignedTopicPartitions is a positional field.
+        // PendingTopicPartitions is not present as a positional field in any version.
         var assignedTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
-
-        // v1+ adds PendingTopicPartitions as a positional field (KIP-848 refinement).
-        // v0 only has AssignedTopicPartitions.
-        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> pendingTopicPartitions = [];
-        if (version >= 1)
-        {
-            pendingTopicPartitions = reader.ReadCompactArray(
-                static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
-        }
 
         reader.SkipTaggedFields();
 
         return new ConsumerGroupHeartbeatAssignment
         {
             AssignedTopicPartitions = assignedTopicPartitions,
-            PendingTopicPartitions = pendingTopicPartitions
+            PendingTopicPartitions = []
         };
     }
 }
