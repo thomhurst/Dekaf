@@ -23,8 +23,8 @@
     <PackageReference Include="Google.Protobuf" Version="3.*" />
     <PackageReference Include="Grpc.Tools" Version="2.*" PrivateAssets="All" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0-preview.*" />
-    <PackageReference Include="TUnit" Version="1.37.24" />
-    <PackageReference Include="TUnit.Logging.Microsoft" Version="1.37.24" />
+    <PackageReference Include="TUnit" Version="1.37.35" />
+    <PackageReference Include="TUnit.Logging.Microsoft" Version="1.37.35" />
     <PackageReference Include="Testcontainers.Kafka" Version="*" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
   </ItemGroup>
