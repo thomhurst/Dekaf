@@ -23,7 +23,7 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.*" />
-    <PackageReference Include="OpenTelemetry" Version="1.*" />
+    <PackageReference Include="OpenTelemetry" Version="1.1*" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="*" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
     <PackageReference Include="NSubstitute" Version="5.*" />
