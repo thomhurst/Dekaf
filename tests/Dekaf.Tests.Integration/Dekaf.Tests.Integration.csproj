@@ -21,7 +21,7 @@
   <ItemGroup>
     <PackageReference Include="Apache.Avro" Version="1.12.1" />
     <PackageReference Include="Google.Protobuf" Version="3.*" />
-    <PackageReference Include="Grpc.Tools" Version="2.*" PrivateAssets="All" />
+    <PackageReference Include="Grpc.Tools" Version="2.8*" PrivateAssets="All" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0-preview.*" />
     <PackageReference Include="TUnit" Version="1.45.8" />
     <PackageReference Include="TUnit.Logging.Microsoft" Version="1.45.8" />
