@@ -28,7 +28,7 @@
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
     <PackageReference Include="NSubstitute" Version="5.*" />
     <PackageReference Include="TUnit" Version="1.45.8" />
-    <PackageReference Include="Verify.TUnit" Version="*" />
+    <PackageReference Include="Verify.TUnit" Version="2*" />
   </ItemGroup>
 
 </Project>
