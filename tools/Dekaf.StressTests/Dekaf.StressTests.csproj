@@ -19,9 +19,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Confluent.Kafka" Version="2.*" />
-    <PackageReference Include="Testcontainers" Version="*" />
-    <PackageReference Include="Testcontainers.Kafka" Version="*" />
+    <PackageReference Include="Confluent.Kafka" Version="2.14.2" />
+    <PackageReference Include="Testcontainers" Version="4.12.0" />
+    <PackageReference Include="Testcontainers.Kafka" Version="4.12.0" />
   </ItemGroup>
 
 </Project>
