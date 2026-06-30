@@ -368,7 +368,6 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     // ──────────────────────────────────────────────────────────────
 
     [Test]
-    [Skip("Mutual-TLS handshake is rejected by the broker (EOF on Linux/OpenSSL, SEC_E_ILLEGAL_MESSAGE on Windows/SChannel); pre-existing fixture/client issue tracked as a follow-up. Server-side TLS and cert validation are covered.")]
     public async Task Producer_WithMutualTlsInMemoryCerts_SuccessfullyProduces()
     {
         // Arrange - use mTLS with in-memory certificates
@@ -404,7 +403,6 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     }
 
     [Test]
-    [Skip("Mutual-TLS handshake is rejected by the broker (EOF on Linux/OpenSSL, SEC_E_ILLEGAL_MESSAGE on Windows/SChannel); pre-existing fixture/client issue tracked as a follow-up. Server-side TLS and cert validation are covered.")]
     public async Task Producer_WithMutualTlsFilePaths_SuccessfullyProduces()
     {
         // Arrange - use mTLS with PEM file paths
@@ -441,7 +439,6 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     }
 
     [Test]
-    [Skip("Mutual-TLS handshake is rejected by the broker (EOF on Linux/OpenSSL, SEC_E_ILLEGAL_MESSAGE on Windows/SChannel); pre-existing fixture/client issue tracked as a follow-up. Server-side TLS and cert validation are covered.")]
     public async Task Producer_WithMutualTlsFactoryMethod_SuccessfullyProduces()
     {
         // Arrange - use the builder's UseMutualTls convenience method
@@ -472,7 +469,6 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     }
 
     [Test]
-    [Skip("Mutual-TLS handshake is rejected by the broker (EOF on Linux/OpenSSL, SEC_E_ILLEGAL_MESSAGE on Windows/SChannel); pre-existing fixture/client issue tracked as a follow-up. Server-side TLS and cert validation are covered.")]
     public async Task Consumer_WithMutualTls_SuccessfullyConsumes()
     {
         // Arrange - produce and consume with mTLS

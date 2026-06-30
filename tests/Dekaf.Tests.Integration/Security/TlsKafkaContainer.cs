@@ -94,9 +94,11 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment("KAFKA_SSL_KEYSTORE_LOCATION", serverKeystoreContainerPath)
             .WithEnvironment("KAFKA_SSL_KEYSTORE_PASSWORD", TestCertificateGenerator.StorePassword)
             .WithEnvironment("KAFKA_SSL_KEY_PASSWORD", TestCertificateGenerator.StorePassword)
-            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_TYPE", "PKCS12")
-            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_LOCATION", truststoreContainerPath)
-            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_PASSWORD", TestCertificateGenerator.StorePassword)
+            // Use a PEM truststore (the CA cert) rather than PKCS12: a .NET-exported cert-only
+            // PKCS12 has no key entry, so Java loads it with zero trust anchors and then rejects
+            // every client certificate during mTLS ("trustAnchors parameter must be non-empty").
+            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_TYPE", "PEM")
+            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_LOCATION", caCertContainerPath)
             // Enable client authentication for mTLS tests (requested but not required)
             .WithEnvironment("KAFKA_SSL_CLIENT_AUTH", "requested")
             // Endpoint identification disabled for test certificates
