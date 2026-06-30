@@ -11,7 +11,7 @@ namespace Dekaf.Tests.Integration.Security;
 /// Uses a dedicated SASL_SSL Kafka container shared across the session. Tests are not run in
 /// parallel to avoid overwhelming the single broker.
 /// </summary>
-[Category("Security")]
+[Category("Authentication")]
 [ClassDataSource<SaslSslKafkaContainer>(Shared = SharedType.PerTestSession)]
 [NotInParallel("SaslSslKafka")]
 public class SaslSslAuthenticationTests(SaslSslKafkaContainer saslSsl)

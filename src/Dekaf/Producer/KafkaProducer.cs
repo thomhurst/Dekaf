@@ -1044,6 +1044,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (topicInfo.PartitionCount == 0)
         {
+            // A topic with no partitions due to an authorization error means the principal lacks
+            // access; surface AuthorizationException rather than a generic "no partitions" error.
+            if (topicInfo.ErrorCode is ErrorCode.TopicAuthorizationFailed or ErrorCode.ClusterAuthorizationFailed)
+            {
+                throw KafkaException.FromErrorCode(topicInfo.ErrorCode,
+                    $"Cannot produce to topic '{message.Topic}': {topicInfo.ErrorCode}");
+            }
+
             throw new ProduceException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}") { Topic = message.Topic };
         }
 
@@ -2432,7 +2440,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 if (!response.ErrorCode.IsRetriable())
                 {
-                    throw new KafkaException(response.ErrorCode,
+                    throw KafkaException.FromErrorCode(response.ErrorCode,
                         $"Failed to initialize idempotent producer: {response.ErrorCode}");
                 }
 

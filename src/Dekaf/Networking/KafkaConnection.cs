@@ -333,7 +333,18 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
             var sslOptions = BuildSslClientAuthenticationOptions();
-            await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (System.Security.Authentication.AuthenticationException ex)
+            {
+                // A rejected certificate is a fatal authentication failure, not a transient network
+                // error. Surface it as a KafkaException (AuthenticationException) so callers can catch
+                // it and metadata refresh treats it as fatal rather than masking it.
+                await sslStream.DisposeAsync().ConfigureAwait(false);
+                throw new AuthenticationException($"TLS handshake failed: {ex.Message}", ex);
+            }
             networkStream = sslStream;
         }
 

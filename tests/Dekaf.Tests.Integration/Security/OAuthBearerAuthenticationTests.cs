@@ -13,7 +13,7 @@ namespace Dekaf.Tests.Integration.Security;
 /// Uses a dedicated OAUTHBEARER-enabled Kafka container shared across the test session.
 /// Tests are not run in parallel to avoid overwhelming the single broker.
 /// </summary>
-[Category("Security")]
+[Category("Authentication")]
 [ClassDataSource<OAuthBearerKafkaContainer>(Shared = SharedType.PerTestSession)]
 [NotInParallel("OAuthBearerKafka")]
 public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka)

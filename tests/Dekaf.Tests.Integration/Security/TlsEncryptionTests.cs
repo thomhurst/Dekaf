@@ -197,20 +197,24 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             TargetHost = "localhost"
         };
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(tlsKafka.BootstrapServers)
-            .WithClientId("test-tls-untrusted")
-            .UseTls(tlsConfig)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
-        // Act & Assert - should fail due to certificate validation
-        var act = async () => await producer.ProduceAsync(new ProducerMessage<string, string>
+        // Act & Assert - certificate validation fails during TLS handshake, which happens when
+        // the connection is first established (build or first produce), so both are inside the act.
+        var act = async () =>
         {
-            Topic = "does-not-matter",
-            Key = "key",
-            Value = "value"
-        }, CancellationToken.None);
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(tlsKafka.BootstrapServers)
+                .WithClientId("test-tls-untrusted")
+                .UseTls(tlsConfig)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "does-not-matter",
+                Key = "key",
+                Value = "value"
+            }, CancellationToken.None);
+        };
 
         await Assert.That(act).Throws<KafkaException>();
     }
@@ -226,21 +230,25 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             TargetHost = "localhost"
         };
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(tlsKafka.BootstrapServers)
-            .WithClientId("test-tls-no-ca")
-            .UseTls(tlsConfig)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
-        // Act & Assert - should fail because server cert is signed by our test CA,
-        // not a system-trusted CA
-        var act = async () => await producer.ProduceAsync(new ProducerMessage<string, string>
+        // Act & Assert - should fail because the server cert is signed by our test CA, not a
+        // system-trusted CA. The handshake fails when the connection is established (build or
+        // first produce), so both are inside the act.
+        var act = async () =>
         {
-            Topic = "does-not-matter",
-            Key = "key",
-            Value = "value"
-        }, CancellationToken.None);
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(tlsKafka.BootstrapServers)
+                .WithClientId("test-tls-no-ca")
+                .UseTls(tlsConfig)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "does-not-matter",
+                Key = "key",
+                Value = "value"
+            }, CancellationToken.None);
+        };
 
         await Assert.That(act).Throws<KafkaException>();
     }
@@ -360,6 +368,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     // ──────────────────────────────────────────────────────────────
 
     [Test]
+    [SkipOnWindows("mTLS fails on the Windows SChannel TLS stack (SEC_E_ILLEGAL_MESSAGE); runs on Linux CI.")]
     public async Task Producer_WithMutualTlsInMemoryCerts_SuccessfullyProduces()
     {
         // Arrange - use mTLS with in-memory certificates
@@ -395,6 +404,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     }
 
     [Test]
+    [SkipOnWindows("mTLS fails on the Windows SChannel TLS stack (SEC_E_ILLEGAL_MESSAGE); runs on Linux CI.")]
     public async Task Producer_WithMutualTlsFilePaths_SuccessfullyProduces()
     {
         // Arrange - use mTLS with PEM file paths
@@ -431,6 +441,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     }
 
     [Test]
+    [SkipOnWindows("mTLS fails on the Windows SChannel TLS stack (SEC_E_ILLEGAL_MESSAGE); runs on Linux CI.")]
     public async Task Producer_WithMutualTlsFactoryMethod_SuccessfullyProduces()
     {
         // Arrange - use the builder's UseMutualTls convenience method
@@ -461,6 +472,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
     }
 
     [Test]
+    [SkipOnWindows("mTLS fails on the Windows SChannel TLS stack (SEC_E_ILLEGAL_MESSAGE); runs on Linux CI.")]
     public async Task Consumer_WithMutualTls_SuccessfullyConsumes()
     {
         // Arrange - produce and consume with mTLS

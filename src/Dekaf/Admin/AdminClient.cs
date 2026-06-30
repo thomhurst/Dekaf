@@ -268,16 +268,26 @@ public sealed class AdminClient : IAdminClient
         foreach (var name in topicNames)
         {
             var topic = _metadataManager.Metadata.GetTopic(name);
-            if (topic is not null)
+            if (topic is null)
             {
-                result[name] = new TopicDescription
-                {
-                    Name = topic.Name,
-                    TopicId = topic.TopicId,
-                    IsInternal = topic.IsInternal,
-                    Partitions = topic.Partitions
-                };
+                continue;
             }
+
+            // Surface per-topic errors (e.g. TopicAuthorizationFailed when DESCRIBE is denied)
+            // instead of silently returning a topic with no partition data.
+            if (topic.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(topic.ErrorCode,
+                    $"Failed to describe topic '{name}': {topic.ErrorCode}");
+            }
+
+            result[name] = new TopicDescription
+            {
+                Name = topic.Name,
+                TopicId = topic.TopicId,
+                IsInternal = topic.IsInternal,
+                Partitions = topic.Partitions
+            };
         }
 
         return result;
