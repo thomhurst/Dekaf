@@ -34,6 +34,36 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task BeginTransaction_InAbortableErrorState_Throws()
+    {
+        // A transaction that hit an abortable error must be aborted before a new one can start.
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+
+        ((KafkaProducer<string, string>)producer)._transactionState = TransactionState.AbortableError;
+
+        var act = () => producer.BeginTransaction();
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task BeginTransaction_InFatalErrorState_Throws()
+    {
+        // A producer in a fatal error state cannot start any further transactions.
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+
+        ((KafkaProducer<string, string>)producer)._transactionState = TransactionState.FatalError;
+
+        var act = () => producer.BeginTransaction();
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task InitTransactionsAsync_WithoutTransactionalId_Throws()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -49,12 +79,13 @@ public sealed class TransactionTests
     {
         // Verify enum values exist and are distinct
         var values = Enum.GetValues<TransactionState>();
-        await Assert.That(values).Count().IsEqualTo(6);
+        await Assert.That(values).Count().IsEqualTo(7);
         await Assert.That(values).Contains(TransactionState.Uninitialized);
         await Assert.That(values).Contains(TransactionState.Ready);
         await Assert.That(values).Contains(TransactionState.InTransaction);
         await Assert.That(values).Contains(TransactionState.CommittingTransaction);
         await Assert.That(values).Contains(TransactionState.AbortingTransaction);
+        await Assert.That(values).Contains(TransactionState.AbortableError);
         await Assert.That(values).Contains(TransactionState.FatalError);
     }
 

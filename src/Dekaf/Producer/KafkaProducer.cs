@@ -78,6 +78,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private volatile bool _idempotentInitialized;
     private int _transactionCoordinatorId = -1;
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
+    // The error code that drove the transaction into AbortableError/FatalError, surfaced by
+    // the fail-fast produce guard for context. ErrorCode is short-backed, so volatile is valid.
+    internal volatile ErrorCode _lastTransactionError = ErrorCode.None;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
@@ -362,6 +365,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
+
+        // KIP-1050 fail-fast: once a transaction is broken, reject new produces so the caller must
+        // abort (abortable) or close the producer (fatal) before continuing. Single volatile read
+        // on the hot path; only transactional producers ever reach the error states.
+        if (_options.TransactionalId is not null)
+        {
+            var txnState = _transactionState;
+            if (txnState == TransactionState.AbortableError)
+            {
+                throw new AbortableTransactionException(_lastTransactionError,
+                    "Cannot produce: the current transaction has an abortable error and must be aborted.")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            if (txnState == TransactionState.FatalError)
+            {
+                throw new FatalTransactionException(_lastTransactionError,
+                    "Cannot produce: the producer is in a fatal error state and must be closed.")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+        }
 
         // Check cancellation upfront before any work
         cancellationToken.ThrowIfCancellationRequested();
@@ -1175,6 +1203,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 "Producer is in a fatal error state and cannot begin new transactions.");
         }
 
+        if (_transactionState == TransactionState.AbortableError)
+        {
+            throw new InvalidOperationException(
+                "The current transaction has an abortable error. Call AbortAsync() before beginning a new transaction.");
+        }
+
         if (_transactionState == TransactionState.InTransaction)
         {
             throw new InvalidOperationException(
@@ -1188,6 +1222,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         _transactionState = TransactionState.InTransaction;
+        _lastTransactionError = ErrorCode.None;
         _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
         lock (_partitionsInTransactionLock)
         {
@@ -1229,6 +1264,46 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Re-initializes the producer ID/epoch via the transaction coordinator.
     /// Called after abort to get the bumped epoch (KIP-360), and during initial setup.
     /// </summary>
+    /// <summary>
+    /// Builds the transaction exception whose type reflects the KIP-1050 classification, and
+    /// records the error code for the fail-fast produce guard. Does not change transaction state.
+    /// </summary>
+    private TransactionException CreateTransactionException(
+        ErrorCode errorCode, TransactionErrorClassification classification, string message)
+    {
+        _lastTransactionError = errorCode;
+        return classification switch
+        {
+            TransactionErrorClassification.Fatal =>
+                new FatalTransactionException(errorCode, message) { TransactionalId = _options.TransactionalId },
+            TransactionErrorClassification.Abortable =>
+                new AbortableTransactionException(errorCode, message) { TransactionalId = _options.TransactionalId },
+            _ =>
+                new TransactionException(errorCode, message) { TransactionalId = _options.TransactionalId },
+        };
+    }
+
+    /// <summary>
+    /// Handles a non-<see cref="ErrorCode.None"/> transactional error. Returns normally when the error
+    /// is retriable (the caller should back off and retry). For fatal errors it transitions to
+    /// <see cref="TransactionState.FatalError"/> and for abortable errors to
+    /// <see cref="TransactionState.AbortableError"/>, then throws the matching typed exception.
+    /// </summary>
+    private void ThrowIfNonRetriableTransactionError(ErrorCode errorCode, string operation, bool tv2)
+    {
+        var classification = TransactionErrorClassifier.Classify(errorCode, tv2);
+        if (classification == TransactionErrorClassification.Retriable)
+        {
+            return;
+        }
+
+        _transactionState = classification == TransactionErrorClassification.Fatal
+            ? TransactionState.FatalError
+            : TransactionState.AbortableError;
+
+        throw CreateTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
+    }
+
     internal async ValueTask ReinitializeProducerIdAsync(CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
@@ -1257,45 +1332,38 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     request, initProducerIdVersion, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (response.ErrorCode == ErrorCode.ProducerFenced ||
-                response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
-            {
-                _transactionState = TransactionState.FatalError;
-                throw new TransactionException(response.ErrorCode,
-                    $"InitProducerId failed with fatal error: {response.ErrorCode}")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
-            }
-
-            if (response.ErrorCode is ErrorCode.CoordinatorLoadInProgress
-                or ErrorCode.CoordinatorNotAvailable
-                or ErrorCode.ConcurrentTransactions)
-            {
-                LogInitProducerIdRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                continue;
-            }
-
-            if (response.ErrorCode == ErrorCode.NotCoordinator)
-            {
-                LogInitProducerIdNotCoordinator(attempt + 1, maxRetries);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
             if (response.ErrorCode != ErrorCode.None)
             {
-                throw new TransactionException(response.ErrorCode,
-                    $"InitProducerId failed: {response.ErrorCode}")
+                var classification = TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2);
+
+                if (classification == TransactionErrorClassification.Retriable)
                 {
-                    TransactionalId = _options.TransactionalId
-                };
+                    if (response.ErrorCode == ErrorCode.NotCoordinator)
+                    {
+                        LogInitProducerIdNotCoordinator(attempt + 1, maxRetries);
+
+                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                        await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    LogInitProducerIdRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    continue;
+                }
+
+                // InitProducerId runs before a transaction is active, so abortable errors do not
+                // transition to AbortableError; only fatal errors mark the producer unusable.
+                if (classification == TransactionErrorClassification.Fatal)
+                {
+                    _transactionState = TransactionState.FatalError;
+                }
+
+                throw CreateTransactionException(response.ErrorCode, classification,
+                    $"InitProducerId failed: {response.ErrorCode}");
             }
 
             _producerId = response.ProducerId;
@@ -1478,11 +1546,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (firstNonRetriableError.HasValue)
             {
-                throw new TransactionException(firstNonRetriableError.Value,
-                    $"AddPartitionsToTxn failed for {errorContext}: {firstNonRetriableError.Value}")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                // Runs on the BrokerSender background path: transitioning to AbortableError/FatalError
+                // here is what makes subsequent ProduceAsync calls fail fast. This error is not in the
+                // classifier's retriable set, so the call always throws (never returns).
+                ThrowIfNonRetriableTransactionError(
+                    firstNonRetriableError.Value,
+                    $"AddPartitionsToTxn for {errorContext}",
+                    _currentTransactionUsesTV2);
             }
 
             if (!hasRetriableError)
@@ -1552,38 +1622,26 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             var classification = TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2);
 
-            switch (classification)
+            if (classification == TransactionErrorClassification.Retriable)
             {
-                case TransactionErrorClassification.Fatal:
-                    _transactionState = TransactionState.FatalError;
-                    throw new TransactionException(response.ErrorCode,
-                        $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
-                    {
-                        TransactionalId = _options.TransactionalId
-                    };
-
-                case TransactionErrorClassification.Retriable:
-                    if (response.ErrorCode == ErrorCode.NotCoordinator)
-                    {
-                        LogEndTxnNotCoordinator(attempt + 1, maxRetries);
-                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                        await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+                if (response.ErrorCode == ErrorCode.NotCoordinator)
+                {
+                    LogEndTxnNotCoordinator(attempt + 1, maxRetries);
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                     continue;
+                }
 
-                default: // Abortable or unknown
-                    throw new TransactionException(response.ErrorCode,
-                        $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
-                    {
-                        TransactionalId = _options.TransactionalId
-                    };
+                LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                continue;
             }
+
+            // Fatal or abortable: transition state and throw the matching typed exception.
+            ThrowIfNonRetriableTransactionError(response.ErrorCode,
+                $"EndTxn ({(committed ? "commit" : "abort")})", _currentTransactionUsesTV2);
         }
 
         throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
@@ -1593,17 +1651,21 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
     }
 
-    internal ValueTask SendOffsetsToTransactionInternalAsync(
+    internal async ValueTask SendOffsetsToTransactionInternalAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         string consumerGroupId,
         CancellationToken cancellationToken)
     {
-        // The entire three-step sequence (AddOffsetsToTxn -> FindCoordinator -> TxnOffsetCommit)
-        // is wrapped in a single retry lambda. If Step 1 succeeds but Step 2 or 3 fails, the
-        // retry re-executes Step 1. This is safe because AddOffsetsToTxn is idempotent in Kafka's
-        // transaction protocol — calling it multiple times with the same group ID within the same
-        // transaction epoch has no additional effect.
-        return RetryHelper.WithRetryAsync(async () =>
+        // The three-step sequence (AddOffsetsToTxn -> FindCoordinator -> TxnOffsetCommit) is retried
+        // as a unit. If a later step fails, the retry re-executes Step 1 — safe because AddOffsetsToTxn
+        // is idempotent within a transaction epoch. Errors are classified through
+        // TransactionErrorClassifier (the single source of retriability for transactional ops) rather
+        // than RetryHelper, whose IsRetriable predicate does not cover codes like ConcurrentTransactions.
+        const int maxRetries = 5;
+        var retryDelayMs = 100;
+        var tv2 = _currentTransactionUsesTV2;
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             // Step 1: Add offsets to the transaction via the transaction coordinator
             var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
@@ -1629,11 +1691,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (addOffsetsResponse.ErrorCode != ErrorCode.None)
             {
-                throw new TransactionException(addOffsetsResponse.ErrorCode,
-                    $"AddOffsetsToTxn failed: {addOffsetsResponse.ErrorCode}")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                // Retriable -> back off and restart the sequence; fatal/abortable -> throws typed exception.
+                ThrowIfNonRetriableTransactionError(addOffsetsResponse.ErrorCode, "AddOffsetsToTxn", tv2);
+                if (addOffsetsResponse.ErrorCode == ErrorCode.NotCoordinator)
+                    await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                continue;
             }
 
             // Step 2: Find the group coordinator
@@ -1659,11 +1723,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (findCoordResponse.Coordinators.Count == 0)
             {
-                throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
-                    "FindCoordinator returned an empty Coordinators array")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                // Treat an empty coordinator set as transiently unavailable and retry.
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                continue;
             }
 
             var coord = findCoordResponse.Coordinators[0];
@@ -1671,11 +1734,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (coord.ErrorCode != ErrorCode.None)
             {
-                throw new TransactionException(coord.ErrorCode,
-                    $"FindCoordinator for consumer group '{consumerGroupId}' failed: {coord.ErrorCode}")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                ThrowIfNonRetriableTransactionError(coord.ErrorCode,
+                    $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                continue;
             }
 
             // Step 3: Send TxnOffsetCommit to the group coordinator
@@ -1727,22 +1790,43 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     txnOffsetCommitRequest, txnOffsetCommitVersion, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Check for errors
+            // Check for errors across all partitions
+            ErrorCode? commitError = null;
+            string? commitContext = null;
             foreach (var topicResult in txnOffsetCommitResponse.Topics)
             {
                 foreach (var partitionResult in topicResult.Partitions)
                 {
                     if (partitionResult.ErrorCode != ErrorCode.None)
                     {
-                        throw new TransactionException(partitionResult.ErrorCode,
-                            $"TxnOffsetCommit failed for {topicResult.Name}-{partitionResult.PartitionIndex}: {partitionResult.ErrorCode}")
-                        {
-                            TransactionalId = _options.TransactionalId
-                        };
+                        commitError = partitionResult.ErrorCode;
+                        commitContext = $"TxnOffsetCommit for {topicResult.Name}-{partitionResult.PartitionIndex}";
+                        break;
                     }
                 }
+
+                if (commitError.HasValue)
+                    break;
             }
-        }, _metadataManager, cancellationToken);
+
+            if (commitError.HasValue)
+            {
+                ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
+                if (commitError.Value == ErrorCode.NotCoordinator)
+                    await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                continue;
+            }
+
+            return; // All three steps succeeded
+        }
+
+        throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
+            $"SendOffsetsToTransaction failed after {maxRetries} retries")
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     /// <inheritdoc />
@@ -3128,7 +3212,13 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             {
                 _producer._partitionsInTransaction.Clear();
             }
-            _producer._transactionState = TransactionState.Ready;
+
+            // Preserve an error state set while ending the transaction (fail-fast relies on it);
+            // otherwise return to Ready for the next transaction.
+            if (_producer._transactionState is not (TransactionState.AbortableError or TransactionState.FatalError))
+            {
+                _producer._transactionState = TransactionState.Ready;
+            }
         }
     }
 
@@ -3161,7 +3251,13 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             {
                 _producer._partitionsInTransaction.Clear();
             }
-            _producer._transactionState = TransactionState.Ready;
+
+            // A successful abort clears the abortable state; only leave the producer non-Ready if
+            // ending the transaction itself failed fatally/abortably.
+            if (_producer._transactionState is not (TransactionState.AbortableError or TransactionState.FatalError))
+            {
+                _producer._transactionState = TransactionState.Ready;
+            }
         }
     }
 
@@ -3182,9 +3278,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     public async ValueTask DisposeAsync()
     {
         if (!_committed && !_aborted && !_producer.IsDisposed
-            && _producer._transactionState == TransactionState.InTransaction)
+            && _producer._transactionState is TransactionState.InTransaction or TransactionState.AbortableError)
         {
-            // Abort on dispose if not completed and transaction is actually in progress
+            // Abort on dispose if not completed and a transaction is in progress or abortable
             try
             {
                 await AbortAsync().ConfigureAwait(false);

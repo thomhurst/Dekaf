@@ -291,7 +291,15 @@ public sealed class GroupException : KafkaException
 /// <summary>
 /// Exception thrown when a transaction operation fails.
 /// </summary>
-public sealed class TransactionException : KafkaException
+/// <remarks>
+/// KIP-1050 categorizes transaction errors so callers can react consistently.
+/// The category is expressed through the concrete type:
+/// <see cref="AbortableTransactionException"/> (abort the current transaction, then reuse
+/// the producer) and <see cref="FatalTransactionException"/> (close the producer and create
+/// a new instance). A plain <see cref="TransactionException"/> carries no specific recovery
+/// requirement.
+/// </remarks>
+public class TransactionException : KafkaException
 {
     public TransactionException() : base()
     {
@@ -313,6 +321,54 @@ public sealed class TransactionException : KafkaException
     /// The transactional ID.
     /// </summary>
     public string? TransactionalId { get; init; }
+}
+
+/// <summary>
+/// Exception thrown when a transactional operation fails with an abortable error.
+/// The current transaction is broken and must be rolled back by calling
+/// <c>AbortAsync()</c>; the producer remains usable for a new transaction afterward.
+/// </summary>
+public sealed class AbortableTransactionException : TransactionException
+{
+    public AbortableTransactionException() : base()
+    {
+    }
+
+    public AbortableTransactionException(string message) : base(message)
+    {
+    }
+
+    public AbortableTransactionException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+
+    public AbortableTransactionException(ErrorCode errorCode, string message) : base(errorCode, message)
+    {
+    }
+}
+
+/// <summary>
+/// Exception thrown when a transactional operation fails with a fatal error, such as the
+/// producer being fenced. The producer is irrecoverably broken and must be closed; create a
+/// new producer instance to continue producing transactionally.
+/// </summary>
+public sealed class FatalTransactionException : TransactionException
+{
+    public FatalTransactionException() : base()
+    {
+    }
+
+    public FatalTransactionException(string message) : base(message)
+    {
+    }
+
+    public FatalTransactionException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+
+    public FatalTransactionException(ErrorCode errorCode, string message) : base(errorCode, message)
+    {
+    }
 }
 
 /// <summary>
