@@ -224,6 +224,64 @@ public class ExceptionTypesTests
 
     #endregion
 
+    #region AbortableTransactionException Tests
+
+    [Test]
+    public async Task AbortableTransactionException_InheritsTransactionException()
+    {
+        var ex = new AbortableTransactionException();
+        await Assert.That(ex).IsAssignableTo<TransactionException>();
+        await Assert.That(ex).IsAssignableTo<KafkaException>();
+    }
+
+    [Test]
+    public async Task AbortableTransactionException_CarriesErrorCodeAndTransactionalId()
+    {
+        var ex = new AbortableTransactionException(ErrorCode.TransactionAbortable, "abort me")
+        {
+            TransactionalId = "txn-1"
+        };
+        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.TransactionAbortable);
+        await Assert.That(ex.TransactionalId).IsEqualTo("txn-1");
+    }
+
+    #endregion
+
+    #region FatalTransactionException Tests
+
+    [Test]
+    public async Task FatalTransactionException_InheritsTransactionException()
+    {
+        var ex = new FatalTransactionException();
+        await Assert.That(ex).IsAssignableTo<TransactionException>();
+        await Assert.That(ex).IsAssignableTo<KafkaException>();
+    }
+
+    [Test]
+    public async Task FatalTransactionException_CarriesErrorCodeAndTransactionalId()
+    {
+        var ex = new FatalTransactionException(ErrorCode.ProducerFenced, "fenced")
+        {
+            TransactionalId = "txn-1"
+        };
+        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(ex.TransactionalId).IsEqualTo("txn-1");
+    }
+
+    [Test]
+    public async Task TransactionSubtypes_AreCatchableAsTransactionException()
+    {
+        // The whole point of the KIP-1050 hierarchy: a caller catching TransactionException
+        // still receives the specific subtype so it can inspect/rethrow based on category.
+        TransactionException abortable = new AbortableTransactionException("a");
+        TransactionException fatal = new FatalTransactionException("f");
+
+        await Assert.That(abortable is AbortableTransactionException).IsTrue();
+        await Assert.That(fatal is FatalTransactionException).IsTrue();
+    }
+
+    #endregion
+
     #region BrokerVersionException Tests
 
     [Test]
