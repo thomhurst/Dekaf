@@ -15,7 +15,7 @@ namespace Dekaf.Tests.Integration.Security;
 /// - Operations succeed after ACLs are granted
 /// - Different resource types (topic, group, cluster) enforce ACLs independently
 /// </summary>
-[Category("Security")]
+[Category("Authorization")]
 [NotInParallel("AclKafka")]
 [ClassDataSource<AclKafkaContainer>(Shared = SharedType.PerTestSession)]
 public class AclEnforcementTests(AclKafkaContainer kafka)
@@ -73,17 +73,19 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         // Arrange: create topic as admin, then try to produce as testuser (no ACLs)
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
-            .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
-            .WithClientId("acl-test-producer-denied")
-            .WithAcks(Acks.All)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
-        // Act & Assert: producing without WRITE permission should fail
+        // Act & Assert: producing without WRITE permission should fail. The denial can surface
+        // either when the idempotent producer initializes (ClusterAuthorizationFailed) or when it
+        // produces to the topic (TopicAuthorizationFailed), so the build is inside the assertion.
         var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
         {
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
+                .WithClientId("acl-test-producer-denied")
+                .WithAcks(Acks.All)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -92,12 +94,11 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             }, CancellationToken.None);
         });
 
-        // The error should indicate authorization failure
-        // Kafka returns TopicAuthorizationFailed (error code 29) when WRITE is denied
         await Assert.That(exception).IsNotNull();
         await Assert.That(
             exception is AuthorizationException ||
-            exception.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed
+            exception.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
+            exception.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed
         ).IsTrue();
     }
 
@@ -439,17 +440,12 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .WithClientId("acl-test-restricted-admin-describe")
             .Build();
 
-        // Act & Assert: describing topic without DESCRIBE permission should fail
-        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
-        {
-            await restrictedAdmin.DescribeTopicsAsync([topic]);
-        });
+        // Act & Assert: describing a topic without DESCRIBE permission reports the per-topic
+        // authorization failure on the description rather than failing the whole batch.
+        var descriptions = await restrictedAdmin.DescribeTopicsAsync([topic]);
 
-        await Assert.That(exception).IsNotNull();
-        await Assert.That(
-            exception is AuthorizationException ||
-            exception.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed
-        ).IsTrue();
+        await Assert.That(descriptions.TryGetValue(topic, out var description)).IsTrue();
+        await Assert.That(description!.ErrorCode).IsEqualTo(Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed);
     }
 
     #endregion
@@ -468,17 +464,17 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
 
         // Step 1: Verify access is denied without ACLs
         {
-            await using var producer = await Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
-                .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
-                .WithClientId("acl-lifecycle-denied-1")
-                .WithAcks(Acks.All)
-                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-                .BuildAsync();
-
             var denied = false;
             try
             {
+                await using var producer = await Kafka.CreateProducer<string, string>()
+                    .WithBootstrapServers(kafka.BootstrapServers)
+                    .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
+                    .WithClientId("acl-lifecycle-denied-1")
+                    .WithAcks(Acks.All)
+                    .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                    .BuildAsync();
+
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
@@ -488,7 +484,8 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             }
             catch (KafkaException ex) when (
                 ex is AuthorizationException ||
-                ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed)
+                ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
+                ex.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed)
             {
                 denied = true;
             }
@@ -547,18 +544,18 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await WaitForAclDeletionAsync(admin, topicFilter);
 
         {
-            // Create a fresh producer to avoid cached authorization state from step 2
-            await using var producer = await Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
-                .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
-                .WithClientId("acl-lifecycle-denied-2")
-                .WithAcks(Acks.All)
-                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-                .BuildAsync();
-
             var deniedAgain = false;
             try
             {
+                // Create a fresh producer to avoid cached authorization state from step 2
+                await using var producer = await Kafka.CreateProducer<string, string>()
+                    .WithBootstrapServers(kafka.BootstrapServers)
+                    .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
+                    .WithClientId("acl-lifecycle-denied-2")
+                    .WithAcks(Acks.All)
+                    .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                    .BuildAsync();
+
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
@@ -568,7 +565,8 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             }
             catch (KafkaException ex) when (
                 ex is AuthorizationException ||
-                ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed)
+                ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
+                ex.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed)
             {
                 deniedAgain = true;
             }

@@ -39,6 +39,7 @@ if (!skipIntegrationTests)
     var integrationTestModules = new Dictionary<string, Action>(StringComparer.OrdinalIgnoreCase)
     {
         ["Admin"] = () => builder.Services.AddModule<RunAdminIntegrationTestsModule>(),
+        ["Authentication"] = () => builder.Services.AddModule<RunAuthenticationIntegrationTestsModule>(),
         ["Backpressure"] = () => builder.Services.AddModule<RunBackpressureIntegrationTestsModule>(),
         ["Compression"] = () => builder.Services.AddModule<RunCompressionIntegrationTestsModule>(),
         ["Consumer"] = () => builder.Services.AddModule<RunConsumerIntegrationTestsModule>(),
@@ -50,8 +51,10 @@ if (!skipIntegrationTests)
         ["MultiInFlightProducer"] = () => builder.Services.AddModule<RunMultiInFlightProducerIntegrationTestsModule>(),
         ["Offsets"] = () => builder.Services.AddModule<RunOffsetsIntegrationTestsModule>(),
         ["Producer"] = () => builder.Services.AddModule<RunProducerIntegrationTestsModule>(),
+        ["Authorization"] = () => builder.Services.AddModule<RunAuthorizationIntegrationTestsModule>(),
         ["Resilience"] = () => builder.Services.AddModule<RunResilienceIntegrationTestsModule>(),
         ["Serialization"] = () => builder.Services.AddModule<RunSerializationIntegrationTestsModule>(),
+        ["Tls"] = () => builder.Services.AddModule<RunTlsIntegrationTestsModule>(),
         ["Transaction"] = () => builder.Services.AddModule<RunTransactionIntegrationTestsModule>(),
     };
 

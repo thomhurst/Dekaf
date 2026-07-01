@@ -55,6 +55,26 @@ public class KafkaException : Exception
     /// Whether this exception is retriable.
     /// </summary>
     public bool IsRetriable => ErrorCode?.IsRetriable() ?? false;
+
+    /// <summary>
+    /// Creates the most specific exception type for a Kafka error code:
+    /// <see cref="AuthorizationException"/> for authorization failures and
+    /// <see cref="AuthenticationException"/> for authentication failures, otherwise a plain
+    /// <see cref="KafkaException"/>. Prefer this over <c>new KafkaException(errorCode, ...)</c>
+    /// at error-surfacing call sites so callers can catch the typed exception.
+    /// </summary>
+    public static KafkaException FromErrorCode(ErrorCode errorCode, string message) => errorCode switch
+    {
+        Protocol.ErrorCode.TopicAuthorizationFailed
+            or Protocol.ErrorCode.GroupAuthorizationFailed
+            or Protocol.ErrorCode.ClusterAuthorizationFailed
+            or Protocol.ErrorCode.TransactionalIdAuthorizationFailed
+            or Protocol.ErrorCode.DelegationTokenAuthorizationFailed
+            => new AuthorizationException(errorCode, message),
+        Protocol.ErrorCode.SaslAuthenticationFailed
+            => new AuthenticationException(errorCode, message),
+        _ => new KafkaException(errorCode, message),
+    };
 }
 
 /// <summary>

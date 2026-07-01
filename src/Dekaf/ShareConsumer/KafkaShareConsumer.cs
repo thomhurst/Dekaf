@@ -649,7 +649,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
         if (response.ErrorCode != ErrorCode.None)
         {
-            throw new KafkaException(response.ErrorCode,
+            throw KafkaException.FromErrorCode(response.ErrorCode,
                 $"ShareAcknowledge failed for broker {brokerId}: {response.ErrorCode} - {response.ErrorMessage}");
         }
     }

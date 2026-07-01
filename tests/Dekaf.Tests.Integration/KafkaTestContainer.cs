@@ -193,6 +193,111 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         throw new InvalidOperationException($"Topic '{topicName}' not visible in metadata after {maxAttempts} attempts");
     }
 
+    /// <summary>
+    /// Polls until an admin client can list topics, i.e. the authenticated connection path is
+    /// fully ready (the base <see cref="WaitForKafkaAsync"/> only checks raw TCP connectivity).
+    /// On timeout the broker log tail and last client error are included to aid CI triage.
+    /// </summary>
+    /// <param name="label">A short label identifying the auth path, used in logs/errors.</param>
+    /// <param name="adminFactory">Factory for the admin client to probe with; defaults to <see cref="CreateAdminClient"/>.</param>
+    /// <param name="maxAttempts">Maximum number of poll attempts (1s apart).</param>
+    protected async Task WaitForAdminReadyAsync(string label, Func<IAdminClient>? adminFactory = null, int maxAttempts = 30)
+    {
+        var factory = adminFactory ?? CreateAdminClient;
+        Console.WriteLine($"[{GetType().Name}] Waiting for {label} authentication to be ready...");
+
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                var adminClient = factory();
+                await using (adminClient.ConfigureAwait(false))
+                {
+                    await adminClient.ListTopicsAsync().ConfigureAwait(false);
+                    Console.WriteLine($"[{GetType().Name}] Kafka is ready ({label} authentication successful)");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"{label}: Kafka not ready for authentication after {maxAttempts} attempts. " +
+            $"Last client error: {lastError?.Message}.{await TryGetBrokerLogTailAsync().ConfigureAwait(false)}");
+    }
+
+    /// <summary>
+    /// Creates SCRAM-SHA-256 and SCRAM-SHA-512 credentials for the given user via the admin client.
+    /// SCRAM credentials live in KRaft metadata and must be created after the broker starts. Each
+    /// mechanism is upserted in its own request (Kafka rejects two alterations for the same user
+    /// in one request).
+    /// </summary>
+    protected async Task CreateScramCredentialsAsync(string user, string password, int iterations = 4096)
+    {
+        await using var adminClient = CreateAdminClient();
+        foreach (var mechanism in new[] { ScramMechanism.ScramSha256, ScramMechanism.ScramSha512 })
+        {
+            await adminClient.AlterUserScramCredentialsAsync(
+            [
+                new UserScramCredentialUpsertion
+                {
+                    User = user,
+                    Mechanism = mechanism,
+                    Iterations = iterations,
+                    Password = password
+                }
+            ]).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Hook for subclasses to apply transport security (e.g. TLS) to admin clients the base class
+    /// builds. The default applies none.
+    /// </summary>
+    protected virtual AdminClientBuilder ApplyTransportSecurity(AdminClientBuilder builder) => builder;
+
+    /// <summary>
+    /// Builds an admin client authenticated with the given SCRAM mechanism, used to verify SCRAM
+    /// credentials have propagated after <see cref="CreateScramCredentialsAsync"/>.
+    /// </summary>
+    protected IAdminClient CreateScramAdminClient(ScramMechanism mechanism, string user, string password)
+    {
+        var builder = ApplyTransportSecurity(Kafka.CreateAdminClient()
+            .WithBootstrapServers(BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        builder = mechanism == ScramMechanism.ScramSha256
+            ? builder.WithSaslScramSha256(user, password)
+            : builder.WithSaslScramSha512(user, password);
+        return builder.Build();
+    }
+
+    private async Task<string> TryGetBrokerLogTailAsync()
+    {
+        if (_container is null)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var (stdout, stderr) = await _container.GetLogsAsync().ConfigureAwait(false);
+            return $"\nBroker stdout tail:\n{Tail(stdout, 4000)}\nBroker stderr tail:\n{Tail(stderr, 2000)}";
+        }
+        catch
+        {
+            return string.Empty;
+        }
+
+        static string Tail(string value, int maxChars) =>
+            string.IsNullOrEmpty(value) || value.Length <= maxChars ? value : value[^maxChars..];
+    }
+
     public virtual async ValueTask DisposeAsync()
     {
         if (_container is not null)

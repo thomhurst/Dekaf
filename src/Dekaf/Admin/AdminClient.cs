@@ -37,7 +37,11 @@ public sealed class AdminClient : IAdminClient
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
-                SaslPassword = options.SaslPassword
+                SaslPassword = options.SaslPassword,
+                GssapiConfig = options.GssapiConfig,
+                OAuthBearerConfig = options.OAuthBearerConfig,
+                OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
+                OAuthBearerToken = options.OAuthBearerToken
             },
             loggerFactory);
 
@@ -264,16 +268,21 @@ public sealed class AdminClient : IAdminClient
         foreach (var name in topicNames)
         {
             var topic = _metadataManager.Metadata.GetTopic(name);
-            if (topic is not null)
+            if (topic is null)
             {
-                result[name] = new TopicDescription
-                {
-                    Name = topic.Name,
-                    TopicId = topic.TopicId,
-                    IsInternal = topic.IsInternal,
-                    Partitions = topic.Partitions
-                };
+                continue;
             }
+
+            // Report per-topic errors (e.g. TopicAuthorizationFailed when DESCRIBE is denied) on the
+            // description rather than throwing, so one inaccessible topic does not fail the whole batch.
+            result[name] = new TopicDescription
+            {
+                Name = topic.Name,
+                TopicId = topic.TopicId,
+                IsInternal = topic.IsInternal,
+                Partitions = topic.Partitions,
+                ErrorCode = topic.ErrorCode
+            };
         }
 
         return result;
@@ -2073,6 +2082,30 @@ public sealed class AdminClientOptions
     public string? SaslPassword { get; init; }
 
     /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when <see cref="SaslMechanism"/> is
+    /// <see cref="SaslMechanism.Gssapi"/>.
+    /// </summary>
+    public GssapiConfig? GssapiConfig { get; init; }
+
+    /// <summary>
+    /// OAuth 2.0 / OIDC configuration used to fetch bearer tokens from a token endpoint.
+    /// Used when <see cref="SaslMechanism"/> is <see cref="SaslMechanism.OAuthBearer"/>.
+    /// </summary>
+    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+
+    /// <summary>
+    /// A callback that supplies OAuth bearer tokens on demand.
+    /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
+    /// </summary>
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+
+    /// <summary>
+    /// A pre-obtained OAuth bearer token. Use this for static tokens; for dynamic
+    /// retrieval use <see cref="OAuthBearerTokenProvider"/> instead.
+    /// </summary>
+    public OAuthBearerToken? OAuthBearerToken { get; init; }
+
+    /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
@@ -2099,6 +2132,9 @@ public sealed class AdminClientBuilder
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private GssapiConfig? _gssapiConfig;
+    private OAuthBearerConfig? _oauthConfig;
+    private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -2195,6 +2231,41 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Configures SASL/GSSAPI (Kerberos) authentication.
+    /// </summary>
+    /// <param name="config">The GSSAPI configuration.</param>
+    public AdminClientBuilder WithGssapi(GssapiConfig config)
+    {
+        _saslMechanism = SaslMechanism.Gssapi;
+        _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        return this;
+    }
+
+    /// <summary>
+    /// Configures SASL/OAUTHBEARER authentication using OAuth 2.0 client credentials.
+    /// </summary>
+    /// <param name="config">The OAuth configuration describing the token endpoint and client.</param>
+    public AdminClientBuilder WithOAuthBearer(OAuthBearerConfig config)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures SASL/OAUTHBEARER authentication using a custom token provider.
+    /// </summary>
+    /// <param name="tokenProvider">A callback that returns an OAuth bearer token on demand.</param>
+    public AdminClientBuilder WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+        _oauthConfig = null;
+        return this;
+    }
+
     public AdminClientBuilder WithLoggerFactory(ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -2253,6 +2324,9 @@ public sealed class AdminClientBuilder
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            GssapiConfig = _gssapiConfig,
+            OAuthBearerConfig = _oauthConfig,
+            OAuthBearerTokenProvider = _oauthTokenProvider,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
         };

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Dekaf.Errors;
 
 namespace Dekaf.Security.Sasl;
 
@@ -245,13 +246,4 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
         }
         return result;
     }
-}
-
-/// <summary>
-/// Exception thrown when SASL authentication fails.
-/// </summary>
-public class AuthenticationException : Exception
-{
-    public AuthenticationException(string message) : base(message) { }
-    public AuthenticationException(string message, Exception innerException) : base(message, innerException) { }
 }

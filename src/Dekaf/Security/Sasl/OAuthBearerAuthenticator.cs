@@ -1,4 +1,5 @@
 using System.Text;
+using Dekaf.Errors;
 
 namespace Dekaf.Security.Sasl;
 
@@ -84,46 +85,50 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
         }
 
         // OAUTHBEARER initial client response format (RFC 7628):
-        // gs2-header kvsep *kvpair kvsep
-        // where:
-        //   gs2-header = "n,," (no channel binding, no authzid)
-        //   kvsep = 0x01 (ASCII SOH)
-        //   kvpair = key "=" value
+        //   client-resp = gs2-header kvsep *kvpair kvsep
+        //   kvpair      = key "=" value kvsep      (note: each kvpair carries its own trailing kvsep)
+        //   gs2-header  = "n,,"                     (no channel binding, no authzid)
+        //   kvsep       = 0x01 (ASCII SOH)
         //
-        // Required kvpair: auth=Bearer <token>
-        // Format: n,,\x01auth=Bearer <token>\x01
+        // With only the required auth pair this yields:
+        //   n,,\x01auth=Bearer <token>\x01\x01
+        // The final \x01 is the empty kvsep that terminates the (possibly extended) kvpair list.
         //
-        // If extensions are present, they are added as additional kvpairs:
-        // n,,\x01auth=Bearer <token>\x01ext1=val1\x01ext2=val2\x01
+        // With extensions:
+        //   n,,\x01auth=Bearer <token>\x01ext1=val1\x01ext2=val2\x01\x01
 
         var builder = new StringBuilder();
 
         // GS2 header: "n,," means no channel binding and no authorization identity
         builder.Append("n,,");
 
-        // SOH separator
+        // SOH separating the GS2 header from the key/value pairs
         builder.Append('\x01');
 
-        // Authorization header with bearer token
+        // Authorization key/value pair, terminated by its own SOH
         builder.Append("auth=Bearer ");
         builder.Append(token.TokenValue);
+        builder.Append('\x01');
 
-        // Add any extensions
+        // Extension key/value pairs, each terminated by SOH
         if (token.Extensions is { Count: > 0 })
         {
             foreach (var (key, value) in token.Extensions)
             {
-                builder.Append('\x01');
                 builder.Append(key);
                 builder.Append('=');
                 builder.Append(value);
+                builder.Append('\x01');
             }
         }
 
-        // Final SOH terminator (kvsep at end per RFC 7628)
+        // Final SOH terminating the kvpair list (the trailing kvsep in client-resp)
         builder.Append('\x01');
 
-        _complete = true;
+        // Note: do NOT mark complete here. OAUTHBEARER is a single round trip, but the client
+        // is only authenticated once the server accepts the response. On failure the server
+        // replies with a JSON error challenge (RFC 7628), which EvaluateChallenge must observe;
+        // completing here would cause the caller to stop before reading that challenge.
         return Encoding.UTF8.GetBytes(builder.ToString());
     }
 

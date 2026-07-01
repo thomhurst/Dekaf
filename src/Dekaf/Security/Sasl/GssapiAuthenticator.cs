@@ -1,4 +1,5 @@
 using System.Net.Security;
+using Dekaf.Errors;
 
 namespace Dekaf.Security.Sasl;
 

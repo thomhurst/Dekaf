@@ -94,21 +94,25 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment("KAFKA_SSL_KEYSTORE_LOCATION", serverKeystoreContainerPath)
             .WithEnvironment("KAFKA_SSL_KEYSTORE_PASSWORD", TestCertificateGenerator.StorePassword)
             .WithEnvironment("KAFKA_SSL_KEY_PASSWORD", TestCertificateGenerator.StorePassword)
-            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_TYPE", "PKCS12")
-            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_LOCATION", truststoreContainerPath)
-            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_PASSWORD", TestCertificateGenerator.StorePassword)
+            // Use a PEM truststore (the CA cert) rather than PKCS12: a .NET-exported cert-only
+            // PKCS12 has no key entry, so Java loads it with zero trust anchors and then rejects
+            // every client certificate during mTLS ("trustAnchors parameter must be non-empty").
+            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_TYPE", "PEM")
+            .WithEnvironment("KAFKA_SSL_TRUSTSTORE_LOCATION", caCertContainerPath)
             // Enable client authentication for mTLS tests (requested but not required)
             .WithEnvironment("KAFKA_SSL_CLIENT_AUTH", "requested")
             // Endpoint identification disabled for test certificates
             .WithEnvironment("KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM", "")
-            // Mount certificate files into the container
-            .WithResourceMapping(_certGenerator.CaCertPemPath, caCertContainerPath)
-            .WithResourceMapping(serverCertPemPath, serverCertContainerPath)
-            .WithResourceMapping(serverKeyPemPath, serverKeyContainerPath)
-            .WithResourceMapping(_certGenerator.ServerKeystorePath, serverKeystoreContainerPath)
-            .WithResourceMapping(_certGenerator.ServerTruststorePath, truststoreContainerPath)
-            .WithResourceMapping(_certGenerator.ClientCertPemPath, clientCertContainerPath)
-            .WithResourceMapping(_certGenerator.ClientKeyPemPath, clientKeyContainerPath)
+            // Mount certificate files into the container. The byte[] overload copies content to an
+            // exact file path; the string-path overload bind-mounts and can create a directory at
+            // the target on some Docker hosts (e.g. Windows).
+            .WithResourceMapping(File.ReadAllBytes(_certGenerator.CaCertPemPath), caCertContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(serverCertPemPath), serverCertContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(serverKeyPemPath), serverKeyContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(_certGenerator.ServerKeystorePath), serverKeystoreContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(_certGenerator.ServerTruststorePath), truststoreContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(_certGenerator.ClientCertPemPath), clientCertContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(_certGenerator.ClientKeyPemPath), clientKeyContainerPath)
             .Build();
 
         await _container.StartAsync();

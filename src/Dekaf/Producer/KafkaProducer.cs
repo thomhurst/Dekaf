@@ -1044,7 +1044,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (topicInfo.PartitionCount == 0)
         {
-            throw new ProduceException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}") { Topic = message.Topic };
+            throw NoUsablePartitionsException(message.Topic, topicInfo);
         }
 
         // Serialize key and value to pooled memory (returned to pool when batch completes)
@@ -2183,7 +2183,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (topicInfo is null || topicInfo.PartitionCount == 0)
             {
-                var ex = new ProduceException($"Topic '{message.Topic}' not found or has no partitions") { Topic = message.Topic };
+                var ex = NoUsablePartitionsException(message.Topic, topicInfo);
                 LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
                 return;
             }
@@ -2213,6 +2213,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
+    /// Builds the exception to throw when a topic has no usable partition metadata. When the cause
+    /// is an authorization error, returns an <see cref="AuthorizationException"/> (via
+    /// <see cref="KafkaException.FromErrorCode"/>) so callers can catch it specifically; otherwise a
+    /// generic <see cref="ProduceException"/>.
+    /// </summary>
+    private static Exception NoUsablePartitionsException(string topic, TopicInfo? topicInfo)
+    {
+        if (topicInfo is not null &&
+            topicInfo.ErrorCode is ErrorCode.TopicAuthorizationFailed or ErrorCode.ClusterAuthorizationFailed)
+        {
+            return KafkaException.FromErrorCode(topicInfo.ErrorCode,
+                $"Cannot produce to topic '{topic}': {topicInfo.ErrorCode}");
+        }
+
+        return new ProduceException($"Topic '{topic}' not found or has no partitions") { Topic = topic };
+    }
+
+    /// <summary>
     /// Async slow path for fire-and-forget produce with delivery callback when metadata is not cached.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -2238,7 +2256,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (topicInfo is null || topicInfo.PartitionCount == 0)
             {
-                throw new ProduceException($"Topic '{message.Topic}' not found or has no partitions") { Topic = message.Topic };
+                throw NoUsablePartitionsException(message.Topic, topicInfo);
             }
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
@@ -2432,7 +2450,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 if (!response.ErrorCode.IsRetriable())
                 {
-                    throw new KafkaException(response.ErrorCode,
+                    throw KafkaException.FromErrorCode(response.ErrorCode,
                         $"Failed to initialize idempotent producer: {response.ErrorCode}");
                 }
 

@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Builder;
 
@@ -132,6 +133,65 @@ public class AdminClientBuilderTests
             .Build();
 
         await Assert.That(client).IsNotNull();
+    }
+
+    #endregion
+
+    #region GSSAPI / OAUTHBEARER Validation
+
+    [Test]
+    public async Task WithGssapi_NullConfig_ThrowsArgumentNullException()
+    {
+        var builder = new AdminClientBuilder();
+        await Assert.That(() => builder.WithGssapi(null!)).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task WithOAuthBearer_NullConfig_ThrowsArgumentNullException()
+    {
+        var builder = new AdminClientBuilder();
+        await Assert.That(() => builder.WithOAuthBearer((OAuthBearerConfig)null!)).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task WithOAuthBearer_NullTokenProvider_ThrowsArgumentNullException()
+    {
+        var builder = new AdminClientBuilder();
+        await Assert.That(() => builder.WithOAuthBearer((Func<CancellationToken, ValueTask<OAuthBearerToken>>)null!))
+            .Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task WithGssapi_ReturnsSameBuilder()
+    {
+        var builder = new AdminClientBuilder();
+        var result = builder.WithGssapi(new GssapiConfig());
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithOAuthBearer_Config_ReturnsSameBuilder()
+    {
+        var builder = new AdminClientBuilder();
+        var result = builder.WithOAuthBearer(new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://example.test/token",
+            ClientId = "client"
+        });
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithOAuthBearer_TokenProvider_ReturnsSameBuilder()
+    {
+        var builder = new AdminClientBuilder();
+        var result = builder.WithOAuthBearer(_ => new ValueTask<OAuthBearerToken>(new OAuthBearerToken
+        {
+            TokenValue = "t",
+            Expiration = DateTimeOffset.UtcNow.AddHours(1),
+            PrincipalName = "p"
+        }));
+        await Assert.That(result).IsSameReferenceAs(builder);
     }
 
     #endregion

@@ -1,10 +1,14 @@
 using System.Text;
+using Dekaf.Errors;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Security.Sasl;
 
 public class OAuthBearerAuthenticatorTests
 {
+    // SOH (U+0001) is the SASL key/value separator (kvsep) in RFC 7628.
+    private const char Soh = (char)1;
+
     [Test]
     public async Task MechanismName_ReturnsOAuthBearer()
     {
@@ -28,17 +32,12 @@ public class OAuthBearerAuthenticatorTests
         var response = authenticator.GetInitialResponse();
         var responseStr = Encoding.UTF8.GetString(response);
 
-        // Format should be: n,,\x01auth=Bearer <token>\x01
-        // GS2 header
-        await Assert.That(responseStr.StartsWith("n,,", StringComparison.Ordinal)).IsTrue();
-        // SOH separator after GS2 header
-        await Assert.That(responseStr[3]).IsEqualTo('\x01');
-        // Authorization header
-        await Assert.That(responseStr).Contains("auth=Bearer test-jwt-token");
-        // Single SOH terminator (RFC 7628)
-        await Assert.That(responseStr.EndsWith('\x01')).IsTrue();
-        // Verify it's not double SOH
-        await Assert.That(responseStr.EndsWith("\x01\x01", StringComparison.Ordinal)).IsFalse();
+        // Per RFC 7628 the initial client response is:
+        //   gs2-header kvsep auth=Bearer <token> kvsep kvsep
+        // i.e. the auth kvpair carries its own trailing kvsep and a final kvsep closes the list,
+        // so the message ends with a double SOH.
+        var expected = $"n,,{Soh}auth=Bearer test-jwt-token{Soh}{Soh}";
+        await Assert.That(responseStr).IsEqualTo(expected);
     }
 
     [Test]
@@ -60,12 +59,15 @@ public class OAuthBearerAuthenticatorTests
         var response = authenticator.GetInitialResponse();
         var responseStr = Encoding.UTF8.GetString(response);
 
-        await Assert.That(responseStr).Contains("ext1=value1");
-        await Assert.That(responseStr).Contains("ext2=value2");
+        // Each kvpair (including extensions) is terminated by SOH, then a final SOH closes the list.
+        await Assert.That(responseStr).Contains($"auth=Bearer test-jwt-token{Soh}");
+        await Assert.That(responseStr).Contains($"ext1=value1{Soh}");
+        await Assert.That(responseStr).Contains($"ext2=value2{Soh}");
+        await Assert.That(responseStr.EndsWith($"{Soh}{Soh}", StringComparison.Ordinal)).IsTrue();
     }
 
     [Test]
-    public async Task GetInitialResponse_SetsIsCompleteToTrue()
+    public async Task GetInitialResponse_DoesNotCompleteUntilServerResponds()
     {
         var token = CreateValidToken();
         var authenticator = new OAuthBearerAuthenticator(token);
@@ -73,6 +75,12 @@ public class OAuthBearerAuthenticatorTests
         await Assert.That(authenticator.IsComplete).IsFalse();
 
         _ = authenticator.GetInitialResponse();
+
+        // OAUTHBEARER only completes once the server's response is evaluated; completing on the
+        // initial response would skip the server's RFC 7628 error challenge on failure.
+        await Assert.That(authenticator.IsComplete).IsFalse();
+
+        _ = authenticator.EvaluateChallenge([]);
 
         await Assert.That(authenticator.IsComplete).IsTrue();
     }

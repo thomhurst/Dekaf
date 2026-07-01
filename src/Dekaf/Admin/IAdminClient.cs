@@ -322,6 +322,13 @@ public sealed class TopicDescription
     public Guid TopicId { get; init; }
     public bool IsInternal { get; init; }
     public required IReadOnlyList<PartitionInfo> Partitions { get; init; }
+
+    /// <summary>
+    /// The error for this topic, or <see cref="Protocol.ErrorCode.None"/> if it was described
+    /// successfully. A batch describe reports per-topic failures here (for example
+    /// <see cref="Protocol.ErrorCode.TopicAuthorizationFailed"/>) rather than failing the whole call.
+    /// </summary>
+    public Protocol.ErrorCode ErrorCode { get; init; }
 }
 
 /// <summary>

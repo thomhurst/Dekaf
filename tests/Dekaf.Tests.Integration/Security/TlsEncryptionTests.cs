@@ -15,7 +15,7 @@ namespace Dekaf.Tests.Integration.Security;
 /// These tests use a dedicated TLS-enabled Kafka container with
 /// auto-generated test certificates (CA, server, client).
 /// </summary>
-[Category("Security")]
+[Category("Tls")]
 [NotInParallel("TlsKafka")]
 [ClassDataSource<TlsKafkaContainer>(Shared = SharedType.PerTestSession)]
 public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
@@ -197,20 +197,24 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             TargetHost = "localhost"
         };
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(tlsKafka.BootstrapServers)
-            .WithClientId("test-tls-untrusted")
-            .UseTls(tlsConfig)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
-        // Act & Assert - should fail due to certificate validation
-        var act = async () => await producer.ProduceAsync(new ProducerMessage<string, string>
+        // Act & Assert - certificate validation fails during TLS handshake, which happens when
+        // the connection is first established (build or first produce), so both are inside the act.
+        var act = async () =>
         {
-            Topic = "does-not-matter",
-            Key = "key",
-            Value = "value"
-        }, CancellationToken.None);
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(tlsKafka.BootstrapServers)
+                .WithClientId("test-tls-untrusted")
+                .UseTls(tlsConfig)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "does-not-matter",
+                Key = "key",
+                Value = "value"
+            }, CancellationToken.None);
+        };
 
         await Assert.That(act).Throws<KafkaException>();
     }
@@ -226,21 +230,25 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             TargetHost = "localhost"
         };
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(tlsKafka.BootstrapServers)
-            .WithClientId("test-tls-no-ca")
-            .UseTls(tlsConfig)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
-        // Act & Assert - should fail because server cert is signed by our test CA,
-        // not a system-trusted CA
-        var act = async () => await producer.ProduceAsync(new ProducerMessage<string, string>
+        // Act & Assert - should fail because the server cert is signed by our test CA, not a
+        // system-trusted CA. The handshake fails when the connection is established (build or
+        // first produce), so both are inside the act.
+        var act = async () =>
         {
-            Topic = "does-not-matter",
-            Key = "key",
-            Value = "value"
-        }, CancellationToken.None);
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(tlsKafka.BootstrapServers)
+                .WithClientId("test-tls-no-ca")
+                .UseTls(tlsConfig)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "does-not-matter",
+                Key = "key",
+                Value = "value"
+            }, CancellationToken.None);
+        };
 
         await Assert.That(act).Throws<KafkaException>();
     }

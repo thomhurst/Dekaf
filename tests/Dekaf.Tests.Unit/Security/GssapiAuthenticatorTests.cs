@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Security;

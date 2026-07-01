@@ -54,28 +54,28 @@ public class AclKafkaContainer : KafkaTestContainer
             // Enable StandardAuthorizer for KRaft mode
             .WithEnvironment("KAFKA_AUTHORIZER_CLASS_NAME",
                 "org.apache.kafka.metadata.authorizer.StandardAuthorizer")
-            // Admin is a super user - bypasses all ACL checks
-            .WithEnvironment("KAFKA_SUPER_USERS", "User:admin")
+            // Admin is a super user - bypasses all ACL checks. ANONYMOUS is also a super user so the
+            // PLAINTEXT controller listener's internal requests are authorized. KAFKA_SUPER_USERS is
+            // cluster-wide, so this is only safe because every CLIENT-reachable listener requires
+            // real authentication (the external listener is SASL_PLAINTEXT; the PLAINTEXT listeners
+            // are internal broker/controller only). If a future change exposes an anonymous client
+            // listener, the ACL assertions below would silently stop enforcing — keep that invariant.
+            .WithEnvironment("KAFKA_SUPER_USERS", "User:admin;User:ANONYMOUS")
             // Deny access by default when no ACLs match
             .WithEnvironment("KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND", "false")
-            // Configure SASL PLAIN on the external listener
-            // The Testcontainers KafkaBuilder for apache/kafka creates listeners named:
-            //   PLAINTEXT (controller), BROKER (inter-broker), and the external listener
-            // We configure SASL on the external-facing listener
+            // Configure SASL PLAIN on the external and inter-broker listeners. The controller
+            // listener stays PLAINTEXT (every listener in the protocol map must have a protocol).
             .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
-                "PLAINTEXT:SASL_PLAINTEXT,BROKER:SASL_PLAINTEXT")
+                "PLAINTEXT:SASL_PLAINTEXT,BROKER:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT")
             .WithEnvironment("KAFKA_SASL_ENABLED_MECHANISMS", "PLAIN")
             .WithEnvironment("KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL", "PLAIN")
             .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SASL_ENABLED_MECHANISMS", "PLAIN")
             .WithEnvironment("KAFKA_LISTENER_NAME_BROKER_SASL_ENABLED_MECHANISMS", "PLAIN")
-            // JAAS configuration for SASL PLAIN - applies to all listeners
+            // JAAS configuration for SASL PLAIN on the SASL listeners
             .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_PLAIN_SASL_JAAS_CONFIG", JaasConfig)
             .WithEnvironment("KAFKA_LISTENER_NAME_BROKER_PLAIN_SASL_JAAS_CONFIG", JaasConfig)
             // Inter-broker communication uses admin credentials
-            .WithEnvironment("KAFKA_SASL_JAAS_CONFIG", JaasConfig)
-            // Configure SASL PLAIN on the KRaft controller listener for inter-controller communication
-            .WithEnvironment("KAFKA_LISTENER_NAME_CONTROLLER_SASL_ENABLED_MECHANISMS", "PLAIN")
-            .WithEnvironment("KAFKA_LISTENER_NAME_CONTROLLER_PLAIN_SASL_JAAS_CONFIG", JaasConfig);
+            .WithEnvironment("KAFKA_SASL_JAAS_CONFIG", JaasConfig);
 
     /// <summary>
     /// Creates an admin client authenticated as the super user.

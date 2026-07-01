@@ -156,6 +156,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Initializes the metadata manager by fetching initial metadata.
     /// Retries with exponential backoff matching Java client's reconnect.backoff behavior.
     /// </summary>
+    /// <summary>
+    /// Errors that no other broker (or retry) can resolve: the same broker-version mismatch,
+    /// credentials, or authorization decision applies everywhere, so fail fast and surface the
+    /// real cause instead of masking it as a generic metadata-refresh failure.
+    /// </summary>
+    private static bool IsFatalMetadataError(Exception ex) =>
+        ex is BrokerVersionException or AuthenticationException or AuthorizationException;
+
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
         var backoffMs = _options.RetryBackoffMs;
@@ -167,7 +175,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
                 break;
             }
-            catch (Exception ex) when (ex is not BrokerVersionException && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (!IsFatalMetadataError(ex) && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
             {
                 LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
                 await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
@@ -499,9 +507,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return;
             }
-            catch (BrokerVersionException)
+            catch (Exception ex) when (IsFatalMetadataError(ex))
             {
-                throw; // Permanent error — do not retry against another broker
+                throw; // No other broker will resolve this — surface the real cause.
             }
             catch (Exception ex)
             {
@@ -620,9 +628,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return true;
             }
-            catch (BrokerVersionException)
+            catch (Exception ex) when (IsFatalMetadataError(ex))
             {
-                throw; // Permanent error — do not retry against another broker
+                throw; // No other broker will resolve this — surface the real cause.
             }
             catch (Exception ex)
             {
@@ -840,6 +848,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 break;
             }
+            catch (Exception ex) when (IsFatalMetadataError(ex))
+            {
+                // Credentials or authorization changed mid-session: retrying forever would mask the
+                // failure. Stop the background loop; the next foreground metadata operation will
+                // surface the fatal exception to the caller.
+                LogBackgroundMetadataRefreshFatal(ex);
+                break;
+            }
             catch (Exception ex)
             {
                 consecutiveFailures++;
@@ -934,6 +950,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Background metadata refresh failed (attempt {Attempt}), continuing with existing metadata")]
     private partial void LogBackgroundMetadataRefreshFailed(Exception exception, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Background metadata refresh hit a fatal authentication/authorization error; stopping background refresh (foreground operations will surface it)")]
+    private partial void LogBackgroundMetadataRefreshFatal(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "Metadata cache hit for {Topic}-{Partition}")]
     private partial void LogMetadataCacheHit(string topic, int partition);
