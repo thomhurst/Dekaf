@@ -358,12 +358,22 @@ public sealed class GroupDescription
 {
     public required string GroupId { get; init; }
     public string? ProtocolType { get; init; }
+
+    /// <summary>
+    /// Selected protocol data from the classic DescribeGroups API. For KIP-848 consumer
+    /// groups this mirrors <see cref="AssignorName"/> for compatibility.
+    /// </summary>
     public string? ProtocolData { get; init; }
     public string State { get; init; } = "Unknown";
     public required IReadOnlyList<MemberDescription> Members { get; init; }
     public int? CoordinatorId { get; init; }
     public int? GroupEpoch { get; init; }
     public int? AssignmentEpoch { get; init; }
+
+    /// <summary>
+    /// Selected assignor reported by ConsumerGroupDescribe (API 69), or null when the
+    /// group falls back to the classic DescribeGroups API.
+    /// </summary>
     public string? AssignorName { get; init; }
     public int AuthorizedOperations { get; init; } = int.MinValue;
 }

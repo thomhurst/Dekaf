@@ -23,6 +23,7 @@ public sealed class AdminClient : IAdminClient
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly ILogger<AdminClient>? _logger;
+    private readonly bool _ownsResources;
     private int _telemetryStartAttempted;
     private int _disposed;
 
@@ -58,6 +59,22 @@ public sealed class AdminClient : IAdminClient
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>());
+        _ownsResources = true;
+    }
+
+    internal AdminClient(
+        AdminClientOptions options,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILogger<AdminClient>? logger = null,
+        bool ownsResources = false)
+    {
+        _options = options;
+        _connectionPool = connectionPool;
+        _metadataManager = metadataManager;
+        _logger = logger;
+        _telemetryManager = new ClientTelemetryManager(connectionPool, metadataManager);
+        _ownsResources = ownsResources;
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
@@ -331,13 +348,39 @@ public sealed class AdminClient : IAdminClient
                 groups.Add(groupId);
             }
 
-            return _metadataManager.HasApiKey(Protocol.ApiKey.ConsumerGroupDescribe)
-                ? await DescribeConsumerGroupsWithKip848Async(groupsByCoordinator, cancellationToken).ConfigureAwait(false)
-                : await DescribeConsumerGroupsWithClassicApiAsync(groupsByCoordinator, cancellationToken).ConfigureAwait(false);
+            return await DescribeConsumerGroupsWithBestAvailableApiAsync(
+                groupsByCoordinator,
+                cancellationToken).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsWithKip848Async(
+    private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsWithBestAvailableApiAsync(
+        IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
+        CancellationToken cancellationToken)
+    {
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ConsumerGroupDescribe))
+        {
+            return await DescribeConsumerGroupsWithClassicApiAsync(groupsByCoordinator, cancellationToken).ConfigureAwait(false);
+        }
+
+        var (descriptions, classicFallbackGroups) = await DescribeConsumerGroupsWithKip848Async(
+            groupsByCoordinator,
+            cancellationToken).ConfigureAwait(false);
+
+        if (classicFallbackGroups.Count > 0)
+        {
+            var classicDescriptions = await DescribeConsumerGroupsWithClassicApiAsync(
+                classicFallbackGroups,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var (groupId, description) in classicDescriptions)
+                descriptions[groupId] = description;
+        }
+
+        return descriptions;
+    }
+
+    private async ValueTask<(Dictionary<string, GroupDescription> Descriptions, Dictionary<int, List<string>> ClassicFallbackGroups)> DescribeConsumerGroupsWithKip848Async(
         IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
         CancellationToken cancellationToken)
     {
@@ -347,6 +390,7 @@ public sealed class AdminClient : IAdminClient
             ConsumerGroupDescribeRequest.HighestSupportedVersion);
 
         var result = new Dictionary<string, GroupDescription>();
+        var classicFallbackGroups = new Dictionary<int, List<string>>();
 
         foreach (var (coordinatorId, groups) in groupsByCoordinator)
         {
@@ -365,6 +409,18 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var group in response.Groups)
             {
+                if (ShouldFallbackToClassicConsumerGroupApi(group.ErrorCode))
+                {
+                    if (!classicFallbackGroups.TryGetValue(coordinatorId, out var fallbackGroups))
+                    {
+                        fallbackGroups = [];
+                        classicFallbackGroups[coordinatorId] = fallbackGroups;
+                    }
+
+                    fallbackGroups.Add(group.GroupId);
+                    continue;
+                }
+
                 if (group.ErrorCode != Protocol.ErrorCode.None)
                 {
                     throw new Errors.GroupException(group.ErrorCode,
@@ -378,6 +434,7 @@ public sealed class AdminClient : IAdminClient
                 {
                     GroupId = group.GroupId,
                     ProtocolType = "consumer",
+                    // Legacy shape: classic DescribeGroups exposes the assignor in ProtocolData.
                     ProtocolData = group.AssignorName,
                     State = group.GroupState,
                     CoordinatorId = coordinatorId,
@@ -403,8 +460,11 @@ public sealed class AdminClient : IAdminClient
             }
         }
 
-        return result;
+        return (result, classicFallbackGroups);
     }
+
+    private static bool ShouldFallbackToClassicConsumerGroupApi(Protocol.ErrorCode errorCode) =>
+        errorCode is Protocol.ErrorCode.GroupIdNotFound or Protocol.ErrorCode.UnsupportedVersion;
 
     private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsWithClassicApiAsync(
         IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
@@ -2185,8 +2245,12 @@ public sealed class AdminClient : IAdminClient
         var telemetryStopMs = Math.Max(1, Math.Min(_options.RequestTimeoutMs, 5000));
         await _telemetryManager.StopAsync(TimeSpan.FromMilliseconds(telemetryStopMs)).ConfigureAwait(false);
         await _telemetryManager.DisposeAsync().ConfigureAwait(false);
-        await _metadataManager.DisposeAsync().ConfigureAwait(false);
-        await _connectionPool.DisposeAsync().ConfigureAwait(false);
+
+        if (_ownsResources)
+        {
+            await _metadataManager.DisposeAsync().ConfigureAwait(false);
+            await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }
 
