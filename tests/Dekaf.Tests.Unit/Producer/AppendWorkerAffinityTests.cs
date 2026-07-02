@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
+using Dekaf.Tests.Unit;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -50,22 +51,6 @@ public class AppendWorkerAffinityTests
         return (int)deques.GetType().GetProperty("Count")!.GetValue(deques)!;
     }
 
-    /// <summary>
-    /// Waits until <paramref name="condition"/> becomes true. The accumulator exposes no
-    /// awaitable completion signal at append time (completions are held for delivery), so
-    /// the worker-created batch state must be polled. The wait is bounded only by the test's
-    /// [Timeout] cancellation token, so it tolerates thread-pool starvation on loaded runners
-    /// instead of failing at an arbitrary fixed deadline.
-    /// </summary>
-    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken cancellationToken)
-    {
-        while (!condition())
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.Delay(25, cancellationToken);
-        }
-    }
-
     [Test]
     [Timeout(120_000)]
     public async Task EnqueueAppend_SamePartition_ProcessedSequentially(CancellationToken cancellationToken)
@@ -102,7 +87,10 @@ public class AppendWorkerAffinityTests
         // Wait deterministically for the worker to create the batch, bounded by the test's
         // [Timeout] cancellation rather than an arbitrary fixed deadline that flakes when the
         // append workers are thread-pool-starved on loaded runners.
-        await WaitUntilAsync(() => HasBatchForPartition(deques, tp), cancellationToken);
+        await TestWait.UntilAsync(
+            () => HasBatchForPartition(deques, tp),
+            cancellationToken,
+            TimeSpan.FromMilliseconds(25));
 
         await Assert.That(HasBatchForPartition(deques, tp)).IsTrue();
 
@@ -150,15 +138,17 @@ public class AppendWorkerAffinityTests
         // Wait deterministically until workers have created batches for ALL partitions,
         // bounded by the test's [Timeout] cancellation rather than an arbitrary fixed deadline
         // that flakes when the append workers are thread-pool-starved on loaded runners.
-        await WaitUntilAsync(() =>
-        {
-            for (var p = 0; p < partitionCount; p++)
+        await TestWait.UntilAsync(() =>
             {
-                if (!HasBatchForPartition(deques, new TopicPartition("test-topic", p)))
-                    return false;
-            }
-            return true;
-        }, cancellationToken);
+                for (var p = 0; p < partitionCount; p++)
+                {
+                    if (!HasBatchForPartition(deques, new TopicPartition("test-topic", p)))
+                        return false;
+                }
+                return true;
+            },
+            cancellationToken,
+            TimeSpan.FromMilliseconds(25));
 
         for (var p = 0; p < partitionCount; p++)
         {

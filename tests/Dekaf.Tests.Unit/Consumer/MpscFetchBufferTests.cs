@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
+using Dekaf.Tests.Unit;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -15,18 +15,6 @@ public class MpscFetchBufferTests
     private static PendingFetchData CreateDummy(string topic = "test-topic", int partition = 0)
     {
         return PendingFetchData.Create(topic, partition, Array.Empty<RecordBatch>());
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        while (!condition())
-        {
-            if (stopwatch.Elapsed >= timeout)
-                throw new TimeoutException("Condition was not reached before the timeout.");
-
-            await Task.Delay(10);
-        }
     }
 
     #region TryWrite / TryRead basic operations
@@ -124,7 +112,7 @@ public class MpscFetchBufferTests
         var waiter1 = buffer.WaitToWriteAsync(cts.Token).AsTask();
         var waiter2 = buffer.WaitToWriteAsync(cts.Token).AsTask();
 
-        await WaitUntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(10));
+        await TestWait.UntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(10));
 
         await Assert.That(buffer.TryRead(out var readFirst)).IsTrue();
         readFirst!.Dispose();

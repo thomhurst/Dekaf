@@ -105,8 +105,10 @@ internal sealed class MpscFetchBuffer
                 // A concurrent TryRead that freed the slot also released a permit for us
                 // (it saw _producerWaiterCount > 0). Drain it non-blockingly so the permit
                 // does not linger and spuriously wake a future waiter when the buffer is full.
-                // Wait(0) never blocks and only consumes an already-available permit, so it
-                // cannot suppress a genuine wakeup or stall a still-blocked producer.
+                // Wait(0) never blocks. A racing waiter can lose this already-released
+                // permit if it has incremented _producerWaiterCount but not registered with
+                // SemaphoreSlim yet; callers loop through TryWrite, so that costs one extra
+                // wait cycle rather than a hang.
                 _spaceAvailable.Wait(0, CancellationToken.None);
                 return;
             }

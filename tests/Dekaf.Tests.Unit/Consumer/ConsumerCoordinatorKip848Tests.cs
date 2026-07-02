@@ -4,6 +4,7 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Tests.Unit;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -97,22 +98,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             HeartbeatIntervalMs = heartbeatIntervalMs,
             RebalanceTimeoutMs = rebalanceTimeoutMs
         };
-
-    /// <summary>
-    /// Polls <paramref name="condition"/> until it holds or the timeout elapses, avoiding
-    /// fixed-delay sleeps that flake when a loaded runner is slow to advance background state.
-    /// </summary>
-    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
-        while (!condition())
-        {
-            if (Environment.TickCount64 >= deadline)
-                throw new TimeoutException("Condition was not reached before the timeout.");
-
-            await Task.Delay(10);
-        }
-    }
 
     private void SetupFindCoordinator()
     {
@@ -589,9 +574,13 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.GenerationId).IsEqualTo(5);
 
-        // Wait for heartbeat loop to process the fencing response (deterministic signal)
+        // The mock signals fencingProcessed as it returns the fenced response, i.e. BEFORE the
+        // heartbeat loop processes it. Wait for that signal, then poll for the actual state
+        // transition rather than sleeping a fixed delay that flakes on a slow/loaded runner.
+        // The loop breaks on FencedMemberEpoch (no auto-rejoin), so the transition is stable
+        // until the explicit rejoin below.
         await fencingProcessed.Task.WaitAsync(timeout);
-        await WaitUntilAsync(
+        await TestWait.UntilAsync(
             () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == 0,
             timeout);
 
@@ -676,7 +665,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         // The loop breaks on FencedMemberEpoch (no auto-rejoin), so the transition is stable
         // until the explicit rejoin below.
         await fencingProcessed.Task.WaitAsync(timeout);
-        await WaitUntilAsync(
+        await TestWait.UntilAsync(
             () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == -2,
             timeout);
 
