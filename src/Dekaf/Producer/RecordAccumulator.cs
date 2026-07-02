@@ -2114,6 +2114,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Non-blocking variant of Append for the ProduceAsync fast path.
     /// Returns false when buffer is full (caller falls back to async slow path)
     /// OR when the accumulator is disposed.
+    /// Retained for pooled-memory append coverage; production ProduceAsync uses
+    /// <see cref="TryAppendFromSpansWithCompletion"/> to avoid per-message data-array rents.
     /// </summary>
     internal bool TryAppendWithCompletion(
         string topic,
@@ -2183,6 +2185,84 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 key.Return();
                 value.Return();
                 ReturnPooledHeaders(headers);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (sealedBatch is not null)
+        {
+            CompressAndSignalBatch(sealedBatch);
+            SignalWakeup();
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Non-blocking span variant for the ProduceAsync fast path.
+    /// Stores the completion source in the batch while copying serialized key/value bytes
+    /// into the batch arena instead of renting per-message pooled arrays.
+    /// </summary>
+    internal bool TryAppendFromSpansWithCompletion(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        Header[]? headers,
+        int headerCount,
+        PooledValueTaskSource<RecordMetadata> completionSource,
+        int partitionCount = 0)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return false;
+
+        var keyLength = keyIsNull ? 0 : keyData.Length;
+        var valueLength = valueIsNull ? 0 : valueData.Length;
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
+
+        if (!TryReserveMemory(recordSize))
+            return false;
+
+        Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
+        var pd = GetOrCreateDeque(topic, partition);
+        ReadyBatch? sealedBatch = null;
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                    headers, headerCount, completionSource, null, recordSize))
+                    return true;
+
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
+            }
+
+            var newBatch = RentBatch(new TopicPartition(topic, partition), partitionCount);
+            pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
+
+            if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                headers, headerCount, completionSource, null, recordSize))
+            {
+                pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
+                _batchPool.Return(newBatch);
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
@@ -2300,7 +2380,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (pd.CurrentBatch is { } currentBatch)
             {
                 if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                    headers, headerCount, callback, recordSize))
+                    headers, headerCount, null, callback, recordSize))
                     return true;
 
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
@@ -2311,7 +2391,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Increment(ref _unsealedBatchCount);
 
             if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                headers, headerCount, callback, recordSize))
+                headers, headerCount, null, callback, recordSize))
             {
                 pd.CurrentBatch = null;
                 Interlocked.Decrement(ref _unsealedBatchCount);
@@ -2377,15 +2457,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool valueIsNull,
         Header[]? headers,
         int headerCount,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
-            headers, headerCount, callback, estimatedSize);
+            headers, headerCount, completionSource, callback, estimatedSize);
 
         if (result.Success)
         {
-            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: false);
+            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
             var overestimate = estimatedSize - result.ActualSizeAdded;
             if (overestimate > 0)
                 ReleaseMemory(overestimate);
@@ -4017,6 +4098,7 @@ internal sealed class PartitionBatch
         bool valueIsNull,
         Header[]? headers,
         int headerCount,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedRecordSize)
     {
@@ -4050,6 +4132,10 @@ internal sealed class PartitionBatch
         if (_recordCount >= _records.Length)
         {
             GrowArray(ref _records, ref _recordCount, ProducerContainerPools.Records);
+        }
+        if (completionSource is not null && _completionSourceCount >= _completionSources.Length)
+        {
+            GrowArray(ref _completionSources, ref _completionSourceCount, ProducerContainerPools.CompletionSources);
         }
         if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
@@ -4133,6 +4219,12 @@ internal sealed class PartitionBatch
             HeaderCount = headerCount,
             CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, keyIsNull, keyLength, valueIsNull, valueLength, headers, headerCount)
         };
+
+        if (completionSource is not null)
+        {
+            _completionSources[_completionSourceCount++] = completionSource;
+            ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
+        }
 
         if (callback is not null)
         {
