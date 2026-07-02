@@ -21,7 +21,7 @@ public class PrefetchPipelineRunnerTests
     {
         // Tracks the order of fetch start/completion to verify pipelining invariant:
         // the eager fetch must complete before the next synchronous fetch begins.
-        var fetchLog = new List<string>();
+        var fetchLog = new ConcurrentQueue<string>();
         var fetchCount = 0;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -29,9 +29,9 @@ public class PrefetchPipelineRunnerTests
             prefetchRecords: async ct =>
             {
                 var id = Interlocked.Increment(ref fetchCount);
-                fetchLog.Add($"start-{id}");
-                await Task.Yield(); // Simulate async work
-                fetchLog.Add($"end-{id}");
+                fetchLog.Enqueue($"start-{id}");
+                await YieldOnDedicatedThreadAsync().ConfigureAwait(false);
+                fetchLog.Enqueue($"end-{id}");
 
                 // After 3 fetches, explicitly cancel and exit immediately
                 if (id >= 3)
@@ -53,13 +53,14 @@ public class PrefetchPipelineRunnerTests
         // Verify that no two fetches overlap: each start-N must be followed by end-N
         // before the next start-(N+1). Only verify complete pairs to avoid
         // breaking on an odd number of log entries.
-        var completePairs = fetchLog.Count / 2;
+        var logEntries = fetchLog.ToArray();
+        var completePairs = logEntries.Length / 2;
         await Assert.That(completePairs).IsGreaterThanOrEqualTo(2);
 
         for (var i = 0; i < completePairs * 2; i += 2)
         {
-            var startEntry = fetchLog[i];
-            var endEntry = fetchLog[i + 1];
+            var startEntry = logEntries[i];
+            var endEntry = logEntries[i + 1];
 
             // Extract the IDs — they must match (start-X followed by end-X)
             var startId = startEntry.Split('-')[1];
@@ -927,7 +928,7 @@ public class PrefetchPipelineRunnerTests
         var thread = new Thread(static state => ((TaskCompletionSource)state!).SetResult())
         {
             IsBackground = true,
-            Name = "prefetch-position-test-yield"
+            Name = "prefetch-test-yield"
         };
         thread.Start(completion);
         return completion.Task;
