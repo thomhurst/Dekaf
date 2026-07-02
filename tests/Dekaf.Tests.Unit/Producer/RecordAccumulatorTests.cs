@@ -128,6 +128,72 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendFromSpansAsync_WithCallback_PreservesCallbackAfterRotation()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 80,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var callbackCount = 0;
+        RecordMetadata callbackMetadata = default;
+        Exception? callbackError = null;
+
+        var firstValue = new byte[30];
+        await accumulator.AppendFromSpansAsync(
+            "test-topic",
+            partition: 0,
+            timestamp,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            firstValue,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: (metadata, error) =>
+            {
+                callbackCount++;
+                callbackMetadata = metadata;
+                callbackError = error;
+            },
+            CancellationToken.None,
+            partitionCount: 1);
+
+        var secondValue = new byte[30];
+        await accumulator.AppendFromSpansAsync(
+            "test-topic",
+            partition: 0,
+            timestamp + 1,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            secondValue,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(accumulator.TryDrainBatch(out var sealedBatch)).IsTrue();
+
+        var completedAt = DateTimeOffset.UtcNow;
+        sealedBatch!.CompleteSend(baseOffset: 42, completedAt);
+
+        await Assert.That(callbackCount).IsEqualTo(1);
+        await Assert.That(callbackError).IsNull();
+        await Assert.That(callbackMetadata.Topic).IsEqualTo("test-topic");
+        await Assert.That(callbackMetadata.Partition).IsEqualTo(0);
+        await Assert.That(callbackMetadata.Offset).IsEqualTo(42);
+        await Assert.That(callbackMetadata.Timestamp).IsEqualTo(completedAt);
+    }
+
+    [Test]
     public async Task PartitionBatch_Complete_CalledTwice_ReturnsIdempotent()
     {
         // This test verifies that calling Complete() multiple times on the same PartitionBatch

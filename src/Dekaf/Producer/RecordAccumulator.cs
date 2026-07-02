@@ -2311,7 +2311,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (pd.CurrentBatch is { } currentBatch)
                     {
                         if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                            headers, headerCount, completionSource, null, recordSize))
+                            headers, headerCount, completionSource, callback, recordSize))
                         {
                             batchToReturn = rentedBatch;
                             rentedBatch = null;
@@ -2336,7 +2336,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         Interlocked.Increment(ref _unsealedBatchCount);
 
                         if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                            headers, headerCount, completionSource, null, recordSize))
+                            headers, headerCount, completionSource, callback, recordSize))
                         {
                             ClearRotationInProgressUnderLock(pd);
                             ownsRotation = false;
