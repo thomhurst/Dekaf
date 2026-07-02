@@ -82,7 +82,7 @@ public sealed class PatternSubscriptionTests
     }
 
     [Test]
-    public async Task Subscribe_WithFilter_StoresPatternSubscription()
+    public async Task Subscribe_WithFilter_LeavesExplicitSubscriptionAndAssignmentEmpty()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
