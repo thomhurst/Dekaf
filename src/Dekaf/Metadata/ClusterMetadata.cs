@@ -245,6 +245,100 @@ public sealed class ClusterMetadata
         return snapshot.Brokers.TryGetValue(partitionInfo.LeaderId, out var broker) ? broker : null;
     }
 
+    /// <summary>
+    /// Updates a single partition leader from inline Produce/Fetch response metadata.
+    /// The update is accepted only when the leader epoch advances the cached view.
+    /// </summary>
+    internal bool TryUpdatePartitionLeader(
+        string topicName,
+        int partition,
+        int leaderId,
+        int leaderEpoch,
+        BrokerNode? leaderEndpoint)
+    {
+        if (leaderId < 0 || leaderEpoch < 0)
+            return false;
+
+        lock (_writeLock)
+        {
+            var existing = _snapshot;
+            if (!existing.Topics.TryGetValue(topicName, out var topic))
+                return false;
+
+            var currentPartition = GetPartitionInfo(existing, topicName, partition);
+            if (currentPartition is null)
+                return false;
+
+            if (currentPartition.LeaderEpoch >= 0 && leaderEpoch <= currentPartition.LeaderEpoch)
+                return false;
+
+            var brokers = new Dictionary<int, BrokerNode>(existing.Brokers);
+            if (leaderEndpoint is not null)
+            {
+                if (leaderEndpoint.NodeId != leaderId)
+                    return false;
+
+                brokers[leaderEndpoint.NodeId] = leaderEndpoint;
+            }
+            else if (!brokers.ContainsKey(leaderId))
+            {
+                return false;
+            }
+
+            var partitions = new PartitionInfo[topic.Partitions.Count];
+            var updated = false;
+            for (var i = 0; i < topic.Partitions.Count; i++)
+            {
+                var existingPartition = topic.Partitions[i];
+                if (existingPartition.PartitionIndex != partition)
+                {
+                    partitions[i] = existingPartition;
+                    continue;
+                }
+
+                partitions[i] = new PartitionInfo
+                {
+                    PartitionIndex = existingPartition.PartitionIndex,
+                    LeaderId = leaderId,
+                    LeaderEpoch = leaderEpoch,
+                    ReplicaNodes = existingPartition.ReplicaNodes,
+                    IsrNodes = existingPartition.IsrNodes,
+                    OfflineReplicas = existingPartition.OfflineReplicas,
+                    ErrorCode = existingPartition.ErrorCode
+                };
+                updated = true;
+            }
+
+            if (!updated)
+                return false;
+
+            var topics = new Dictionary<string, TopicInfo>(existing.Topics);
+            var topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById);
+            var updatedTopic = new TopicInfo
+            {
+                Name = topic.Name,
+                TopicId = topic.TopicId,
+                ErrorCode = topic.ErrorCode,
+                IsInternal = topic.IsInternal,
+                Partitions = partitions
+            };
+
+            topics[topicName] = updatedTopic;
+            if (updatedTopic.TopicId != Guid.Empty)
+                topicsById[updatedTopic.TopicId] = updatedTopic;
+
+            _snapshot = new ClusterMetadataSnapshot(
+                existing.ClusterId,
+                existing.ControllerId,
+                DateTimeOffset.UtcNow,
+                brokers,
+                topics,
+                topicsById);
+
+            return true;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static PartitionInfo? GetPartitionInfo(
         ClusterMetadataSnapshot snapshot,
@@ -302,7 +396,7 @@ public sealed class ClusterMetadata
                 foreach (var (id, info) in existing.TopicsById)
                     topicsById[id] = info;
 
-                AddResponseTopics(response, topics, topicsById);
+                AddResponseTopics(response, topics, topicsById, existing, brokers);
 
                 _snapshot = new ClusterMetadataSnapshot(
                     response.ClusterId,
@@ -315,24 +409,21 @@ public sealed class ClusterMetadata
         }
         else
         {
-            // Non-merge: no shared state read, build topics outside the lock
-            var topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
-            var topicsById = new Dictionary<Guid, TopicInfo>();
-
-            AddResponseTopics(response, topics, topicsById);
-
-            var newSnapshot = new ClusterMetadataSnapshot(
-                response.ClusterId,
-                response.ControllerId,
-                DateTimeOffset.UtcNow,
-                brokers,
-                topics,
-                topicsById);
-
-            // Only the snapshot swap needs the lock to serialize concurrent writes
             lock (_writeLock)
             {
-                _snapshot = newSnapshot;
+                var existing = _snapshot;
+                var topics = new Dictionary<string, TopicInfo>(response.Topics.Count);
+                var topicsById = new Dictionary<Guid, TopicInfo>();
+
+                AddResponseTopics(response, topics, topicsById, existing, brokers);
+
+                _snapshot = new ClusterMetadataSnapshot(
+                    response.ClusterId,
+                    response.ControllerId,
+                    DateTimeOffset.UtcNow,
+                    brokers,
+                    topics,
+                    topicsById);
             }
         }
     }
@@ -343,7 +434,9 @@ public sealed class ClusterMetadata
     private static void AddResponseTopics(
         MetadataResponse response,
         Dictionary<string, TopicInfo> topics,
-        Dictionary<Guid, TopicInfo> topicsById)
+        Dictionary<Guid, TopicInfo> topicsById,
+        ClusterMetadataSnapshot existing,
+        Dictionary<int, BrokerNode> brokers)
     {
         foreach (var topic in response.Topics)
         {
@@ -351,6 +444,14 @@ public sealed class ClusterMetadata
             var partitions = new List<PartitionInfo>(topic.Partitions.Count);
             foreach (var p in topic.Partitions)
             {
+                var existingPartition = GetPartitionInfo(existing, topic.Name, p.PartitionIndex);
+                if (existingPartition is not null && ShouldPreserveExistingPartition(existingPartition, p))
+                {
+                    partitions.Add(existingPartition);
+                    EnsureBrokerPresent(brokers, existing, existingPartition.LeaderId);
+                    continue;
+                }
+
                 partitions.Add(new PartitionInfo
                 {
                     PartitionIndex = p.PartitionIndex,
@@ -377,6 +478,33 @@ public sealed class ClusterMetadata
             {
                 topicsById[topic.TopicId] = topicInfo;
             }
+        }
+    }
+
+    private static bool ShouldPreserveExistingPartition(PartitionInfo existing, PartitionMetadata incoming)
+    {
+        if (existing.LeaderEpoch < 0)
+            return false;
+
+        if (incoming.LeaderEpoch >= 0)
+        {
+            return incoming.LeaderEpoch < existing.LeaderEpoch
+                || (incoming.LeaderEpoch == existing.LeaderEpoch && incoming.LeaderId != existing.LeaderId);
+        }
+
+        return true;
+    }
+
+    private static void EnsureBrokerPresent(
+        Dictionary<int, BrokerNode> brokers,
+        ClusterMetadataSnapshot existing,
+        int leaderId)
+    {
+        if (leaderId >= 0
+            && !brokers.ContainsKey(leaderId)
+            && existing.Brokers.TryGetValue(leaderId, out var broker))
+        {
+            brokers[leaderId] = broker;
         }
     }
 }

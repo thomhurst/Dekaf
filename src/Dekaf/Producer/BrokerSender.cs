@@ -1445,7 +1445,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys, responseLookup?.Count ?? 0, respKeys);
                 }
 
-                ProcessResponseBatches(pending, responseLookup,
+                ProcessResponseBatches(pending, responseLookup, response.NodeEndpoints,
                     carryOver, cancellationToken, task.Id);
 
                 // Clear for reuse on next response (avoids per-response dictionary allocation)
@@ -1498,6 +1498,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ProcessResponseBatches(
         PendingResponse pending,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
+        IReadOnlyList<NodeEndpoint> nodeEndpoints,
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken,
         int responseTaskId = 0)
@@ -1567,6 +1568,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
 
                         HandleRetriableBatch(batch, partitionResponse.ErrorCode,
+                            partitionResponse.CurrentLeader, nodeEndpoints,
                             carryOver, cancellationToken);
                         batches[j] = null!;
                         continue;
@@ -1795,6 +1797,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void HandleRetriableBatch(ReadyBatch batch, ErrorCode errorCode,
         PartitionCarryOver carryOver, CancellationToken cancellationToken)
+        => HandleRetriableBatch(batch, errorCode, null, [], carryOver, cancellationToken);
+
+    private void HandleRetriableBatch(
+        ReadyBatch batch,
+        ErrorCode errorCode,
+        LeaderIdAndEpoch? currentLeader,
+        IReadOnlyList<NodeEndpoint> nodeEndpoints,
+        PartitionCarryOver carryOver,
+        CancellationToken cancellationToken)
     {
         // Check delivery deadline
         var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
@@ -1860,16 +1871,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         else
         {
-            LogRetriableErrorWithBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
-                _options.RetryBackoffMs);
+            if (TryApplyInlineLeader(batch.TopicPartition, errorCode, currentLeader, nodeEndpoints))
+            {
+                LogRetriableErrorWithoutBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                batch.RetryNotBefore = 0;
+            }
+            else
+            {
+                LogRetriableErrorWithBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+                    _options.RetryBackoffMs);
 
-            // Fire-and-forget metadata refresh for leader changes.
-            // Observe exceptions to prevent UnobservedTaskException on GC.
-            _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, cancellationToken);
+                // Fire-and-forget metadata refresh for leader changes.
+                // Observe exceptions to prevent UnobservedTaskException on GC.
+                _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, cancellationToken);
 
-            // Set backoff via RetryNotBefore instead of Task.Delay
-            batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                _options.RetryBackoffTicks;
+                // Set backoff via RetryNotBefore instead of Task.Delay
+                batch.RetryNotBefore = Stopwatch.GetTimestamp() +
+                    _options.RetryBackoffTicks;
+            }
         }
 
         Diagnostics.DekafMetrics.Retries.Add(1,
@@ -1882,6 +1901,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.IsRetry = true;
         batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(batch);
+    }
+
+    private bool TryApplyInlineLeader(
+        TopicPartition topicPartition,
+        ErrorCode errorCode,
+        LeaderIdAndEpoch? currentLeader,
+        IReadOnlyList<NodeEndpoint> nodeEndpoints)
+    {
+        if (errorCode is not (ErrorCode.NotLeaderOrFollower or ErrorCode.FencedLeaderEpoch)
+            || currentLeader is null)
+        {
+            return false;
+        }
+
+        var endpoint = LeaderDiscoveryFields.FindNodeEndpoint(nodeEndpoints, currentLeader.LeaderId);
+        return _metadataManager.TryUpdatePartitionLeader(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            currentLeader.LeaderId,
+            currentLeader.LeaderEpoch,
+            endpoint);
     }
 
     /// <summary>
@@ -3105,6 +3145,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms")]
     private partial void LogRetriableErrorWithBackoff(ErrorCode errorCode, string topic, int partition, int backoffMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, inline leader update accepted; retrying without backoff")]
+    private partial void LogRetriableErrorWithoutBackoff(ErrorCode errorCode, string topic, int partition);
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "BrokerSender[{BrokerId}] send loop iteration: {CarryOverCount} carry-over, {PendingResponseCount} pending responses")]
     private partial void LogSendLoopIteration(int brokerId, int carryOverCount, int pendingResponseCount);

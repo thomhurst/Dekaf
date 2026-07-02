@@ -41,6 +41,11 @@ public sealed class FetchResponse : IKafkaResponse
     public int SessionId { get; internal set; }
 
     /// <summary>
+    /// Endpoints for current leaders reported in KIP-951 response tagged fields.
+    /// </summary>
+    public NodeEndpoint[] NodeEndpoints { get; internal set; } = [];
+
+    /// <summary>
     /// Responses per topic.
     /// </summary>
     public IReadOnlyList<FetchResponseTopic> Responses
@@ -100,14 +105,40 @@ public sealed class FetchResponse : IKafkaResponse
         var responses = s_topicListPool.Rent();
         reader.ReadCompactArrayInto(responses, static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
 
-        reader.SkipTaggedFields();
+        var nodeEndpoints = ReadResponseTaggedFields(ref reader, version);
 
         var response = Rent();
         response.ThrottleTimeMs = throttleTimeMs;
         response.ErrorCode = errorCode;
         response.SessionId = sessionId;
         response.Responses = responses;
+        response.NodeEndpoints = nodeEndpoints;
         return response;
+    }
+
+    private static NodeEndpoint[] ReadResponseTaggedFields(ref KafkaProtocolReader reader, short version)
+    {
+        NodeEndpoint[]? nodeEndpoints = null;
+        var numFields = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < numFields; i++)
+        {
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            var start = reader.Consumed;
+
+            if (tag == 0 && version >= 16)
+            {
+                nodeEndpoints = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r));
+            }
+            else
+            {
+                reader.Skip(size);
+            }
+
+            LeaderDiscoveryFields.SkipRemaining(ref reader, start, size);
+        }
+
+        return nodeEndpoints ?? [];
     }
 
     private sealed class FetchResponsePool() : ObjectPool<FetchResponse>(maxPoolSize: 16)
@@ -119,6 +150,7 @@ public sealed class FetchResponse : IKafkaResponse
             item.ThrottleTimeMs = 0;
             item.ErrorCode = ErrorCode.None;
             item.SessionId = 0;
+            item.NodeEndpoints = [];
             item._responses = Array.Empty<FetchResponseTopic>();
             item.PooledMemoryOwner = null;
         }
@@ -439,7 +471,7 @@ public sealed class FetchResponsePartition
             }
         }
 
-        reader.SkipTaggedFields();
+        ReadPartitionTaggedFields(ref reader, version, out divergingEpoch, out currentLeader, out snapshotId);
 
         var result = Rent();
         result.PartitionIndex = partitionIndex;
@@ -454,6 +486,51 @@ public sealed class FetchResponsePartition
         result.PreferredReadReplica = preferredReadReplica;
         result.Records = records;
         return result;
+    }
+
+    private static void ReadPartitionTaggedFields(
+        ref KafkaProtocolReader reader,
+        short version,
+        out EpochEndOffset? divergingEpoch,
+        out LeaderIdAndEpoch? currentLeader,
+        out SnapshotId? snapshotId)
+    {
+        divergingEpoch = null;
+        currentLeader = null;
+        snapshotId = null;
+
+        var numFields = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < numFields; i++)
+        {
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            var start = reader.Consumed;
+
+            if (version >= 12)
+            {
+                switch (tag)
+                {
+                    case 0:
+                        divergingEpoch = LeaderDiscoveryFields.ReadEpochEndOffset(ref reader, size);
+                        break;
+                    case 1:
+                        currentLeader = LeaderDiscoveryFields.ReadLeaderIdAndEpoch(ref reader, size);
+                        break;
+                    case 2:
+                        snapshotId = LeaderDiscoveryFields.ReadSnapshotId(ref reader, size);
+                        break;
+                    default:
+                        reader.Skip(size);
+                        break;
+                }
+            }
+            else
+            {
+                reader.Skip(size);
+            }
+
+            LeaderDiscoveryFields.SkipRemaining(ref reader, start, size);
+        }
     }
 
     private sealed class FetchResponsePartitionPool() : ObjectPool<FetchResponsePartition>(maxPoolSize: 64)

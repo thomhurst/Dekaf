@@ -351,6 +351,31 @@ public sealed partial class MetadataManager : IAsyncDisposable
         => _metadata.GetPartitionLeader(topicName, partition);
 
     /// <summary>
+    /// Applies inline leader information from Produce/Fetch responses when it advances the cached epoch.
+    /// </summary>
+    internal bool TryUpdatePartitionLeader(
+        string topicName,
+        int partition,
+        int leaderId,
+        int leaderEpoch,
+        NodeEndpoint? leaderEndpoint = null)
+    {
+        BrokerNode? broker = null;
+        if (leaderEndpoint is not null)
+        {
+            broker = new BrokerNode
+            {
+                NodeId = leaderEndpoint.NodeId,
+                Host = leaderEndpoint.Host,
+                Port = leaderEndpoint.Port,
+                Rack = leaderEndpoint.Rack
+            };
+        }
+
+        return _metadata.TryUpdatePartitionLeader(topicName, partition, leaderId, leaderEpoch, broker);
+    }
+
+    /// <summary>
     /// Gets the leader for a partition.
     /// </summary>
     public async ValueTask<BrokerNode?> GetPartitionLeaderAsync(

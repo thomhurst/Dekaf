@@ -34,6 +34,11 @@ public sealed class ProduceResponse : IKafkaResponse
     /// </summary>
     public int ThrottleTimeMs { get; internal set; }
 
+    /// <summary>
+    /// Endpoints for current leaders reported in KIP-951 response tagged fields.
+    /// </summary>
+    public NodeEndpoint[] NodeEndpoints { get; internal set; } = [];
+
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var topicCount = reader.ReadUnsignedVarInt() - 1;
@@ -51,10 +56,34 @@ public sealed class ProduceResponse : IKafkaResponse
 
         response.TopicCount = Math.Max(topicCount, 0);
         response.ThrottleTimeMs = reader.ReadInt32();
-
-        reader.SkipTaggedFields();
+        response.NodeEndpoints = ReadResponseTaggedFields(ref reader, version);
 
         return response;
+    }
+
+    private static NodeEndpoint[] ReadResponseTaggedFields(ref KafkaProtocolReader reader, short version)
+    {
+        NodeEndpoint[]? nodeEndpoints = null;
+        var numFields = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < numFields; i++)
+        {
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            var start = reader.Consumed;
+
+            if (tag == 0 && version >= 10)
+            {
+                nodeEndpoints = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r));
+            }
+            else
+            {
+                reader.Skip(size);
+            }
+
+            LeaderDiscoveryFields.SkipRemaining(ref reader, start, size);
+        }
+
+        return nodeEndpoints ?? [];
     }
 
     /// <summary>
@@ -90,6 +119,7 @@ public sealed class ProduceResponse : IKafkaResponse
         {
             item.TopicCount = 0;
             item.ThrottleTimeMs = 0;
+            item.NodeEndpoints = [];
         }
     }
 }
@@ -198,6 +228,11 @@ public readonly struct ProduceResponsePartitionData
     /// </summary>
     public string? ErrorMessage { get; init; }
 
+    /// <summary>
+    /// Current leader reported by KIP-951 for retriable leader errors.
+    /// </summary>
+    public LeaderIdAndEpoch? CurrentLeader { get; init; }
+
     public static ProduceResponsePartitionData Read(ref KafkaProtocolReader reader, short version)
     {
         var index = reader.ReadInt32();
@@ -208,8 +243,7 @@ public readonly struct ProduceResponsePartitionData
 
         var recordErrors = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version);
         var errorMessage = reader.ReadCompactString();
-
-        reader.SkipTaggedFields();
+        var currentLeader = ReadPartitionTaggedFields(ref reader, version);
 
         return new ProduceResponsePartitionData
         {
@@ -219,8 +253,34 @@ public readonly struct ProduceResponsePartitionData
             LogAppendTimeMs = logAppendTimeMs,
             LogStartOffset = logStartOffset,
             RecordErrors = recordErrors,
-            ErrorMessage = errorMessage
+            ErrorMessage = errorMessage,
+            CurrentLeader = currentLeader
         };
+    }
+
+    private static LeaderIdAndEpoch? ReadPartitionTaggedFields(ref KafkaProtocolReader reader, short version)
+    {
+        LeaderIdAndEpoch? currentLeader = null;
+        var numFields = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < numFields; i++)
+        {
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            var start = reader.Consumed;
+
+            if (tag == 0 && version >= 10)
+            {
+                currentLeader = LeaderDiscoveryFields.ReadLeaderIdAndEpoch(ref reader, size);
+            }
+            else
+            {
+                reader.Skip(size);
+            }
+
+            LeaderDiscoveryFields.SkipRemaining(ref reader, start, size);
+        }
+
+        return currentLeader;
     }
 }
 

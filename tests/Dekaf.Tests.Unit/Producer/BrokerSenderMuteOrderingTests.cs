@@ -24,16 +24,16 @@ public sealed class BrokerSenderMuteOrderingTests
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        MaxInFlightRequestsPerConnection = maxInFlight,
-        Acks = acks,
-        DeliveryTimeoutMs = deliveryTimeoutMs,
-        RetryBackoffMs = retryBackoffMs,
-        RetryBackoffMaxMs = retryBackoffMaxMs,
-        RequestTimeoutMs = requestTimeoutMs,
-        LingerMs = 0
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            MaxInFlightRequestsPerConnection = maxInFlight,
+            Acks = acks,
+            DeliveryTimeoutMs = deliveryTimeoutMs,
+            RetryBackoffMs = retryBackoffMs,
+            RetryBackoffMaxMs = retryBackoffMaxMs,
+            RequestTimeoutMs = requestTimeoutMs,
+            LingerMs = 0
+        };
 
     private static (IConnectionPool pool, IKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
@@ -129,6 +129,42 @@ public sealed class BrokerSenderMuteOrderingTests
             ]
         };
 
+    private static ProduceResponse CreateInlineLeaderErrorResponse(
+        string topic,
+        int partition,
+        int leaderId,
+        int leaderEpoch) =>
+        new()
+        {
+            TopicCount = 1,
+            NodeEndpoints =
+            [
+                new NodeEndpoint { NodeId = leaderId, Host = $"broker-{leaderId}", Port = 9092 + leaderId }
+            ],
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = topic,
+                    PartitionCount = 1,
+                    PartitionResponses =
+                    [
+                        new ProduceResponsePartitionData
+                        {
+                            Index = partition,
+                            ErrorCode = ErrorCode.NotLeaderOrFollower,
+                            BaseOffset = -1,
+                            CurrentLeader = new LeaderIdAndEpoch
+                            {
+                                LeaderId = leaderId,
+                                LeaderEpoch = leaderEpoch
+                            }
+                        }
+                    ]
+                }
+            ]
+        };
+
     private static ProduceResponse CreateMultiPartitionResponse(
         string topic, params (int partition, ErrorCode errorCode, long baseOffset)[] partitions) =>
         new()
@@ -155,10 +191,12 @@ public sealed class BrokerSenderMuteOrderingTests
         IConnectionPool pool,
         ProducerOptions options,
         RecordAccumulator accumulator,
-        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement) =>
+        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
+        MetadataManager? metadataManager = null,
+        Action<ReadyBatch>? rerouteBatch = null) =>
         new(
             brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
+            metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
             accumulator, options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
@@ -168,9 +206,82 @@ public sealed class BrokerSenderMuteOrderingTests
             ensurePartitionInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
-            rerouteBatch: null,
+            rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: null);
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task RetriableError_WithInlineLeader_ReroutesWithoutRetryBackoff(CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs);
+
+        var requestSent = new TaskCompletionSource();
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
+        var options = CreateOptions(retryBackoffMs: 10_000, retryBackoffMaxMs: 10_000);
+        var accumulator = new RecordAccumulator(options);
+        var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var rerouted = new TaskCompletionSource<ReadyBatch>();
+
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "test-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 1,
+                            LeaderEpoch = 5,
+                            ReplicaNodes = [1],
+                            IsrNodes = [1]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            metadataManager,
+            rerouteBatch: batch => rerouted.TrySetResult(batch));
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, "test-topic", 0);
+            sender.Enqueue(batch);
+
+            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            tcs.SetResult(CreateInlineLeaderErrorResponse("test-topic", 0, leaderId: 2, leaderEpoch: 6));
+
+            var reroutedBatch = await rerouted.Task.WaitAsync(TimeSpan.FromSeconds(3), ct);
+            var leader = metadataManager.Metadata.GetPartitionLeader("test-topic", 0);
+
+            await Assert.That(reroutedBatch).IsSameReferenceAs(batch);
+            await Assert.That(leader).IsNotNull();
+            await Assert.That(leader!.NodeId).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
 
     /// <summary>
     /// Core muting test: a retriable error on partition 0 should mute it, blocking

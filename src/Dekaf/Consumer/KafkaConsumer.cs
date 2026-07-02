@@ -559,6 +559,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly object _fetchCacheLock = new();
     private Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? _cachedTopicPartitions;
     private List<TopicPartition>? _cachedPartitionsList;
+    private readonly ConcurrentDictionary<string, byte> _pendingLeaderRefreshTopics = new();
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -1811,9 +1812,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         }
                         else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
                         {
-                            // Invalidate metadata cache to force re-discovery of leader
-                            InvalidatePartitionCache();
-                            LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
+                            await HandleNotLeaderOrFollowerAsync(
+                                topic,
+                                partitionResponse,
+                                response.NodeEndpoints,
+                                cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
@@ -3275,7 +3278,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     if (partitionResponse.ErrorCode != ErrorCode.None)
                     {
-                        LogFetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                        if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
+                        {
+                            await HandleNotLeaderOrFollowerAsync(
+                                topic,
+                                partitionResponse,
+                                response.NodeEndpoints,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            LogFetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                        }
                         continue;
                     }
 
@@ -3471,6 +3485,57 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
             var low = partitionResponse.LogStartOffset >= 0 ? partitionResponse.LogStartOffset : 0;
             _watermarks[tp] = new WatermarkOffsets(low, partitionResponse.HighWatermark);
+        }
+    }
+
+    private ValueTask HandleNotLeaderOrFollowerAsync(
+        string topic,
+        FetchResponsePartition partitionResponse,
+        IReadOnlyList<NodeEndpoint> nodeEndpoints,
+        CancellationToken cancellationToken)
+    {
+        var currentLeader = partitionResponse.CurrentLeader;
+        var endpoint = currentLeader is null
+            ? null
+            : LeaderDiscoveryFields.FindNodeEndpoint(nodeEndpoints, currentLeader.LeaderId);
+
+        var updated = currentLeader is not null
+            && _metadataManager.TryUpdatePartitionLeader(
+                topic,
+                partitionResponse.PartitionIndex,
+                currentLeader.LeaderId,
+                currentLeader.LeaderEpoch,
+                endpoint);
+
+        InvalidatePartitionCache();
+        LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
+
+        if (!updated)
+            ScheduleLeaderRefresh(topic, cancellationToken);
+
+        return ValueTask.CompletedTask;
+    }
+
+    private void ScheduleLeaderRefresh(string topic, CancellationToken cancellationToken)
+    {
+        if (_pendingLeaderRefreshTopics.TryAdd(topic, 0))
+            _ = ObserveLeaderRefreshAsync(topic, cancellationToken);
+    }
+
+    private async Task ObserveLeaderRefreshAsync(string topic, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _metadataManager.RefreshMetadataAsync([topic], forceRefresh: true, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort refresh; the next fetch cycle will retry leader resolution.
+        }
+        finally
+        {
+            _pendingLeaderRefreshTopics.TryRemove(topic, out _);
         }
     }
 
@@ -4130,7 +4195,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     [LoggerMessage(Level = LogLevel.Warning, Message = "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}")]
     private partial void LogOffsetOutOfRangeReset(string topic, int partition, string reset);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "NotLeaderOrFollower for {Topic}-{Partition}, will refresh metadata")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "NotLeaderOrFollower for {Topic}-{Partition}, updating leader metadata")]
     private partial void LogNotLeaderOrFollower(string topic, int partition);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Prefetch error for {Topic}-{Partition}: {Error}")]

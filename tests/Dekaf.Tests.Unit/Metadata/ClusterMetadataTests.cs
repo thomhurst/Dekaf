@@ -281,6 +281,97 @@ public sealed class ClusterMetadataTests
     }
 
     [Test]
+    public async Task TryUpdatePartitionLeader_NewerEpoch_UpdatesLeaderAndEndpoint()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+
+        var updated = metadata.TryUpdatePartitionLeader(
+            "test-topic",
+            partition: 0,
+            leaderId: 4,
+            leaderEpoch: 6,
+            new BrokerNode { NodeId = 4, Host = "broker4", Port = 9094, Rack = "rack-b" });
+
+        var leader = metadata.GetPartitionLeader("test-topic", 0);
+        var partition = metadata.GetPartitionInfo("test-topic", 0);
+
+        await Assert.That(updated).IsTrue();
+        await Assert.That(leader).IsNotNull();
+        await Assert.That(leader!.NodeId).IsEqualTo(4);
+        await Assert.That(leader.Host).IsEqualTo("broker4");
+        await Assert.That(leader.Port).IsEqualTo(9094);
+        await Assert.That(leader.Rack).IsEqualTo("rack-b");
+        await Assert.That(partition!.LeaderEpoch).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task TryUpdatePartitionLeader_StaleEpoch_DoesNotUpdateLeader()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+
+        var updated = metadata.TryUpdatePartitionLeader(
+            "test-topic",
+            partition: 0,
+            leaderId: 2,
+            leaderEpoch: 4,
+            new BrokerNode { NodeId = 2, Host = "broker2", Port = 9092 });
+
+        var leader = metadata.GetPartitionLeader("test-topic", 0);
+        var partition = metadata.GetPartitionInfo("test-topic", 0);
+
+        await Assert.That(updated).IsFalse();
+        await Assert.That(leader!.NodeId).IsEqualTo(1);
+        await Assert.That(partition!.LeaderEpoch).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task Update_StaleLeaderEpoch_DoesNotOverwriteInlineLeader()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+        metadata.TryUpdatePartitionLeader(
+            "test-topic",
+            partition: 0,
+            leaderId: 4,
+            leaderEpoch: 6,
+            new BrokerNode { NodeId = 4, Host = "broker4", Port = 9094 });
+
+        metadata.Update(CreateMetadataResponse());
+
+        var leader = metadata.GetPartitionLeader("test-topic", 0);
+        var partition = metadata.GetPartitionInfo("test-topic", 0);
+
+        await Assert.That(leader).IsNotNull();
+        await Assert.That(leader!.NodeId).IsEqualTo(4);
+        await Assert.That(leader.Host).IsEqualTo("broker4");
+        await Assert.That(partition!.LeaderEpoch).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task Update_UnknownLeaderEpoch_DoesNotOverwriteInlineLeader()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+        metadata.TryUpdatePartitionLeader(
+            "test-topic",
+            partition: 0,
+            leaderId: 4,
+            leaderEpoch: 6,
+            new BrokerNode { NodeId = 4, Host = "broker4", Port = 9094 });
+
+        metadata.Update(CreateMetadataResponse(partition0LeaderId: 1, partition0LeaderEpoch: -1));
+
+        var leader = metadata.GetPartitionLeader("test-topic", 0);
+        var partition = metadata.GetPartitionInfo("test-topic", 0);
+
+        await Assert.That(leader).IsNotNull();
+        await Assert.That(leader!.NodeId).IsEqualTo(4);
+        await Assert.That(partition!.LeaderEpoch).IsEqualTo(6);
+    }
+
+    [Test]
     public async Task GetPartitionInfo_HighPartitionIndex_ReturnsPartition()
     {
         var metadata = new ClusterMetadata();
@@ -394,9 +485,9 @@ public sealed class ClusterMetadataTests
                     Name = "test-topic",
                     Partitions =
                     [
-                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
-                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
-                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 2, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, LeaderEpoch = 6, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 1, LeaderEpoch = 6, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 2, LeaderId = 1, LeaderEpoch = 6, ReplicaNodes = [1], IsrNodes = [1] },
                     ]
                 }
             ]
@@ -591,7 +682,9 @@ public sealed class ClusterMetadataTests
     private static MetadataResponse CreateMetadataResponse(
         string? clusterId = "test-cluster",
         int controllerId = 1,
-        Guid topicId = default)
+        Guid topicId = default,
+        int partition0LeaderId = 1,
+        int partition0LeaderEpoch = 5)
     {
         return new MetadataResponse
         {
@@ -616,8 +709,8 @@ public sealed class ClusterMetadataTests
                         {
                             ErrorCode = ErrorCode.None,
                             PartitionIndex = 0,
-                            LeaderId = 1,
-                            LeaderEpoch = 5,
+                            LeaderId = partition0LeaderId,
+                            LeaderEpoch = partition0LeaderEpoch,
                             ReplicaNodes = [1, 2, 3],
                             IsrNodes = [1, 2, 3]
                         },
