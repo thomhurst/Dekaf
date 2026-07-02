@@ -95,4 +95,54 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(registry.GetCallCount("topic-b-value")).IsEqualTo(1);
         await Assert.That(registry.TotalCallCount).IsEqualTo(2);
     }
+
+    [Test]
+    public async Task Client_CacheSchema_ClearsWhenMaxCachedSchemasReached()
+    {
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://localhost:8081",
+            MaxCachedSchemas = 2
+        });
+
+        client.CacheSchema(1, "subject-1", NewSchema(1));
+        client.CacheSchema(2, "subject-2", NewSchema(2));
+
+        await Assert.That(client.CachedSchemaByIdCount).IsEqualTo(2);
+        await Assert.That(client.CachedSchemaIdCount).IsEqualTo(2);
+
+        client.CacheSchema(3, "subject-3", NewSchema(3));
+
+        await Assert.That(client.CachedSchemaByIdCount).IsEqualTo(1);
+        await Assert.That(client.CachedSchemaIdCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Client_CacheSchema_MaxCachedSchemasZero_DisablesCaching()
+    {
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://localhost:8081",
+            MaxCachedSchemas = 0
+        });
+
+        client.CacheSchema(1, "subject-1", NewSchema(1));
+
+        await Assert.That(client.CachedSchemaByIdCount).IsEqualTo(0);
+        await Assert.That(client.CachedSchemaIdCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Client_CreateHttpHandler_SetsPooledConnectionLifetime()
+    {
+        using var handler = SchemaRegistryClient.CreateHttpHandler();
+
+        await Assert.That(handler.PooledConnectionLifetime).IsEqualTo(TimeSpan.FromMinutes(2));
+    }
+
+    private static Schema NewSchema(int id) => new()
+    {
+        SchemaType = SchemaType.Json,
+        SchemaString = $$"""{ "type": "string", "title": "schema-{{id}}" }"""
+    };
 }

@@ -13,18 +13,23 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public sealed class SchemaRegistryClient : ISchemaRegistryClient
 {
+    private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+
     private readonly HttpClient _httpClient;
     private readonly SchemaRegistryConfig _config;
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
     private readonly ConcurrentDictionary<(string Subject, Schema Schema), int> _idBySchemaCache = new();
+    private readonly object _cacheLock = new();
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly int _maxCachedSchemas;
     private bool _disposed;
 
     public SchemaRegistryClient(SchemaRegistryConfig config)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
+        _maxCachedSchemas = Math.Max(0, config.MaxCachedSchemas);
 
-        _httpClient = new HttpClient
+        _httpClient = new HttpClient(CreateHttpHandler(), disposeHandler: true)
         {
             BaseAddress = new Uri(config.Url.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMilliseconds(config.RequestTimeoutMs)
@@ -46,6 +51,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         };
     }
+
+    internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
+    internal int CachedSchemaIdCount => _idBySchemaCache.Count;
+
+    internal static SocketsHttpHandler CreateHttpHandler() => new()
+    {
+        PooledConnectionLifetime = PooledConnectionLifetime
+    };
 
     public async Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
     {
@@ -78,9 +91,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient
 
         var id = result!.Id;
 
-        // Cache both directions
-        _schemaByIdCache.TryAdd(id, schema);
-        _idBySchemaCache.TryAdd(cacheKey, id);
+        CacheSchema(id, subject, schema);
 
         return id;
     }
@@ -111,7 +122,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient
             }).ToList()
         };
 
-        _schemaByIdCache.TryAdd(id, schema);
+        CacheSchema(id, subject: null, schema);
         return schema;
     }
 
@@ -138,8 +149,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient
             }).ToList()
         };
 
-        // Cache the schema
-        _schemaByIdCache.TryAdd(result.Id, schema);
+        CacheSchema(result.Id, subject: null, schema);
 
         return new RegisteredSchema
         {
@@ -188,11 +198,30 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient
 
         var id = result!.Id;
 
-        // Cache both directions
-        _schemaByIdCache.TryAdd(id, schema);
-        _idBySchemaCache.TryAdd(cacheKey, id);
+        CacheSchema(id, subject, schema);
 
         return id;
+    }
+
+    internal void CacheSchema(int id, string? subject, Schema schema)
+    {
+        if (_maxCachedSchemas == 0)
+            return;
+
+        lock (_cacheLock)
+        {
+            if (_schemaByIdCache.Count >= _maxCachedSchemas || _idBySchemaCache.Count >= _maxCachedSchemas)
+            {
+                _schemaByIdCache.Clear();
+                _idBySchemaCache.Clear();
+            }
+
+            _schemaByIdCache.TryAdd(id, schema);
+            if (subject is not null)
+            {
+                _idBySchemaCache.TryAdd((subject, schema), id);
+            }
+        }
     }
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
