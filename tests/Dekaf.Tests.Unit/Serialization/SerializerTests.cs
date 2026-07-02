@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.InteropServices;
+using System.Text;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Serialization;
@@ -20,6 +21,39 @@ public class SerializerTests
         var result = serializer.Deserialize(buffer.WrittenMemory, context);
 
         await Assert.That(result).IsEqualTo("hello world");
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("hello world")]
+    [Arguments("caf\u00e9 \u2603 \ud83d\ude80")]
+    public async Task StringSerializer_Serialize_PreservesUtf8Bytes(string value)
+    {
+        var serializer = Serializers.String;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var expected = Encoding.UTF8.GetBytes(value);
+
+        serializer.Serialize(value, ref buffer, context);
+
+        await Assert.That(buffer.WrittenMemory.ToArray().SequenceEqual(expected)).IsTrue();
+    }
+
+    [Test]
+    public async Task StringSerializer_Serialize_ReservesWorstCaseAndAdvancesActualBytes()
+    {
+        var serializer = Serializers.String;
+        var context = CreateContext();
+        var value = "A\u0800\ud83d\ude80";
+        var expected = Encoding.UTF8.GetBytes(value);
+        var buffer = new TrackingBufferWriter(value.Length * 3);
+
+        serializer.Serialize(value, ref buffer, context);
+
+        await Assert.That(buffer.GetSpanCallCount).IsEqualTo(1);
+        await Assert.That(buffer.LastSizeHint).IsEqualTo(value.Length * 3);
+        await Assert.That(buffer.WrittenCount).IsEqualTo(expected.Length);
+        await Assert.That(buffer.WrittenMemory.ToArray().SequenceEqual(expected)).IsTrue();
     }
 
     [Test]
@@ -495,6 +529,18 @@ public class SerializerTests
         await Assert.That(result).IsNull();
     }
 
+    [Test]
+    public async Task NullableStringSerializer_Null_WritesNoBytes()
+    {
+        var serializer = Serializers.NullableString;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(null, ref buffer, context);
+
+        await Assert.That(buffer.WrittenCount).IsEqualTo(0);
+    }
+
     #endregion
 
     #region RawBytes Serializer Tests
@@ -595,4 +641,35 @@ public class SerializerTests
     }
 
     #endregion
+
+    private sealed class TrackingBufferWriter(int capacity) : IBufferWriter<byte>
+    {
+        private readonly byte[] _buffer = new byte[capacity];
+
+        public int GetSpanCallCount { get; private set; }
+
+        public int LastSizeHint { get; private set; }
+
+        public int WrittenCount { get; private set; }
+
+        public ReadOnlyMemory<byte> WrittenMemory => _buffer.AsMemory(0, WrittenCount);
+
+        public void Advance(int count)
+        {
+            WrittenCount += count;
+        }
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            LastSizeHint = sizeHint;
+            return _buffer.AsMemory(WrittenCount);
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            GetSpanCallCount++;
+            LastSizeHint = sizeHint;
+            return _buffer.AsSpan(WrittenCount);
+        }
+    }
 }

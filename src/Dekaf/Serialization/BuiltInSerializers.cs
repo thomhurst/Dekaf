@@ -126,10 +126,9 @@ internal sealed class StringSerde : ISerde<string>
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-        var span = destination.GetSpan(byteCount);
-        Encoding.UTF8.GetBytes(value, span);
-        destination.Advance(byteCount);
+        var span = destination.GetSpan(checked(value.Length * 3));
+        var bytesWritten = Encoding.UTF8.GetBytes(value, span);
+        destination.Advance(bytesWritten);
     }
 
     public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -146,10 +145,9 @@ internal sealed class NullableStringSerde : ISerde<string?>
         if (value is null)
             return;
 
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-        var span = destination.GetSpan(byteCount);
-        Encoding.UTF8.GetBytes(value, span);
-        destination.Advance(byteCount);
+        var span = destination.GetSpan(checked(value.Length * 3));
+        var bytesWritten = Encoding.UTF8.GetBytes(value, span);
+        destination.Advance(bytesWritten);
     }
 
     public string? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
