@@ -743,6 +743,47 @@ public class PooledPendingRequestTests
     }
 
     [Test]
+    public async Task TryComplete_WithStaleVersion_DoesNotCompleteReusedRequest()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var staleVersion = request.Version;
+
+        var canceled = request.TrySetCanceled();
+        await Assert.That(canceled).IsTrue();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await request.AsValueTask().ConfigureAwait(false);
+        });
+        pool.Return(request);
+
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(request);
+
+        reused.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var currentVersion = reused.Version;
+
+        var staleData = new byte[] { 0, 0, 0, 1, 10 };
+        var staleBuffer = new PooledResponseBuffer(staleData, staleData.Length, isPooled: false);
+
+        var staleCompleted = reused.TryComplete(staleVersion, staleBuffer);
+
+        await Assert.That(staleCompleted).IsFalse();
+        staleBuffer.Dispose();
+
+        var currentData = new byte[] { 0, 0, 0, 2, 20 };
+        var currentBuffer = new PooledResponseBuffer(currentData, currentData.Length, isPooled: false);
+        var currentCompleted = reused.TryComplete(currentVersion, currentBuffer);
+        var result = await reused.AsValueTask().ConfigureAwait(false);
+
+        await Assert.That(currentCompleted).IsTrue();
+        await Assert.That(result.Data.Span[0]).IsEqualTo((byte)20);
+
+        pool.Return(reused);
+    }
+
+    [Test]
     public async Task RunContinuationsAsynchronously_SurvivesResetAndReuse()
     {
         // Regression test: RunContinuationsAsynchronously must remain true after

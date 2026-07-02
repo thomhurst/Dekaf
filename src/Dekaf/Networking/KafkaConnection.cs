@@ -163,7 +163,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     // silently drop responses for timed-out requests.
     private const int MaxCancelledCorrelationIds = 10_000;
     private static int s_globalCorrelationId;
-    private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
+    private readonly ConcurrentDictionary<int, PendingRequestEntry> _pendingRequests = new();
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
@@ -205,6 +205,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// Returns null if no SASL authentication occurred or if re-authentication is disabled.
     /// </summary>
     internal SaslSessionState? SaslSession => _saslSessionState;
+
+    private readonly struct PendingRequestEntry(PooledPendingRequest request, short version)
+    {
+        public PooledPendingRequest Request { get; } = request;
+        public short Version { get; } = version;
+    }
 
     public KafkaConnection(
         string host,
@@ -454,7 +460,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         var pending = _pendingRequestPool.Rent();
         pending.Initialize(responseHeaderVersion, cancellationToken);
-        _pendingRequests[correlationId] = pending;
+        _pendingRequests[correlationId] = new PendingRequestEntry(pending, pending.Version);
 
         ThrowIfDisposedAfterAddingPendingRequest(correlationId);
 
@@ -479,7 +485,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // tries TryRemove — the second attempt harmlessly returns false.
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
-                _pendingRequestPool.Return(removed);
+                _pendingRequestPool.Return(removed.Request);
             }
 
             throw;
@@ -588,7 +594,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         var pending = _pendingRequestPool.Rent();
         pending.Initialize(responseHeaderVersion, cancellationToken);
-        _pendingRequests[correlationId] = pending;
+        _pendingRequests[correlationId] = new PendingRequestEntry(pending, pending.Version);
 
         ThrowIfDisposedAfterAddingPendingRequest(correlationId);
 
@@ -606,7 +612,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // On failure, ensure we clean up the pending request
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
-                _pendingRequestPool.Return(removed);
+                _pendingRequestPool.Return(removed.Request);
             }
 
             throw;
@@ -701,7 +707,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
-                _pendingRequestPool.Return(removed);
+                _pendingRequestPool.Return(removed.Request);
 
                 // Broker may still send a response for a timed-out/cancelled request.
                 // Record it so the receive loop discards silently instead of warning.
@@ -1087,7 +1093,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         if (_pendingRequests.TryGetValue(correlationId, out var pending))
         {
-            if (!pending.TryComplete(responseData))
+            if (!pending.Request.TryComplete(pending.Version, responseData))
             {
                 responseData.Dispose();
             }
@@ -1207,7 +1213,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
-                _pendingRequestPool.Return(removed);
+                _pendingRequestPool.Return(removed.Request);
             }
             throw new ObjectDisposedException(nameof(KafkaConnection));
         }
@@ -1241,7 +1247,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             foreach (var kvp in _pendingRequests)
             {
-                kvp.Value.TrySetException(ex);
+                kvp.Value.Request.TrySetException(kvp.Value.Version, ex);
             }
         }
     }
@@ -2034,7 +2040,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             if (_pendingRequests.TryRemove(kvp.Key, out var orphaned))
             {
-                _pendingRequestPool.Return(orphaned);
+                _pendingRequestPool.Return(orphaned.Request);
             }
         }
 
@@ -2541,10 +2547,14 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     private const int MaxReasonableTagCount = 1000;
 
+    private const int StatePending = 0;
+    private const int StateCompleting = 1;
+    private const int StateCompleted = 2;
+
     private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core = new() { RunContinuationsAsynchronously = true };
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
-    private int _state; // 0 = pending, 1 = completing, 2 = completed
+    private int _state; // High 16 bits = core version; low 16 bits = State*
     private PooledResponseBuffer? _pendingBuffer; // Buffer received but not yet processed
 
     /// <summary>
@@ -2553,7 +2563,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     public void Initialize(short responseHeaderVersion, CancellationToken cancellationToken)
     {
         _responseHeaderVersion = responseHeaderVersion;
-        _state = 0;
+        _state = CreateState(_core.Version, StatePending);
         _pendingBuffer = null;
 
         // Register for cancellation if the token can be cancelled
@@ -2614,9 +2624,16 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// Returns false if already completed (cancelled or failed).
     /// </summary>
     public bool TryComplete(PooledResponseBuffer pooledBuffer)
+        => TryComplete(_core.Version, pooledBuffer);
+
+    /// <summary>
+    /// Attempts to complete the request with response data for the captured version.
+    /// Returns false if the request was already completed or reused.
+    /// </summary>
+    public bool TryComplete(short expectedVersion, PooledResponseBuffer pooledBuffer)
     {
         // Atomically claim the completing state
-        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        if (!TryClaimCompletion(expectedVersion))
         {
             return false; // Already completing or completed
         }
@@ -2641,9 +2658,9 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // Mark as completed BEFORE invoking continuation.
         // The continuation may return this instance to the pool, and we must not
         // access mutable state after that point.
-        Volatile.Write(ref _state, 2);
+        Volatile.Write(ref _state, CreateState(expectedVersion, StateCompleted));
 
-        // Now invoke the continuation (this may synchronously return to caller)
+        // Publish the completion after all mutable request state has been read.
         if (parseException is not null)
         {
             _core.SetException(parseException);
@@ -2661,16 +2678,22 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// Returns false if already completed.
     /// </summary>
     public bool TrySetException(Exception exception)
+        => TrySetException(_core.Version, exception);
+
+    /// <summary>
+    /// Attempts to complete the captured request version with an exception.
+    /// Returns false if already completed or reused.
+    /// </summary>
+    public bool TrySetException(short expectedVersion, Exception exception)
     {
-        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        if (!TryClaimCompletion(expectedVersion))
         {
             return false;
         }
 
-        // Mark as completed BEFORE invoking continuation.
-        // SetException invokes the continuation synchronously, which may return
-        // this instance to the pool.
-        Volatile.Write(ref _state, 2);
+        // Mark as completed before publishing completion; a continuation may
+        // return this instance to the pool afterwards.
+        Volatile.Write(ref _state, CreateState(expectedVersion, StateCompleted));
         _core.SetException(exception);
         return true;
     }
@@ -2681,18 +2704,30 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     public bool TrySetCanceled()
     {
-        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        var version = _core.Version;
+        if (!TryClaimCompletion(version))
         {
             return false;
         }
 
-        // Mark as completed BEFORE invoking continuation.
-        // SetException invokes the continuation synchronously, which may return
-        // this instance to the pool.
-        Volatile.Write(ref _state, 2);
+        // Mark as completed before publishing completion; a continuation may
+        // return this instance to the pool afterwards.
+        Volatile.Write(ref _state, CreateState(version, StateCompleted));
         _core.SetException(new OperationCanceledException());
         return true;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryClaimCompletion(short expectedVersion)
+    {
+        var pendingState = CreateState(expectedVersion, StatePending);
+        var completingState = CreateState(expectedVersion, StateCompleting);
+        return Interlocked.CompareExchange(ref _state, completingState, pendingState) == pendingState;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int CreateState(short version, int state)
+        => ((ushort)version << 16) | state;
 
     private PooledResponseBuffer ParseAndSliceResponse(PooledResponseBuffer pooledBuffer)
     {
@@ -2797,7 +2832,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
 
         // Reset the core for reuse
         _core.Reset();
-        _state = 0;
+        _state = CreateState(_core.Version, StatePending);
     }
 
     // IValueTaskSource implementation
