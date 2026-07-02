@@ -8,6 +8,8 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// </summary>
 internal sealed class PooledMemoryStream : Stream
 {
+    private static readonly byte[] EmptyBuffer = [];
+
     private byte[] _buffer;
     private int _position;
     private int _length;
@@ -20,8 +22,8 @@ internal sealed class PooledMemoryStream : Stream
     /// <param name="initialBuffer">The initial buffer (should be rented from ArrayPool).</param>
     public PooledMemoryStream(byte[] initialBuffer)
     {
-        _buffer = initialBuffer;
-        _ownsBuffer = false; // Caller owns the initial buffer
+        _buffer = EmptyBuffer;
+        Reset(initialBuffer);
     }
 
     /// <summary>
@@ -31,9 +33,34 @@ internal sealed class PooledMemoryStream : Stream
     /// <param name="length">The number of valid bytes in the buffer.</param>
     public PooledMemoryStream(byte[] buffer, int length)
     {
+        _buffer = EmptyBuffer;
+        Reset(buffer, length);
+    }
+
+    public void Reset(byte[] buffer, int length = 0)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        if (length > buffer.Length)
+            throw new ArgumentOutOfRangeException(nameof(length), "Length cannot exceed buffer length.");
+
+        ReleaseOwnedBuffer();
+
         _buffer = buffer;
+        _position = 0;
         _length = length;
-        _ownsBuffer = false; // Caller owns the buffer
+        _ownsBuffer = false; // Caller owns the supplied buffer
+        _disposed = false;
+    }
+
+    public void DetachBuffer()
+    {
+        ReleaseOwnedBuffer();
+
+        _buffer = EmptyBuffer;
+        _position = 0;
+        _length = 0;
+        _ownsBuffer = false;
     }
 
     public override bool CanRead => !_disposed;
@@ -186,6 +213,16 @@ internal sealed class PooledMemoryStream : Stream
         _ownsBuffer = true; // We now own this buffer
     }
 
+    private void ReleaseOwnedBuffer()
+    {
+        if (!_ownsBuffer)
+            return;
+
+        // No need to clear - contains serialized Avro payloads, not sensitive data
+        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        _ownsBuffer = false;
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (_disposed)
@@ -193,11 +230,10 @@ internal sealed class PooledMemoryStream : Stream
 
         if (disposing && _ownsBuffer)
         {
-            // No need to clear - contains serialized Avro payloads, not sensitive data
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
-            _buffer = null!;
+            ReleaseOwnedBuffer();
         }
 
+        _buffer = EmptyBuffer;
         _disposed = true;
         base.Dispose(disposing);
     }
