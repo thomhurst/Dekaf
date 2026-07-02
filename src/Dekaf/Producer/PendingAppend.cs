@@ -39,6 +39,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     // Append parameters — stored on Initialize, consumed by drain
     private string _topic = null!;
     private int _partition;
+    private int _partitionCount;
     private long _timestamp;
     private PooledMemory _key;
     private PooledMemory _value;
@@ -71,6 +72,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     // Expose stored parameters for DrainPendingAppends
     internal string Topic => _topic;
     internal int Partition => _partition;
+    internal int PartitionCount => _partitionCount;
     internal long Timestamp => _timestamp;
     internal PooledMemory Key => _key;
     internal PooledMemory Value => _value;
@@ -98,6 +100,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal void Initialize(
         string topic,
         int partition,
+        int partitionCount,
         long timestamp,
         PooledMemory key,
         PooledMemory value,
@@ -114,6 +117,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     {
         _topic = topic;
         _partition = partition;
+        _partitionCount = partitionCount;
         _timestamp = timestamp;
         _key = key;
         _value = value;
@@ -243,6 +247,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     {
         // Clear references to avoid rooting objects across pool rentals
         _topic = null!;
+        _partitionCount = 0;
         _key = default;
         _value = default;
         _headers = null;

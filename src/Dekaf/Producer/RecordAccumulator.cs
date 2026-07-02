@@ -380,6 +380,7 @@ internal readonly struct AppendWorkItem
 {
     public readonly string Topic;
     public readonly int Partition;
+    public readonly int PartitionCount;
     public readonly long Timestamp;
     public readonly PooledMemory Key;
     public readonly PooledMemory Value;
@@ -391,6 +392,7 @@ internal readonly struct AppendWorkItem
     public AppendWorkItem(
         string topic,
         int partition,
+        int partitionCount,
         long timestamp,
         PooledMemory key,
         PooledMemory value,
@@ -401,6 +403,7 @@ internal readonly struct AppendWorkItem
     {
         Topic = topic;
         Partition = partition;
+        PartitionCount = partitionCount;
         Timestamp = timestamp;
         Key = key;
         Value = value;
@@ -897,6 +900,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly SemaphoreSlim _flushLingerLock = new(1, 1);
 
     private readonly ILogger _logger;
+    private readonly Action<string, int>? _onBatchComplete;
 
     private int _disposed;
     private int _closed;
@@ -1548,7 +1552,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         var result = AppendAfterReservation(
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
-                            op.CompletionSource, op.Callback, op.RecordSize);
+                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount);
 
                         op.CompleteResult(result);
                     }
@@ -1617,11 +1621,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _wakeupSignal.RegisterShutdownToken(cancellationToken);
     }
 
-    public RecordAccumulator(ProducerOptions options, CompressionCodecRegistry? compressionCodecs = null, ILogger? logger = null)
+    public RecordAccumulator(
+        ProducerOptions options,
+        CompressionCodecRegistry? compressionCodecs = null,
+        ILogger? logger = null,
+        Action<string, int>? onBatchComplete = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
         _compressionCodecs = compressionCodecs;
+        _onBatchComplete = onBatchComplete;
 
         // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
         // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
@@ -1798,7 +1807,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.HeaderCount,
                     workItem.Completion,
                     null,
-                    workItem.CancellationToken).ConfigureAwait(false))
+                    workItem.CancellationToken,
+                    partitionCount: workItem.PartitionCount).ConfigureAwait(false))
                 {
                     CleanupWorkItemResources(in workItem);
                     workItem.Completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
@@ -1850,11 +1860,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int partitionCount = 0)
     {
         EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
-        var workItem = new AppendWorkItem(topic, partition, timestamp, key, value,
+        var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
             headers, headerCount, completion, cancellationToken);
 
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
@@ -1868,9 +1879,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Rents a new PartitionBatch from the pool and configures it with current transaction state.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private PartitionBatch RentBatch(TopicPartition topicPartition)
+    private PartitionBatch RentBatch(TopicPartition topicPartition, int partitionCount)
     {
-        var batch = _batchPool.Rent(topicPartition);
+        var batch = _batchPool.Rent(topicPartition, partitionCount);
         batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional);
         return batch;
     }
@@ -1945,7 +1956,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int partitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -1955,11 +1967,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
-                headers, headerCount, completionSource, callback, recordSize));
+                headers, headerCount, completionSource, callback, recordSize, partitionCount));
 
         // Cold path: buffer full — enqueue pooled PendingAppend (zero async state machine allocation)
         return AppendSlowPathPooled(topic, partition, timestamp, key, value,
-            headers, headerCount, completionSource, callback, recordSize, cancellationToken);
+            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount);
     }
 
     private bool AppendAfterReservation(
@@ -1972,7 +1984,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int recordSize)
+        int recordSize,
+        int partitionCount)
     {
         if (completionSource is not null)
             Interlocked.Increment(ref _pendingAwaitedProduceCount);
@@ -2003,7 +2016,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
-            var newBatch = RentBatch(new TopicPartition(topic, partition));
+            var newBatch = RentBatch(new TopicPartition(topic, partition), partitionCount);
             pd.CurrentBatch = newBatch;
             Interlocked.Increment(ref _unsealedBatchCount);
 
@@ -2049,7 +2062,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int partitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -2070,7 +2084,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var (startTicks, deadline) = BeginReservationWait(recordSize);
 
         var op = _pendingAppendPool.Rent();
-        op.Initialize(topic, partition, timestamp, key, value, headers, headerCount,
+        op.Initialize(topic, partition, partitionCount, timestamp, key, value, headers, headerCount,
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
@@ -2109,7 +2123,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledMemory value,
         Header[]? headers,
         int headerCount,
-        PooledValueTaskSource<RecordMetadata> completionSource)
+        PooledValueTaskSource<RecordMetadata> completionSource,
+        int partitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return false;
@@ -2152,7 +2167,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             // Create new batch
-            var newBatch = RentBatch(new TopicPartition(topic, partition));
+            var newBatch = RentBatch(new TopicPartition(topic, partition), partitionCount);
             pd.CurrentBatch = newBatch;
             Interlocked.Increment(ref _unsealedBatchCount);
 
@@ -2228,7 +2243,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int partitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -2240,7 +2256,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
             return new ValueTask<bool>(AppendFromSpansAfterReservation(topic, partition, timestamp,
-                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize));
+                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize, partitionCount));
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -2248,7 +2264,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
         return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, callback, recordSize, cancellationToken);
+            headers, headerCount, callback, recordSize, partitionCount, cancellationToken);
     }
 
     /// <summary>
@@ -2265,7 +2281,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
-        int recordSize)
+        int recordSize,
+        int partitionCount)
     {
         var pd = GetOrCreateDeque(topic, partition);
         ReadyBatch? sealedBatch = null;
@@ -2289,7 +2306,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
-            var newBatch = RentBatch(new TopicPartition(topic, partition));
+            var newBatch = RentBatch(new TopicPartition(topic, partition), partitionCount);
             pd.CurrentBatch = newBatch;
             Interlocked.Increment(ref _unsealedBatchCount);
 
@@ -2329,10 +2346,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
+        int partitionCount,
         CancellationToken cancellationToken)
     {
         return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize, cancellationToken);
+            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount);
     }
 
     /// <summary>
@@ -2402,6 +2420,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (readyBatch.CompletionSourcesCount > 0)
                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+            if (currentBatch.PartitionCount > 1)
+                _onBatchComplete?.Invoke(readyBatch.TopicPartition.Topic, currentBatch.PartitionCount);
 
             OnBatchEntersPipeline(readyBatch);
             pd.AddLast(readyBatch);
@@ -3640,10 +3660,10 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     /// <summary>
     /// Gets a batch from the pool or creates a new one, configured for the given partition.
     /// </summary>
-    public PartitionBatch Rent(TopicPartition topicPartition)
+    public PartitionBatch Rent(TopicPartition topicPartition, int partitionCount)
     {
         var batch = Rent();
-        batch.Reset(topicPartition);
+        batch.Reset(topicPartition, partitionCount);
         return batch;
     }
 }
@@ -3659,6 +3679,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 internal sealed class PartitionBatch
 {
     private TopicPartition _topicPartition;
+    private int _partitionCount;
     private ProducerOptions _options;
     private readonly int _initialRecordCapacity;
     private ReadyBatchPool? _readyBatchPool; // Pool for renting ReadyBatch objects
@@ -3788,9 +3809,10 @@ internal sealed class PartitionBatch
     /// and those messages would be lost when Reset() is later called. By only resetting this flag
     /// at rent time, we ensure that any stale references fail the _isCompleted check in TryAppend().
     /// </remarks>
-    internal void Reset(TopicPartition topicPartition)
+    internal void Reset(TopicPartition topicPartition, int partitionCount)
     {
         _topicPartition = topicPartition;
+        _partitionCount = partitionCount;
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
         _completionSourceCount = 0;
@@ -3863,6 +3885,7 @@ internal sealed class PartitionBatch
     public BatchArena? Arena => Volatile.Read(ref _isCompleted) == 0 ? _arena : null;
 
     public TopicPartition TopicPartition => _topicPartition;
+    public int PartitionCount => _partitionCount;
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
 

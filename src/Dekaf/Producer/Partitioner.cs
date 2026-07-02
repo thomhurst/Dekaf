@@ -14,6 +14,11 @@ public interface IPartitioner
     int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount);
 }
 
+internal interface IBatchCompletionAwarePartitioner
+{
+    void OnBatchComplete(string topic, int partitionCount);
+}
+
 /// <summary>
 /// Default partitioner - uses murmur2 hash of key, or round-robin for null keys.
 /// </summary>
@@ -40,7 +45,7 @@ public sealed class DefaultPartitioner : IPartitioner
 /// Sticky partitioner - sticks to a partition for null keys until batch is full.
 /// Uses ConcurrentDictionary for lock-free read access in the hot path.
 /// </summary>
-public sealed class StickyPartitioner : IPartitioner
+public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwarePartitioner
 {
     private readonly ConcurrentDictionary<string, int> _stickyPartitions = new();
     private uint _counter;

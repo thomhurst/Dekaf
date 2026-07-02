@@ -261,7 +261,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);
-        _accumulator = new RecordAccumulator(options, _compressionCodecs, loggerFactory?.CreateLogger<RecordAccumulator>());
+        Action<string, int>? batchCompletionCallback = _partitioner is IBatchCompletionAwarePartitioner batchCompletionAware
+            ? batchCompletionAware.OnBatchComplete
+            : null;
+        _accumulator = new RecordAccumulator(
+            options,
+            _compressionCodecs,
+            loggerFactory?.CreateLogger<RecordAccumulator>(),
+            batchCompletionCallback);
 
         // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
         // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
@@ -828,6 +835,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Determine partition
             var partition = message.Partition
                 ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+            var batchCompletionPartitionCount = message.Partition is null && keyIsNull
+                ? topicInfo.PartitionCount
+                : 0;
 
             // Get timestamp - use fast cached timestamp when no override provided
             var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
@@ -849,7 +859,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 value,
                 pooledHeaderArray,
                 headerCount,
-                completion))
+                completion,
+                batchCompletionPartitionCount))
             {
                 // Clean up serialized data — the async slow path will re-serialize
                 CleanupPooledResources(key, value, pooledHeaderArray);
@@ -1084,6 +1095,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Determine partition
         var partition = message.Partition
             ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+        var batchCompletionPartitionCount = message.Partition is null && keyIsNull
+            ? topicInfo.PartitionCount
+            : 0;
 
         // Get timestamp
         var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
@@ -1108,7 +1122,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             pooledHeaderArray,
             headerCount,
             completion,
-            cancellationToken);
+            cancellationToken,
+            batchCompletionPartitionCount);
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(
@@ -2394,6 +2409,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
         var resolvedPartition = partition
             ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+        var batchCompletionPartitionCount = partition is null && keyIsNull
+            ? topicInfo.PartitionCount
+            : 0;
 
         var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
@@ -2412,7 +2430,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             keySpan, keyIsNull,
             valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
             valueIsNull,
-            pooledHeaderArray, headerCount, callback, CancellationToken.None);
+            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
     }
 
     /// <summary>
