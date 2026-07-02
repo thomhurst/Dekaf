@@ -647,6 +647,13 @@ public sealed class RecordBatch : IDisposable
     /// <summary>
     /// Writes the record batch to the output buffer.
     /// </summary>
+    /// <remarks>
+    /// Current encoding requests one contiguous destination span for the CRC field plus
+    /// the CRC-covered batch body. This keeps the array-backed writer path zero-copy and
+    /// lets the CRC be backpatched in place, but it means segmented writers must be able
+    /// to provide that full span. A streaming writer path would need incremental CRC32C
+    /// calculation while emitting fields and records in smaller segments.
+    /// </remarks>
     public void Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None, CompressionCodecRegistry? codecs = null)
     {
         var writer = new KafkaProtocolWriter(output);
@@ -713,8 +720,9 @@ public sealed class RecordBatch : IDisposable
             const int crcContentFixedSize = 40;
             var crcContentSize = crcContentFixedSize + compressedRecords.Length;
 
-            // Get a span for CRC (4 bytes) + content, write content directly, calculate CRC, backpatch
-            // This eliminates the need for crcBuffer intermediate copy
+            // Get one contiguous span for CRC (4 bytes) + content, write content directly,
+            // calculate CRC, and backpatch. This avoids a crcBuffer intermediate copy, but
+            // is the current contiguous-destination constraint documented on Write().
             var crcAndContentSpan = output.GetSpan(4 + crcContentSize);
             var contentSpan = crcAndContentSpan.Slice(4); // Content starts after CRC
 
