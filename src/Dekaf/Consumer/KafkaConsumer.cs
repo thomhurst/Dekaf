@@ -548,6 +548,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
 
+    // Incremental fetch responses can omit unchanged empty partitions; EOF mode needs those
+    // empty partition responses to emit partition EOF events.
+    private bool ShouldUseFetchSessions => _options.EnableFetchSessions && !_options.EnablePartitionEof;
+
     // Cached partition grouping by broker to avoid allocations on every fetch
     // Invalidated whenever _assignment or _paused changes
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
@@ -1552,7 +1556,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 wakeupCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
-            var fetchSessionSnapshot = _options.EnableFetchSessions && !_fetchSessions.IsEmpty
+            var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
                 ? _fetchSessions.ToArray()
                 : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
             var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
@@ -1769,7 +1773,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         await ResolveSpecialOffsetsAsync(partitions, partitionStartIndex, partitionCount, cancellationToken).ConfigureAwait(false);
 
         FetchSessionHandler? fetchSessionHandler = null;
-        if (_options.EnableFetchSessions && apiVersion >= 7)
+        if (ShouldUseFetchSessions && apiVersion >= 7)
         {
             fetchSessionHandler = _fetchSessions.GetOrAdd((brokerId, connectionIndex), static _ => new FetchSessionHandler());
             await fetchSessionHandler.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -3060,7 +3064,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 wakeupCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
-            var fetchSessionSnapshot = _options.EnableFetchSessions && !_fetchSessions.IsEmpty
+            var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
                 ? _fetchSessions.ToArray()
                 : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
 
@@ -3328,7 +3332,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var topicData = BuildFetchRequestTopics(partitions, 0, partitions.Count);
         FetchSessionHandler? fetchSessionHandler = null;
         FetchSessionBuildResult? fetchSessionBuild = null;
-        if (_options.EnableFetchSessions && apiVersion >= 7)
+        if (ShouldUseFetchSessions && apiVersion >= 7)
         {
             fetchSessionHandler = _fetchSessions.GetOrAdd((brokerId, 0), static _ => new FetchSessionHandler());
             fetchSessionBuild = fetchSessionHandler.Build(topicData, _metadataManager.Metadata);
@@ -4066,43 +4070,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         ThrowIfNotInitialized();
 
-        // Group partitions by broker leader for efficient batch requests
-        var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
-        foreach (var tpt in timestampsToSearch)
+        var timestamps = timestampsToSearch as IReadOnlyList<TopicPartitionTimestamp>
+            ?? [.. timestampsToSearch];
+
+        return await RetryHelper.WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async () =>
         {
-            var leader = await _metadataManager.GetPartitionLeaderAsync(tpt.Topic, tpt.Partition, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (leader is null)
+            // Group partitions by broker leader for efficient batch requests.
+            // Retrying the whole operation re-groups after metadata refreshes.
+            var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
+            foreach (var tpt in timestamps)
             {
-                LogNoLeaderFound(tpt.Topic, tpt.Partition);
-                continue;
+                var leader = await _metadataManager.GetPartitionLeaderAsync(tpt.Topic, tpt.Partition, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (leader is null)
+                {
+                    LogNoLeaderFound(tpt.Topic, tpt.Partition);
+                    continue;
+                }
+
+                if (!partitionsByBroker.TryGetValue(leader.NodeId, out var list))
+                {
+                    list = [];
+                    partitionsByBroker[leader.NodeId] = list;
+                }
+
+                list.Add(tpt);
             }
 
-            if (!partitionsByBroker.TryGetValue(leader.NodeId, out var list))
+            var results = new Dictionary<TopicPartition, long>();
+
+            // Send ListOffsets requests to each broker
+            foreach (var (brokerId, partitions) in partitionsByBroker)
             {
-                list = [];
-                partitionsByBroker[leader.NodeId] = list;
+                var brokerResults = await GetOffsetsForTimesFromBrokerAsync(brokerId, partitions, cancellationToken)
+                    .ConfigureAwait(false);
+
+                foreach (var kvp in brokerResults)
+                {
+                    results[kvp.Key] = kvp.Value;
+                }
             }
 
-            list.Add(tpt);
-        }
-
-        var results = new Dictionary<TopicPartition, long>();
-
-        // Send ListOffsets requests to each broker
-        foreach (var (brokerId, partitions) in partitionsByBroker)
-        {
-            var brokerResults = await GetOffsetsForTimesFromBrokerAsync(brokerId, partitions, cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (var kvp in brokerResults)
-            {
-                results[kvp.Key] = kvp.Value;
-            }
-        }
-
-        return results;
+            return results;
+        }, _metadataManager, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<Dictionary<TopicPartition, long>> GetOffsetsForTimesFromBrokerAsync(
@@ -4171,8 +4182,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     LogListOffsetsError(topicName, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
-                    results[tp] = -1;
-                    continue;
+                    throw new Errors.ConsumeException(partitionResponse.ErrorCode,
+                        $"ListOffsets failed for {topicName}-{partitionResponse.PartitionIndex}: {partitionResponse.ErrorCode}");
                 }
 
                 results[tp] = partitionResponse.Offset;
