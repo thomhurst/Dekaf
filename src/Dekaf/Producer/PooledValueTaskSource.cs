@@ -22,7 +22,6 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     private ValueTaskSourcePool<T>? _pool;
     private Action<T, Exception?>? _deliveryHandler;
     private CancellationTokenRegistration _cancellationRegistration;
-    private CancellationToken _cancellationToken;
     private int _hasCompleted; // 0 = not completed, 1 = completed
 
     /// <summary>
@@ -140,15 +139,10 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             return;
 
         _cancellationRegistration.Dispose();
-        _cancellationToken = cancellationToken;
-        _cancellationRegistration = cancellationToken.UnsafeRegister(s_cancellationCallback, this);
+        _cancellationRegistration = cancellationToken.UnsafeRegister(
+            static (state, token) => ((PooledValueTaskSource<T>)state!).TrySetCanceled(token),
+            this);
     }
-
-    private static readonly Action<object?> s_cancellationCallback = static state =>
-    {
-        var source = (PooledValueTaskSource<T>)state!;
-        source.TrySetCanceled(source._cancellationToken);
-    };
 
     /// <summary>
     /// Gets the result of the operation. Called by the awaiter.
@@ -179,7 +173,6 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         {
             _cancellationRegistration.Dispose();
             _cancellationRegistration = default;
-            _cancellationToken = default;
 
             // Clear handler before returning to pool
             _deliveryHandler = null;

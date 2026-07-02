@@ -485,19 +485,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         var startTimestamp = Stopwatch.GetTimestamp();
-        CancellationTokenRegistration registration = default;
-
-        if (cancellationToken.CanBeCanceled)
-        {
-            var state = (completion, cancellationToken);
-            registration = cancellationToken.Register(
-                static s =>
-                {
-                    var (comp, token) = ((PooledValueTaskSource<RecordMetadata>, CancellationToken))s!;
-                    comp.TrySetCanceled(token);
-                },
-                state);
-        }
+        completion.RegisterCancellation(cancellationToken);
 
         try
         {
@@ -509,13 +497,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             Diagnostics.DekafMetrics.ProduceErrors.Add(1, GetMetricTags(topic));
             throw;
-        }
-        finally
-        {
-            if (cancellationToken.CanBeCanceled)
-            {
-                await registration.DisposeAsync().ConfigureAwait(false);
-            }
         }
     }
 
@@ -530,11 +511,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         var startTimestamp = Stopwatch.GetTimestamp();
-
-        if (cancellationToken.CanBeCanceled)
-        {
-            completion.RegisterCancellation(cancellationToken);
-        }
+        completion.RegisterCancellation(cancellationToken);
 
         try
         {

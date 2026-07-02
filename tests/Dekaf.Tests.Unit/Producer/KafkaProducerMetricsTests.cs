@@ -82,6 +82,27 @@ public sealed class KafkaProducerMetricsTests
         await Assert.That(durationTopic).IsEqualTo("orders");
     }
 
+    [Test]
+    public async Task AwaitWithMetrics_Cancellation_CancelsCompletion()
+    {
+        await using var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ClientId = "metrics-test"
+            },
+            Serializers.String,
+            Serializers.String);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var completion = pool.Rent();
+        using var cts = new CancellationTokenSource();
+
+        var pending = InvokeAwaitWithMetrics(producer, completion, "orders", cts.Token);
+        cts.Cancel();
+
+        await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+    }
+
     private static bool ProducerMetricsEnabled()
     {
         var method = typeof(KafkaProducer<string, string>).GetMethod(
@@ -94,7 +115,8 @@ public sealed class KafkaProducerMetricsTests
     private static async ValueTask<RecordMetadata> InvokeAwaitWithMetrics(
         KafkaProducer<string, string> producer,
         PooledValueTaskSource<RecordMetadata> completion,
-        string topic)
+        string topic,
+        CancellationToken cancellationToken = default)
     {
         var method = typeof(KafkaProducer<string, string>).GetMethod(
             "AwaitWithMetrics",
@@ -102,7 +124,7 @@ public sealed class KafkaProducerMetricsTests
 
         var result = (ValueTask<RecordMetadata>)method!.Invoke(
             producer,
-            [completion, topic, CancellationToken.None])!;
+            [completion, topic, cancellationToken])!;
         return await result;
     }
 
