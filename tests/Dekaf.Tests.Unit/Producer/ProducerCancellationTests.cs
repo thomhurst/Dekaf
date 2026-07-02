@@ -73,9 +73,10 @@ public class ProducerCancellationTests
             // batch undrained until the CTS expires. A dedicated thread drains regardless
             // of pool pressure, making the test deterministic.
             using var cts = new CancellationTokenSource(30000);
+            var drainToken = cts.Token;
             var drainThread = new Thread(() =>
             {
-                while (!cts.Token.IsCancellationRequested)
+                while (!drainToken.IsCancellationRequested)
                 {
                     if (accumulator.TryDrainBatch(out var batch))
                     {
@@ -96,13 +97,18 @@ public class ProducerCancellationTests
             };
             drainThread.Start();
 
-            // Act - FlushAsync completes once the drain thread processes the batch.
-            // The CTS timeout (30s) guards against genuine hangs via OperationCanceledException.
-            await accumulator.FlushAsync(cts.Token);
-
-            // Stop the drain thread and join it before the CTS is disposed
-            await cts.CancelAsync();
-            drainThread.Join();
+            try
+            {
+                // Act - FlushAsync completes once the drain thread processes the batch.
+                // The CTS timeout (30s) guards against genuine hangs via OperationCanceledException.
+                await accumulator.FlushAsync(cts.Token);
+            }
+            finally
+            {
+                // Stop the drain thread and join it before the CTS is disposed.
+                await cts.CancelAsync();
+                drainThread.Join();
+            }
         }
         finally
         {
