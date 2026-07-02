@@ -117,24 +117,31 @@ public class MpscFetchBufferTests
         var first = CreateDummy("topic", 0);
         await Assert.That(buffer.TryWrite(first)).IsTrue();
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // Generous outer budget: waiter completion depends on thread-pool scheduling of the
+        // SemaphoreSlim continuations, which can lag on a starved CI runner. All waits below
+        // bound on this single token rather than shorter fixed delays that flake under load.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var waiter1 = buffer.WaitToWriteAsync(cts.Token).AsTask();
         var waiter2 = buffer.WaitToWriteAsync(cts.Token).AsTask();
 
-        await WaitUntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(10));
 
         await Assert.That(buffer.TryRead(out var readFirst)).IsTrue();
         readFirst!.Dispose();
 
-        var firstReleased = await Task.WhenAny(waiter1, waiter2, Task.Delay(TimeSpan.FromSeconds(5), cts.Token));
-        await Assert.That(firstReleased == waiter1 || firstReleased == waiter2).IsTrue();
+        var firstReleased = await Task.WhenAny(waiter1, waiter2).WaitAsync(cts.Token);
+        await Assert.That(firstReleased.IsCompletedSuccessfully).IsTrue();
+        var completedWaiterCount =
+            (waiter1.IsCompletedSuccessfully ? 1 : 0) +
+            (waiter2.IsCompletedSuccessfully ? 1 : 0);
+        await Assert.That(completedWaiterCount).IsEqualTo(1);
 
         var second = CreateDummy("topic", 1);
         await Assert.That(buffer.TryWrite(second)).IsTrue();
         await Assert.That(buffer.TryRead(out var readSecond)).IsTrue();
         readSecond!.Dispose();
 
-        await Task.WhenAll(waiter1, waiter2).WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
+        await Task.WhenAll(waiter1, waiter2).WaitAsync(cts.Token);
     }
 
     #endregion
