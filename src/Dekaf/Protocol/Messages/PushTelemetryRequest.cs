@@ -9,8 +9,6 @@ public sealed class PushTelemetryRequest : IKafkaRequest<PushTelemetryResponse>
     public static ApiKey ApiKey => ApiKey.PushTelemetry;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
 
     /// <summary>
     /// The client instance ID assigned by GetTelemetrySubscriptions.

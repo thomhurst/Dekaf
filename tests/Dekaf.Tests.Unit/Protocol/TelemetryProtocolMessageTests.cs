@@ -103,9 +103,27 @@ public sealed class TelemetryProtocolMessageTests
     [Test]
     public async Task TelemetryRequests_UseFlexibleHeaders()
     {
-        await Assert.That(GetTelemetrySubscriptionsRequest.GetRequestHeaderVersion(0)).IsEqualTo((short)2);
-        await Assert.That(GetTelemetrySubscriptionsRequest.GetResponseHeaderVersion(0)).IsEqualTo((short)1);
-        await Assert.That(PushTelemetryRequest.GetRequestHeaderVersion(0)).IsEqualTo((short)2);
-        await Assert.That(PushTelemetryRequest.GetResponseHeaderVersion(0)).IsEqualTo((short)1);
+        await Assert.That(GetRequestHeaderVersion<GetTelemetrySubscriptionsRequest, GetTelemetrySubscriptionsResponse>(0))
+            .IsEqualTo((short)2);
+        await Assert.That(GetResponseHeaderVersion<GetTelemetrySubscriptionsRequest, GetTelemetrySubscriptionsResponse>(0))
+            .IsEqualTo((short)1);
+        await Assert.That(GetRequestHeaderVersion<PushTelemetryRequest, PushTelemetryResponse>(0))
+            .IsEqualTo((short)2);
+        await Assert.That(GetResponseHeaderVersion<PushTelemetryRequest, PushTelemetryResponse>(0))
+            .IsEqualTo((short)1);
+    }
+
+    private static short GetRequestHeaderVersion<TRequest, TResponse>(short version)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        return TRequest.GetRequestHeaderVersion(version);
+    }
+
+    private static short GetResponseHeaderVersion<TRequest, TResponse>(short version)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        return TRequest.GetResponseHeaderVersion(version);
     }
 }

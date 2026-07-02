@@ -9,8 +9,6 @@ public sealed class GetTelemetrySubscriptionsRequest : IKafkaRequest<GetTelemetr
     public static ApiKey ApiKey => ApiKey.GetTelemetrySubscriptions;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
-    public static short GetRequestHeaderVersion(short version) => 2;
-    public static short GetResponseHeaderVersion(short version) => 1;
 
     /// <summary>
     /// The assigned client instance ID. Use Guid.Empty on the first request.
