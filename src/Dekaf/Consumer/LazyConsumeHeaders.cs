@@ -13,6 +13,7 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
     private readonly PendingFetchData _owner;
     private readonly int _generation;
     private Header[]? _snapshot;
+    private const string StaleHeadersMessage = "Consumer headers were not materialized before the owning fetch batch was disposed.";
 
     private LazyConsumeHeaders(Header[] pooledHeaders, int count, PendingFetchData owner, int generation)
     {
@@ -32,7 +33,7 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
             return null;
 
         if (owner is null)
-            throw new ObjectDisposedException(nameof(Headers), "Consumer headers were not materialized before the owning fetch batch was disposed.");
+            throw new ObjectDisposedException(nameof(Headers), StaleHeadersMessage);
 
         return new LazyConsumeHeaders(pooledHeaders, count, owner, generation);
     }
@@ -79,6 +80,6 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
     private void ThrowIfStale()
     {
         if (!_owner.IsHeaderGenerationActive(_generation))
-            throw new ObjectDisposedException(nameof(Headers), "Consumer headers were not materialized before the owning fetch batch was disposed.");
+            throw new ObjectDisposedException(nameof(Headers), StaleHeadersMessage);
     }
 }
