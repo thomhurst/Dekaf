@@ -172,6 +172,32 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_CachesGenericDatumWriter_ForSameSchema()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record1 = new GenericRecord(schema!);
+        record1.Add("id", 1);
+        record1.Add("name", "first");
+
+        var record2 = new GenericRecord(schema!);
+        record2.Add("id", 2);
+        record2.Add("name", "second");
+
+        var buffer1 = new ArrayBufferWriter<byte>();
+        var buffer2 = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(record1, ref buffer1, context);
+        serializer.Serialize(record2, ref buffer2, context);
+
+        await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedSpecificWriterCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Serializer_UsesTopicNameStrategy_ByDefault()
     {
         // Arrange
@@ -338,5 +364,49 @@ public sealed class AvroSerializerTests
         // Verify deserialization worked correctly
         await Assert.That((int)result["id"]!).IsEqualTo(42);
         await Assert.That((string)result["name"]!).IsEqualTo("warmup-test");
+    }
+
+    [Test]
+    public async Task Deserializer_CachesGenericDatumReader_ForSameSchemaPair()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        var schemaObj = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schemaObj);
+
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
+        await deserializer.WarmupAsync(schemaId);
+
+        var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record1 = new GenericRecord(avroSchema!);
+        record1.Add("id", 1);
+        record1.Add("name", "first");
+
+        var record2 = new GenericRecord(avroSchema!);
+        record2.Add("id", 2);
+        record2.Add("name", "second");
+
+        var wireFormat1 = CreateWireFormat(schemaId, SerializeAvroRecord(record1, avroSchema!));
+        var wireFormat2 = CreateWireFormat(schemaId, SerializeAvroRecord(record2, avroSchema!));
+        var context = CreateContext();
+
+        deserializer.Deserialize(wireFormat1, context);
+        deserializer.Deserialize(wireFormat2, context);
+
+        await Assert.That(deserializer.CachedGenericReaderCount).IsEqualTo(1);
+        await Assert.That(deserializer.CachedSpecificReaderCount).IsEqualTo(0);
+    }
+
+    private static byte[] CreateWireFormat(int schemaId, byte[] avroPayload)
+    {
+        var wireFormat = new byte[1 + 4 + avroPayload.Length];
+        wireFormat[0] = 0x00;
+        BinaryPrimitives.WriteInt32BigEndian(wireFormat.AsSpan(1, 4), schemaId);
+        avroPayload.CopyTo(wireFormat.AsSpan(5));
+        return wireFormat;
     }
 }

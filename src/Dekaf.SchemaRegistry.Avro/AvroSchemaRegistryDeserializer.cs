@@ -40,6 +40,10 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private readonly AvroDeserializerConfig _config;
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<int, Lazy<Task<AvroSchema>>> _schemaCache = new();
+    private readonly ConcurrentDictionary<AvroSchemaPair, GenericDatumReader<GenericRecord>> _genericReaders =
+        new(AvroSchemaPairReferenceComparer.Instance);
+    private readonly ConcurrentDictionary<AvroSchemaPair, SpecificDatumReader<T>> _specificReaders =
+        new(AvroSchemaPairReferenceComparer.Instance);
     private readonly AvroSchema? _readerSchema;
 
     /// <summary>
@@ -60,6 +64,9 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         // Parse custom reader schema if provided, otherwise derive from type
         _readerSchema = GetReaderSchema();
     }
+
+    internal int CachedGenericReaderCount => _genericReaders.Count;
+    internal int CachedSpecificReaderCount => _specificReaders.Count;
 
     /// <summary>
     /// Pre-warms the schema cache for a specific schema ID.
@@ -104,18 +111,21 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
         // Extract Avro payload using pooled buffer to avoid allocation
         var payload = span.Slice(5);
+        var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
+        var memoryStream = codecState.Stream;
         var rentedBuffer = ArrayPool<byte>.Shared.Rent(payload.Length);
+
         try
         {
             payload.CopyTo(rentedBuffer);
 
-            using var memoryStream = new PooledMemoryStream(rentedBuffer, payload.Length);
-            var decoder = new BinaryDecoder(memoryStream);
+            memoryStream.Reset(rentedBuffer, payload.Length);
 
-            return ReadAvroValue(writerSchema, decoder);
+            return ReadAvroValue(writerSchema, codecState.Decoder);
         }
         finally
         {
+            memoryStream.DetachBuffer();
             ArrayPool<byte>.Shared.Return(rentedBuffer);
         }
     }
@@ -126,14 +136,18 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
         if (typeof(T) == typeof(GenericRecord))
         {
-            var reader = new GenericDatumReader<GenericRecord>(writerSchema, readerSchema);
+            var reader = _genericReaders.GetOrAdd(
+                new AvroSchemaPair(writerSchema, readerSchema),
+                static key => new GenericDatumReader<GenericRecord>(key.WriterSchema, key.ReaderSchema));
             var result = reader.Read(default!, decoder);
             return (T)(object)result;
         }
 
         if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
         {
-            var reader = new SpecificDatumReader<T>(writerSchema, readerSchema);
+            var reader = _specificReaders.GetOrAdd(
+                new AvroSchemaPair(writerSchema, readerSchema),
+                static key => new SpecificDatumReader<T>(key.WriterSchema, key.ReaderSchema));
             return reader.Read(default!, decoder);
         }
 
@@ -143,12 +157,7 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
     private AvroSchema GetWriterSchemaCached(int schemaId)
     {
-        // Use Lazy<Task<T>> pattern for thread-safe lazy initialization.
-        // GetOrAdd ensures only one Lazy instance is created per schema ID.
-        // The Lazy ensures only one thread executes the factory (fetches the schema).
-        var lazyTask = _schemaCache.GetOrAdd(
-            schemaId,
-            id => new Lazy<Task<AvroSchema>>(() => FetchWriterSchemaAsync(id)));
+        var lazyTask = GetOrAddWriterSchemaLazy(schemaId, cancellationToken: default);
 
         // If the task is already completed, this returns immediately without blocking.
         // If this is the first access, it will block waiting for the schema fetch.
@@ -169,12 +178,28 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
     private async Task<AvroSchema> GetOrFetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)
     {
-        var lazyTask = _schemaCache.GetOrAdd(
-            schemaId,
-            id => new Lazy<Task<AvroSchema>>(() => FetchWriterSchemaAsync(id, cancellationToken)));
+        var lazyTask = GetOrAddWriterSchemaLazy(schemaId, cancellationToken);
 
         return await lazyTask.Value.ConfigureAwait(false);
     }
+
+    private Lazy<Task<AvroSchema>> GetOrAddWriterSchemaLazy(int schemaId, CancellationToken cancellationToken)
+    {
+        if (_schemaCache.TryGetValue(schemaId, out var cached))
+            return cached;
+
+        return _schemaCache.GetOrAdd(
+            schemaId,
+            static (id, state) => state.Deserializer.CreateWriterSchemaLazy(id, state.CancellationToken),
+            new WriterSchemaFetchState(this, cancellationToken));
+    }
+
+    private Lazy<Task<AvroSchema>> CreateWriterSchemaLazy(int schemaId, CancellationToken cancellationToken) =>
+        new(() => FetchWriterSchemaAsync(schemaId, cancellationToken));
+
+    private readonly record struct WriterSchemaFetchState(
+        AvroSchemaRegistryDeserializer<T> Deserializer,
+        CancellationToken CancellationToken);
 
     private async Task<AvroSchema> FetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)
     {
