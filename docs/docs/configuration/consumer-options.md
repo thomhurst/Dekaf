@@ -6,6 +6,31 @@ sidebar_position: 3
 
 Complete reference for all consumer configuration options.
 
+These methods are available anywhere a `ConsumerBuilder<TKey,TValue>` is used, including dependency injection registration:
+
+```csharp
+// Before: DI examples only showed connection and group settings.
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumer<string, string>(consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("orders"));
+});
+
+// After: DI uses the full consumer builder.
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumer<string, string>(consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("orders")
+        .WithFetchMinBytes(1024)
+        .WithFetchMaxBytes(50 * 1024 * 1024)
+        .WithPrefetchPipelineDepth(4)
+        .WithSaslScramSha512("user", "password")
+        .SubscribeTo("orders"));
+});
+```
+
 ## Connection Settings
 
 ### WithBootstrapServers

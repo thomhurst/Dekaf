@@ -25,11 +25,60 @@ builder.Services.AddDekaf(dekaf =>
 {
     dekaf.AddProducer<string, string>(producer => producer
         .WithBootstrapServers(builder.Configuration["Kafka:BootstrapServers"]!)
+        .WithLinger(TimeSpan.FromMilliseconds(5))
+        .WithBatchSize(64 * 1024)
         .ForReliability());
 
     dekaf.AddConsumer<string, string>(consumer => consumer
         .WithBootstrapServers(builder.Configuration["Kafka:BootstrapServers"]!)
-        .WithGroupId("my-service"));
+        .WithGroupId("my-service")
+        .WithFetchMinBytes(1024));
+});
+```
+
+## Full Builder Surface
+
+The DI callback receives the same `ProducerBuilder<TKey,TValue>` and `ConsumerBuilder<TKey,TValue>` used by the non-DI API. Any option available during manual construction is available during registration too.
+
+Before:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, string>(producer => producer
+        .WithBootstrapServers("localhost:9092")
+        .WithAcks(Acks.All));
+});
+```
+
+After:
+
+```csharp
+var retryPolicy = new FixedDelayRetryPolicy
+{
+    Delay = TimeSpan.FromMilliseconds(100),
+    MaxAttempts = 3
+};
+
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, string>(producer => producer
+        .WithBootstrapServers("localhost:9092")
+        .WithLinger(TimeSpan.FromMilliseconds(5))
+        .WithBatchSize(64 * 1024)
+        .WithBufferMemory(256 * 1024 * 1024)
+        .WithSaslScramSha512("user", "password")
+        .WithRetryPolicy(retryPolicy)
+        .ForHighThroughput());
+
+    dekaf.AddConsumer<string, string>(consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("orders")
+        .WithFetchMinBytes(1024)
+        .WithFetchMaxBytes(50 * 1024 * 1024)
+        .WithPrefetchPipelineDepth(4)
+        .WithRetryPolicy(retryPolicy)
+        .SubscribeTo("orders"));
 });
 ```
 
@@ -63,10 +112,12 @@ builder.Services.AddDekaf(dekaf =>
 {
     dekaf.AddProducer<string, string>(producer => producer
         .WithBootstrapServers(config["Kafka:BootstrapServers"]!)
+        .WithLinger(TimeSpan.FromMilliseconds(5))
         .ForReliability());
 
     dekaf.AddProducer<string, byte[]>(producer => producer
         .WithBootstrapServers(config["Kafka:BootstrapServers"]!)
+        .WithBatchSize(128 * 1024)
         .ForHighThroughput());
 });
 ```

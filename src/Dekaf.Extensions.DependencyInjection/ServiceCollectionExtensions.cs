@@ -104,9 +104,10 @@ public sealed class DekafBuilder
     /// <summary>
     /// Adds a producer to the service collection.
     /// </summary>
-    public DekafBuilder AddProducer<TKey, TValue>(Action<ProducerServiceBuilder<TKey, TValue>> configure)
+    /// <param name="configure">Configures the full producer builder surface.</param>
+    public DekafBuilder AddProducer<TKey, TValue>(Action<ProducerBuilder<TKey, TValue>> configure)
     {
-        var builder = new ProducerServiceBuilder<TKey, TValue>();
+        var builder = new ProducerBuilder<TKey, TValue>();
         configure(builder);
 
         var globalTypes = _globalProducerInterceptorTypes;
@@ -115,10 +116,9 @@ public sealed class DekafBuilder
         {
             var loggerFactory = sp.GetService<ILoggerFactory>();
 
-            List<IProducerInterceptor<TKey, TValue>>? globalInterceptors = null;
             if (globalTypes.Count > 0)
             {
-                globalInterceptors = new List<IProducerInterceptor<TKey, TValue>>(globalTypes.Count);
+                var globalInterceptors = new List<IProducerInterceptor<TKey, TValue>>(globalTypes.Count);
                 foreach (var type in globalTypes)
                 {
                     var closedType = type.IsGenericTypeDefinition
@@ -128,9 +128,16 @@ public sealed class DekafBuilder
                         ActivatorUtilities.CreateInstance(sp, closedType);
                     globalInterceptors.Add(interceptor);
                 }
+
+                builder.AddInterceptorsFirst(globalInterceptors);
             }
 
-            return builder.Build(loggerFactory, globalInterceptors);
+            if (loggerFactory is not null)
+            {
+                builder.WithLoggerFactory(loggerFactory);
+            }
+
+            return builder.Build();
         });
 
         // Register as IInitializableKafkaClient (resolves the same singleton instance)
@@ -143,9 +150,13 @@ public sealed class DekafBuilder
     /// <summary>
     /// Adds a consumer to the service collection.
     /// </summary>
-    public DekafBuilder AddConsumer<TKey, TValue>(Action<ConsumerServiceBuilder<TKey, TValue>> configure)
+    /// <param name="configure">Configures the full consumer builder surface.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    public DekafBuilder AddConsumer<TKey, TValue>(
+        Action<ConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
     {
-        var builder = new ConsumerServiceBuilder<TKey, TValue>();
+        var builder = new ConsumerBuilder<TKey, TValue>();
         configure(builder);
 
         var globalTypes = _globalConsumerInterceptorTypes;
@@ -154,10 +165,9 @@ public sealed class DekafBuilder
         {
             var loggerFactory = sp.GetService<ILoggerFactory>();
 
-            List<IConsumerInterceptor<TKey, TValue>>? globalInterceptors = null;
             if (globalTypes.Count > 0)
             {
-                globalInterceptors = new List<IConsumerInterceptor<TKey, TValue>>(globalTypes.Count);
+                var globalInterceptors = new List<IConsumerInterceptor<TKey, TValue>>(globalTypes.Count);
                 foreach (var type in globalTypes)
                 {
                     var closedType = type.IsGenericTypeDefinition
@@ -167,19 +177,34 @@ public sealed class DekafBuilder
                         ActivatorUtilities.CreateInstance(sp, closedType);
                     globalInterceptors.Add(interceptor);
                 }
+
+                builder.AddInterceptorsFirst(globalInterceptors);
             }
 
-            return builder.Build(loggerFactory, globalInterceptors);
+            if (loggerFactory is not null)
+            {
+                builder.WithLoggerFactory(loggerFactory);
+            }
+
+            return builder.Build();
         });
 
         // Register as IInitializableKafkaClient (resolves the same singleton instance)
         _services.AddSingleton<IInitializableKafkaClient>(sp =>
             sp.GetRequiredService<IKafkaConsumer<TKey, TValue>>());
 
-        // Register DLQ options if configured
-        var dlqOptions = builder.BuildDeadLetterOptions();
-        if (dlqOptions is not null)
+        if (configureDeadLetterQueue is not null)
         {
+            var dlqBuilder = new DeadLetterQueueBuilder();
+            configureDeadLetterQueue(dlqBuilder);
+
+            var bootstrapServers = builder.BootstrapServersString;
+            if (bootstrapServers is not null)
+            {
+                dlqBuilder.WithDefaultBootstrapServers(bootstrapServers);
+            }
+
+            var dlqOptions = dlqBuilder.Build();
             _services.AddSingleton(dlqOptions);
         }
 
@@ -201,258 +226,6 @@ public sealed class DekafBuilder
         });
 
         return this;
-    }
-}
-
-/// <summary>
-/// Builder for configuring a producer service.
-/// </summary>
-public sealed class ProducerServiceBuilder<TKey, TValue>
-{
-    private readonly ProducerBuilder<TKey, TValue> _builder = new();
-    private readonly List<IProducerInterceptor<TKey, TValue>> _perInstanceInterceptors = [];
-
-    public ProducerServiceBuilder<TKey, TValue> WithBootstrapServers(string servers)
-    {
-        _builder.WithBootstrapServers(servers);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> WithClientId(string clientId)
-    {
-        _builder.WithClientId(clientId);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> WithAcks(Acks acks)
-    {
-        _builder.WithAcks(acks);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> WithTransactionalId(string transactionalId)
-    {
-        _builder.WithTransactionalId(transactionalId);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> UseZstdCompression()
-    {
-        _builder.UseCompression(Protocol.Records.CompressionType.Zstd);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> UseGzipCompression()
-    {
-        _builder.UseGzipCompression();
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> UseLz4Compression()
-    {
-        _builder.UseCompression(Protocol.Records.CompressionType.Lz4);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> WithKeySerializer(ISerializer<TKey> serializer)
-    {
-        _builder.WithKeySerializer(serializer);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> WithValueSerializer(ISerializer<TValue> serializer)
-    {
-        _builder.WithValueSerializer(serializer);
-        return this;
-    }
-
-    public ProducerServiceBuilder<TKey, TValue> UseTls()
-    {
-        _builder.UseTls();
-        return this;
-    }
-
-    /// <summary>
-    /// Adds a per-instance producer interceptor. Per-instance interceptors execute after global interceptors.
-    /// </summary>
-    /// <param name="interceptor">The interceptor to add.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public ProducerServiceBuilder<TKey, TValue> AddInterceptor(IProducerInterceptor<TKey, TValue> interceptor)
-    {
-        ArgumentNullException.ThrowIfNull(interceptor);
-        _perInstanceInterceptors.Add(interceptor);
-        return this;
-    }
-
-    internal IKafkaProducer<TKey, TValue> Build(
-        ILoggerFactory? loggerFactory,
-        List<IProducerInterceptor<TKey, TValue>>? globalInterceptors = null)
-    {
-        if (loggerFactory is not null)
-        {
-            _builder.WithLoggerFactory(loggerFactory);
-        }
-
-        // Add global interceptors first (execute first)
-        if (globalInterceptors is not null)
-        {
-            foreach (var interceptor in globalInterceptors)
-            {
-                _builder.AddInterceptor(interceptor);
-            }
-        }
-
-        // Add per-instance interceptors second (execute after globals)
-        foreach (var interceptor in _perInstanceInterceptors)
-        {
-            _builder.AddInterceptor(interceptor);
-        }
-
-        return _builder.Build();
-    }
-}
-
-/// <summary>
-/// Builder for configuring a consumer service.
-/// </summary>
-public sealed class ConsumerServiceBuilder<TKey, TValue>
-{
-    private readonly ConsumerBuilder<TKey, TValue> _builder = new();
-    private readonly List<IConsumerInterceptor<TKey, TValue>> _perInstanceInterceptors = [];
-    private string? _bootstrapServers;
-
-    public ConsumerServiceBuilder<TKey, TValue> WithBootstrapServers(string servers)
-    {
-        _bootstrapServers = servers;
-        _builder.WithBootstrapServers(servers);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithClientId(string clientId)
-    {
-        _builder.WithClientId(clientId);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithGroupId(string groupId)
-    {
-        _builder.WithGroupId(groupId);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithGroupInstanceId(string groupInstanceId)
-    {
-        _builder.WithGroupInstanceId(groupInstanceId);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithOffsetCommitMode(OffsetCommitMode mode)
-    {
-        _builder.WithOffsetCommitMode(mode);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithAutoOffsetReset(AutoOffsetReset autoOffsetReset)
-    {
-        _builder.WithAutoOffsetReset(autoOffsetReset);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
-    {
-        _builder.WithKeyDeserializer(deserializer);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithValueDeserializer(IDeserializer<TValue> deserializer)
-    {
-        _builder.WithValueDeserializer(deserializer);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> WithRebalanceListener(IRebalanceListener listener)
-    {
-        _builder.WithRebalanceListener(listener);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> UseTls()
-    {
-        _builder.UseTls();
-        return this;
-    }
-
-    private DeadLetterQueueBuilder? _dlqBuilder;
-
-    /// <summary>
-    /// Configures dead letter queue routing for the consumer service.
-    /// </summary>
-    /// <param name="configure">An action to configure the dead letter queue builder.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public ConsumerServiceBuilder<TKey, TValue> WithDeadLetterQueue(Action<DeadLetterQueueBuilder> configure)
-    {
-        _dlqBuilder = new DeadLetterQueueBuilder();
-        configure(_dlqBuilder);
-        return this;
-    }
-
-    /// <summary>
-    /// Builds the dead letter options if a DLQ was configured.
-    /// </summary>
-    /// <returns>The configured <see cref="DeadLetterOptions"/> or null if DLQ was not configured.</returns>
-    internal DeadLetterOptions? BuildDeadLetterOptions()
-    {
-        if (_dlqBuilder is null)
-        {
-            return null;
-        }
-
-        // Inherit consumer's bootstrap servers if not explicitly set on DLQ
-        if (_bootstrapServers is not null)
-        {
-            _dlqBuilder.WithDefaultBootstrapServers(_bootstrapServers);
-        }
-
-        return _dlqBuilder.Build();
-    }
-
-    /// <summary>
-    /// Adds a per-instance consumer interceptor. Per-instance interceptors execute after global interceptors.
-    /// </summary>
-    /// <param name="interceptor">The interceptor to add.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public ConsumerServiceBuilder<TKey, TValue> AddInterceptor(IConsumerInterceptor<TKey, TValue> interceptor)
-    {
-        ArgumentNullException.ThrowIfNull(interceptor);
-        _perInstanceInterceptors.Add(interceptor);
-        return this;
-    }
-
-    internal IKafkaConsumer<TKey, TValue> Build(
-        ILoggerFactory? loggerFactory,
-        List<IConsumerInterceptor<TKey, TValue>>? globalInterceptors = null)
-    {
-        if (loggerFactory is not null)
-        {
-            _builder.WithLoggerFactory(loggerFactory);
-        }
-
-        // Add global interceptors first (execute first)
-        if (globalInterceptors is not null)
-        {
-            foreach (var interceptor in globalInterceptors)
-            {
-                _builder.AddInterceptor(interceptor);
-            }
-        }
-
-        // Add per-instance interceptors second (execute after globals)
-        foreach (var interceptor in _perInstanceInterceptors)
-        {
-            _builder.AddInterceptor(interceptor);
-        }
-
-        return _builder.Build();
     }
 }
 

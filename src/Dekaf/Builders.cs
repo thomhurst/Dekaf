@@ -552,6 +552,17 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    internal void AddInterceptorsFirst(IReadOnlyList<IProducerInterceptor<TKey, TValue>> interceptors)
+    {
+        if (interceptors.Count == 0)
+        {
+            return;
+        }
+
+        _interceptors ??= [];
+        _interceptors.InsertRange(0, interceptors);
+    }
+
     /// <summary>
     /// Sets the delivery timeout - the upper bound on the time to report success or failure
     /// after a call to <c>ProduceAsync</c>. This limits the total time a message can spend
@@ -1419,6 +1430,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _interceptors ??= [];
         _interceptors.Add(interceptor);
         return this;
+    }
+
+    internal string? BootstrapServersString => _bootstrapServers.Count == 0
+        ? null
+        : string.Join(",", _bootstrapServers);
+
+    internal void AddInterceptorsFirst(IReadOnlyList<IConsumerInterceptor<TKey, TValue>> interceptors)
+    {
+        if (interceptors.Count == 0)
+        {
+            return;
+        }
+
+        _interceptors ??= [];
+        _interceptors.InsertRange(0, interceptors);
     }
 
     /// <summary>

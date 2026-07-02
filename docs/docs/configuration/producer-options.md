@@ -6,6 +6,29 @@ sidebar_position: 2
 
 Complete reference for all producer configuration options.
 
+These methods are available anywhere a `ProducerBuilder<TKey,TValue>` is used, including dependency injection registration:
+
+```csharp
+// Before: DI examples only showed the small common subset.
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, string>(producer => producer
+        .WithBootstrapServers("localhost:9092"));
+});
+
+// After: DI uses the full producer builder.
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, string>(producer => producer
+        .WithBootstrapServers("localhost:9092")
+        .WithLinger(TimeSpan.FromMilliseconds(5))
+        .WithBatchSize(64 * 1024)
+        .WithBufferMemory(256 * 1024 * 1024)
+        .WithSaslScramSha512("user", "password")
+        .ForHighThroughput());
+});
+```
+
 ## Connection Settings
 
 ### WithBootstrapServers

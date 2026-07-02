@@ -312,15 +312,19 @@ using Dekaf.Extensions.DependencyInjection;
 services.AddDekaf(dekaf =>
 {
     dekaf.AddProducer<string, string>(producer => producer
-        .WithBootstrapServers(configuration["Kafka:BootstrapServers"]!));
+        .WithBootstrapServers(configuration["Kafka:BootstrapServers"]!)
+        .WithLinger(TimeSpan.FromMilliseconds(5))
+        .ForReliability());
 
     dekaf.AddConsumer<string, string>(consumer => consumer
         .WithBootstrapServers(configuration["Kafka:BootstrapServers"]!)
-        .WithGroupId("my-service"));
+        .WithGroupId("my-service")
+        .WithFetchMinBytes(1024));
 });
 ```
 
 Then inject `IKafkaProducer<string, string>` or `IKafkaConsumer<string, string>` wherever you need them.
+The DI callbacks use the same `ProducerBuilder` and `ConsumerBuilder` types as `Kafka.CreateProducer()` and `Kafka.CreateConsumer()`, so advanced options, SASL/TLS, retry policies, presets, interceptors, and compression extension methods are available there too.
 
 ### Global Interceptors
 
@@ -334,11 +338,13 @@ services.AddDekaf(dekaf =>
     dekaf.AddGlobalConsumerInterceptor(typeof(MetricsInterceptor<,>));
 
     dekaf.AddProducer<string, string>(producer => producer
-        .WithBootstrapServers("localhost:9092"));
+        .WithBootstrapServers("localhost:9092")
+        .WithLinger(TimeSpan.FromMilliseconds(5)));
 
     dekaf.AddConsumer<string, string>(consumer => consumer
         .WithBootstrapServers("localhost:9092")
-        .WithGroupId("my-service"));
+        .WithGroupId("my-service")
+        .WithPrefetchPipelineDepth(4));
 });
 ```
 
