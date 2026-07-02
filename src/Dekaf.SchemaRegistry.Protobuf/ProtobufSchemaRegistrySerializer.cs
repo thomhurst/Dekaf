@@ -34,7 +34,7 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
     private readonly MessageDescriptor _descriptor;
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly Schema _schema;
-    private readonly int[] _messageIndexes;
+    private readonly byte[] _encodedMessageIndexes;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -62,8 +62,10 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
             References = _config.UseSchemaReferences ? GetSchemaReferences(_descriptor) : null
         };
 
-        // Calculate the message index path
-        _messageIndexes = CalculateMessageIndexes(_descriptor);
+        // Pre-encode the immutable message index path once per serializer.
+        _encodedMessageIndexes = VarintEncoder.EncodeMessageIndexes(
+            CalculateMessageIndexes(_descriptor),
+            _config.UseDeprecatedFormat);
     }
 
     /// <inheritdoc />
@@ -79,11 +81,8 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
         // with both generated and hand-coded messages
         var protoBytes = value.ToByteArray();
 
-        // Calculate the varint-encoded message indexes size
-        var indexesSize = VarintEncoder.CalculateVarintArraySize(_messageIndexes);
-
         // Total size: magic byte + schema ID + indexes + message
-        var totalSize = 1 + 4 + indexesSize + protoBytes.Length;
+        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protoBytes.Length;
         var span = destination.GetSpan(totalSize);
 
         // Write magic byte
@@ -92,9 +91,9 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
         // Write schema ID (big-endian)
         BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
 
-        // Write message indexes as varints
         var offset = 5;
-        offset += VarintEncoder.WriteVarintArray(span.Slice(offset), _messageIndexes);
+        _encodedMessageIndexes.CopyTo(span.Slice(offset));
+        offset += _encodedMessageIndexes.Length;
 
         // Write the protobuf message
         protoBytes.AsSpan().CopyTo(span.Slice(offset));

@@ -31,13 +31,12 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         // Build the wire format manually
         var protoBytes = originalMessage.ToByteArray();
-        var wireBytes = new byte[1 + 4 + 2 + protoBytes.Length]; // magic + schemaId + indexes + proto
+        var wireBytes = new byte[1 + 4 + 1 + protoBytes.Length]; // magic + schemaId + indexes + proto
 
         wireBytes[0] = 0x00; // Magic byte
         BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 123); // Schema ID
-        wireBytes[5] = 1; // Array length (1 index)
-        wireBytes[6] = 0; // Index 0
-        protoBytes.CopyTo(wireBytes.AsSpan(7));
+        wireBytes[5] = 0; // Single top-level message index [0]
+        protoBytes.CopyTo(wireBytes.AsSpan(6));
 
         // Act
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -63,13 +62,12 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         var originalMessage = new TestMessage { Id = 42, Name = "Hello", Value = 3.14 };
         var protoBytes = originalMessage.ToByteArray();
-        var wireBytes = new byte[1 + 4 + 2 + protoBytes.Length];
+        var wireBytes = new byte[1 + 4 + 1 + protoBytes.Length];
 
         wireBytes[0] = 0x00;
         BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), schemaId);
-        wireBytes[5] = 1;
-        wireBytes[6] = 0;
-        protoBytes.CopyTo(wireBytes.AsSpan(7));
+        wireBytes[5] = 0;
+        protoBytes.CopyTo(wireBytes.AsSpan(6));
 
         // Act
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -146,13 +144,12 @@ public class ProtobufSchemaRegistryDeserializerTests
         // Create a valid wire format message
         var originalMessage = new TestMessage { Id = 42, Name = "Hello", Value = 3.14 };
         var protoBytes = originalMessage.ToByteArray();
-        var wireBytes = new byte[1 + 4 + 2 + protoBytes.Length];
+        var wireBytes = new byte[1 + 4 + 1 + protoBytes.Length];
 
         wireBytes[0] = 0x00;
         BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 123);
-        wireBytes[5] = 1;
-        wireBytes[6] = 0;
-        protoBytes.CopyTo(wireBytes.AsSpan(7));
+        wireBytes[5] = 0;
+        protoBytes.CopyTo(wireBytes.AsSpan(6));
 
         // Act
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -160,6 +157,39 @@ public class ProtobufSchemaRegistryDeserializerTests
         // Assert - schema registry should not be called
         await schemaRegistry.DidNotReceive().GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());
         await Assert.That(result.Id).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task Deserialize_SkipsConfluentZigZagEncodedMessageIndexes()
+    {
+        // Arrange
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new Schema
+            {
+                SchemaType = SchemaType.Protobuf,
+                SchemaString = "syntax = \"proto3\";"
+            }));
+
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(schemaRegistry);
+        var originalMessage = new TestMessage { Id = 42, Name = "Nested", Value = 6.28 };
+        var protoBytes = originalMessage.ToByteArray();
+        var wireBytes = new byte[1 + 4 + 3 + protoBytes.Length];
+
+        wireBytes[0] = 0x00;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 123);
+        wireBytes[5] = 4; // zigzag length: 2
+        wireBytes[6] = 2; // zigzag index: 1
+        wireBytes[7] = 0; // zigzag index: 0
+        protoBytes.CopyTo(wireBytes.AsSpan(8));
+
+        // Act
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        // Assert
+        await Assert.That(result.Id).IsEqualTo(42);
+        await Assert.That(result.Name).IsEqualTo("Nested");
+        await Assert.That(result.Value).IsEqualTo(6.28);
     }
 
     [Test]

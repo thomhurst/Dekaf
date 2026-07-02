@@ -34,7 +34,8 @@ public sealed class ProtobufSerializerConfig
     public bool UseLatestVersion { get; init; }
 
     /// <summary>
-    /// Whether to use the deprecated subject naming format (without -key/-value suffix for RecordName strategy).
+    /// Whether to use the deprecated unsigned Protobuf message-index encoding.
+    /// This also preserves the previous RecordName subject naming format without a -key/-value suffix.
     /// Default is false.
     /// </summary>
     public bool UseDeprecatedFormat { get; init; }

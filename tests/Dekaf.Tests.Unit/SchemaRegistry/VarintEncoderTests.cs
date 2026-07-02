@@ -135,4 +135,28 @@ public class VarintEncoderTests
 
         await Assert.That(writtenSize).IsEqualTo(calculatedSize);
     }
+
+    [Test]
+    public async Task EncodeMessageIndexes_SingleTopLevelIndex_WritesConfluentShorthand()
+    {
+        var encoded = VarintEncoder.EncodeMessageIndexes([0]);
+
+        await Assert.That(encoded).IsEquivalentTo(new byte[] { 0x00 });
+    }
+
+    [Test]
+    public async Task EncodeMessageIndexes_NestedIndexes_UsesConfluentZigZagEncoding()
+    {
+        var encoded = VarintEncoder.EncodeMessageIndexes([1, 0]);
+
+        await Assert.That(encoded).IsEquivalentTo(new byte[] { 0x04, 0x02, 0x00 });
+    }
+
+    [Test]
+    public async Task EncodeMessageIndexes_DeprecatedFormat_UsesUnsignedVarints()
+    {
+        var encoded = VarintEncoder.EncodeMessageIndexes([1, 0], useDeprecatedFormat: true);
+
+        await Assert.That(encoded).IsEquivalentTo(new byte[] { 0x02, 0x01, 0x00 });
+    }
 }

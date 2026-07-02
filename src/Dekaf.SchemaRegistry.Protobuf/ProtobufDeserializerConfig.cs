@@ -6,7 +6,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 public sealed class ProtobufDeserializerConfig
 {
     /// <summary>
-    /// Whether to use the deprecated subject naming format.
+    /// Whether to read the deprecated unsigned Protobuf message-index encoding.
     /// Default is false.
     /// </summary>
     public bool UseDeprecatedFormat { get; init; }

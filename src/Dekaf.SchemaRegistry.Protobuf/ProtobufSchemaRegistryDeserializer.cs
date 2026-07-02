@@ -71,12 +71,16 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // Read the message indexes (varints)
         var payload = span.Slice(5);
-        var (indexCount, bytesRead) = ReadVarint(payload);
+        var (indexCount, bytesRead) = ReadVarint(payload, _config.UseDeprecatedFormat);
+        if (indexCount < 0)
+            throw new InvalidOperationException("Message index array length cannot be negative");
 
         // Skip past the index array
         for (var i = 0; i < indexCount; i++)
         {
-            var (_, indexBytesRead) = ReadVarint(payload.Slice(bytesRead));
+            var (index, indexBytesRead) = ReadVarint(payload.Slice(bytesRead), _config.UseDeprecatedFormat);
+            if (index < 0)
+                throw new InvalidOperationException("Message index cannot be negative");
             bytesRead += indexBytesRead;
         }
 
@@ -88,18 +92,18 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         return _parser.ParseFrom(protobufData);
     }
 
-    private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data)
+    private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data, bool useDeprecatedFormat)
     {
-        var value = 0;
+        ulong rawValue = 0;
         var shift = 0;
         var bytesRead = 0;
 
         foreach (var b in data)
         {
             bytesRead++;
-            value |= (b & 0x7F) << shift;
+            rawValue |= (ulong)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
-                return (value, bytesRead);
+                return (DecodeVarint(rawValue, useDeprecatedFormat), bytesRead);
             shift += 7;
 
             if (shift >= 35)
@@ -108,6 +112,27 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         throw new InvalidOperationException("Varint is truncated");
     }
+
+    private static int DecodeVarint(ulong rawValue, bool useDeprecatedFormat)
+    {
+        if (useDeprecatedFormat)
+        {
+            if (rawValue > int.MaxValue)
+                throw new InvalidOperationException("Varint value is too large");
+
+            return (int)rawValue;
+        }
+
+        var decoded = (long)(rawValue >> 1);
+        if ((rawValue & 1) != 0)
+            decoded = ~decoded;
+
+        if (decoded is < int.MinValue or > int.MaxValue)
+            throw new InvalidOperationException("Varint value is too large");
+
+        return (int)decoded;
+    }
+
     /// <inheritdoc />
     public ValueTask DisposeAsync()
     {

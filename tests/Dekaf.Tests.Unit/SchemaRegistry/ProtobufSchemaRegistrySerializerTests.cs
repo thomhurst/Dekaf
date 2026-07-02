@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
+using Google.Protobuf;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -38,11 +39,11 @@ public class ProtobufSchemaRegistrySerializerTests
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(written.AsSpan(1, 4));
         await Assert.That(schemaId).IsEqualTo(42);
 
-        // Message index array length (varint) - should be 1 for top-level message
-        await Assert.That(written[5]).IsEqualTo((byte)1);
+        // Message index array [0] is encoded as a single 0x00 byte in Confluent's Protobuf format.
+        await Assert.That(written[5]).IsEqualTo((byte)0);
 
-        // Message index (varint) - should be 0 for first message in file
-        await Assert.That(written[6]).IsEqualTo((byte)0);
+        var expectedPayload = message.ToByteArray();
+        await Assert.That(written.AsSpan(6).ToArray()).IsEquivalentTo(expectedPayload);
     }
 
     [Test]
