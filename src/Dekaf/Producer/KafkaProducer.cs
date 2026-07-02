@@ -1237,6 +1237,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
+        if (ProducerCallbackContext.IsInDeliveryCallback)
+        {
+            throw new InvalidOperationException(
+                "FlushAsync cannot be called from a delivery callback because it can deadlock the producer sender thread. Move the flush call outside the callback.");
+        }
+
         ThrowIfNotInitialized();
 
         // No channel to drain — all produce paths append directly to the accumulator.

@@ -4867,13 +4867,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
                     {
                         try
                         {
-                            callback.Invoke(new RecordMetadata
-                            {
-                                Topic = _topicPartition.Topic,
-                                Partition = _topicPartition.Partition,
-                                Offset = baseOffset + i,
-                                Timestamp = timestamp
-                            }, null);
+                            ProducerCallbackContext.Invoke(
+                                callback,
+                                new RecordMetadata
+                                {
+                                    Topic = _topicPartition.Topic,
+                                    Partition = _topicPartition.Partition,
+                                    Offset = baseOffset + i,
+                                    Timestamp = timestamp
+                                },
+                                null);
                         }
                         catch
                         {
@@ -4944,7 +4947,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
                     {
                         try
                         {
-                            callback.Invoke(default, exception);
+                            ProducerCallbackContext.Invoke(callback, default, exception);
                         }
                         catch
                         {

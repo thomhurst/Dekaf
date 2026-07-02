@@ -88,15 +88,15 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         string? groupRemoteAssignor = null,
         int heartbeatIntervalMs = 3000,
         int rebalanceTimeoutMs = 30000) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        GroupId = groupId,
-        GroupRemoteAssignor = groupRemoteAssignor,
-        GroupInstanceId = groupInstanceId,
-        RebalanceListener = rebalanceListener,
-        HeartbeatIntervalMs = heartbeatIntervalMs,
-        RebalanceTimeoutMs = rebalanceTimeoutMs
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            GroupId = groupId,
+            GroupRemoteAssignor = groupRemoteAssignor,
+            GroupInstanceId = groupInstanceId,
+            RebalanceListener = rebalanceListener,
+            HeartbeatIntervalMs = heartbeatIntervalMs,
+            RebalanceTimeoutMs = rebalanceTimeoutMs
+        };
 
     private void SetupFindCoordinator()
     {
@@ -424,13 +424,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", rebalanceTimeoutMs: 1000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
-        // Generous safety net — the 1s rebalance timeout is the mechanism under test.
-        // On slow CI runners with thread pool starvation, Task.Delay overshoots and a tight
-        // CTS fires before the rebalance timeout check, causing TaskCanceledException.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
         await Assert.That(async () =>
-                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cts.Token))
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None))
             .Throws<KafkaTimeoutException>();
     }
 
