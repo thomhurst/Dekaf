@@ -783,6 +783,63 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
+    public async Task Drain_PartialLeaderMigration_ReenqueuesTrackedPartition()
+    {
+        // Node 1 still owns another partition after migration, so the old full-node scan
+        // would not take the empty-node re-enqueue path and would orphan partition 0.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var metadataManager = CreateMultiBrokerMetadataManager("test-topic",
+            [(0, 1), (1, 1), (2, 2)]);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.TryAppendWithCompletion("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion);
+            }
+
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            var migratedManager = CreateMultiBrokerMetadataManager("test-topic",
+                [(0, 2), (1, 1), (2, 2)]);
+
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(migratedManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+
+            await Assert.That(drainResult.ContainsKey(1)).IsFalse();
+
+            var readyNodes2 = new HashSet<int>();
+            accumulator.Ready(migratedManager, readyNodes2);
+            await Assert.That(readyNodes2).Contains(2);
+
+            var drainResult2 = new Dictionary<int, List<ReadyBatch>>();
+            accumulator.Drain(migratedManager, readyNodes2, int.MaxValue, drainResult2, batchListPool);
+            await Assert.That(drainResult2).ContainsKey(2);
+            await Assert.That(drainResult2[2].Count).IsEqualTo(1);
+
+            await migratedManager.DisposeAsync();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Drain_LeaderMigration_MultipleCycles_NoPartitionLoss()
     {
         // Verifies that repeated leader migration cycles don't lose partition notifications.

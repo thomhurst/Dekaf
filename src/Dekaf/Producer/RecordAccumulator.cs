@@ -827,6 +827,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // thread. Entries survive after Drain re-enqueues partitions and are only cleared by the next
     // Ready() call. Breaking this ordering could cause duplicate re-enqueues.
     private readonly Dictionary<int, List<TopicPartition>> _readyPartitionsPerNode = new();
+    private readonly HashSet<TopicPartition> _readyPartitionDedup = new();
     private readonly Stack<List<TopicPartition>> _partitionListPool = new();
 
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
@@ -1119,6 +1120,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _partitionListPool.Push(list);
         }
         _readyPartitionsPerNode.Clear();
+        _readyPartitionDedup.Clear();
 
         // Snapshot the current queue length to avoid infinite loop: partitions that need
         // re-enqueue (backoff, unknown leader) are added back during the loop, but we only
@@ -1202,7 +1204,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     : new List<TopicPartition>();
                 _readyPartitionsPerNode[leader.NodeId] = nodePartitions;
             }
-            nodePartitions.Add(tp);
+            if (_readyPartitionDedup.Add(tp))
+                nodePartitions.Add(tp);
         }
 
         // With push-based notifications, the sender wakes on SignalWakeup() from batch
@@ -1254,16 +1257,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int maxRequestSize,
         List<ReadyBatch> ready)
     {
-        var partitions = metadataManager.GetPartitionsForNode(nodeId);
+        var usingTrackedPartitions = _readyPartitionsPerNode.TryGetValue(nodeId, out var readyPartitionsForNode)
+            && readyPartitionsForNode.Count > 0;
+        IReadOnlyList<TopicPartition> partitions = usingTrackedPartitions
+            ? readyPartitionsForNode!
+            : metadataManager.GetPartitionsForNode(nodeId);
         if (partitions.Count == 0)
         {
             // Leader migrated between Ready() and Drain(). Re-enqueue only the specific
             // partitions that Ready() consumed for this node — O(k) where k is the number
             // of ready partitions for this node, not O(n) over all partition deques (#577).
-            if (_readyPartitionsPerNode.TryGetValue(nodeId, out var trackedPartitions))
+            if (_readyPartitionsPerNode.TryGetValue(nodeId, out var migratedPartitions))
             {
-                for (var j = 0; j < trackedPartitions.Count; j++)
-                    _readyPartitions.Enqueue(trackedPartitions[j]);
+                for (var j = 0; j < migratedPartitions.Count; j++)
+                    _readyPartitions.Enqueue(migratedPartitions[j]);
             }
             SignalWakeup();
             return;
@@ -1276,6 +1283,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var count = partitions.Count;
         var now = Stopwatch.GetTimestamp();
         var lastDrainIndex = startIndex;
+        var reenqueueLeaderChanges = false;
 
         for (var i = 0; i < count; i++)
         {
@@ -1283,6 +1291,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var tp = partitions[idx];
 
             lastDrainIndex = (startIndex + i + 1) % count;
+
+            if (usingTrackedPartitions)
+            {
+                var currentLeader = metadataManager.TryGetCachedPartitionLeader(tp.Topic, tp.Partition);
+                if (currentLeader is null || currentLeader.NodeId != nodeId)
+                {
+                    // Ready() consumed this partition for nodeId, but leadership changed before
+                    // Drain(). Re-enqueue it so the next Ready() resolves the current leader.
+                    _readyPartitions.Enqueue(tp);
+                    reenqueueLeaderChanges = true;
+                    continue;
+                }
+            }
 
             if (_mutedPartitions.ContainsKey(tp))
                 continue;
@@ -1338,6 +1359,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         _drainIndex[nodeId] = lastDrainIndex;
+        if (reenqueueLeaderChanges)
+            SignalWakeup();
     }
 
     /// <summary>
