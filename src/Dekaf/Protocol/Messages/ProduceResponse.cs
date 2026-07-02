@@ -135,7 +135,7 @@ public struct ProduceResponseTopicData
     /// </summary>
     internal void ReadInto(ref KafkaProtocolReader reader, short version)
     {
-        Name = reader.ReadCompactNonNullableString();
+        Name = TopicNameInternCache.Intern(reader.ReadCompactNonNullableString());
 
         var partitionCount = reader.ReadUnsignedVarInt() - 1;
 

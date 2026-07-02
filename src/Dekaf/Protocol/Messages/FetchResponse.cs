@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
@@ -144,12 +143,6 @@ public sealed class FetchResponseTopic
     // Pool for the partition lists to avoid per-topic-per-fetch array allocation.
     private static readonly FetchResponsePartitionListPool s_partitionListPool = new();
 
-    // Cache of topic name strings to avoid per-fetch string allocation.
-    // Topic names repeat every fetch cycle; caching them eliminates ~50-100 byte alloc per fetch per topic.
-    private static readonly ConcurrentDictionary<string, string> s_topicNameCache = new();
-    private static int s_topicNameCacheCount;
-    private const int MaxCachedTopicNames = 256;
-
     private int _pooled; // 0 = active, 1 = returned to pool
     private IReadOnlyList<FetchResponsePartition> _partitions = Array.Empty<FetchResponsePartition>();
 
@@ -205,31 +198,6 @@ public sealed class FetchResponseTopic
         return item;
     }
 
-    /// <summary>
-    /// Interns a topic name string to avoid per-fetch allocations.
-    /// Topic names are stable identifiers that repeat every fetch cycle.
-    /// </summary>
-    private static string InternTopicName(string topic)
-    {
-        if (s_topicNameCache.TryGetValue(topic, out var cached))
-            return cached;
-
-        // Avoid unbounded cache growth with dynamic topic names
-        if (Volatile.Read(ref s_topicNameCacheCount) < MaxCachedTopicNames)
-        {
-            if (s_topicNameCache.TryAdd(topic, topic))
-            {
-                Interlocked.Increment(ref s_topicNameCacheCount);
-            }
-            else if (s_topicNameCache.TryGetValue(topic, out cached))
-            {
-                return cached;
-            }
-        }
-
-        return topic;
-    }
-
     public static FetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
         Guid topicId = Guid.Empty;
@@ -244,7 +212,7 @@ public sealed class FetchResponseTopic
             topic = reader.ReadCompactString();
             // Intern topic names to reuse string instances across fetch cycles
             if (topic is not null)
-                topic = InternTopicName(topic);
+                topic = TopicNameInternCache.Intern(topic);
         }
 
         // Use pooled list to avoid per-topic array allocation
