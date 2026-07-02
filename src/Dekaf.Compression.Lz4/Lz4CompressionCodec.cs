@@ -52,21 +52,7 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
         using var inputStream = new ReadOnlySequenceStream(source);
         using var lz4Stream = LZ4Stream.Decode(inputStream, leaveOpen: true);
 
-        var buffer = ArrayPool<byte>.Shared.Rent(8192);
-        try
-        {
-            int bytesRead;
-            while ((bytesRead = lz4Stream.Read(buffer)) > 0)
-            {
-                var span = destination.GetSpan(bytesRead);
-                buffer.AsSpan(0, bytesRead).CopyTo(span);
-                destination.Advance(bytesRead);
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
+        CompressionStreamCopy.CopyToBufferWriter(lz4Stream, destination);
     }
 }
 
