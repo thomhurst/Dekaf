@@ -346,7 +346,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
-    public async Task Producer_WithStickyPartitioner_DistributesMessages()
+    public async Task Producer_WithStickyPartitioner_SticksMessagesBeforeBatchCompletes()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
@@ -355,10 +355,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sticky")
             .WithPartitioner(PartitionerType.Sticky)
+            .WithLinger(TimeSpan.FromSeconds(5))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Act - produce messages without keys (should use sticky partitioner)
+        // Act - produce null-key messages while linger keeps the current batch open.
         var tasks = new List<ValueTask<RecordMetadata>>();
         for (var i = 0; i < 10; i++)
         {
@@ -376,11 +377,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             results.Add(await task);
         }
 
-        // Assert - all messages should go to same partition (sticky)
+        // Assert - all messages choose the same sticky partition before batch completion.
         await Assert.That(results).Count().IsEqualTo(10);
         var partitions = results.Select(r => r.Partition).Distinct().ToList();
-        // With sticky partitioner and quick produces, should mostly go to same partition
-        await Assert.That(partitions.Count).IsLessThanOrEqualTo(2);
+        await Assert.That(partitions.Count).IsEqualTo(1);
     }
 
     [Test]
