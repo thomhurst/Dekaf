@@ -115,6 +115,10 @@ public readonly record struct Record
     public static Record Read(ref KafkaProtocolReader reader)
     {
         var length = reader.ReadVarInt();
+        if (length < 0)
+            throw new MalformedProtocolDataException($"Invalid record length {length}");
+
+        var bodyStart = reader.Consumed;
         var attributes = (byte)reader.ReadInt8();
         var timestampDelta = reader.ReadVarLong();
         var offsetDelta = reader.ReadVarInt();
@@ -128,6 +132,8 @@ public readonly record struct Record
         var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
 
         var headerCount = reader.ReadVarInt();
+        ValidateHeaderCount(headerCount, length, reader.Consumed - bodyStart, reader.Remaining);
+
         Header[]? headers = null;
 
         if (headerCount > 0)
@@ -155,6 +161,20 @@ public readonly record struct Record
             Headers = headers,
             HeaderCount = headerCount
         };
+    }
+
+    private static void ValidateHeaderCount(int headerCount, int recordBodyLength, long bodyBytesRead, long readerRemaining)
+    {
+        var remainingInRecord = recordBodyLength - bodyBytesRead;
+        if (remainingInRecord < 0 || headerCount < 0)
+            throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
+
+        // A header needs at least one byte for key length and one byte for value length.
+        // Bound the declared record body by the actual readable bytes so corrupt frames
+        // cannot force a giant ArrayPool rent before the first header read fails.
+        var readableRecordBytes = Math.Min(remainingInRecord, readerRemaining);
+        if (headerCount > readableRecordBytes / 2)
+            throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
     }
 
     /// <summary>
