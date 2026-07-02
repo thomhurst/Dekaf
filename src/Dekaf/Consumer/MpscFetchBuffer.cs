@@ -24,12 +24,18 @@ internal sealed class MpscFetchBuffer
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
+    private readonly Action? _afterProducerWaiterCountIncrementedForTesting;
     private int _producerWaiterCount;
     private int _consumerWaiting;
     private volatile bool _completed;
     private volatile Exception? _completionError;
 
     public MpscFetchBuffer(int capacity)
+        : this(capacity, afterProducerWaiterCountIncrementedForTesting: null)
+    {
+    }
+
+    internal MpscFetchBuffer(int capacity, Action? afterProducerWaiterCountIncrementedForTesting)
     {
         if (capacity < 1)
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
@@ -43,6 +49,7 @@ internal sealed class MpscFetchBuffer
         while (size < capacity) size <<= 1;
         _buffer = new PendingFetchData?[size];
         _mask = size - 1;
+        _afterProducerWaiterCountIncrementedForTesting = afterProducerWaiterCountIncrementedForTesting;
     }
 
     internal int Capacity => _buffer.Length;
@@ -99,17 +106,16 @@ internal sealed class MpscFetchBuffer
         Interlocked.Increment(ref _producerWaiterCount);
         try
         {
+            _afterProducerWaiterCountIncrementedForTesting?.Invoke();
+
             // Re-check after setting flag to avoid missed signal
             if (HasSpaceAvailable())
             {
-                // A concurrent TryRead that freed the slot also released a permit for us
-                // (it saw _producerWaiterCount > 0). Drain it non-blockingly so the permit
-                // does not linger and spuriously wake a future waiter when the buffer is full.
-                // Wait(0) never blocks. A racing waiter can lose this already-released
-                // permit if it has incremented _producerWaiterCount but not registered with
-                // SemaphoreSlim yet; callers loop through TryWrite, so that costs one extra
-                // wait cycle rather than a hang.
-                _spaceAvailable.Wait(0, CancellationToken.None);
+                // Concurrent TryRead calls may have released permits for this waiter after
+                // it incremented _producerWaiterCount but before it registered with
+                // SemaphoreSlim. Drain every stale permit non-blockingly so future waiters
+                // are not spuriously woken while the buffer is full.
+                DrainAvailableSpaceSignals();
                 return;
             }
 
@@ -218,6 +224,13 @@ internal sealed class MpscFetchBuffer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasSpaceAvailable() =>
         Volatile.Read(ref _headReserved.Value) - Volatile.Read(ref _tail.Value) < _buffer.Length;
+
+    private void DrainAvailableSpaceSignals()
+    {
+        while (_spaceAvailable.Wait(0, CancellationToken.None))
+        {
+        }
+    }
 
     /// <summary>
     /// Cache-line-padded index to prevent false sharing between producer and consumer.
