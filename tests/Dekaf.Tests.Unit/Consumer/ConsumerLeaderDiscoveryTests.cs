@@ -126,11 +126,55 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task HandleNotLeaderOrFollower_WithoutInlineLeader_SchedulesRefreshWhenFetchCycleAlreadyCanceled()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var refreshTokenCaptured = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                refreshTokenCaptured.TrySetResult((CancellationToken)callInfo[2]!);
+                return new ValueTask<MetadataResponse>(refreshResponse.Task);
+            });
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        SetMetadataApiVersion(metadataManager);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        using var fetchCycleCts = new CancellationTokenSource();
+
+        var partitionResponse = new FetchResponsePartition
+        {
+            PartitionIndex = 0,
+            ErrorCode = ErrorCode.NotLeaderOrFollower
+        };
+
+        fetchCycleCts.Cancel();
+        await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, [], fetchCycleCts.Token);
+
+        var refreshToken = await refreshTokenCaptured.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(refreshToken.IsCancellationRequested).IsFalse();
+
+        refreshResponse.SetResult(CreateMetadataResponse());
+        await WaitForLeaderRefreshToDrainAsync(consumer);
+    }
+
+    [Test]
     public async Task DisposeAsync_WithInFlightLeaderRefresh_WaitsBeforeDisposingDependencies()
     {
         var pool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
         var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshCancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         var poolDisposeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -148,8 +192,12 @@ public sealed class ConsumerLeaderDiscoveryTests
                 Arg.Any<MetadataRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(_ =>
+            .Returns(callInfo =>
             {
+                var cancellationToken = (CancellationToken)callInfo[2]!;
+                cancellationToken.Register(static state =>
+                    ((TaskCompletionSource)state!).TrySetResult(), refreshCancellationObserved);
+
                 refreshStarted.TrySetResult();
                 return new ValueTask<MetadataResponse>(refreshResponse.Task);
             });
@@ -171,7 +219,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             disposeTask = consumer.DisposeAsync().AsTask();
-            await Task.Delay(100);
+            await refreshCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(poolDisposeStarted.Task.IsCompleted).IsFalse();
 

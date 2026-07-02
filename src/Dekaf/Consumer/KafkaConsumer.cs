@@ -3639,7 +3639,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         InvalidatePartitionCache();
         LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
 
-        if (!updated && !cancellationToken.IsCancellationRequested)
+        if (!updated)
             ScheduleLeaderRefresh(topic);
 
         return ValueTask.CompletedTask;
@@ -3650,6 +3650,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
+        TaskCompletionSource refreshCompletion;
+        CancellationToken cancellationToken;
+
         lock (_leaderRefreshTasksLock)
         {
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
@@ -3658,7 +3661,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             if (_pendingLeaderRefreshTasks.ContainsKey(topic))
                 return;
 
-            CancellationToken cancellationToken;
             try
             {
                 cancellationToken = _leaderRefreshCts.Token;
@@ -3668,24 +3670,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 return;
             }
 
-            var refreshTask = ObserveLeaderRefreshAsync(topic, cancellationToken);
-            _pendingLeaderRefreshTasks[topic] = refreshTask;
-
-            if (refreshTask.IsCompleted)
-            {
-                _pendingLeaderRefreshTasks.TryRemove(topic, out _);
-                return;
-            }
-
-            _ = refreshTask.ContinueWith(static (task, state) =>
-            {
-                var (consumer, topicName) = ((KafkaConsumer<TKey, TValue> Consumer, string Topic))state!;
-                consumer._pendingLeaderRefreshTasks.TryRemove(topicName, out _);
-            }, (this, topic), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            refreshCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingLeaderRefreshTasks[topic] = refreshCompletion.Task;
         }
+
+        _ = ExecuteLeaderRefreshAsync(topic, refreshCompletion, cancellationToken);
     }
 
-    private async Task ObserveLeaderRefreshAsync(string topic, CancellationToken cancellationToken)
+    private async Task ExecuteLeaderRefreshAsync(
+        string topic,
+        TaskCompletionSource refreshCompletion,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -3695,6 +3690,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         catch
         {
             // Best-effort refresh; the next fetch cycle will retry leader resolution.
+        }
+        finally
+        {
+            if (_pendingLeaderRefreshTasks.TryGetValue(topic, out var task)
+                && ReferenceEquals(task, refreshCompletion.Task))
+            {
+                _pendingLeaderRefreshTasks.TryRemove(topic, out _);
+            }
+
+            refreshCompletion.TrySetResult();
         }
     }
 
