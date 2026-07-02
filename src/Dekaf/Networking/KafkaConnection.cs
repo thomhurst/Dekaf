@@ -167,7 +167,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
     private readonly CancellationTokenSource _pendingRequestSlotCts = new();
-    private int _pendingRequestSlotWaiterCount;
+    private readonly TaskCompletionSource _pendingRequestSlotOperationsDrained =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _pendingRequestSlotOperationCount;
+    private int _pendingRequestSlotsClosed;
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
@@ -1144,23 +1147,30 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private ValueTask ReservePendingRequestSlotAsync(CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) != 0)
+        if (!TryEnterPendingRequestSlotOperation())
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
         try
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+
             if (_pendingRequestSlots.Wait(0, cancellationToken))
             {
                 if (Volatile.Read(ref _disposed) == 0)
                     return ValueTask.CompletedTask;
 
-                ReleasePendingRequestSlot();
+                _pendingRequestSlots.Release();
                 throw new ObjectDisposedException(nameof(KafkaConnection));
             }
         }
-        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
         {
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
+        finally
+        {
+            ExitPendingRequestSlotOperation();
         }
 
         return ReservePendingRequestSlotSlowAsync(cancellationToken);
@@ -1168,57 +1178,73 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private async ValueTask ReservePendingRequestSlotSlowAsync(CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref _pendingRequestSlotWaiterCount);
+        if (!TryEnterPendingRequestSlotOperation())
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+
         try
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _pendingRequestSlotCts.Token);
 
             await _pendingRequestSlots.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+
+            if (Volatile.Read(ref _disposed) == 0)
+                return;
+
+            _pendingRequestSlots.Release();
+            throw new ObjectDisposedException(nameof(KafkaConnection));
         }
         catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0 && !cancellationToken.IsCancellationRequested)
         {
             throw new ObjectDisposedException(nameof(KafkaConnection));
         }
-        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
         {
             throw new ObjectDisposedException(nameof(KafkaConnection));
         }
         finally
         {
-            Interlocked.Decrement(ref _pendingRequestSlotWaiterCount);
+            ExitPendingRequestSlotOperation();
         }
-
-        if (Volatile.Read(ref _disposed) == 0)
-            return;
-
-        ReleasePendingRequestSlot();
-        throw new ObjectDisposedException(nameof(KafkaConnection));
     }
 
     private void ReleasePendingRequestSlot()
     {
+        if (!TryEnterPendingRequestSlotOperation())
+            return;
+
         try
         {
             _pendingRequestSlots.Release();
         }
-        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
         {
+        }
+        finally
+        {
+            ExitPendingRequestSlotOperation();
         }
     }
 
     private void ReleasePendingRequestSlots(int count)
     {
-        if (count > 0)
+        if (count <= 0 || !TryEnterPendingRequestSlotOperation())
+            return;
+
+        try
         {
-            try
-            {
-                _pendingRequestSlots.Release(count);
-            }
-            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
-            {
-            }
+            _pendingRequestSlots.Release(count);
+        }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
+        {
+        }
+        finally
+        {
+            ExitPendingRequestSlotOperation();
         }
     }
 
@@ -1239,18 +1265,37 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
     }
 
-    private async ValueTask<bool> WaitForPendingRequestSlotWaitersToDrainAsync()
+    private bool TryEnterPendingRequestSlotOperation()
     {
-        var stopwatch = Stopwatch.StartNew();
-        while (Volatile.Read(ref _pendingRequestSlotWaiterCount) != 0)
+        if (Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
+            return false;
+
+        Interlocked.Increment(ref _pendingRequestSlotOperationCount);
+        if (Volatile.Read(ref _pendingRequestSlotsClosed) == 0)
+            return true;
+
+        ExitPendingRequestSlotOperation();
+        return false;
+    }
+
+    private void ExitPendingRequestSlotOperation()
+    {
+        var count = Interlocked.Decrement(ref _pendingRequestSlotOperationCount);
+        Debug.Assert(count >= 0);
+
+        if (count == 0 && Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
         {
-            if (stopwatch.Elapsed >= TimeSpan.FromSeconds(1))
-                return false;
-
-            await Task.Delay(1).ConfigureAwait(false);
+            _pendingRequestSlotOperationsDrained.TrySetResult();
         }
+    }
 
-        return true;
+    private Task ClosePendingRequestSlotsAsync()
+    {
+        Volatile.Write(ref _pendingRequestSlotsClosed, 1);
+
+        return Volatile.Read(ref _pendingRequestSlotOperationCount) == 0
+            ? Task.CompletedTask
+            : _pendingRequestSlotOperationsDrained.Task;
     }
 
     private void AddPendingRequest(int correlationId, PooledPendingRequest request)
@@ -2160,6 +2205,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        var pendingRequestSlotOperationsDrained = ClosePendingRequestSlotsAsync();
         CancelPendingRequestSlotWaiters();
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -2263,11 +2309,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         // cleaned up by a continuation since none was registered.
         ReturnAllPendingRequestsToPool();
 
-        if (await WaitForPendingRequestSlotWaitersToDrainAsync().ConfigureAwait(false))
-        {
-            _pendingRequestSlots.Dispose();
-            _pendingRequestSlotCts.Dispose();
-        }
+        await pendingRequestSlotOperationsDrained.ConfigureAwait(false);
+        _pendingRequestSlots.Dispose();
+        _pendingRequestSlotCts.Dispose();
 
         _cancelledCorrelationIds.Clear();
     }
