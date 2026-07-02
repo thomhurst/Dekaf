@@ -9,6 +9,7 @@ namespace Dekaf.Internal;
 internal static class PoolSizing
 {
     private const int SharedArrayPoolDepthCeiling = 4096;
+    private const int ProduceResponsePoolSizeCeiling = 512;
 
     /// <summary>
     /// Serialization buffer arrays per connection. Each RentedBufferWriter growth step
@@ -216,10 +217,10 @@ internal static class PoolSizing
         var clampedBatchSize = Math.Clamp(batchSize, 1024, 4 * 1024 * 1024);
         var estimatedMessagesPerBatch = Math.Clamp(clampedBatchSize / 256, 8, 512);
         var peakInFlightBatches = SaturatingMultiply(totalMaxConnections, clampedMaxInFlight);
-        var producerDataArrays = (int)Math.Clamp(
+        var producerDataArrays = ClampPoolDepth(
             SaturatingMultiply(estimatedMessagesPerBatch, peakInFlightBatches),
-            64L,
-            4096L);
+            floor: 64,
+            ceiling: SharedArrayPoolDepthCeiling);
 
         // Header[] arrays are rented once per header-bearing message and held until
         // the owning batch completes, so they need the same working-set depth.
@@ -245,10 +246,10 @@ internal static class PoolSizing
 
         // ProduceResponsePool: one response per in-flight request per connection,
         // with 2x headroom for concurrent rent/return overlap.
-        var responsePoolSize = Math.Clamp(
+        var responsePoolSize = ClampPoolDepth(
             SaturatingMultiply(SaturatingMultiply(totalConnections, clampedMaxInFlight), 2L),
-            64L,
-            512L);
+            floor: 64,
+            ceiling: ProduceResponsePoolSizeCeiling);
 
         return new SharedPoolSizes
         {
@@ -256,7 +257,7 @@ internal static class PoolSizing
             HeaderArraysPerBucket = headerArrays,
             PipeMemoryArraysPerBucket = pipeMemoryArrays,
             SerializationArraysPerBucket = serializationArrays,
-            ProduceResponsePoolSize = (int)responsePoolSize,
+            ProduceResponsePoolSize = responsePoolSize,
         };
     }
 
