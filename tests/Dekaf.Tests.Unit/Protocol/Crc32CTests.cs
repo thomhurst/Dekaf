@@ -21,7 +21,7 @@ public class Crc32CTests
     [Test]
     public async Task Compute_MixedLengths_MatchesBitwiseReference()
     {
-        for (var length = 0; length <= 512; length++)
+        foreach (var length in MixedLengths())
         {
             var data = CreateDeterministicBytes(length);
             var expected = ComputeBitwise(data);
@@ -33,7 +33,7 @@ public class Crc32CTests
     [Test]
     public async Task ComputeSoftware_MixedLengths_MatchesBitwiseReference()
     {
-        for (var length = 0; length <= 512; length++)
+        foreach (var length in MixedLengths())
         {
             var data = CreateDeterministicBytes(length);
             var expected = ComputeBitwise(data);
@@ -48,12 +48,42 @@ public class Crc32CTests
         if (!Sse42.IsSupported)
             return;
 
-        for (var length = 0; length <= 512; length++)
+        foreach (var length in MixedLengths())
         {
             var data = CreateDeterministicBytes(length);
             var expected = ComputeBitwise(data);
 
             await Assert.That(Crc32C.ComputeHardwareX86(data)).IsEqualTo(expected);
+        }
+    }
+
+    [Test]
+    public async Task ComputeHardwareX86Scalar_WhenSupported_MatchesBitwiseReference()
+    {
+        if (!Sse42.IsSupported)
+            return;
+
+        foreach (var length in MixedLengths())
+        {
+            var data = CreateDeterministicBytes(length);
+            var expected = ComputeBitwise(data);
+
+            await Assert.That(Crc32C.ComputeHardwareX86Scalar(data)).IsEqualTo(expected);
+        }
+    }
+
+    [Test]
+    public async Task ComputeHardwareX86Optimized_WhenSupported_MatchesBitwiseReference()
+    {
+        if (!Sse42.X64.IsSupported)
+            return;
+
+        foreach (var length in MixedLengths())
+        {
+            var data = CreateDeterministicBytes(length);
+            var expected = ComputeBitwise(data);
+
+            await Assert.That(Crc32C.ComputeHardwareX86Optimized(data)).IsEqualTo(expected);
         }
     }
 
@@ -82,6 +112,19 @@ public class Crc32CTests
         }
 
         return data;
+    }
+
+    private static IEnumerable<int> MixedLengths()
+    {
+        for (var length = 0; length <= 512; length++)
+        {
+            yield return length;
+        }
+
+        foreach (var length in new[] { 513, 777, 1024, 1535, 1536, 1537, 2048, 4096, 8191, 8192, 16384, 65536 })
+        {
+            yield return length;
+        }
     }
 
     private static uint ComputeBitwise(ReadOnlySpan<byte> data)

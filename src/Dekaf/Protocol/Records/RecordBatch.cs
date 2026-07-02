@@ -1234,8 +1234,12 @@ internal static class Crc32C
 {
     private const int TableSize = 256;
     private const int SliceCount = 8;
+    private const int X86ParallelChunkSize = 512;
+    private const int X86ParallelBlockSize = X86ParallelChunkSize * 3;
 
     private static readonly uint[] Table = GenerateTable();
+    private static readonly uint[] X86ShiftChunk = CreateShiftOperator(X86ParallelChunkSize);
+    private static readonly uint[] X86ShiftTwoChunks = CreateShiftOperator(X86ParallelChunkSize * 2);
 
     private static uint[] GenerateTable()
     {
@@ -1286,7 +1290,60 @@ internal static class Crc32C
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static uint ComputeHardwareX86(ReadOnlySpan<byte> data)
     {
+        if (Sse42.X64.IsSupported && data.Length >= X86ParallelBlockSize)
+        {
+            return ComputeHardwareX86Optimized(data);
+        }
+
+        return ComputeHardwareX86Scalar(data);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static uint ComputeHardwareX86Scalar(ReadOnlySpan<byte> data)
+        => UpdateHardwareX86(data, 0xFFFFFFFFu) ^ 0xFFFFFFFFu;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static uint ComputeHardwareX86Optimized(ReadOnlySpan<byte> data)
+    {
+        if (!Sse42.X64.IsSupported || data.Length < X86ParallelBlockSize)
+        {
+            return ComputeHardwareX86Scalar(data);
+        }
+
         var crc = 0xFFFFFFFFu;
+        var offset = 0;
+
+        while (offset + X86ParallelBlockSize <= data.Length)
+        {
+            var crc0 = crc;
+            var crc1 = 0u;
+            var crc2 = 0u;
+
+            for (var i = 0; i < X86ParallelChunkSize; i += 8)
+            {
+                crc0 = (uint)Sse42.X64.Crc32(
+                    crc0,
+                    BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset + i, 8)));
+                crc1 = (uint)Sse42.X64.Crc32(
+                    crc1,
+                    BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset + X86ParallelChunkSize + i, 8)));
+                crc2 = (uint)Sse42.X64.Crc32(
+                    crc2,
+                    BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset + (X86ParallelChunkSize * 2) + i, 8)));
+            }
+
+            // crc1/crc2 start from zero, so combine the three independent chains by
+            // shifting each raw CRC state as though its following chunks were zero bytes.
+            crc = ShiftCrc32C(crc0, X86ShiftTwoChunks) ^ ShiftCrc32C(crc1, X86ShiftChunk) ^ crc2;
+            offset += X86ParallelBlockSize;
+        }
+
+        return UpdateHardwareX86(data[offset..], crc) ^ 0xFFFFFFFFu;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint UpdateHardwareX86(ReadOnlySpan<byte> data, uint crc)
+    {
         var i = 0;
 
         // Process 8 bytes at a time using 64-bit CRC instruction
@@ -1316,7 +1373,7 @@ internal static class Crc32C
             i++;
         }
 
-        return crc ^ 0xFFFFFFFFu;
+        return crc;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1385,5 +1442,113 @@ internal static class Crc32C
         }
 
         return crc ^ 0xFFFFFFFFu;
+    }
+
+    private static uint[] CreateShiftOperator(int byteCount)
+    {
+        var shift = new uint[32];
+
+        for (var bit = 0; bit < 32; bit++)
+        {
+            shift[bit] = ShiftCrc32C(1u << bit, byteCount);
+        }
+
+        return shift;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ShiftCrc32C(uint crc, uint[] shiftOperator)
+    {
+        var shifted = 0u;
+        var bit = 0;
+
+        while (crc != 0)
+        {
+            if ((crc & 1) != 0)
+            {
+                shifted ^= shiftOperator[bit];
+            }
+
+            crc >>= 1;
+            bit++;
+        }
+
+        return shifted;
+    }
+
+    private static uint ShiftCrc32C(uint crc, int byteCount)
+    {
+        if (byteCount <= 0)
+        {
+            return crc;
+        }
+
+        Span<uint> odd = stackalloc uint[32];
+        Span<uint> even = stackalloc uint[32];
+
+        odd[0] = 0x82F63B78u;
+        var row = 1u;
+        for (var i = 1; i < 32; i++)
+        {
+            odd[i] = row;
+            row <<= 1;
+        }
+
+        SquareMatrix(even, odd);
+        SquareMatrix(odd, even);
+
+        var length = byteCount;
+        do
+        {
+            SquareMatrix(even, odd);
+            if ((length & 1) != 0)
+            {
+                crc = MatrixTimes(even, crc);
+            }
+
+            length >>= 1;
+            if (length == 0)
+            {
+                break;
+            }
+
+            SquareMatrix(odd, even);
+            if ((length & 1) != 0)
+            {
+                crc = MatrixTimes(odd, crc);
+            }
+
+            length >>= 1;
+        }
+        while (length != 0);
+
+        return crc;
+    }
+
+    private static void SquareMatrix(Span<uint> square, ReadOnlySpan<uint> matrix)
+    {
+        for (var i = 0; i < 32; i++)
+        {
+            square[i] = MatrixTimes(matrix, matrix[i]);
+        }
+    }
+
+    private static uint MatrixTimes(ReadOnlySpan<uint> matrix, uint vector)
+    {
+        var sum = 0u;
+        var index = 0;
+
+        while (vector != 0)
+        {
+            if ((vector & 1) != 0)
+            {
+                sum ^= matrix[index];
+            }
+
+            vector >>= 1;
+            index++;
+        }
+
+        return sum;
     }
 }
