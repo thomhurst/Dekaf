@@ -505,6 +505,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // for multiple brokers AND multiple connections to the same broker.
     // Stale entries from scaled-down connections are pruned lazily in PrefetchRecordsAsync.
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
+    private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler> _fetchSessions = new();
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -1551,11 +1552,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 wakeupCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
+            var fetchSessionSnapshot = _options.EnableFetchSessions && !_fetchSessions.IsEmpty
+                ? _fetchSessions.ToArray()
+                : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
+            var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+            var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
 
             // If all partitions are paused, delay to prevent tight spin loop
             // that would starve timeout/cancellation mechanisms of CPU time
             var brokerCount = partitionsByBroker.Count;
-            if (brokerCount == 0)
+            if (brokerCount == 0 && fetchSessionSnapshot.Length == 0)
             {
                 await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                 return;
@@ -1564,8 +1570,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // Fetch from all brokers in parallel for maximum throughput.
             // When multiple fetch connections are available, split each broker's partitions
             // across connections to issue concurrent fetches to the same broker.
-            var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
-            var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
 
             // Lazily prune stale entries from scaled-down connections.
             // O(k) over a small dictionary (brokers × connections), once per fetch cycle — not hot path.
@@ -1576,11 +1580,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
 
             // Upper bound: each broker can produce up to fetchConnectionCount tasks
-            var maxTasks = brokerCount * fetchConnectionCount;
+            var maxTasks = (brokerCount * fetchConnectionCount) + fetchSessionSnapshot.Length;
             var fetchTasks = ArrayPool<Task>.Shared.Rent(maxTasks);
             try
             {
                 var taskCount = 0;
+                HashSet<(int BrokerId, int ConnectionIndex)>? scheduledFetchSessions = fetchSessionSnapshot.Length == 0 ? null : [];
 
                 // Stack-allocate group ranges — bounded by MaxFetchConnectionsPerBroker
                 Span<(int StartIndex, int Count)> groups = stackalloc (int, int)[Math.Min(fetchConnectionCount, ConsumerConnectionScaler.MaxFetchConnectionsPerBroker)];
@@ -1596,11 +1601,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         // Deterministic: group g always maps to connection g, ensuring stable
                         // (brokerId, connectionIndex) keys across cycles for pendingItems lists
                         var connectionIndex = g % fetchConnectionCount;
+                        scheduledFetchSessions?.Add((brokerId, connectionIndex));
 
                         fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
                             brokerId, partitions, startIndex, count, connectionIndex,
                             wakeupCts.Token, wakeupCts.Token);
                     }
+                }
+
+                foreach (var (key, handler) in fetchSessionSnapshot)
+                {
+                    if (!handler.HasActiveSession)
+                    {
+                        _fetchSessions.TryRemove(key, out _);
+                        continue;
+                    }
+
+                    if (key.ConnectionIndex >= fetchConnectionCount)
+                    {
+                        _fetchSessions.TryRemove(key, out _);
+                        continue;
+                    }
+
+                    if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
+                        continue;
+
+                    fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
+                        key.BrokerId, [], 0, 0, key.ConnectionIndex,
+                        wakeupCts.Token, wakeupCts.Token);
+                }
+
+                if (taskCount == 0)
+                {
+                    await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                    return;
                 }
 
                 // Timing wraps the entire parallel fetch cycle (all brokers via Task.WhenAll)
@@ -1734,167 +1768,201 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Resolve any special offset values — pass index range to avoid GetRange allocation
         await ResolveSpecialOffsetsAsync(partitions, partitionStartIndex, partitionCount, cancellationToken).ConfigureAwait(false);
 
-        // Build fetch request — pass index range to avoid GetRange allocation
-        var topicData = BuildFetchRequestTopics(partitions, partitionStartIndex, partitionCount);
-
-        var request = FetchRequest.Rent();
-        request.MaxWaitMs = _options.FetchMaxWaitMs;
-        request.MinBytes = _options.FetchMinBytes;
-        request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
-        request.IsolationLevel = _options.IsolationLevel;
-        request.Topics = topicData;
-
-        var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        FetchResponse response;
-        try
+        FetchSessionHandler? fetchSessionHandler = null;
+        if (_options.EnableFetchSessions && apiVersion >= 7)
         {
-            response = await connection.SendAsync<FetchRequest, FetchResponse>(
-                request,
-                (short)apiVersion,
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            request.ReturnToPool();
+            fetchSessionHandler = _fetchSessions.GetOrAdd((brokerId, connectionIndex), static _ => new FetchSessionHandler());
+            await fetchSessionHandler.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        // Record fetch round-trip duration (~3ns no-op when no listener)
-        Diagnostics.DekafMetrics.FetchDuration.Record(
-            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
-            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
-
-        // Take ownership of pooled memory from the response (if zero-copy was used)
-        var memoryOwner = response.PooledMemoryOwner;
-        response.PooledMemoryOwner = null; // Clear to prevent double-dispose
-
-        // Collect pending fetch data items - we need to assign memory owner to the last one
-        // since FIFO processing means the last one will be disposed last
-        // Reuse list per (broker, connection) across prefetch cycles to avoid per-cycle allocation
-        // Each (broker, connection) pair gets its own list since PrefetchFromBrokerAsync runs
-        // concurrently for different brokers AND different connections to the same broker
-        var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd((brokerId, connectionIndex), static _ => []);
-        pendingItems.Clear();
-
-        // Write to prefetch channel
         try
         {
-            foreach (var topicResponse in response.Responses)
+            // Build fetch request — pass index range to avoid GetRange allocation
+            var topicData = BuildFetchRequestTopics(partitions, partitionStartIndex, partitionCount);
+            FetchSessionBuildResult? fetchSessionBuild = fetchSessionHandler?.Build(topicData, _metadataManager.Metadata);
+
+            var request = FetchRequest.Rent();
+            request.MaxWaitMs = _options.FetchMaxWaitMs;
+            request.MinBytes = _options.FetchMinBytes;
+            request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
+            request.IsolationLevel = _options.IsolationLevel;
+            request.Topics = fetchSessionBuild?.Topics ?? topicData;
+            request.ForgottenTopicsData = fetchSessionBuild?.ForgottenTopicsData;
+            request.SessionId = fetchSessionBuild?.SessionId ?? 0;
+            request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
+
+            var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            FetchResponse response;
+            try
             {
-                var topic = ResolveTopicName(topicResponse);
-                var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
+                response = await connection.SendAsync<FetchRequest, FetchResponse>(
+                    request,
+                    (short)apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                fetchSessionHandler?.HandleError();
+                throw;
+            }
+            finally
+            {
+                request.ReturnToPool();
+            }
 
-                foreach (var partitionResponse in topicResponse.Partitions)
+            // Record fetch round-trip duration (~3ns no-op when no listener)
+            Diagnostics.DekafMetrics.FetchDuration.Record(
+                System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+                new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
+
+            // Take ownership of pooled memory from the response (if zero-copy was used)
+            var memoryOwner = response.PooledMemoryOwner;
+            response.PooledMemoryOwner = null; // Clear to prevent double-dispose
+
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                fetchSessionHandler?.HandleResponse(response);
+                LogFetchSessionError(brokerId, response.ErrorCode);
+                response.ReturnToPool();
+                memoryOwner?.Dispose();
+                return;
+            }
+
+            fetchSessionHandler?.HandleResponse(response);
+
+            // Collect pending fetch data items - we need to assign memory owner to the last one
+            // since FIFO processing means the last one will be disposed last
+            // Reuse list per (broker, connection) across prefetch cycles to avoid per-cycle allocation
+            // Each (broker, connection) pair gets its own list since PrefetchFromBrokerAsync runs
+            // concurrently for different brokers AND different connections to the same broker
+            var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd((brokerId, connectionIndex), static _ => []);
+            pendingItems.Clear();
+
+            // Write to prefetch channel
+            try
+            {
+                foreach (var topicResponse in response.Responses)
                 {
-                    var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+                    var topic = ResolveTopicName(topicResponse);
+                    var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
 
-                    // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                    UpdateWatermarksFromFetchResponse(topic, partitionResponse);
-
-                    if (partitionResponse.ErrorCode != ErrorCode.None)
+                    foreach (var partitionResponse in topicResponse.Partitions)
                     {
-                        if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
+                        var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
+                        // Update watermark cache from fetch response (even on errors, watermarks may be valid)
+                        UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+
+                        if (partitionResponse.ErrorCode != ErrorCode.None)
                         {
-                            // CRITICAL: Reset fetch position based on auto.offset.reset policy
-                            // Without this, we would retry with the same invalid offset forever
-                            var (resetTimestamp, resetName) = _options.AutoOffsetReset switch
+                            if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                             {
-                                AutoOffsetReset.Latest => (-1L, "latest"),
-                                AutoOffsetReset.Earliest => (-2L, "earliest"),
-                                AutoOffsetReset.None => throw new KafkaException(
-                                    ErrorCode.OffsetOutOfRange,
-                                    $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
-                                _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
-                            };
-                            _fetchPositions[tp] = resetTimestamp;
-                            _positions[tp] = resetTimestamp;
-                            LogOffsetOutOfRangeReset(topic, partitionResponse.PartitionIndex, resetName);
+                                // CRITICAL: Reset fetch position based on auto.offset.reset policy
+                                // Without this, we would retry with the same invalid offset forever
+                                var (resetTimestamp, resetName) = _options.AutoOffsetReset switch
+                                {
+                                    AutoOffsetReset.Latest => (-1L, "latest"),
+                                    AutoOffsetReset.Earliest => (-2L, "earliest"),
+                                    AutoOffsetReset.None => throw new KafkaException(
+                                        ErrorCode.OffsetOutOfRange,
+                                        $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
+                                    _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
+                                };
+                                _fetchPositions[tp] = resetTimestamp;
+                                _positions[tp] = resetTimestamp;
+                                LogOffsetOutOfRangeReset(topic, partitionResponse.PartitionIndex, resetName);
+                            }
+                            else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
+                            {
+                                await HandleNotLeaderOrFollowerAsync(
+                                    topic,
+                                    partitionResponse,
+                                    response.NodeEndpoints,
+                                    cancellationToken).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                LogPrefetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                            }
+                            continue;
                         }
-                        else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
+
+                        // Update high watermark from response (thread-safe with ConcurrentDictionary)
+                        _highWatermarks[tp] = partitionResponse.HighWatermark;
+
+                        // Cache Records reference to avoid repeated Volatile.Read from the pool guard
+                        var records = partitionResponse.Records;
+
+                        if (records is { Count: > 0 })
                         {
-                            await HandleNotLeaderOrFollowerAsync(
+                            // We have new records - reset EOF state for this partition
+                            _eofEmitted.TryRemove(tp, out _);
+
+                            var pending = PendingFetchData.Create(
                                 topic,
-                                partitionResponse,
-                                response.NodeEndpoints,
-                                cancellationToken).ConfigureAwait(false);
+                                partitionResponse.PartitionIndex,
+                                records,
+                                partitionResponse.AbortedTransactions,
+                                activityName: activityName);
+
+                            // Track memory before adding to channel
+                            TrackPrefetchedBytes(pending, release: false);
+
+                            // Update fetch positions for next prefetch
+                            UpdateFetchPositionsFromPrefetch(pending);
+
+                            // Collect for later - we'll assign memory owner to the last one
+                            pendingItems.Add(pending);
                         }
-                        else
+                        else if (_options.EnablePartitionEof)
                         {
-                            LogPrefetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
-                        }
-                        continue;
-                    }
+                            // No records returned - check if we're at EOF
+                            var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
 
-                    // Update high watermark from response (thread-safe with ConcurrentDictionary)
-                    _highWatermarks[tp] = partitionResponse.HighWatermark;
-
-                    // Cache Records reference to avoid repeated Volatile.Read from the pool guard
-                    var records = partitionResponse.Records;
-
-                    if (records is { Count: > 0 })
-                    {
-                        // We have new records - reset EOF state for this partition
-                        _eofEmitted.TryRemove(tp, out _);
-
-                        var pending = PendingFetchData.Create(
-                            topic,
-                            partitionResponse.PartitionIndex,
-                            records,
-                            partitionResponse.AbortedTransactions,
-                            activityName: activityName);
-
-                        // Track memory before adding to channel
-                        TrackPrefetchedBytes(pending, release: false);
-
-                        // Update fetch positions for next prefetch
-                        UpdateFetchPositionsFromPrefetch(pending);
-
-                        // Collect for later - we'll assign memory owner to the last one
-                        pendingItems.Add(pending);
-                    }
-                    else if (_options.EnablePartitionEof)
-                    {
-                        // No records returned - check if we're at EOF
-                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
-
-                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                        if (fetchPosition >= partitionResponse.HighWatermark && _eofEmitted.TryAdd(tp, 0))
-                        {
-                            // Queue EOF event and mark as emitted
-                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                            if (fetchPosition >= partitionResponse.HighWatermark && _eofEmitted.TryAdd(tp, 0))
+                            {
+                                // Queue EOF event and mark as emitted
+                                _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            }
                         }
                     }
                 }
             }
+            finally
+            {
+                // Return the response and its nested objects to their pools.
+                // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
+                response.ReturnToPool();
+            }
+
+            // Write all pending items to the channel, with shared memory owner
+            if (pendingItems.Count > 0)
+            {
+                if (memoryOwner is not null)
+                {
+                    AssignSharedMemoryOwner(pendingItems, memoryOwner);
+                    memoryOwner = null; // Transferred
+                }
+
+                for (var i = 0; i < pendingItems.Count; i++)
+                {
+                    while (!_prefetchBuffer.TryWrite(pendingItems[i]))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+
+            // If no pending items were created but we have a memory owner, dispose it
+            memoryOwner?.Dispose();
         }
         finally
         {
-            // Return the response and its nested objects to their pools.
-            // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
-            response.ReturnToPool();
+            fetchSessionHandler?.Release();
         }
-
-        // Write all pending items to the channel, with shared memory owner
-        if (pendingItems.Count > 0)
-        {
-            if (memoryOwner is not null)
-            {
-                AssignSharedMemoryOwner(pendingItems, memoryOwner);
-                memoryOwner = null; // Transferred
-            }
-
-            for (var i = 0; i < pendingItems.Count; i++)
-            {
-                while (!_prefetchBuffer.TryWrite(pendingItems[i]))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
-
-        // If no pending items were created but we have a memory owner, dispose it
-        memoryOwner?.Dispose();
     }
 
     /// <summary>
@@ -2992,11 +3060,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 wakeupCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
+            var fetchSessionSnapshot = _options.EnableFetchSessions && !_fetchSessions.IsEmpty
+                ? _fetchSessions.ToArray()
+                : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
 
             // If all partitions are paused, delay to prevent tight spin loop
             // that would starve timeout/cancellation mechanisms of CPU time
             var brokerCount = partitionsByBroker.Count;
-            if (brokerCount == 0)
+            if (brokerCount == 0 && fetchSessionSnapshot.Length == 0)
             {
                 await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                 return;
@@ -3004,14 +3075,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Fetch from all brokers in parallel for maximum throughput
             // Use pooled array to avoid allocation per fetch cycle
-            var fetchTasks = ArrayPool<Task<List<PendingFetchData>?>>.Shared.Rent(brokerCount);
+            var fetchTasks = ArrayPool<Task<List<PendingFetchData>?>>.Shared.Rent(brokerCount + fetchSessionSnapshot.Length);
             try
             {
-                var i = 0;
+                var taskCount = 0;
+                HashSet<int>? scheduledFetchSessionBrokers = fetchSessionSnapshot.Length == 0 ? null : [];
                 foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
-                    fetchTasks[i++] = FetchFromBrokerWithErrorHandlingAsync(
+                    scheduledFetchSessionBrokers?.Add(brokerId);
+                    fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
                         brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
+                }
+
+                foreach (var (key, handler) in fetchSessionSnapshot)
+                {
+                    if (!handler.HasActiveSession)
+                    {
+                        _fetchSessions.TryRemove(key, out _);
+                        continue;
+                    }
+
+                    if (key.ConnectionIndex != 0)
+                    {
+                        _fetchSessions.TryRemove(key, out _);
+                        continue;
+                    }
+
+                    if (scheduledFetchSessionBrokers is not null && scheduledFetchSessionBrokers.Contains(key.BrokerId))
+                        continue;
+
+                    fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
+                        key.BrokerId, [], wakeupCts.Token, wakeupCts.Token);
+                }
+
+                if (taskCount == 0)
+                {
+                    await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                    return;
                 }
 
                 // Timing wraps the entire parallel fetch cycle (all brokers via Task.WhenAll)
@@ -3021,12 +3121,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 _adaptiveFetchSizer?.RecordFetchStart();
 
                 // ReadOnlySpan overload: same zero-copy benefit as above
-                await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
 
                 _adaptiveFetchSizer?.RecordFetchEnd();
 
                 // Enqueue results from all brokers (now on main thread, safe for Queue)
-                for (var j = 0; j < brokerCount; j++)
+                for (var j = 0; j < taskCount; j++)
                 {
                     var pendingItems = fetchTasks[j].Result;
                     if (pendingItems is not null)
@@ -3226,13 +3326,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Build fetch request - use imperative code to avoid LINQ allocations
         var topicData = BuildFetchRequestTopics(partitions, 0, partitions.Count);
+        FetchSessionHandler? fetchSessionHandler = null;
+        FetchSessionBuildResult? fetchSessionBuild = null;
+        if (_options.EnableFetchSessions && apiVersion >= 7)
+        {
+            fetchSessionHandler = _fetchSessions.GetOrAdd((brokerId, 0), static _ => new FetchSessionHandler());
+            fetchSessionBuild = fetchSessionHandler.Build(topicData, _metadataManager.Metadata);
+        }
 
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
         request.MinBytes = _options.FetchMinBytes;
         request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
         request.IsolationLevel = _options.IsolationLevel;
-        request.Topics = topicData;
+        request.Topics = fetchSessionBuild?.Topics ?? topicData;
+        request.ForgottenTopicsData = fetchSessionBuild?.ForgottenTopicsData;
+        request.SessionId = fetchSessionBuild?.SessionId ?? 0;
+        request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
         var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -3243,6 +3353,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            fetchSessionHandler?.HandleError();
+            throw;
         }
         finally
         {
@@ -3257,6 +3372,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
         response.PooledMemoryOwner = null; // Clear to prevent double-dispose
+
+        if (response.ErrorCode != ErrorCode.None)
+        {
+            fetchSessionHandler?.HandleResponse(response);
+            LogFetchSessionError(brokerId, response.ErrorCode);
+            response.ReturnToPool();
+            memoryOwner?.Dispose();
+            return null;
+        }
+
+        fetchSessionHandler?.HandleResponse(response);
 
         // Collect pending fetch data items - we need to assign memory owner to the last one
         List<PendingFetchData>? pendingItems = null;
@@ -4206,6 +4332,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to fetch from broker {BrokerId}")]
     private partial void LogFetchFromBrokerError(Exception exception, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Fetch session error from broker {BrokerId}: {Error}")]
+    private partial void LogFetchSessionError(int brokerId, ErrorCode error);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Fetch error for {Topic}-{Partition}: {Error}")]
     private partial void LogFetchError(string topic, int partition, ErrorCode error);

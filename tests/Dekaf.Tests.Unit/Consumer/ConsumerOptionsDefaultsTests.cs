@@ -82,6 +82,13 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task EnableFetchSessions_DefaultsTo_True()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.EnableFetchSessions).IsTrue();
+    }
+
+    [Test]
     public async Task MaxPollRecords_DefaultsTo_500()
     {
         var options = CreateOptions();

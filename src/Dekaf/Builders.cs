@@ -828,6 +828,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxConnectionsPerBroker = 4;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
+    private bool _enableFetchSessions = true;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1028,6 +1029,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
             throw new ArgumentOutOfRangeException(nameof(maxWait), "Fetch max wait must be positive");
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxWait.TotalMilliseconds, int.MaxValue, nameof(maxWait));
         _fetchMaxWaitMs = (int)maxWait.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables KIP-227 incremental fetch sessions.
+    /// Enabled by default.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithFetchSessions(bool enabled = true)
+    {
+        _enableFetchSessions = enabled;
         return this;
     }
 
@@ -1490,6 +1501,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             FetchMaxBytes = _fetchMaxBytes,
             MaxPartitionFetchBytes = _maxPartitionFetchBytes,
             FetchMaxWaitMs = _fetchMaxWaitMs,
+            EnableFetchSessions = _enableFetchSessions,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,

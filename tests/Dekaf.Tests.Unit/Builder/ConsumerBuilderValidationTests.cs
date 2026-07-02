@@ -149,6 +149,33 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithFetchSessions_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+        var result = builder.WithFetchSessions(false);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithFetchSessions_DisablesOption()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithFetchSessions(false)
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.EnableFetchSessions).IsFalse();
+    }
+
+    private static ConsumerOptions GetConsumerOptions<TKey, TValue>(IKafkaConsumer<TKey, TValue> consumer)
+    {
+        var field = consumer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (ConsumerOptions)field.GetValue(consumer)!;
+    }
+
+    [Test]
     public async Task WithSessionTimeout_Milliseconds_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

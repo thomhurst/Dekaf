@@ -94,6 +94,11 @@ public sealed class ConsumerOptions
     public int FetchMaxWaitMs { get; init; } = 200;
 
     /// <summary>
+    /// Enable KIP-227 incremental fetch sessions when supported by the broker.
+    /// </summary>
+    public bool EnableFetchSessions { get; init; } = true;
+
+    /// <summary>
     /// Maximum poll records.
     /// </summary>
     public int MaxPollRecords { get; init; } = 500;
