@@ -3606,16 +3606,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)
     {
-        if (_autoCommitTask is not null)
+        var currentTask = _autoCommitTask;
+        if (currentTask is { IsCompleted: false })
+            return;
+
+        if (currentTask is not null)
         {
-            _autoCommitCts?.Cancel();
             try
             {
-                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await currentTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
-                // Swallow — old task may not exit promptly after cancellation
+                // Swallow — old task may have completed from cancellation or fault.
             }
             _autoCommitCts?.Dispose();
         }
