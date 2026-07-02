@@ -89,20 +89,24 @@ public sealed class GzipCompressionCodec : ICompressionCodec
         using var inputStream = new ReadOnlySequenceStream(source);
         using var gzipStream = new GZipStream(inputStream, CompressionMode.Decompress);
 
-        var buffer = ArrayPool<byte>.Shared.Rent(8192);
-        try
+        CompressionStreamCopy.CopyToBufferWriter(gzipStream, destination);
+    }
+}
+
+internal static class CompressionStreamCopy
+{
+    private const int BufferSize = 8192;
+
+    internal static void CopyToBufferWriter(Stream source, IBufferWriter<byte> destination)
+    {
+        while (true)
         {
-            int bytesRead;
-            while ((bytesRead = gzipStream.Read(buffer)) > 0)
-            {
-                var span = destination.GetSpan(bytesRead);
-                buffer.AsSpan(0, bytesRead).CopyTo(span);
-                destination.Advance(bytesRead);
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
+            var span = destination.GetSpan(BufferSize);
+            var bytesRead = source.Read(span);
+            if (bytesRead == 0)
+                break;
+
+            destination.Advance(bytesRead);
         }
     }
 }

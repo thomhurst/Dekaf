@@ -70,21 +70,7 @@ public sealed class BrotliCompressionCodec : ICompressionCodec
         using var inputStream = new ReadOnlySequenceStream(source);
         using var brotliStream = new BrotliStream(inputStream, CompressionMode.Decompress);
 
-        var buffer = ArrayPool<byte>.Shared.Rent(8192);
-        try
-        {
-            int bytesRead;
-            while ((bytesRead = brotliStream.Read(buffer)) > 0)
-            {
-                var span = destination.GetSpan(bytesRead);
-                buffer.AsSpan(0, bytesRead).CopyTo(span);
-                destination.Advance(bytesRead);
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
+        CompressionStreamCopy.CopyToBufferWriter(brotliStream, destination);
     }
 }
 
