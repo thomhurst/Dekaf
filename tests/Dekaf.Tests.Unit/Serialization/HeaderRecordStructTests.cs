@@ -1,3 +1,5 @@
+using System.Buffers;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Serialization;
@@ -119,5 +121,36 @@ public class HeaderRecordStructTests
         var header1 = new Header("key1", data);
         var header2 = new Header("key2", data);
         await Assert.That(header1).IsNotEqualTo(header2);
+    }
+
+    [Test]
+    public async Task Write_LongUtf8Key_RoundTrips()
+    {
+        var key = new string('x', 140) + "-é";
+        var parsed = RoundTrip(new Header(key, "value"u8.ToArray()));
+
+        await Assert.That(parsed.Key).IsEqualTo(key);
+        await Assert.That(parsed.GetValueAsString()).IsEqualTo("value");
+    }
+
+    [Test]
+    public async Task Read_RepeatedKeyBytes_ReusesCachedString()
+    {
+        var key = "trace-id-" + Guid.NewGuid().ToString("N");
+
+        var first = RoundTrip(new Header(key, "one"u8.ToArray()));
+        var second = RoundTrip(new Header(key, "two"u8.ToArray()));
+
+        await Assert.That(second.Key).IsSameReferenceAs(first.Key);
+    }
+
+    private static Header RoundTrip(Header header)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        header.Write(ref writer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        return Header.Read(ref reader);
     }
 }

@@ -604,6 +604,19 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads compact string bytes without decoding them.
+    /// Length is encoded as length + 1 (0 means null).
+    /// </summary>
+    public ReadOnlyMemory<byte>? ReadCompactStringBytes()
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length < 0)
+            return null;
+
+        return ReadMemorySlice(length);
+    }
+
+    /// <summary>
     /// Reads string content of the specified length without additional allocation for single-segment data.
     /// </summary>
     public string ReadStringContent(int length)
