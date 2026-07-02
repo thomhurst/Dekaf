@@ -10,6 +10,15 @@ namespace Dekaf.Compression.Zstd;
 /// </summary>
 public sealed class ZstdCompressionCodec : ICompressionCodec
 {
+    [ThreadStatic]
+    private static Compressor? s_compressor;
+
+    [ThreadStatic]
+    private static int s_compressorLevel;
+
+    [ThreadStatic]
+    private static Decompressor? s_decompressor;
+
     private readonly int _compressionLevel;
 
     /// <summary>
@@ -32,7 +41,7 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
 
     public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        using var compressor = new Compressor(_compressionLevel);
+        var compressor = GetCompressor(_compressionLevel);
 
         var position = source.Start;
         var remaining = source.Length;
@@ -44,10 +53,13 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
             var sourceSpan = segment.Span;
 
             // Process this segment
+            var outputSizeHint = 0;
             while (sourceSpan.Length > 0)
             {
-                var maxOutputSize = Compressor.GetCompressBound(sourceSpan.Length);
-                var destSpan = destination.GetSpan(maxOutputSize);
+                outputSizeHint = outputSizeHint == 0
+                    ? Compressor.GetCompressBound(sourceSpan.Length)
+                    : outputSizeHint;
+                var destSpan = destination.GetSpan(outputSizeHint);
 
                 var status = compressor.WrapStream(sourceSpan, destSpan, out var bytesConsumed, out var bytesWritten, isFinalBlock: false);
                 destination.Advance(bytesWritten);
@@ -58,17 +70,20 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
 
                 if (status == OperationStatus.DestinationTooSmall && bytesConsumed == 0)
                 {
-                    // Need larger buffer
+                    outputSizeHint = GrowDestinationSizeHint(outputSizeHint);
                     continue;
                 }
+
+                outputSizeHint = 0;
             }
 
             // On final segment, finalize the frame
             if (isFinalBlock)
             {
+                var flushSizeHint = 64;
                 while (true)
                 {
-                    var destSpan = destination.GetSpan(64);
+                    var destSpan = destination.GetSpan(flushSizeHint);
                     var status = compressor.WrapStream(ReadOnlySpan<byte>.Empty, destSpan, out _, out var bytesWritten, isFinalBlock: true);
                     destination.Advance(bytesWritten);
 
@@ -77,6 +92,9 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
 
                     if (status == OperationStatus.InvalidData)
                         throw new InvalidOperationException("Zstd compression failed: invalid data");
+
+                    if (status == OperationStatus.DestinationTooSmall && bytesWritten == 0)
+                        flushSizeHint = GrowDestinationSizeHint(flushSizeHint);
                 }
             }
         }
@@ -84,7 +102,7 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
 
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        using var decompressor = new Decompressor();
+        var decompressor = GetDecompressor();
 
         var position = source.Start;
 
@@ -109,6 +127,46 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
                 // NeedMoreData or DestinationTooSmall: continue with next iteration
             }
         }
+    }
+
+    private static Compressor GetCompressor(int compressionLevel)
+    {
+        var compressor = s_compressor;
+        if (compressor is null || s_compressorLevel != compressionLevel)
+        {
+            compressor?.Dispose();
+            compressor = new Compressor(compressionLevel);
+            s_compressor = compressor;
+            s_compressorLevel = compressionLevel;
+            return compressor;
+        }
+
+        compressor.ResetStream();
+        return compressor;
+    }
+
+    private static Decompressor GetDecompressor()
+    {
+        var decompressor = s_decompressor;
+        if (decompressor is null)
+        {
+            decompressor = new Decompressor();
+            s_decompressor = decompressor;
+            return decompressor;
+        }
+
+        decompressor.ResetStream();
+        return decompressor;
+    }
+
+    private static int GrowDestinationSizeHint(int sizeHint)
+    {
+        if (sizeHint <= 0)
+            return 256;
+
+        return sizeHint >= int.MaxValue / 2
+            ? int.MaxValue
+            : sizeHint * 2;
     }
 }
 

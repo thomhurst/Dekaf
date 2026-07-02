@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using System.Text;
 using Dekaf.Compression;
 using Dekaf.Compression.Zstd;
@@ -148,6 +149,63 @@ public class ZstdCompressionCodecTests
 
     #endregion
 
+    #region Context Reuse Tests
+
+    [Test]
+    public async Task ZstdCompressionCodec_Compress_ReusesThreadStaticCompressorForSameLevel()
+    {
+        var codec = new ZstdCompressionCodec();
+        var sameLevelCodec = new ZstdCompressionCodec();
+        var otherLevelCodec = new ZstdCompressionCodec(compressionLevel: 5);
+        var data = "zstd thread-static compressor cache"u8.ToArray();
+
+        Compress(codec, data);
+        var firstCompressor = GetRequiredStaticField("s_compressor");
+
+        Compress(sameLevelCodec, data);
+        var secondCompressor = GetRequiredStaticField("s_compressor");
+
+        Compress(otherLevelCodec, data);
+        var thirdCompressor = GetRequiredStaticField("s_compressor");
+
+        await Assert.That(ReferenceEquals(firstCompressor, secondCompressor)).IsTrue();
+        await Assert.That(ReferenceEquals(firstCompressor, thirdCompressor)).IsFalse();
+    }
+
+    [Test]
+    public async Task ZstdCompressionCodec_Decompress_ReusesThreadStaticDecompressor()
+    {
+        var codec = new ZstdCompressionCodec();
+        var data = "zstd thread-static decompressor cache"u8.ToArray();
+
+        var compressed = Compress(codec, data);
+
+        Decompress(codec, compressed);
+        var firstDecompressor = GetRequiredStaticField("s_decompressor");
+
+        Decompress(codec, compressed);
+        var secondDecompressor = GetRequiredStaticField("s_decompressor");
+
+        await Assert.That(ReferenceEquals(firstDecompressor, secondDecompressor)).IsTrue();
+    }
+
+    [Test]
+    public async Task ZstdCompressionCodec_GrowDestinationSizeHint_DoublesUntilIntMax()
+    {
+        var growDestinationSizeHint = typeof(ZstdCompressionCodec).GetMethod(
+            "GrowDestinationSizeHint",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new MissingMethodException(nameof(ZstdCompressionCodec), "GrowDestinationSizeHint");
+
+        var doubled = (int)growDestinationSizeHint.Invoke(null, [64])!;
+        var capped = (int)growDestinationSizeHint.Invoke(null, [int.MaxValue])!;
+
+        await Assert.That(doubled).IsEqualTo(128);
+        await Assert.That(capped).IsEqualTo(int.MaxValue);
+    }
+
+    #endregion
+
     #region Extension Methods Tests
 
     [Test]
@@ -195,6 +253,29 @@ public class ZstdCompressionCodecTests
     #endregion
 
     #region Helper Classes
+
+    private static byte[] Compress(ZstdCompressionCodec codec, byte[] data)
+    {
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>(data), compressedBuffer);
+        return compressedBuffer.WrittenSpan.ToArray();
+    }
+
+    private static byte[] Decompress(ZstdCompressionCodec codec, byte[] data)
+    {
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Decompress(new ReadOnlySequence<byte>(data), decompressedBuffer);
+        return decompressedBuffer.WrittenSpan.ToArray();
+    }
+
+    private static object GetRequiredStaticField(string name)
+    {
+        var field = typeof(ZstdCompressionCodec).GetField(name, BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new MissingFieldException(typeof(ZstdCompressionCodec).FullName, name);
+
+        return field.GetValue(null)
+            ?? throw new InvalidOperationException($"{name} was not initialized.");
+    }
 
     /// <summary>
     /// Helper class for creating multi-segment ReadOnlySequence for testing.
