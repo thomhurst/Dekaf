@@ -209,10 +209,10 @@ public sealed class FetchResponseTopic
         }
         else
         {
-            topic = reader.ReadCompactString();
+            var topicBytes = reader.ReadCompactStringBytes();
             // Intern topic names to reuse string instances across fetch cycles
-            if (topic is not null)
-                topic = TopicNameInternCache.Intern(topic);
+            if (topicBytes is not null)
+                topic = TopicNameInternCache.Intern(topicBytes.Value);
         }
 
         // Use pooled list to avoid per-topic array allocation

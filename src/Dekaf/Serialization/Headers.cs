@@ -1,6 +1,7 @@
 using System.Collections;
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text;
+using Dekaf.Internal;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 
@@ -237,9 +238,9 @@ public readonly record struct Header
     /// Kafka headers typically reuse the same small set of keys across all messages,
     /// so caching them avoids repeated string allocations. Capped to prevent unbounded growth.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, string> s_keyCache = new();
-    private static int s_keyCacheCount;
     private const int MaxCachedKeys = 128;
+    private const int MaxCachedKeyBytes = 256;
+    private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
 
     /// <summary>
     /// Creates a new header with a byte array value.
@@ -295,12 +296,10 @@ public readonly record struct Header
     /// <summary>
     /// Writes the header to the protocol writer.
     /// </summary>
+    [SkipLocalsInit]
     internal void Write(ref KafkaProtocolWriter writer)
     {
-        // Write key with VarInt length prefix - use the writer's string encoding support
-        var keyByteCount = Encoding.UTF8.GetByteCount(Key);
-        writer.WriteVarInt(keyByteCount);
-        writer.WriteStringContent(Key);
+        WriteKey(ref writer, Key);
 
         if (IsValueNull)
         {
@@ -313,30 +312,41 @@ public readonly record struct Header
         }
     }
 
+    private static void WriteKey(ref KafkaProtocolWriter writer, string key)
+    {
+        if (key.Length <= 128)
+        {
+            Span<byte> buffer = stackalloc byte[512];
+            var actualBytes = Encoding.UTF8.GetBytes(key, buffer);
+            writer.WriteVarInt(actualBytes);
+            if (actualBytes > 0)
+            {
+                var outputSpan = writer.BufferWriter.GetSpan(actualBytes);
+                buffer[..actualBytes].CopyTo(outputSpan);
+                writer.BufferWriter.Advance(actualBytes);
+                writer.AddBytesWritten(actualBytes);
+            }
+            return;
+        }
+
+        var keyByteCount = Encoding.UTF8.GetByteCount(key);
+        writer.WriteVarInt(keyByteCount);
+        if (keyByteCount == 0)
+            return;
+
+        var span = writer.BufferWriter.GetSpan(keyByteCount);
+        Encoding.UTF8.GetBytes(key, span);
+        writer.BufferWriter.Advance(keyByteCount);
+        writer.AddBytesWritten(keyByteCount);
+    }
+
     /// <summary>
     /// Reads a header from the protocol reader.
     /// </summary>
     internal static Header Read(ref KafkaProtocolReader reader)
     {
         var keyLength = reader.ReadVarInt();
-        var key = reader.ReadStringContent(keyLength);
-
-        // Intern the key string: Kafka headers typically reuse the same keys
-        // across all messages, so caching avoids per-message string allocation.
-        // Use TryGetValue first (lock-free read) for the common case where the key is already cached.
-        if (s_keyCache.TryGetValue(key, out var cached))
-        {
-            key = cached;
-        }
-        else if (Volatile.Read(ref s_keyCacheCount) < MaxCachedKeys)
-        {
-            // Only attempt to add if under the cap. The volatile read avoids
-            // ConcurrentDictionary.Count which acquires all bucket locks.
-            if (s_keyCache.TryAdd(key, key))
-            {
-                Interlocked.Increment(ref s_keyCacheCount);
-            }
-        }
+        var key = s_keyCache.Intern(reader.ReadMemorySlice(keyLength));
 
         var valueLength = reader.ReadVarInt();
         var isValueNull = valueLength < 0;

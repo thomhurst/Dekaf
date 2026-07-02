@@ -34,6 +34,20 @@ public class ProduceResponseTests
         produce.Return();
     }
 
+    [Test]
+    public async Task FetchResponseRead_InternsRepeatedTopicNames()
+    {
+        var topicName = "fetch-topic-" + Guid.NewGuid().ToString("N");
+
+        var first = ReadFetchResponse(topicName);
+        var second = ReadFetchResponse(topicName);
+
+        await Assert.That(second.Responses[0].Topic).IsSameReferenceAs(first.Responses[0].Topic);
+
+        first.ReturnToPool();
+        second.ReturnToPool();
+    }
+
     private static ProduceResponse ReadProduceResponse(string topicName)
     {
         var buffer = new ArrayBufferWriter<byte>();
