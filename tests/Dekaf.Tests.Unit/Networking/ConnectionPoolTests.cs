@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Reflection;
 using Dekaf.Networking;
 using Dekaf.Security.Sasl;
 
@@ -105,6 +107,33 @@ public sealed class ConnectionPoolTests
         await using var pool = new ConnectionPool("test-client");
 
         await pool.CloseAllAsync();
+    }
+
+    [Test]
+    public async Task CloseAllAsync_DoesNotDisposeSharedPipeMemoryPool()
+    {
+        var pool = new ConnectionPool("test-client");
+        var sharedPool = GetSharedPipeMemoryPool(pool);
+
+        await pool.CloseAllAsync();
+
+        using (var owner = sharedPool.Rent(1))
+        {
+            await Assert.That(owner.Memory.Length).IsGreaterThanOrEqualTo(1);
+        }
+
+        await pool.DisposeAsync();
+    }
+
+    [Test]
+    public async Task DisposeAsync_DisposesSharedPipeMemoryPool()
+    {
+        var pool = new ConnectionPool("test-client");
+        var sharedPool = GetSharedPipeMemoryPool(pool);
+
+        await pool.DisposeAsync();
+
+        await Assert.That(() => sharedPool.Rent(1)).Throws<ObjectDisposedException>();
     }
 
     [Test]
@@ -340,4 +369,13 @@ public sealed class ConnectionPoolTests
         PrincipalName = "principal",
         Expiration = DateTimeOffset.UtcNow.AddHours(1)
     };
+
+    private static MemoryPool<byte> GetSharedPipeMemoryPool(ConnectionPool pool)
+    {
+        var field = typeof(ConnectionPool).GetField(
+            "_sharedPipeMemoryPool",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        return (MemoryPool<byte>)field!.GetValue(pool)!;
+    }
 }

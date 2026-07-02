@@ -853,11 +853,6 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionReplacementLocks.Clear();
             _groupCreationLocks.Clear();
 
-            // Dispose the shared memory pool after all connections are closed.
-            // At this point, all pipes have been completed and IMemoryOwner<byte> references
-            // returned, so the underlying ArrayPool can be collected by the GC.
-            _sharedPipeMemoryPool?.Dispose();
-
             LogAllConnectionsClosed();
         }
         finally
@@ -872,6 +867,11 @@ public sealed partial class ConnectionPool : IConnectionPool
             return;
 
         await CloseAllAsync().ConfigureAwait(false);
+
+        // Dispose the shared memory pool only when the pool itself is disposed.
+        // Public CloseAllAsync is a reset/reconnect operation; keeping the pool alive
+        // lets subsequent connections reuse it without tripping ObjectDisposedException.
+        _sharedPipeMemoryPool?.Dispose();
 
         _sharedOAuthBearerTokenProvider?.Dispose();
         _disposeLock.Dispose();
