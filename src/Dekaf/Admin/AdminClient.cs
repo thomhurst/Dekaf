@@ -67,21 +67,6 @@ public sealed class AdminClient : IAdminClient
         AdminClientOptions options,
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
-        ILogger<AdminClient>? logger = null,
-        bool ownsResources = false)
-    {
-        _options = options;
-        _connectionPool = connectionPool;
-        _metadataManager = metadataManager;
-        _logger = logger;
-        _telemetryManager = new ClientTelemetryManager(connectionPool, metadataManager);
-        _ownsResources = ownsResources;
-    }
-
-    internal AdminClient(
-        AdminClientOptions options,
-        IConnectionPool connectionPool,
-        MetadataManager metadataManager,
         ILoggerFactory? loggerFactory = null,
         bool ownsResources = false)
     {
