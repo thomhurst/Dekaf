@@ -1883,8 +1883,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 await HandleNotLeaderOrFollowerAsync(
                                     topic,
                                     partitionResponse,
-                                    response.NodeEndpoints,
-                                    cancellationToken).ConfigureAwait(false);
+                                    response.NodeEndpoints).ConfigureAwait(false);
                             }
                             else
                             {
@@ -3412,8 +3411,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             await HandleNotLeaderOrFollowerAsync(
                                 topic,
                                 partitionResponse,
-                                response.NodeEndpoints,
-                                cancellationToken).ConfigureAwait(false);
+                                response.NodeEndpoints).ConfigureAwait(false);
                         }
                         else
                         {
@@ -3620,8 +3618,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private ValueTask HandleNotLeaderOrFollowerAsync(
         string topic,
         FetchResponsePartition partitionResponse,
-        IReadOnlyList<NodeEndpoint> nodeEndpoints,
-        CancellationToken cancellationToken)
+        IReadOnlyList<NodeEndpoint> nodeEndpoints)
     {
         var currentLeader = partitionResponse.CurrentLeader;
         var endpoint = currentLeader is null
@@ -3725,7 +3722,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         catch
         {
-            // Ignore — best-effort refresh may not exit promptly after cancellation.
+            // Leader refresh is best-effort. Shutdown cancels the refresh token before this wait;
+            // if it still outlives the bound, teardown continues and the refresh task observes
+            // any late dependency-disposal exception internally.
         }
     }
 
