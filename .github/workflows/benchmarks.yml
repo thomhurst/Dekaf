@@ -16,9 +16,9 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
-concurrency:
-  group: "benchmarks"
-  cancel-in-progress: false
+# concurrency:
+#   group: "benchmarks"
+#   cancel-in-progress: false
 
 jobs:
   unit-benchmarks:
