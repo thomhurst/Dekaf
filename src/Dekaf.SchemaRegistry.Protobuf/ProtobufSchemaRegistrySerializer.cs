@@ -33,6 +33,7 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
+    private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly Schema _schema;
     private readonly byte[] _encodedMessageIndexes;
 
@@ -74,8 +75,7 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
-        var schemaId = GetSchemaIdSync(subject);
+        var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
 
         // Serialize the protobuf message to bytes using ToByteArray() for compatibility
         // with both generated and hand-coded messages
@@ -100,6 +100,14 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
 
         destination.Advance(totalSize);
     }
+
+    private int GetSchemaIdForContext(string topic, bool isKey)
+        => _subjectSchemaIdCache.GetOrAdd(
+            topic,
+            isKey,
+            this,
+            static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
+            static (serializer, subject) => serializer.GetSchemaIdSync(subject));
 
     private int GetSchemaIdSync(string subject)
     {

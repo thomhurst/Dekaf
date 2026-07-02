@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Protobuf" />
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
   </ItemGroup>

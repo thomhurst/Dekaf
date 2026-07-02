@@ -40,6 +40,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly bool _ownsClient;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
+    private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -94,11 +95,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
-        var schema = _getSchema(subject);
-
-        // Get or register schema ID (cached after first call per subject)
-        var schemaId = GetSchemaIdSync(subject, schema);
+        var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
 
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
         payloadBuffer.ResetWrittenCount();
@@ -117,6 +114,18 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
         destination.Advance(totalSize);
     }
+
+    private int GetSchemaIdForContext(string topic, bool isKey)
+        => _subjectSchemaIdCache.GetOrAdd(
+            topic,
+            isKey,
+            this,
+            static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
+            static (serializer, subject) =>
+            {
+                var schema = serializer._getSchema(subject);
+                return serializer.GetSchemaIdSync(subject, schema);
+            });
 
     private int GetSchemaIdSync(string subject, Schema schema)
     {
