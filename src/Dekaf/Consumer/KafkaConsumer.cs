@@ -691,9 +691,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     : null);
         }
 
-        // Initialize prefetch buffer - bounded by QueuedMinMessages batches
-        var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
-        _prefetchBuffer = new MpscFetchBuffer(prefetchCapacity * 10);
+        _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
 
         // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
@@ -1692,6 +1690,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             fetchMaxBytes);
         var minRequired = fetchResponseSize * (pipelineDepth + 1);
         return Math.Max(configuredMax, minRequired);
+    }
+
+    internal static int CalculatePrefetchBufferCapacity(ConsumerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return PoolSizing.ForConsumerPrefetchBuffer(
+            options.QueuedMaxMessagesKbytes,
+            options.MaxPartitionFetchBytes,
+            options.FetchMaxBytes,
+            options.PrefetchPipelineDepth,
+            options.ConnectionsPerBroker);
     }
 
     internal static bool IsFatalPrefetchError(Exception ex) => ex is

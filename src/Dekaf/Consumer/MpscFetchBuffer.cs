@@ -24,19 +24,30 @@ internal sealed class MpscFetchBuffer
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
-    private volatile bool _producerWaiting;
-    private volatile bool _consumerWaiting;
+    private int _producerWaiterCount;
+    private int _consumerWaiting;
     private volatile bool _completed;
     private volatile Exception? _completionError;
 
     public MpscFetchBuffer(int capacity)
     {
+        if (capacity < 1)
+            throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
+
+        const int MaxPowerOfTwoCapacity = 1 << 30;
+        if (capacity > MaxPowerOfTwoCapacity)
+            throw new ArgumentOutOfRangeException(nameof(capacity), $"Capacity must be <= {MaxPowerOfTwoCapacity}.");
+
         // Round up to next power of 2 for mask-based indexing
         var size = 1;
         while (size < capacity) size <<= 1;
         _buffer = new PendingFetchData?[size];
         _mask = size - 1;
     }
+
+    internal int Capacity => _buffer.Length;
+
+    internal int ProducerWaiterCount => Volatile.Read(ref _producerWaiterCount);
 
     /// <summary>
     /// Attempts to write an item. Safe for concurrent callers (multiple prefetch tasks).
@@ -65,8 +76,9 @@ internal sealed class MpscFetchBuffer
                 spin.SpinOnce();
 
             Volatile.Write(ref _headCommitted.Value, head + 1);
+            Interlocked.MemoryBarrier();
 
-            if (_consumerWaiting)
+            if (Volatile.Read(ref _consumerWaiting) != 0)
                 _dataAvailable.Set();
 
             return true;
@@ -80,22 +92,22 @@ internal sealed class MpscFetchBuffer
     public async ValueTask WaitToWriteAsync(CancellationToken cancellationToken)
     {
         // Fast path: space already available
-        if (Volatile.Read(ref _headReserved.Value) - Volatile.Read(ref _tail.Value) < _buffer.Length)
+        if (HasSpaceAvailable())
             return;
 
         // Slow path: wait for the consumer to drain
-        _producerWaiting = true;
+        Interlocked.Increment(ref _producerWaiterCount);
         try
         {
             // Re-check after setting flag to avoid missed signal
-            if (Volatile.Read(ref _headReserved.Value) - Volatile.Read(ref _tail.Value) < _buffer.Length)
+            if (HasSpaceAvailable())
                 return;
 
             await _spaceAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            _producerWaiting = false;
+            Interlocked.Decrement(ref _producerWaiterCount);
         }
     }
 
@@ -118,8 +130,9 @@ internal sealed class MpscFetchBuffer
         item = _buffer[tail & _mask]!;
         _buffer[tail & _mask] = null;
         Volatile.Write(ref _tail.Value, tail + 1);
+        Interlocked.MemoryBarrier();
 
-        if (_producerWaiting)
+        if (Volatile.Read(ref _producerWaiterCount) > 0)
             _spaceAvailable.Release();
 
         return true;
@@ -144,10 +157,12 @@ internal sealed class MpscFetchBuffer
 
         // Slow path: wait for signal
         _dataAvailable.Reset();
-        _consumerWaiting = true;
+        Volatile.Write(ref _consumerWaiting, 1);
 
         try
         {
+            Interlocked.MemoryBarrier();
+
             // Re-check after reset to avoid missed signal
             if (Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value))
                 return true;
@@ -168,7 +183,7 @@ internal sealed class MpscFetchBuffer
         }
         finally
         {
-            _consumerWaiting = false;
+            Volatile.Write(ref _consumerWaiting, 0);
         }
     }
 
@@ -189,6 +204,10 @@ internal sealed class MpscFetchBuffer
     }
 
     public bool IsCompleted => _completed;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasSpaceAvailable() =>
+        Volatile.Read(ref _headReserved.Value) - Volatile.Read(ref _tail.Value) < _buffer.Length;
 
     /// <summary>
     /// Cache-line-padded index to prevent false sharing between producer and consumer.
