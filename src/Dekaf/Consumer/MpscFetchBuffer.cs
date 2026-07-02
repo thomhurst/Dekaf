@@ -101,7 +101,15 @@ internal sealed class MpscFetchBuffer
         {
             // Re-check after setting flag to avoid missed signal
             if (HasSpaceAvailable())
+            {
+                // A concurrent TryRead that freed the slot also released a permit for us
+                // (it saw _producerWaiterCount > 0). Drain it non-blockingly so the permit
+                // does not linger and spuriously wake a future waiter when the buffer is full.
+                // Wait(0) never blocks and only consumes an already-available permit, so it
+                // cannot suppress a genuine wakeup or stall a still-blocked producer.
+                _spaceAvailable.Wait(0, CancellationToken.None);
                 return;
+            }
 
             await _spaceAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
         }

@@ -129,6 +129,7 @@ public class MpscFetchBufferTests
         await Assert.That(buffer.TryRead(out var readFirst)).IsTrue();
         readFirst!.Dispose();
 
+        // First read frees one slot -> exactly one waiter is released.
         var firstReleased = await Task.WhenAny(waiter1, waiter2).WaitAsync(cts.Token);
         await Assert.That(firstReleased.IsCompletedSuccessfully).IsTrue();
         var completedWaiterCount =
@@ -141,6 +142,7 @@ public class MpscFetchBufferTests
         await Assert.That(buffer.TryRead(out var readSecond)).IsTrue();
         readSecond!.Dispose();
 
+        // Second read frees the remaining slot -> both waiters are released.
         await Task.WhenAll(waiter1, waiter2).WaitAsync(cts.Token);
     }
 
