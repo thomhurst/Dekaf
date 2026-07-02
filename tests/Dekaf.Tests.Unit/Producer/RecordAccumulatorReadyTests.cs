@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Diagnostics;
+using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -14,7 +16,10 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public class RecordAccumulatorReadyTests
 {
-    private static ProducerOptions CreateTestOptions(int batchSize = 1000, int lingerMs = 10)
+    private static ProducerOptions CreateTestOptions(
+        int batchSize = 1000,
+        int lingerMs = 10,
+        CompressionType compressionType = CompressionType.None)
     {
         return new ProducerOptions
         {
@@ -22,7 +27,8 @@ public class RecordAccumulatorReadyTests
             ClientId = "test-producer",
             BufferMemory = ulong.MaxValue,
             BatchSize = batchSize,
-            LingerMs = lingerMs
+            LingerMs = lingerMs,
+            CompressionType = compressionType
         };
     }
 
@@ -92,6 +98,49 @@ public class RecordAccumulatorReadyTests
             var (nextCheckDelayMs, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
 
             // Assert: Node 1 should be ready (partition 0's leader)
+            await Assert.That(readyNodes).Contains(1);
+            await Assert.That(unknownLeadersExist).IsFalse();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_CompressesSealedBatch_OutsideAppendPath()
+    {
+        var options = CreateTestOptions(batchSize: 50, compressionType: CompressionType.Gzip);
+
+        var codec = new CountingCompressionCodec(CompressionType.Gzip);
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(codec);
+
+        var accumulator = new RecordAccumulator(options, compressionCodecs);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.TryAppendWithCompletion("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion);
+            }
+
+            await Assert.That(codec.CompressCount).IsEqualTo(0);
+
+            var readyNodes = new HashSet<int>();
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+
+            await Assert.That(codec.CompressCount).IsEqualTo(1);
             await Assert.That(readyNodes).Contains(1);
             await Assert.That(unknownLeadersExist).IsFalse();
         }
@@ -788,6 +837,28 @@ public class RecordAccumulatorReadyTests
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
             await metadataManager.DisposeAsync();
+        }
+    }
+
+    private sealed class CountingCompressionCodec(CompressionType type) : ICompressionCodec
+    {
+        private int _compressCount;
+
+        public CompressionType Type { get; } = type;
+
+        public int CompressCount => Volatile.Read(ref _compressCount);
+
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            Interlocked.Increment(ref _compressCount);
+            foreach (var segment in source)
+                destination.Write(segment.Span);
+        }
+
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            foreach (var segment in source)
+                destination.Write(segment.Span);
         }
     }
 

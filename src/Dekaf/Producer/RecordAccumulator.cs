@@ -1151,6 +1151,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (head is null)
                 continue;
 
+            if (!head.IsCompressionReady)
+                CompressBatch(head);
+
             // Check retry backoff
             if (head.IsRetry && head.RetryNotBefore > 0)
             {
@@ -1295,9 +1298,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (batch is null)
                     continue;
 
-                // Skip batches still being compressed outside the SpinLock.
-                // CompressAndSignalBatch will enqueue a _readyPartitions
-                // notification when compression finishes.
+                // Safety check: Ready() should have compressed the head batch before
+                // marking this node ready. If another path exposes an unready batch,
+                // leave it in the deque until the next notification.
                 if (!batch.IsCompressionReady)
                     continue;
 
@@ -1974,8 +1977,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
-            CompressAndSignalBatch(sealedBatch);
-            SignalWakeup();
+            PublishSealedBatch(sealedBatch);
         }
 
         return true;
@@ -2127,8 +2129,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
-            CompressAndSignalBatch(sealedBatch);
-            SignalWakeup();
+            PublishSealedBatch(sealedBatch);
         }
 
         return true;
@@ -2205,8 +2206,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
-            CompressAndSignalBatch(sealedBatch);
-            SignalWakeup();
+            PublishSealedBatch(sealedBatch);
         }
 
         return true;
@@ -2340,8 +2340,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (sealedBatch is not null)
         {
-            CompressAndSignalBatch(sealedBatch);
-            SignalWakeup();
+            PublishSealedBatch(sealedBatch);
         }
 
         return true;
@@ -2414,17 +2413,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Seals the current batch in a partition deque and returns the ready batch.
     /// Seals, tracks, and enqueues the batch into the deque under the caller's lock.
-    /// Compression and sender notification happen OUTSIDE the lock via
-    /// <see cref="CompressAndSignalBatch"/> to avoid holding the SpinLock during
-    /// potentially expensive compression (hundreds of microseconds for a full 1MB batch).
+    /// Sender notification happens OUTSIDE the lock via <see cref="PublishSealedBatch"/>.
+    /// Compression is performed later by the sender thread in <see cref="Ready"/> so
+    /// appending threads do not pay per-batch compression tail latency.
     ///
     /// Ordering is preserved because:
     /// 1. The batch is added to the deque (AddLast) under the lock, guaranteeing FIFO order
     ///    even when two threads seal batches for the same partition in rapid succession.
     /// 2. The batch is marked as not yet compression-ready (<see cref="ReadyBatch.IsCompressionReady"/>
-    ///    returns false), so the drain loop skips it until compression finishes.
-    /// 3. The sender notification (_readyPartitions.Enqueue) is deferred until after compression,
-    ///    so the sender won't actively look for this partition either.
+    ///    returns false), so the drain loop skips it until sender-thread compression finishes.
+    /// 3. The sender notification (_readyPartitions.Enqueue) is deferred until after the lock
+    ///    is released, so the sender never observes a partially-enqueued batch.
     ///
     /// MUST be called under pd.Lock.
     /// </summary>
@@ -2443,8 +2442,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             pd.AddLast(readyBatch);
             ProducerDebugCounters.RecordBatchQueuedToReady();
 
-            // Compression and _readyPartitions notification are deferred to
-            // CompressAndSignalBatch(), called by the caller AFTER releasing the lock.
+            // _readyPartitions notification is deferred to PublishSealedBatch(), called
+            // by the caller AFTER releasing the lock. Compression happens in Ready().
         }
         _batchPool.Return(currentBatch);
         pd.CurrentBatch = null;
@@ -2453,16 +2452,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Compresses a sealed batch (if compression is configured) and then notifies the
-    /// sender that the partition has a sendable batch. This runs OUTSIDE the partition
-    /// SpinLock — compression can take hundreds of microseconds for a full 1MB batch,
-    /// and holding a SpinLock that long causes tail latency spikes on appending threads.
+    /// Publishes a sealed batch to the sender loop. Compression, when enabled, is deferred
+    /// to <see cref="Ready"/> so the append caller only pays the queue notification cost.
+    /// </summary>
+    private void PublishSealedBatch(ReadyBatch readyBatch, bool signalWakeup = true)
+    {
+        if (_options.CompressionType == CompressionType.None)
+            readyBatch.MarkCompressionReady();
+
+        _readyPartitions.Enqueue(readyBatch.TopicPartition);
+        if (signalWakeup)
+            SignalWakeup();
+    }
+
+    /// <summary>
+    /// Compresses a sealed batch (if compression is configured). Called by the sender thread
+    /// from <see cref="Ready"/>, outside the partition SpinLock, before the batch can drain.
     ///
     /// Thread safety: the batch is already sealed and in the deque; no other thread can
     /// modify it. The drain loop skips batches where <see cref="ReadyBatch.IsCompressionReady"/>
     /// is false, so the sender won't pick it up until we finish and set the flag.
     /// </summary>
-    private void CompressAndSignalBatch(ReadyBatch readyBatch)
+    private void CompressBatch(ReadyBatch readyBatch)
     {
         if (_options.CompressionType != CompressionType.None)
         {
@@ -2476,16 +2487,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // so subsequent batches in this partition aren't permanently blocked.
                 readyBatch.Fail(ex);
                 readyBatch.MarkCompressionReady();
-                _readyPartitions.Enqueue(readyBatch.TopicPartition);
                 return;
             }
         }
 
         // Mark compression complete so the drain loop can pick up this batch.
         readyBatch.MarkCompressionReady();
-
-        // Notify Ready() that this partition has a sendable batch.
-        _readyPartitions.Enqueue(readyBatch.TopicPartition);
     }
 
     /// <summary>
@@ -2938,7 +2945,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var now = Stopwatch.GetTimestamp();
             var newOldestTicks = long.MaxValue;
-            bool anySealed = false;
+            var anySealed = false;
 
             foreach (var kvp in _partitionDeques)
             {
@@ -2968,7 +2975,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 if (sealedBatch is not null)
                 {
-                    CompressAndSignalBatch(sealedBatch);
+                    PublishSealedBatch(sealedBatch, signalWakeup: false);
                     anySealed = true;
                 }
             }
@@ -4571,7 +4578,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
     /// <summary>
     /// Whether compression has completed (or was not needed) for this batch.
-    /// Set after <see cref="RecordAccumulator.CompressAndSignalBatch"/> finishes.
+    /// Set after <see cref="RecordAccumulator.CompressBatch"/> finishes.
     /// The drain loop skips batches where this is false to avoid sending uncompressed data.
     /// Uses Volatile reads for lock-free checking from the sender thread.
     /// </summary>
@@ -4583,7 +4590,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private int _compressionReady;
 
     /// <summary>
-    /// Marks compression as complete. Called by <see cref="RecordAccumulator.CompressAndSignalBatch"/>
+    /// Marks compression as complete. Called by <see cref="RecordAccumulator.CompressBatch"/>
     /// after compression finishes (or immediately if no compression is configured).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

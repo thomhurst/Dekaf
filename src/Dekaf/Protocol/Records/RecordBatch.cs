@@ -438,8 +438,8 @@ public sealed class RecordBatch : IDisposable
     /// Pre-compressed records data. When set, <see cref="Write"/> skips compression
     /// and uses this data directly. The array is rented from <see cref="ArrayPool{T}"/>
     /// and must be returned by the caller after Write() completes.
-    /// Set by <see cref="PreCompress"/> at batch seal time so compression happens on
-    /// partition-affine append workers instead of the single-threaded send loop.
+    /// Set by <see cref="PreCompress"/> before send so <see cref="Write"/> can emit
+    /// the compressed payload directly.
     /// </summary>
     internal byte[]? PreCompressedRecords { get; private set; }
 
@@ -456,8 +456,8 @@ public sealed class RecordBatch : IDisposable
     internal bool HasPreCompressedRecords => PreCompressedRecords is not null;
 
     /// <summary>
-    /// Pre-compresses the records in this batch. Called at seal time on partition-affine
-    /// append workers to move compression work off the single-threaded send loop.
+    /// Pre-compresses the records in this batch. Producer send paths call this before
+    /// request serialization so <see cref="Write"/> can skip re-compression.
     /// The compressed data is stored in a pooled array and used by <see cref="Write"/>
     /// to skip re-compression. This is a per-batch allocation (acceptable).
     /// </summary>
@@ -485,9 +485,9 @@ public sealed class RecordBatch : IDisposable
             codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
 
             // Copy to a pooled array for storage (scratch buffer will be reused).
-            // Uses ProducerDataPool (not ArrayPool<byte>.Shared) because PreCompress runs on
-            // the producer/accumulator thread but ReturnPreCompressedBuffer runs on the
-            // BrokerSender thread — cross-thread ArrayPool<byte>.Shared causes TLS accumulation.
+            // Uses ProducerDataPool (not ArrayPool<byte>.Shared) because PreCompress and
+            // ReturnPreCompressedBuffer may run on different producer threads; cross-thread
+            // ArrayPool<byte>.Shared use causes TLS accumulation.
             var compressedLength = compressedBuffer.WrittenCount;
             var pooledArray = Producer.ProducerDataPool.BytePool.Rent(compressedLength);
             compressedBuffer.WrittenSpan.CopyTo(pooledArray);
