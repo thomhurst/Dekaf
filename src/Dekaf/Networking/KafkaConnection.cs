@@ -460,7 +460,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
 
         var pending = _pendingRequestPool.Rent();
-        pending.Initialize(responseHeaderVersion, cancellationToken);
+        pending.Initialize(responseHeaderVersion, cancellationToken, registerCancellation: false);
         _pendingRequests[correlationId] = new PendingRequestEntry(pending, pending.Version);
 
         ThrowIfDisposedAfterAddingPendingRequest(correlationId);
@@ -477,7 +477,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
             // Response phase: await response with timeout and parse
             return await AwaitAndParseResponseAsync<TRequest, TResponse>(
-                pending, correlationId, apiVersion, cancellationToken).ConfigureAwait(false);
+                pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -559,7 +559,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// Pipelined overload that skips the per-write CancellationTokenSource rent and
     /// CancellationTokenRegistration allocation. The caller's token must already carry a
     /// timeout (e.g. BrokerSender's sendTimeoutCts).
-    /// The response phase still uses the standard timeout via AwaitAndParseResponseAsync.
     /// </summary>
     /// <remarks>
     /// The caller's token MUST be exclusively a timeout token (e.g., from a CancellationTokenSource
@@ -594,7 +593,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
 
         var pending = _pendingRequestPool.Rent();
-        pending.Initialize(responseHeaderVersion, cancellationToken);
+        pending.Initialize(responseHeaderVersion, cancellationToken, registerCancellation: false);
         _pendingRequests[correlationId] = new PendingRequestEntry(pending, pending.Version);
 
         ThrowIfDisposedAfterAddingPendingRequest(correlationId);
@@ -606,7 +605,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
             // Response phase: await response with timeout, then parse
             return await AwaitAndParseResponseAsync<TRequest, TResponse>(
-                pending, correlationId, apiVersion, cancellationToken).ConfigureAwait(false);
+                pending, correlationId, apiVersion, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -628,6 +627,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         PooledPendingRequest pending,
         int correlationId,
         short apiVersion,
+        bool callerOwnsTimeout,
         CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
@@ -637,25 +637,44 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             LogWaitingForResponse(correlationId);
 
-            using var timeoutCts = _timeoutCtsPool.Rent();
-            timeoutCts.CancelAfter(_options.RequestTimeout);
-            using var reg = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                : default;
-            pending.RegisterCancellation(timeoutCts.Token);
-
             PooledResponseBuffer pooledBuffer;
-            try
+            if (callerOwnsTimeout && cancellationToken.CanBeCanceled)
             {
-                pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                pending.RegisterCancellation(cancellationToken);
+                try
+                {
+                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
+                }
+                finally
+                {
+                    pending.DisposeRegistration();
+                }
             }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            else
             {
-                throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-            }
-            finally
-            {
-                pending.DisposeRegistration();
+                using var timeoutCts = _timeoutCtsPool.Rent();
+                timeoutCts.CancelAfter(_options.RequestTimeout);
+                using var reg = cancellationToken.CanBeCanceled
+                    ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                    : default;
+                pending.RegisterCancellation(timeoutCts.Token);
+
+                try
+                {
+                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
+                }
+                finally
+                {
+                    pending.DisposeRegistration();
+                }
             }
 
             responseReceived = true;
@@ -723,6 +742,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
         }
     }
+
+    private TimeoutException CreateResponseTimeoutException(ApiKey apiKey, int correlationId) =>
+        new($"Request {apiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
 
     /// <summary>
     /// Returns the thread-local request buffer for SASL handshake serialization only.
@@ -2578,13 +2600,13 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// <summary>
     /// Initializes the request for a new operation.
     /// </summary>
-    public void Initialize(short responseHeaderVersion, CancellationToken cancellationToken)
+    public void Initialize(short responseHeaderVersion, CancellationToken cancellationToken, bool registerCancellation = true)
     {
         _responseHeaderVersion = responseHeaderVersion;
         _state = CreateState(_core.Version, StatePending);
 
         // Register for cancellation if the token can be cancelled
-        if (cancellationToken.CanBeCanceled)
+        if (registerCancellation && cancellationToken.CanBeCanceled)
         {
             _cancellationRegistration = cancellationToken.Register(
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
@@ -2598,17 +2620,15 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     public void RegisterCancellation(CancellationToken cancellationToken)
     {
-        if (cancellationToken.CanBeCanceled)
-        {
-            var newRegistration = cancellationToken.Register(
+        var newRegistration = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
-                this);
+                this)
+            : default;
 
-            // Dispose old registration and replace with new one
-            var oldRegistration = _cancellationRegistration;
-            _cancellationRegistration = newRegistration;
-            oldRegistration.Dispose();
-        }
+        var oldRegistration = _cancellationRegistration;
+        _cancellationRegistration = newRegistration;
+        oldRegistration.Dispose();
     }
 
     /// <summary>

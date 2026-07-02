@@ -154,6 +154,29 @@ public class PooledPendingRequestTests
     }
 
     [Test]
+    public async Task Initialize_CanSkipCancellationRegistration()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        var cts = new CancellationTokenSource();
+
+        request.Initialize(responseHeaderVersion: 0, cts.Token, registerCancellation: false);
+
+        cts.Cancel();
+
+        var testData = new byte[] { 0, 0, 0, 1, 42 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        var completed = request.TryComplete(buffer);
+
+        await Assert.That(completed).IsTrue();
+
+        var result = await request.AsValueTask().ConfigureAwait(false);
+        await Assert.That(result.Data.Span[0]).IsEqualTo((byte)42);
+
+        pool.Return(request);
+    }
+
+    [Test]
     public async Task Pool_ReusesInstances()
     {
         var pool = new PendingRequestPool();
@@ -381,6 +404,29 @@ public class PooledPendingRequestTests
         {
             await request.AsValueTask().ConfigureAwait(false);
         });
+
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task RegisterCancellation_WithNonCancelableToken_ReplacesExistingRegistration()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        var cts = new CancellationTokenSource();
+        request.Initialize(responseHeaderVersion: 0, cts.Token);
+
+        request.RegisterCancellation(CancellationToken.None);
+        cts.Cancel();
+
+        var testData = new byte[] { 0, 0, 0, 1, 99 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        var completed = request.TryComplete(buffer);
+
+        await Assert.That(completed).IsTrue();
+
+        var result = await request.AsValueTask().ConfigureAwait(false);
+        await Assert.That(result.Data.Span[0]).IsEqualTo((byte)99);
 
         pool.Return(request);
     }

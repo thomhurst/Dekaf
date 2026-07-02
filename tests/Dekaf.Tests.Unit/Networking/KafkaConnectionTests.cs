@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 
@@ -116,6 +118,39 @@ public sealed class KafkaConnectionTests
         Func<Task> act = () => connection.ConnectAsync().AsTask();
 
         await Assert.That(act).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task SendPipelinedWithCallerTimeoutAsync_ResponseCancellation_ThrowsTimeoutException(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            using var callerTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+            var act = async () => await connection.SendPipelinedWithCallerTimeoutAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                apiVersion: 3,
+                callerTimeout.Token);
+
+            await Assert.That(act).Throws<TimeoutException>();
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     [Test]

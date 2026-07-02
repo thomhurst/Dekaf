@@ -80,8 +80,8 @@ public interface IKafkaConnection : IAsyncDisposable
 
     /// <summary>
     /// Sends a pipelined request where the caller's cancellation token already carries a timeout
-    /// for the write phase. Skips the per-write CancellationTokenSource allocation — a hot-path
-    /// optimization for BrokerSender. The response phase still uses the standard timeout.
+    /// for the write and response phases. Skips per-request timeout CTS/linking on the hot path —
+    /// a hot-path optimization for BrokerSender.
     /// </summary>
     /// <remarks>
     /// The caller's token MUST be exclusively a timeout token (e.g., from a CancellationTokenSource
