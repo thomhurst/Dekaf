@@ -109,14 +109,14 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
-    public async Task StaticMember_RejoinWithinSessionTimeout_SkipsRebalance()
+    public async Task StaticMember_CloseWithoutLeave_DoesNotTriggerImmediateRebalance()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"static-skip-rebalance-{Guid.NewGuid():N}";
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
         var listener1 = new TrackingRebalanceListener();
-        var listener2 = new TrackingRebalanceListener();
+        var dynamicListener = new TrackingRebalanceListener();
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -136,7 +136,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // First consumer with static membership and long session timeout
-        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-1")
             .WithGroupId(groupId)
@@ -145,21 +145,18 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener1)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
-        {
-            consumer1.Subscribe(topic);
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var result = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
-            await Assert.That(result).IsNotNull();
+        consumer1.Subscribe(topic);
 
-            // The first consumer should have been assigned partitions
-            await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(result).IsNotNull();
 
-            await consumer1.CommitAsync();
-        }
+        // The first consumer should have been assigned partitions
+        await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
 
-        // Produce more messages for the second consumer
+        // Produce more messages so the dynamic consumer can join and consume if assigned.
         for (var p = 0; p < 3; p++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -171,32 +168,56 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             }, CancellationToken.None);
         }
 
-        // Rejoin quickly with the same instance ID (within the 30s session timeout)
-        // Since this is a static member, the broker should recognize the instance ID
-        // and skip the rebalance protocol
-        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
+        await using var dynamicConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("static-consumer-2")
+            .WithClientId("dynamic-consumer")
             .WithGroupId(groupId)
-            .WithGroupInstanceId(instanceId)
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithRebalanceListener(listener2)
+            .WithRebalanceListener(dynamicListener)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
-        consumer2.Subscribe(topic);
+        dynamicConsumer.Subscribe(topic);
 
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result2 = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
-        await Assert.That(result2).IsNotNull();
+        try
+        {
+            await dynamicConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // No message on assigned partitions is fine; the poll still drives group join.
+        }
 
-        // The second consumer should have been assigned (at least 1 assignment call),
-        // but the key property of static membership is that there was no revoke/rebalance
-        // triggered for other members. With a single member, we verify assignment succeeds
-        // and the revoked count stays at zero for the new consumer.
-        await Assert.That(listener2.AssignedCallCount).IsGreaterThanOrEqualTo(1);
-        await Assert.That(listener2.RevokedCallCount).IsEqualTo(0);
+        await WaitForConditionAsync(
+            () => dynamicConsumer.Assignment.Any(tp => tp.Topic == topic),
+            TimeSpan.FromSeconds(30));
+
+        var dynamicAssignmentBeforeClose = dynamicConsumer.Assignment
+            .Where(tp => tp.Topic == topic)
+            .Select(tp => tp.Partition)
+            .OrderBy(p => p)
+            .ToArray();
+        var dynamicRevokedBeforeClose = dynamicListener.RevokedCallCount;
+
+        await consumer1.CommitAsync();
+        await consumer1.CloseAsync(new ConsumerCloseOptions
+        {
+            LeaveGroup = false,
+            Timeout = TimeSpan.FromSeconds(10)
+        });
+
+        await Task.Delay(TimeSpan.FromSeconds(5));
+
+        var dynamicAssignmentAfterClose = dynamicConsumer.Assignment
+            .Where(tp => tp.Topic == topic)
+            .Select(tp => tp.Partition)
+            .OrderBy(p => p)
+            .ToArray();
+
+        await Assert.That(dynamicAssignmentAfterClose).IsEquivalentTo(dynamicAssignmentBeforeClose);
+        await Assert.That(dynamicListener.RevokedCallCount).IsEqualTo(dynamicRevokedBeforeClose);
     }
 
     [Test]

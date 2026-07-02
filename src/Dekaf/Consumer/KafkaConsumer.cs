@@ -4037,20 +4037,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <inheritdoc />
-    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    public ValueTask CloseAsync(CancellationToken cancellationToken = default) =>
+        CloseAsync(new ConsumerCloseOptions(), cancellationToken);
+
+    /// <inheritdoc />
+    public async ValueTask CloseAsync(ConsumerCloseOptions options, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.Timeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.Timeout.TotalMilliseconds, int.MaxValue);
+
         // Idempotent - return early if already closed/disposed
         if (Interlocked.Exchange(ref _closed, 1) != 0 || Volatile.Read(ref _consumerDisposed) != 0)
             return;
 
-        await CloseAsyncCore(cancellationToken).ConfigureAwait(false);
+        using var timeoutCts = new CancellationTokenSource(options.Timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+
+        await CloseAsyncCore(options.LeaveGroup, linkedCts.Token).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Core teardown logic shared by <see cref="CloseAsync"/> and <see cref="DisposeAsync"/>.
     /// Callers must ensure this is invoked at most once via an atomic CAS on <c>_closed</c>.
     /// </summary>
-    private async ValueTask CloseAsyncCore(CancellationToken cancellationToken)
+    private async ValueTask CloseAsyncCore(bool leaveGroup, CancellationToken cancellationToken)
     {
         LogClosingConsumer();
 
@@ -4123,13 +4136,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Step 5: Send LeaveGroup request to coordinator
+        // Step 6: Close group coordination, optionally sending LeaveGroup.
         if (_coordinator is not null)
         {
             try
             {
-                await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
-                LogLeftConsumerGroup();
+                await _coordinator.CloseGroupAsync(leaveGroup, cancellationToken).ConfigureAwait(false);
+                if (leaveGroup)
+                    LogLeftConsumerGroup();
             }
             catch (Exception ex)
             {
@@ -4137,10 +4151,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Step 6: Cancel any blocked fetch operations
+        // Step 7: Cancel any blocked fetch operations
         CancelActiveConsumeOperations();
 
-        // Step 7: Clear pending fetch data and dispose to release pooled memory
+        // Step 8: Clear pending fetch data and dispose to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
             pending.Dispose();
@@ -4314,7 +4328,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                await CloseAsyncCore(cts.Token).ConfigureAwait(false);
+                await CloseAsyncCore(leaveGroup: true, cancellationToken: cts.Token).ConfigureAwait(false);
             }
             catch
             {

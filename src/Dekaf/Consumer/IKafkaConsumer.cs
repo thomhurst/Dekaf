@@ -4,6 +4,24 @@ using Dekaf.Serialization;
 namespace Dekaf.Consumer;
 
 /// <summary>
+/// Controls consumer shutdown behavior.
+/// </summary>
+public sealed class ConsumerCloseOptions
+{
+    /// <summary>
+    /// Whether to explicitly leave the consumer group on close.
+    /// Set to <see langword="false" /> for static membership handoff scenarios where the broker
+    /// should preserve the member slot until the session timeout expires.
+    /// </summary>
+    public bool LeaveGroup { get; init; } = true;
+
+    /// <summary>
+    /// Maximum time to wait for pending commits and leave-group during close.
+    /// </summary>
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
+}
+
+/// <summary>
 /// Interface for Kafka consumer.
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
@@ -155,8 +173,9 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     IReadOnlySet<TopicPartition> Paused { get; }
 
     /// <summary>
-    /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
-    /// commits pending offsets, leaves the consumer group, and releases resources.
+    /// Gracefully closes the consumer with default close options: stops background tasks
+    /// (heartbeat, auto-commit, prefetch), commits pending offsets, leaves the consumer group,
+    /// and releases resources.
     /// </summary>
     /// <remarks>
     /// <para><b>Optional:</b> Calling <c>CloseAsync</c> explicitly is not required.
@@ -173,6 +192,19 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task representing the asynchronous close operation.</returns>
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gracefully closes the consumer with caller-specified close options.
+    /// </summary>
+    /// <remarks>
+    /// Set <see cref="ConsumerCloseOptions.LeaveGroup" /> to <see langword="false" /> when using
+    /// static membership and the member slot should be preserved for a quick restart with the same
+    /// group instance ID.
+    /// </remarks>
+    /// <param name="options">Close behavior options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous close operation.</returns>
+    ValueTask CloseAsync(ConsumerCloseOptions options, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Look up the offsets for the given partitions by timestamp.

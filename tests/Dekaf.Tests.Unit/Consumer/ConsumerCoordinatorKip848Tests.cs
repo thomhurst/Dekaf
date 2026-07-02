@@ -480,6 +480,50 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_CloseGroup_WithLeaveGroupTrue_SendsMemberEpochNegativeOne()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        _connection.ClearReceivedCalls();
+
+        SetupConsumerGroupHeartbeat();
+
+        await coordinator.CloseGroupAsync(leaveGroup: true, cancellationToken: CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.MemberEpoch == -1),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_CloseGroup_WithLeaveGroupFalse_SkipsLeaveHeartbeat()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(groupInstanceId: "static-instance-1");
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        _connection.ClearReceivedCalls();
+
+        SetupConsumerGroupHeartbeat();
+
+        await coordinator.CloseGroupAsync(leaveGroup: false, cancellationToken: CancellationToken.None);
+
+        await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.MemberEpoch == -1),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.MemberId).IsNull();
+    }
+
+    [Test]
     public async Task ConsumerProtocol_LeaveGroup_ResetsState()
     {
         SetupSuccessfulConsumerProtocolJoin();

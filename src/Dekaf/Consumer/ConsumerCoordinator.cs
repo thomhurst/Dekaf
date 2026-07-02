@@ -664,6 +664,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 $"ConsumerGroupHeartbeat: fenced member epoch: {response.ErrorMessage}")
             { GroupId = _options.GroupId },
 
+            ErrorCode.FencedInstanceId => new GroupException(response.ErrorCode,
+                $"ConsumerGroupHeartbeat: fenced instance ID '{_options.GroupInstanceId}': {response.ErrorMessage}")
+            { GroupId = _options.GroupId },
+
             ErrorCode.UnreleasedInstanceId => new GroupException(response.ErrorCode,
                 $"ConsumerGroupHeartbeat: unreleased instance ID '{_options.GroupInstanceId}': {response.ErrorMessage}")
             { GroupId = _options.GroupId },
@@ -1042,6 +1046,35 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
 
         await LeaveGroupConsumerProtocolAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Closes group coordination state, optionally sending an explicit leave-group heartbeat.
+    /// </summary>
+    /// <param name="leaveGroup">Whether to explicitly leave the group.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    internal async ValueTask CloseGroupAsync(bool leaveGroup, CancellationToken cancellationToken = default)
+    {
+        if (leaveGroup)
+        {
+            await LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        await StopHeartbeatAsync().ConfigureAwait(false);
+
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ResetMemberState();
+        }
+        finally
+        {
+            _lock.Release();
+        }
     }
 
     /// <summary>

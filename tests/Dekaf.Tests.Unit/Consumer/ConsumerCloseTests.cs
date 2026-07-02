@@ -11,6 +11,15 @@ public class ConsumerCloseTests
     #region Consumer CloseAsync Idempotency Tests
 
     [Test]
+    public async Task ConsumerCloseOptions_DefaultsToLeaveGroupWithThirtySecondTimeout()
+    {
+        var options = new ConsumerCloseOptions();
+
+        await Assert.That(options.LeaveGroup).IsTrue();
+        await Assert.That(options.Timeout).IsEqualTo(TimeSpan.FromSeconds(30));
+    }
+
+    [Test]
     public async Task KafkaConsumer_CloseAsync_IsIdempotent()
     {
         // Create a minimal consumer for testing
@@ -36,6 +45,76 @@ public class ConsumerCloseTests
         // Verify consumer state reflects closed status
         var subscription = consumer.Subscription;
         await Assert.That(subscription.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task KafkaConsumer_CloseAsync_WithOptions_IsIdempotent()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-consumer"
+        };
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        await consumer.CloseAsync(new ConsumerCloseOptions
+        {
+            LeaveGroup = false,
+            Timeout = TimeSpan.FromSeconds(1)
+        });
+
+        await consumer.CloseAsync(new ConsumerCloseOptions
+        {
+            LeaveGroup = true,
+            Timeout = TimeSpan.FromSeconds(1)
+        });
+
+        var subscription = consumer.Subscription;
+        await Assert.That(subscription.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task KafkaConsumer_CloseAsync_WithNullOptions_ThrowsArgumentNullException()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-consumer"
+        };
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        await Assert.That(async () =>
+        {
+            await consumer.CloseAsync(null!);
+        }).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task KafkaConsumer_CloseAsync_WithNegativeTimeout_ThrowsArgumentOutOfRangeException()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-consumer"
+        };
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        await Assert.That(async () =>
+        {
+            await consumer.CloseAsync(new ConsumerCloseOptions { Timeout = TimeSpan.FromMilliseconds(-1) });
+        }).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
