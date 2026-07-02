@@ -35,7 +35,7 @@ internal sealed class PendingFetchData : IDisposable
     private const int DefaultMaxPoolSize = 128;
     private static int s_maxPoolSize = DefaultMaxPoolSize;
     private static LockFreeStack<PendingFetchData> s_pool = new(DefaultMaxPoolSize);
-    private static readonly object s_resizeLock = new();
+    private static readonly Lock s_resizeLock = new();
 
     internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
 
