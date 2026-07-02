@@ -24,6 +24,54 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task SealCurrentBatch_NotifiesBatchCompletionCallback()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 30,
+            LingerMs = 10
+        };
+        var callbackCount = 0;
+        string? callbackTopic = null;
+        var callbackPartitionCount = 0;
+
+        await using var accumulator = new RecordAccumulator(
+            options,
+            onBatchComplete: (topic, partitionCount) =>
+            {
+                callbackCount++;
+                callbackTopic = topic;
+                callbackPartitionCount = partitionCount;
+            });
+
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < 2; i++)
+        {
+            var appended = await accumulator.AppendAsync(
+                "test-topic",
+                partition: 0,
+                timestamp + i,
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 3);
+
+            await Assert.That(appended).IsTrue();
+        }
+
+        await Assert.That(callbackCount).IsEqualTo(1);
+        await Assert.That(callbackTopic).IsEqualTo("test-topic");
+        await Assert.That(callbackPartitionCount).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task PartitionBatch_Complete_CalledTwice_ReturnsIdempotent()
     {
         // This test verifies that calling Complete() multiple times on the same PartitionBatch

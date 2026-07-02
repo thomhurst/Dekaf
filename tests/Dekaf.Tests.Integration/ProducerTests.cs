@@ -384,6 +384,38 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Producer_WithStickyPartitioner_RotatesAcrossCompletedBatches()
+    {
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-sticky-rotates")
+            .WithPartitioner(PartitionerType.Sticky)
+            .WithBatchSize(256)
+            .WithLinger(TimeSpan.Zero)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // Act - each awaited null-key message completes its batch before the next partition choice.
+        var partitions = new HashSet<int>();
+        for (var i = 0; i < 9; i++)
+        {
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = null,
+                Value = new string('x', 128)
+            }, CancellationToken.None);
+            partitions.Add(metadata.Partition);
+        }
+
+        // Assert - sticky partition advances as batches complete, so traffic spreads over time.
+        await Assert.That(partitions.Count).IsGreaterThan(1);
+    }
+
+    [Test]
     public async Task Producer_WithRoundRobinPartitioner_DistributesMessages()
     {
         // Arrange
