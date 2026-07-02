@@ -13,6 +13,9 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// </summary>
 public class BuildFetchResultTests
 {
+    private static readonly int[] ExpectedForgottenPartitions = [0, 2];
+    private static readonly int[] ExpectedSingleForgottenPartition = [0];
+
     private static (Dictionary<string, List<(FetchRequestPartition, TopicPartition)>> Template, TopicPartition Tp)
         CreateSinglePartitionTemplate(string topic = "topic-a", int partition = 0)
     {
@@ -25,6 +28,27 @@ public class BuildFetchResultTests
             ]
         };
         return (dict, tp);
+    }
+
+    private static ClusterMetadata CreateClusterMetadata(string topic, Guid topicId)
+    {
+        var clusterMetadata = new ClusterMetadata();
+        clusterMetadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    Name = topic,
+                    TopicId = topicId,
+                    ErrorCode = ErrorCode.None,
+                    Partitions = [new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }]
+                }
+            ]
+        });
+
+        return clusterMetadata;
     }
 
     [Test]
@@ -121,21 +145,7 @@ public class BuildFetchResultTests
         var (templateDict, tp0) = CreateSinglePartitionTemplate();
         var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 42 };
 
-        var clusterMetadata = new ClusterMetadata();
-        clusterMetadata.Update(new MetadataResponse
-        {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            Topics =
-            [
-                new TopicMetadata
-                {
-                    Name = "topic-a",
-                    TopicId = topicId,
-                    ErrorCode = ErrorCode.None,
-                    Partitions = [new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }]
-                }
-            ]
-        });
+        var clusterMetadata = CreateClusterMetadata("topic-a", topicId);
 
         var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions, clusterMetadata: clusterMetadata);
 
@@ -162,5 +172,50 @@ public class BuildFetchResultTests
         var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions, clusterMetadata: null);
 
         await Assert.That(result[0].TopicId).IsEqualTo(Guid.Empty);
+    }
+
+    [Test]
+    public async Task BuildForgottenTopicsData_WithClusterMetadata_PopulatesTopicId()
+    {
+        var topicId = Guid.NewGuid();
+        var forgottenPartitions = new Dictionary<string, List<int>>
+        {
+            ["topic-a"] = [0, 2]
+        };
+        var clusterMetadata = CreateClusterMetadata("topic-a", topicId);
+
+        var result = KafkaConsumer<string, string>.BuildForgottenTopicsData(forgottenPartitions, clusterMetadata);
+
+        await Assert.That(result[0].Topic).IsEqualTo("topic-a");
+        await Assert.That(result[0].TopicId).IsEqualTo(topicId);
+        await Assert.That(result[0].Partitions).IsEquivalentTo(ExpectedForgottenPartitions);
+    }
+
+    [Test]
+    public async Task BuildForgottenTopicsData_WithMissingMetadata_ReturnsEmptyGuid()
+    {
+        var forgottenPartitions = new Dictionary<string, List<int>>
+        {
+            ["unknown-topic"] = [1]
+        };
+
+        var result = KafkaConsumer<string, string>.BuildForgottenTopicsData(forgottenPartitions, new ClusterMetadata());
+
+        await Assert.That(result[0].TopicId).IsEqualTo(Guid.Empty);
+    }
+
+    [Test]
+    public async Task BuildForgottenTopicsData_CopiesPartitions()
+    {
+        var partitions = new List<int> { 0 };
+        var forgottenPartitions = new Dictionary<string, List<int>>
+        {
+            ["topic-a"] = partitions
+        };
+
+        var result = KafkaConsumer<string, string>.BuildForgottenTopicsData(forgottenPartitions);
+        partitions.Add(1);
+
+        await Assert.That(result[0].Partitions).IsEquivalentTo(ExpectedSingleForgottenPartition);
     }
 }

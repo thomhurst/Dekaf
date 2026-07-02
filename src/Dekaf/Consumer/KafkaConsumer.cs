@@ -3550,6 +3550,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return result;
     }
 
+    internal static List<ForgottenTopic> BuildForgottenTopicsData(
+        Dictionary<string, List<int>> forgottenPartitions,
+        ClusterMetadata? clusterMetadata = null)
+    {
+        var result = new List<ForgottenTopic>(forgottenPartitions.Count);
+
+        foreach (var kvp in forgottenPartitions)
+        {
+            result.Add(new ForgottenTopic
+            {
+                Topic = kvp.Key,
+                TopicId = clusterMetadata?.GetTopic(kvp.Key)?.TopicId ?? Guid.Empty,
+                Partitions = [.. kvp.Value]
+            });
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// Order-independent partition list equality check.
     /// Uses O(n²) comparison for small lists (allocation-free), O(n) HashSet for larger lists.

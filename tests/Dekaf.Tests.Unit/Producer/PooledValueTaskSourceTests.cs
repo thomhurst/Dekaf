@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
@@ -727,15 +728,38 @@ public class PooledValueTaskSourceTests
             continuationFinished.SetResult();
         });
 
-        var completionTask = Task.Run(complete);
-        var completedBeforeRelease = await Task.WhenAny(
-                completionTask,
-                Task.Delay(TimeSpan.FromSeconds(2)))
-            .ConfigureAwait(false) == completionTask;
+        Exception? completionException = null;
+        using var completionReturned = new ManualResetEventSlim();
+        var completionThread = new Thread(() =>
+        {
+            try
+            {
+                complete();
+            }
+            catch (Exception ex)
+            {
+                completionException = ex;
+            }
+            finally
+            {
+                completionReturned.Set();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "ValueTaskSource completion probe"
+        };
+
+        completionThread.Start();
+        var completedBeforeRelease = completionReturned.Wait(TimeSpan.FromSeconds(2));
 
         releaseContinuation.Set();
 
-        await completionTask.ConfigureAwait(false);
+        if (!completionReturned.Wait(TimeSpan.FromSeconds(5)))
+            throw new TimeoutException("Completion did not return after releasing continuation.");
+
+        if (completionException is not null)
+            ExceptionDispatchInfo.Capture(completionException).Throw();
         await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
         await Assert.That(completedBeforeRelease).IsTrue();
