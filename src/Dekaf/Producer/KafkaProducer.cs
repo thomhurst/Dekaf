@@ -2187,7 +2187,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private BrokerSender GetOrCreateBrokerSender(int brokerId)
     {
-        var sender = _brokerSenders.GetOrAdd(brokerId, CreateBrokerSender);
+        var sender = GetExistingOrCreateBrokerSender(brokerId);
 
         if (sender.IsAlive)
             return sender;
@@ -2209,7 +2209,21 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Another thread replaced it concurrently — dispose ours, use theirs
         _ = replacement.DisposeAsync();
-        return _brokerSenders.GetOrAdd(brokerId, CreateBrokerSender);
+        return GetExistingOrCreateBrokerSender(brokerId);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private BrokerSender GetExistingOrCreateBrokerSender(int brokerId)
+    {
+        if (_brokerSenders.TryGetValue(brokerId, out var sender))
+        {
+            return sender;
+        }
+
+        return _brokerSenders.GetOrAdd(
+            brokerId,
+            static (id, producer) => producer.CreateBrokerSender(id),
+            this);
     }
 
     private BrokerSender CreateBrokerSender(int brokerId)
