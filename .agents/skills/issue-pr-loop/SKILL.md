@@ -223,16 +223,16 @@ gh api repos/{owner}/{repo}/issues/{N}/comments
 gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{body author{login}}}}}}}}' -F owner=... -F repo=... -F pr=N
 ```
 
-Actionable means an inline comment with `position != null` and no reply from you, or any unresolved thread. This forces ADDRESS, not WAITING.
+Actionable means any of: (a) a **review** (`pulls/{N}/reviews`) whose `state` is `CHANGES_REQUESTED`, or whose top-level body raises a concern/finding/suggestion — even when `state=COMMENTED` (bots and humans post blocking findings in the review body, not inline; `COMMENTED` is **not** non-blocking); (b) an inline comment with `position != null` and no reply from you; or (c) any unresolved review thread. Check **reviews AND inline threads** — a PR can have zero unresolved threads yet a review body demanding changes. Only an empty/boilerplate review body (e.g. a Codex "will react 👍 if nothing to add" header) is non-blocking. When unsure, treat the review as blocking. This forces ADDRESS, not WAITING.
 
 ### State to Action
 
 | State | Required signals | Action |
 |-------|------------------|--------|
-| MERGE | `MERGEABLE` + `CLEAN` + all `statusCheckRollup` `COMPLETED` and `SUCCESS`/`SKIPPED`/`NEUTRAL` + zero unresolved threads + zero unaddressed comments + (approved or repo does not gate on approval) + bot had a CI cycle since your last fix push | Run the fail-closed gate (§ Merge Command); merge only if `Assert-PrGreen.ps1` exits 0 |
+| MERGE | `MERGEABLE` + `CLEAN` + all `statusCheckRollup` `COMPLETED` and `SUCCESS`/`SKIPPED`/`NEUTRAL` + zero unresolved threads + zero unaddressed inline comments + **no review requesting changes or raising a concern in its body** (check `pulls/{N}/reviews`, not just threads) + (approved or repo does not gate on approval) + bot had a CI cycle since your last fix push | Run the fail-closed gate (§ Merge Command); merge only if `Assert-PrGreen.ps1` exits 0 |
 | CONFLICTS | `mergeStateStatus=DIRTY` | `git fetch origin main`; run rebase with editors disabled: `git -c core.editor=true -c sequence.editor=true rebase origin/main`; resolve; continue with `git -c core.editor=true -c sequence.editor=true rebase --continue` so Git does not wait for interactive message editing; `git push --force-with-lease`. If conflicts touch code you cannot resolve confidently, abort the rebase, leave a PR comment noting the blocker, release the lock, and work another item. |
 | CI FAILING | Any check `conclusion=FAILURE` | `gh pr checks <n>`; `gh run view <id> --log-failed`; fix the root cause as part of the loop; push. Rerun only if confirmed flaky: `gh run rerun <id> --failed`. |
-| ADDRESS | Any actionable comment/thread | Apply fixes. Reply per thread with what changed or why not. Push. Do not merge same iteration; bots run on push, so let one CI cycle pass. |
+| ADDRESS | Any actionable review, inline comment, or thread | Apply fixes. Reply per thread — and per blocking review body — with what changed or why not. Push. Do not merge same iteration; bots run on push, so let one CI cycle pass. |
 | WAITING | CI green, no new comments since last push | Skip. |
 
 Approval gate heuristic: if recent merged PRs on `main` lacked `reviewDecision=APPROVED`, the repo does not require human approval; green CI and clean threads suffice.
