@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 
@@ -5,6 +6,9 @@ namespace Dekaf.Tests.Unit.Consumer;
 
 public class PendingFetchDataTests
 {
+    private static readonly FieldInfo ActivityNameField = typeof(PendingFetchData)
+        .GetField("_activityName", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
     [Test]
     public async Task Constructor_WithActivityName_UsesCachedValue()
     {
@@ -23,7 +27,7 @@ public class PendingFetchDataTests
     }
 
     [Test]
-    public async Task Constructor_WithoutActivityName_GeneratesActivityName()
+    public async Task Constructor_WithoutActivityName_DefersActivityNameAllocation()
     {
         // Arrange
         const string topic = "my-topic";
@@ -33,8 +37,24 @@ public class PendingFetchDataTests
             partitionIndex: 0,
             batches: Array.Empty<RecordBatch>());
 
-        // Assert - falls back to string interpolation
+        // Assert - no tracing listener has requested the activity name yet.
+        await Assert.That(ActivityNameField.GetValue(pending)).IsNull();
+    }
+
+    [Test]
+    public async Task ActivityName_WithoutProvidedName_GeneratesOnDemand()
+    {
+        // Arrange
+        const string topic = "my-topic";
+
+        using var pending = PendingFetchData.Create(
+            topic,
+            partitionIndex: 0,
+            batches: Array.Empty<RecordBatch>());
+
+        // Assert - falls back to lazy activity name creation
         await Assert.That(pending.ActivityName).IsEqualTo("my-topic receive");
+        await Assert.That(ActivityNameField.GetValue(pending)).IsSameReferenceAs(pending.ActivityName);
     }
 
     [Test]
@@ -97,7 +117,7 @@ public class PendingFetchDataTests
     public async Task RatchetPoolSize_DoesNotDecrease()
     {
         // Ratchet to a known high value first to avoid ordering dependency with other tests
-        PendingFetchData.RatchetPoolSize(50_000);
+        PendingFetchData.RatchetPoolSize(PendingFetchData.MaxPoolSizeValue + 100);
         var current = PendingFetchData.MaxPoolSizeValue;
 
         // Try to ratchet down — should be no-op

@@ -30,16 +30,28 @@ namespace Dekaf.Consumer;
 internal sealed class PendingFetchData : IDisposable
 {
     // Pool for reusing PendingFetchData instances to eliminate per-partition-per-fetch allocation.
-    // Typically 1-6 instances per fetch cycle. Soft limit avoids ConcurrentStack.Count overhead.
-    private static readonly ConcurrentStack<PendingFetchData> s_pool = new();
-    private static int s_poolCount;
+    // LockFreeStack avoids the ConcurrentStack node allocation on every return to the pool.
     private const int DefaultMaxPoolSize = 128;
     private static int s_maxPoolSize = DefaultMaxPoolSize;
+    private static LockFreeStack<PendingFetchData> s_pool = new(DefaultMaxPoolSize);
 
     internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
 
-    internal static void RatchetPoolSize(int newSize) =>
-        InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
+    internal static void RatchetPoolSize(int newSize)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref s_maxPoolSize);
+            if (newSize <= current)
+                return;
+
+            if (Interlocked.CompareExchange(ref s_maxPoolSize, newSize, current) == current)
+            {
+                Volatile.Write(ref s_pool, new LockFreeStack<PendingFetchData>(newSize));
+                return;
+            }
+        }
+    }
 
     private IReadOnlyList<RecordBatch> _batches = null!;
     private Dictionary<long, Queue<long>>? _abortedProducers;
@@ -53,9 +65,20 @@ internal sealed class PendingFetchData : IDisposable
     public int PartitionIndex { get; private set; }
 
     /// <summary>
-    /// Cached activity name to avoid per-record string interpolation in consume loop.
+    /// Cached activity name for tracing. Lazily created so no-listener consume paths avoid
+    /// the per-fetch string allocation.
     /// </summary>
-    internal string ActivityName { get; private set; } = null!;
+    private string? _activityName;
+
+    internal string ActivityName
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            var activityName = _activityName;
+            return activityName ?? CreateActivityName();
+        }
+    }
 
     /// <summary>
     /// Cached TopicPartition to avoid per-message allocation in consume loop.
@@ -97,7 +120,7 @@ internal sealed class PendingFetchData : IDisposable
         var instance = Rent();
         instance.Topic = topic;
         instance.PartitionIndex = partitionIndex;
-        instance.ActivityName = activityName ?? $"{topic} receive";
+        instance._activityName = activityName;
         instance.TopicPartition = new TopicPartition(topic, partitionIndex);
         instance._batches = batches;
         instance._memoryOwner = memoryOwner;
@@ -123,13 +146,20 @@ internal sealed class PendingFetchData : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static PendingFetchData Rent()
     {
-        if (s_pool.TryPop(out var instance))
+        if (Volatile.Read(ref s_pool).TryPop(out var instance))
         {
-            Interlocked.Decrement(ref s_poolCount);
             Volatile.Write(ref instance._disposed, 0);
             return instance;
         }
         return new PendingFetchData();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private string CreateActivityName()
+    {
+        var activityName = string.Concat(Topic, " receive");
+        _activityName = activityName;
+        return activityName;
     }
 
     /// <summary>
@@ -345,10 +375,12 @@ internal sealed class PendingFetchData : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Dispose all batches to mark them as disposed
-        foreach (var batch in _batches)
+        // Dispose all batches to mark them as disposed.
+        // Indexing avoids boxing/enumerator allocation from the IReadOnlyList<T> interface.
+        var batches = _batches;
+        for (var i = 0; i < batches.Count; i++)
         {
-            batch.Dispose();
+            batches[i].Dispose();
         }
 
         // Return the batch list to the pool for reuse
@@ -383,17 +415,10 @@ internal sealed class PendingFetchData : IDisposable
         PartitionIndex = 0;
         TopicPartition = default;
         Topic = null!;
-        ActivityName = null!;
+        _activityName = null;
         _abortedProducers?.Clear();
 
-        // Soft limit: the check-then-act is intentionally non-atomic.
-        // Under high concurrency, the pool may briefly exceed the max by a few items.
-        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
-        if (Volatile.Read(ref s_poolCount) < Volatile.Read(ref s_maxPoolSize))
-        {
-            s_pool.Push(this);
-            Interlocked.Increment(ref s_poolCount);
-        }
+        Volatile.Read(ref s_pool).TryPush(this);
     }
 }
 
