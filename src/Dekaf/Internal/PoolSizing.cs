@@ -8,6 +8,8 @@ namespace Dekaf.Internal;
 /// </summary>
 internal static class PoolSizing
 {
+    private const int SharedArrayPoolDepthCeiling = 4096;
+
     /// <summary>
     /// Serialization buffer arrays per connection. Each RentedBufferWriter growth step
     /// (4KB → doubling → final size) rents/returns through the pool; 8 covers the
@@ -226,14 +228,20 @@ internal static class PoolSizing
         // PipeMemoryPool: 32 arrays per peak connection (covers pipelined segments).
         // Use max connections because adaptive single-broker load concentrates all
         // traffic on one shared pool before metadata/broker spread can help.
-        var pipeMemoryArrays = ClampPoolDepth(totalMaxConnections * 32L, floor: 32);
+        // ArrayPool<T>.Create eagerly allocates per-bucket metadata based on depth,
+        // so keep even producer-driven sizing bounded for pathological options.
+        var pipeMemoryArrays = ClampPoolDepth(
+            totalMaxConnections * 32L,
+            floor: 32,
+            ceiling: SharedArrayPoolDepthCeiling);
 
         // SerializationBuffers: covers concurrent request serialization across all connections.
         // Each RentedBufferWriter growth step rents/returns arrays; with multiple connections
         // serializing concurrently, the pool needs depth proportional to peak connections.
         var serializationArrays = ClampPoolDepth(
             totalMaxConnections * SerializationArraysPerConnection,
-            floor: 16);
+            floor: 16,
+            ceiling: SharedArrayPoolDepthCeiling);
 
         // ProduceResponsePool: one response per in-flight request per connection,
         // with 2x headroom for concurrent rent/return overlap.
@@ -252,8 +260,8 @@ internal static class PoolSizing
         };
     }
 
-    private static int ClampPoolDepth(long value, int floor) =>
-        (int)Math.Clamp(value, floor, (long)int.MaxValue);
+    private static int ClampPoolDepth(long value, int floor, int ceiling) =>
+        (int)Math.Clamp(value, floor, (long)ceiling);
 
     private static long SaturatingMultiply(long left, long right)
     {
