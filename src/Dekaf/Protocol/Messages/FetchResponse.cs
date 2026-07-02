@@ -74,9 +74,9 @@ public sealed class FetchResponse : IKafkaResponse
         if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
             return;
 
-        foreach (var topic in _responses)
+        for (var i = 0; i < _responses.Count; i++)
         {
-            topic.ReturnToPool();
+            _responses[i].ReturnToPool();
         }
 
         // Return the topic list to the pool if it's a pooled list
@@ -209,9 +209,9 @@ public sealed class FetchResponseTopic
         if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
             return;
 
-        foreach (var partition in _partitions)
+        for (var i = 0; i < _partitions.Count; i++)
         {
-            partition.ReturnToPool();
+            _partitions[i].ReturnToPool();
         }
 
         // Return the partition list to the pool if it's a pooled list
