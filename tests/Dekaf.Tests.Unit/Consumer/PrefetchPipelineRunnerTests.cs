@@ -589,7 +589,9 @@ public class PrefetchPipelineRunnerTests
     {
         var fetchCount = 0;
         var shouldFail = true;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // The delegate cancels after the successful fetch; a fixed wall-clock timeout
+        // flaked under CI starvation before that deterministic exit path ran.
+        using var cts = new CancellationTokenSource();
 
         var runner = CreateRunner(
             prefetchRecords: ct =>
@@ -707,7 +709,9 @@ public class PrefetchPipelineRunnerTests
         // (3 = depth - 1) over multiple iterations. This test verifies that at most 1
         // eager fetch starts per iteration, and the queue accumulates correctly.
         var fetchCount = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // The delegate cancels after 6 fetches; a fixed wall-clock timeout flaked
+        // under CI starvation before the Task.Yield-based rounds completed.
+        using var cts = new CancellationTokenSource();
 
         var runner = CreateRunner(
             prefetchRecords: async ct =>
