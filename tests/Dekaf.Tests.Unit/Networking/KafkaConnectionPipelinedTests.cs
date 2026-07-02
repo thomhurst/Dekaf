@@ -61,6 +61,18 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
+    public async Task PendingRequests_UsesPreallocatedSlotTable()
+    {
+        var field = typeof(KafkaConnection).GetField(
+            "_pendingRequests",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        await Assert.That(field).IsNotNull();
+        await Assert.That(field!.FieldType.IsArray).IsTrue();
+        await Assert.That(field.FieldType.GetElementType()!.Name).IsEqualTo("PendingRequestSlot");
+    }
+
+    [Test]
     public async Task SendPipelinedAsync_Cancellation_Throws()
     {
         var connection = new KafkaConnection("localhost", 9092);
