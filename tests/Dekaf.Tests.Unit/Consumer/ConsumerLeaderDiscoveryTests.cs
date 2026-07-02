@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
@@ -81,6 +82,49 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Task.Delay(50);
     }
 
+    [Test]
+    public async Task HandleNotLeaderOrFollower_WithoutInlineLeader_RefreshOutlivesFetchCycleCancellation()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var refreshTokenCaptured = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                refreshTokenCaptured.TrySetResult((CancellationToken)callInfo[2]!);
+                return new ValueTask<MetadataResponse>(refreshResponse.Task);
+            });
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        SetMetadataApiVersion(metadataManager);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        using var fetchCycleCts = new CancellationTokenSource();
+
+        var partitionResponse = new FetchResponsePartition
+        {
+            PartitionIndex = 0,
+            ErrorCode = ErrorCode.NotLeaderOrFollower
+        };
+
+        await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, [], fetchCycleCts.Token);
+
+        var refreshToken = await refreshTokenCaptured.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fetchCycleCts.Cancel();
+
+        await Assert.That(refreshToken.IsCancellationRequested).IsFalse();
+
+        refreshResponse.SetResult(CreateMetadataResponse());
+        await WaitForLeaderRefreshToDrainAsync(consumer);
+    }
+
     private static MetadataManager CreateMetadataManager(IConnectionPool pool)
         => new(pool, ["localhost:9092"]);
 
@@ -100,7 +144,11 @@ public sealed class ConsumerLeaderDiscoveryTests
 
     private static void SeedMetadata(MetadataManager metadataManager)
     {
-        metadataManager.Metadata.Update(new MetadataResponse
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+    }
+
+    private static MetadataResponse CreateMetadataResponse()
+        => new()
         {
             ClusterId = "test-cluster",
             ControllerId = 1,
@@ -128,19 +176,48 @@ public sealed class ConsumerLeaderDiscoveryTests
                     ]
                 }
             ]
-        });
+        };
+
+    private static void SetMetadataApiVersion(MetadataManager metadataManager)
+    {
+        var field = typeof(MetadataManager)
+            .GetField("_metadataApiVersion", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_metadataApiVersion field not found");
+
+        field.SetValue(metadataManager, MetadataRequest.HighestSupportedVersion);
+    }
+
+    private static async Task WaitForLeaderRefreshToDrainAsync(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_pendingLeaderRefreshTopics", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pendingLeaderRefreshTopics field not found");
+
+        var pending = (ConcurrentDictionary<string, byte>)field.GetValue(consumer)!;
+        var stopAt = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+
+        while (DateTime.UtcNow < stopAt)
+        {
+            if (!pending.ContainsKey(Topic))
+                return;
+
+            await Task.Delay(20).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException("Leader refresh did not drain.");
     }
 
     private static async ValueTask InvokeHandleNotLeaderOrFollowerAsync(
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition partitionResponse,
-        IReadOnlyList<NodeEndpoint> nodeEndpoints)
+        IReadOnlyList<NodeEndpoint> nodeEndpoints,
+        CancellationToken cancellationToken = default)
     {
         var method = typeof(KafkaConsumer<string, string>)
             .GetMethod("HandleNotLeaderOrFollowerAsync", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("HandleNotLeaderOrFollowerAsync method not found");
 
-        var result = method.Invoke(consumer, [Topic, partitionResponse, nodeEndpoints, CancellationToken.None]);
+        var result = method.Invoke(consumer, [Topic, partitionResponse, nodeEndpoints, cancellationToken]);
         if (result is not ValueTask valueTask)
             throw new InvalidOperationException("HandleNotLeaderOrFollowerAsync did not return ValueTask");
 

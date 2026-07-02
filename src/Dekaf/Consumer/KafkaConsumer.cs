@@ -516,8 +516,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
 
-
     private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeConsumeCancellationSources = new();
+    private readonly CancellationTokenSource _leaderRefreshCts = new();
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
@@ -3638,16 +3638,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         InvalidatePartitionCache();
         LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
 
-        if (!updated)
-            ScheduleLeaderRefresh(topic, cancellationToken);
+        if (!updated && !cancellationToken.IsCancellationRequested)
+            ScheduleLeaderRefresh(topic);
 
         return ValueTask.CompletedTask;
     }
 
-    private void ScheduleLeaderRefresh(string topic, CancellationToken cancellationToken)
+    private void ScheduleLeaderRefresh(string topic)
     {
+        if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+            return;
+
         if (_pendingLeaderRefreshTopics.TryAdd(topic, 0))
-            _ = ObserveLeaderRefreshAsync(topic, cancellationToken);
+            _ = ObserveLeaderRefreshAsync(topic, _leaderRefreshCts.Token);
     }
 
     private async Task ObserveLeaderRefreshAsync(string topic, CancellationToken cancellationToken)
@@ -3973,6 +3976,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // CommitAsync (which waits up to RequestTimeoutMs=30s for network I/O) would cause
         // CloseAsync to hang for the full network timeout, chaining across multiple consumers
         // during sequential `await using` disposal and exceeding test timeouts.
+        _leaderRefreshCts.Cancel();
         _autoCommitCts?.Cancel();
         if (_autoCommitTask is not null)
         {
@@ -4227,6 +4231,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         LogConsumerCloseCompleted(closeElapsedMs);
 
         CancelActiveConsumeOperations();
+        _leaderRefreshCts.Cancel();
         _autoCommitCts?.Cancel();
         _prefetchCts?.Cancel();
 
@@ -4256,6 +4261,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _autoCommitCts?.Dispose();
         _prefetchCts?.Dispose();
+        _leaderRefreshCts.Dispose();
 
         // Clear and dispose CancellationTokenSource pool
         // Note: active consume cancellation sources are managed by the pool and should not be disposed here
