@@ -52,6 +52,12 @@ internal sealed class PendingFetchData : IDisposable
                 if (currentPool.Capacity < newSize)
                 {
                     var newPool = new LockFreeStack<PendingFetchData>(newSize);
+                    // Drain existing pool into the new one. A thread holding a stale
+                    // reference to currentPool may return an item after this drain but
+                    // before the Volatile.Write below. That item is not migrated and can
+                    // be GC'd. This is acceptable because resize runs only when consumer
+                    // assignment raises the high-water mark, not per message; a one-time
+                    // loss is recovered on demand via the miss path.
                     while (currentPool.TryPop(out var item))
                         newPool.TryPush(item);
                     Volatile.Write(ref s_pool, newPool);

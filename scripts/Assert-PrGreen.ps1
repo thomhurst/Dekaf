@@ -94,7 +94,7 @@ if ($requestedChanges.Count -gt 0) {
     Deny "latest review requests changes from: $authors"
 }
 
-$actionableHeadingPattern = '(?im)^\s*#{2,4}\s*(Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Blocking|Blocker|Test coverage gap|Required|Must fix)\b'
+$actionableHeadingPattern = '(?im)^\s*#{2,4}\s+.*\b(Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix)\b'
 $actionableReviews = @()
 foreach ($review in $latestReviews) {
     if ($review.state -ne 'COMMENTED') { continue }
