@@ -3,12 +3,6 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
   workflow_dispatch:
     inputs:
       pr_number:
@@ -16,51 +10,85 @@ on:
         required: true
         type: number
 
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
-    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.actor != 'claude[bot]' &&
+        github.actor != 'dependabot[bot]' &&
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 30
     permissions:
-      contents: write        # Allows pushing fixes/commits
-      pull-requests: write   # Allows posting review comments
-      issues: write          # Allows creating/updating issues
-      checks: write          # Allows creating check runs
-      statuses: write        # Allows updating commit statuses
-      id-token: write        # Required for OIDC authentication
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Detect Claude workflow self-change
+        id: workflow-change
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate --jq '.[].filename' \
+            | grep -Fx '.github/workflows/claude-code-review.yml' >/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Bun
+        if: steps.workflow-change.outputs.changed != 'true'
+        # oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: latest
 
       - name: Run Claude Code Review
+        if: steps.workflow-change.outputs.changed != 'true'
         id: claude-review
-        uses: anthropics/claude-code-action@v1
+        # anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464
         with:
+          
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: |
             Instructions:
-            - ALWAYS post a review comment, even if no issues are found. If the code is good, acknowledge it.
+            - Apply this repository's own conventions: read CLAUDE.md and review against them (design, development standards, performance, zero-allocation). Flag violations of these project rules.
+            - Review in priority order, reporting highest-severity first:
+              * Correctness bugs and logic errors
+              * Security issues
+              * Missing or inadequate test coverage
+              * Design/architecture, maintainability, better abstractions and anti-patterns
+            - Verify every finding against the actual code before reporting it. Do not invent issues to fill space — if the code is sound, a brief acknowledgement is a valid review; say so rather than manufacturing suggestions.
+            - When you do find an issue, suggest a concrete better approach and explain WHY it is better, not just WHAT to change.
             - Compare the current state of the PR against any previous PR comments to make sure they have been addressed.
-            - You MUST post your review as a PR comment using `gh pr review` or `gh pr comment` before finishing. Do not just output the review - actually post it to the PR.
-            - When you find issues, ALWAYS suggest better approaches or architectural improvements, not just minor optimizations.
-            - Focus on:
-              * Design patterns that could be improved
-              * Alternative approaches that are more maintainable or scalable
-              * Architectural concerns or anti-patterns
-              * Better abstractions or simplifications
             - Skip minor style/formatting issues unless they impact readability significantly.
-            - Always explain WHY the suggested approach is better, not just WHAT to change.
+            - ALWAYS post your review, even if no issues are found (acknowledge good code). You MUST post using `gh pr review --comment` before finishing, and ONLY that command. Do not also use `gh pr comment` — it posts a separate issue comment, which duplicates the review. Do not just output the review - actually post it to the PR.
 
             Use the code review skill to run this review: /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }}
-          claude_args: "--allowedTools Bash,Read,Glob,Grep,WebFetch,WebSearch"
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          claude_args: |
+            --allowedTools Bash,Read,Glob,Grep,WebFetch,WebSearch
+            --model claude-sonnet-5
+          allowed_bots: "dependabot[bot]"
