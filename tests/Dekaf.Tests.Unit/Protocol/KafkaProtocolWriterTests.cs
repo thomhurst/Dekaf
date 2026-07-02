@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Protocol;
@@ -124,6 +126,32 @@ public class KafkaProtocolWriterTests
         var result = buffer.WrittenSpan.ToArray();
         // Length + 1 = 5, encoded as varint
         await Assert.That(result).IsEquivalentTo(new byte[] { 0x05, (byte)'t', (byte)'e', (byte)'s', (byte)'t' });
+    }
+
+    [Test]
+    public async Task StackallocStringWriters_SkipLocalsInit()
+    {
+        var methods = new[]
+        {
+            typeof(KafkaProtocolWriter).GetMethod(
+                nameof(KafkaProtocolWriter.WriteString),
+                BindingFlags.Instance | BindingFlags.Public,
+                [typeof(string)]),
+            typeof(KafkaProtocolWriter).GetMethod(
+                nameof(KafkaProtocolWriter.WriteStringContent),
+                BindingFlags.Instance | BindingFlags.Public,
+                [typeof(string)]),
+            typeof(KafkaProtocolWriter).GetMethod(
+                nameof(KafkaProtocolWriter.WriteCompactString),
+                BindingFlags.Instance | BindingFlags.Public,
+                [typeof(string)])
+        };
+
+        foreach (var method in methods)
+        {
+            await Assert.That(method).IsNotNull();
+            await Assert.That(method!.IsDefined(typeof(SkipLocalsInitAttribute), inherit: false)).IsTrue();
+        }
     }
 
     [Test]

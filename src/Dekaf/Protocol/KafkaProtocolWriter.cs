@@ -214,6 +214,7 @@ public ref struct KafkaProtocolWriter
     /// <summary>
     /// Writes a string with 2-byte length prefix (legacy format).
     /// </summary>
+    [SkipLocalsInit]
     public void WriteString(string? value)
     {
         if (value is null)
@@ -262,6 +263,7 @@ public ref struct KafkaProtocolWriter
     /// Writes a string's UTF-8 bytes without any length prefix.
     /// Use when length is written separately (e.g., with VarInt).
     /// </summary>
+    [SkipLocalsInit]
     public void WriteStringContent(string value)
     {
         // Fast path for short strings
@@ -317,6 +319,7 @@ public ref struct KafkaProtocolWriter
     /// Writes a compact string with unsigned varint length prefix (flexible format).
     /// Length is encoded as length + 1 (0 means null).
     /// </summary>
+    [SkipLocalsInit]
     public void WriteCompactString(string? value)
     {
         if (value is null)
