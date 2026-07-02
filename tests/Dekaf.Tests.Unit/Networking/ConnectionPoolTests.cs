@@ -1,4 +1,5 @@
 using Dekaf.Networking;
+using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -187,6 +188,78 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task Constructor_OAuthBearerConfig_CreatesSharedTokenProvider()
+    {
+        var config = CreateOAuthBearerConfig();
+        var options = new ConnectionOptions
+        {
+            SaslMechanism = SaslMechanism.OAuthBearer,
+            OAuthBearerConfig = config
+        };
+
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            loggerFactory: null,
+            connectionsPerBroker: 3);
+
+        await Assert.That(pool.HasSharedOAuthBearerTokenProvider).IsTrue();
+        await Assert.That(pool.EffectiveConnectionOptions).IsNotSameReferenceAs(options);
+        await Assert.That((object?)pool.EffectiveConnectionOptions.OAuthBearerTokenProvider).IsNotNull();
+        await Assert.That(pool.EffectiveConnectionOptions.OAuthBearerConfig).IsNull();
+        await Assert.That(pool.EffectiveConnectionOptions.SaslMechanism).IsEqualTo(SaslMechanism.OAuthBearer);
+    }
+
+    [Test]
+    public async Task Constructor_OAuthBearerTokenProvider_PreservesCustomProvider()
+    {
+        var config = CreateOAuthBearerConfig();
+        Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider =
+            _ => new ValueTask<OAuthBearerToken>(CreateOAuthBearerToken());
+        var options = new ConnectionOptions
+        {
+            SaslMechanism = SaslMechanism.OAuthBearer,
+            OAuthBearerConfig = config,
+            OAuthBearerTokenProvider = tokenProvider
+        };
+
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            loggerFactory: null,
+            connectionsPerBroker: 3);
+
+        await Assert.That(pool.HasSharedOAuthBearerTokenProvider).IsFalse();
+        await Assert.That(pool.EffectiveConnectionOptions).IsSameReferenceAs(options);
+        await Assert.That((object?)pool.EffectiveConnectionOptions.OAuthBearerTokenProvider).IsSameReferenceAs(tokenProvider);
+        await Assert.That(pool.EffectiveConnectionOptions.OAuthBearerConfig).IsSameReferenceAs(config);
+    }
+
+    [Test]
+    public async Task Constructor_OAuthBearerToken_PreservesStaticToken()
+    {
+        var config = CreateOAuthBearerConfig();
+        var token = CreateOAuthBearerToken();
+        var options = new ConnectionOptions
+        {
+            SaslMechanism = SaslMechanism.OAuthBearer,
+            OAuthBearerConfig = config,
+            OAuthBearerToken = token
+        };
+
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            loggerFactory: null,
+            connectionsPerBroker: 3);
+
+        await Assert.That(pool.HasSharedOAuthBearerTokenProvider).IsFalse();
+        await Assert.That(pool.EffectiveConnectionOptions).IsSameReferenceAs(options);
+        await Assert.That(pool.EffectiveConnectionOptions.OAuthBearerToken).IsSameReferenceAs(token);
+        await Assert.That(pool.EffectiveConnectionOptions.OAuthBearerConfig).IsSameReferenceAs(config);
+    }
+
+    [Test]
     public async Task DisposeAsync_ConcurrentCalls_DoesNotThrow()
     {
         var pool = new ConnectionPool("test-client");
@@ -253,4 +326,18 @@ public sealed class ConnectionPoolTests
 
         await Assert.That(result).IsNull();
     }
+
+    private static OAuthBearerConfig CreateOAuthBearerConfig() => new()
+    {
+        TokenEndpointUrl = "https://auth.example.invalid/token",
+        ClientId = "client",
+        ClientSecret = "secret"
+    };
+
+    private static OAuthBearerToken CreateOAuthBearerToken() => new()
+    {
+        TokenValue = "token",
+        PrincipalName = "principal",
+        Expiration = DateTimeOffset.UtcNow.AddHours(1)
+    };
 }

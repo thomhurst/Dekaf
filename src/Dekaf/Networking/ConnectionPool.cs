@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
@@ -15,6 +16,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
     private readonly ResponseBufferPool _responseBufferPool;
+    private readonly OAuthBearerTokenProvider? _sharedOAuthBearerTokenProvider;
 
     /// <summary>
     /// Shared memory pool for all connections. Bounds total retained memory to one set of
@@ -91,7 +93,9 @@ public sealed partial class ConnectionPool : IConnectionPool
         int? pipeMemoryBucketCapacity = null)
     {
         _clientId = clientId;
-        _connectionOptions = connectionOptions ?? new ConnectionOptions();
+        _connectionOptions = ConfigureSharedOAuthBearerProvider(
+            connectionOptions ?? new ConnectionOptions(),
+            out _sharedOAuthBearerTokenProvider);
         _loggerFactory = loggerFactory;
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
@@ -112,7 +116,9 @@ public sealed partial class ConnectionPool : IConnectionPool
         Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>> connectionFactory)
     {
         _clientId = clientId;
-        _connectionOptions = connectionOptions ?? new ConnectionOptions();
+        _connectionOptions = ConfigureSharedOAuthBearerProvider(
+            connectionOptions ?? new ConnectionOptions(),
+            out _sharedOAuthBearerTokenProvider);
         _loggerFactory = null;
         _logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
@@ -129,6 +135,46 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// </summary>
     private static int ScaledBucketCapacity(int connectionsPerBroker)
         => Math.Min(connectionsPerBroker * 32, 256);
+
+    internal ConnectionOptions EffectiveConnectionOptions => _connectionOptions;
+
+    internal bool HasSharedOAuthBearerTokenProvider => _sharedOAuthBearerTokenProvider is not null;
+
+    private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
+        ConnectionOptions options,
+        out OAuthBearerTokenProvider? sharedProvider)
+    {
+        if (options.OAuthBearerConfig is null ||
+            options.OAuthBearerTokenProvider is not null ||
+            options.OAuthBearerToken is not null)
+        {
+            sharedProvider = null;
+            return options;
+        }
+
+        sharedProvider = new OAuthBearerTokenProvider(options.OAuthBearerConfig);
+
+        return new ConnectionOptions
+        {
+            UseTls = options.UseTls,
+            TlsConfig = options.TlsConfig,
+            RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
+            SaslMechanism = options.SaslMechanism,
+            SaslUsername = options.SaslUsername,
+            SaslPassword = options.SaslPassword,
+            GssapiConfig = options.GssapiConfig,
+            OAuthBearerTokenProvider = sharedProvider.GetTokenAsync,
+            OAuthBearerToken = options.OAuthBearerToken,
+            SaslReauthenticationConfig = options.SaslReauthenticationConfig,
+            SendBufferSize = options.SendBufferSize,
+            ReceiveBufferSize = options.ReceiveBufferSize,
+            MinimumSegmentSize = options.MinimumSegmentSize,
+            MinimumReadSize = options.MinimumReadSize,
+            ConnectionTimeout = options.ConnectionTimeout,
+            RequestTimeout = options.RequestTimeout,
+            MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
+        };
+    }
 
     /// <summary>
     /// Increases the shared PipeMemoryPool bucket capacity if <paramref name="bucketCapacity"/>
@@ -827,6 +873,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         await CloseAllAsync().ConfigureAwait(false);
 
+        _sharedOAuthBearerTokenProvider?.Dispose();
         _disposeLock.Dispose();
         _scaleLock.Dispose();
     }
