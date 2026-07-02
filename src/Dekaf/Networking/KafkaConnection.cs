@@ -2574,7 +2574,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
     private int _state; // High 16 bits = core version; low 16 bits = State*
-    private PooledResponseBuffer? _pendingBuffer; // Buffer received but not yet processed
 
     /// <summary>
     /// Initializes the request for a new operation.
@@ -2583,7 +2582,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     {
         _responseHeaderVersion = responseHeaderVersion;
         _state = CreateState(_core.Version, StatePending);
-        _pendingBuffer = null;
 
         // Register for cancellation if the token can be cancelled
         if (cancellationToken.CanBeCanceled)
@@ -2841,10 +2839,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     public void Reset()
     {
-        // Dispose any pending buffer
-        _pendingBuffer?.Dispose();
-        _pendingBuffer = null;
-
         // Dispose cancellation registration
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;

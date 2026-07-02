@@ -567,17 +567,6 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
-    /// Reserves space for a length prefix and returns a position marker.
-    /// Call WriteLength after writing the content to fill in the length.
-    /// </summary>
-    public LengthPlaceholder ReserveLengthPrefix()
-    {
-        var startPosition = _bytesWritten;
-        WriteInt32(0); // Placeholder
-        return new LengthPlaceholder(startPosition, _bytesWritten);
-    }
-
-    /// <summary>
     /// Writes an array with 4-byte length prefix (legacy format).
     /// State-passing overload to avoid closure allocations.
     /// </summary>
@@ -640,15 +629,4 @@ public ref struct KafkaProtocolWriter
     /// Delegate for writing a single item in an array with state to avoid closure allocations.
     /// </summary>
     public delegate void WriteAction<T, TState>(ref KafkaProtocolWriter writer, T item, TState state);
-}
-
-/// <summary>
-/// Represents a placeholder for a length prefix that will be filled in later.
-/// </summary>
-public readonly struct LengthPlaceholder(int lengthPosition, int contentStartPosition)
-{
-    public int LengthPosition { get; } = lengthPosition;
-    public int ContentStartPosition { get; } = contentStartPosition;
-
-    public int CalculateLength(int currentPosition) => currentPosition - ContentStartPosition;
 }
