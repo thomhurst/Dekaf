@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Json;
 
@@ -45,6 +46,21 @@ public class JsonSerializerTests
         await Assert.That(json).DoesNotContain("\"Age\"");
     }
 
+    [Test]
+    public async Task Serialize_RepeatedCalls_ResetsWriterAndBuffer()
+    {
+        var serializer = new JsonSerializer<TestPerson>();
+        var context = CreateContext();
+        var firstBuffer = new ArrayBufferWriter<byte>();
+        var secondBuffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new TestPerson { Name = "Longer name", Age = 41 }, ref firstBuffer, context);
+        serializer.Serialize(new TestPerson { Name = "Al", Age = 7 }, ref secondBuffer, context);
+
+        var json = System.Text.Encoding.UTF8.GetString(secondBuffer.WrittenSpan);
+        await Assert.That(json).IsEqualTo("{\"name\":\"Al\",\"age\":7}");
+    }
+
     #endregion
 
     #region Custom Options Tests
@@ -83,6 +99,25 @@ public class JsonSerializerTests
         var act = () => serializer.Deserialize((ReadOnlyMemory<byte>)invalidJson, context);
 
         await Assert.That(act).Throws<JsonException>();
+    }
+
+    [Test]
+    public async Task Serialize_AfterSerializationException_CanSerializeAgain()
+    {
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(new ThrowingPayloadConverter());
+        var throwingSerializer = new JsonSerializer<ThrowingPayload>(options);
+        var serializer = new JsonSerializer<ThrowingPayload>();
+        var context = CreateContext();
+        var failedBuffer = new ArrayBufferWriter<byte>();
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var act = () => throwingSerializer.Serialize(new ThrowingPayload("boom"), ref failedBuffer, context);
+        await Assert.That(act).Throws<InvalidOperationException>();
+
+        serializer.Serialize(new ThrowingPayload("ok"), ref buffer, context);
+        var json = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        await Assert.That(json).IsEqualTo("{\"value\":\"ok\"}");
     }
 
     #endregion
@@ -168,6 +203,24 @@ public class JsonSerializerTests
     {
         public string? OrderId { get; set; }
         public List<string> Items { get; set; } = [];
+    }
+
+    private sealed record ThrowingPayload(string Value);
+
+    private sealed class ThrowingPayloadConverter : JsonConverter<ThrowingPayload>
+    {
+        public override ThrowingPayload Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options) =>
+            throw new NotSupportedException();
+
+        public override void Write(Utf8JsonWriter writer, ThrowingPayload value, JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("value");
+            throw new InvalidOperationException("stop");
+        }
     }
 
     #endregion

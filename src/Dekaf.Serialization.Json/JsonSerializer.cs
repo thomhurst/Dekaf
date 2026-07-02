@@ -12,6 +12,9 @@ public sealed class JsonSerializer<T> : ISerde<T>
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_sharedBuffer;
 
+    [ThreadStatic]
+    private static Utf8JsonWriter? t_jsonWriter;
+
     private readonly JsonSerializerOptions _options;
 
     public JsonSerializer(JsonSerializerOptions? options = null)
@@ -34,9 +37,26 @@ public sealed class JsonSerializer<T> : ISerde<T>
         var sharedBuffer = t_sharedBuffer ??= new ArrayBufferWriter<byte>();
         sharedBuffer.ResetWrittenCount();
 
-        using (var jsonWriter = new Utf8JsonWriter(sharedBuffer))
+        var jsonWriter = t_jsonWriter;
+        if (jsonWriter is null)
+        {
+            jsonWriter = new Utf8JsonWriter(sharedBuffer);
+            t_jsonWriter = jsonWriter;
+        }
+        else
+        {
+            jsonWriter.Reset(sharedBuffer);
+        }
+
+        try
         {
             System.Text.Json.JsonSerializer.Serialize(jsonWriter, value, _options);
+            jsonWriter.Flush();
+        }
+        catch
+        {
+            t_jsonWriter = null;
+            throw;
         }
 
         var written = sharedBuffer.WrittenSpan;
