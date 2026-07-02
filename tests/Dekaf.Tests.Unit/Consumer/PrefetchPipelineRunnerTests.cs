@@ -886,7 +886,7 @@ public class PrefetchPipelineRunnerTests
                 var pos = Volatile.Read(ref fetchPosition);
                 positionsReadByFetch[id] = pos;
 
-                await Task.Yield(); // Simulate async work
+                await YieldOnDedicatedThreadAsync().ConfigureAwait(false);
 
                 // Advance position (simulates UpdateFetchPositionsFromPrefetch)
                 Interlocked.Add(ref fetchPosition, 10);
@@ -918,6 +918,19 @@ public class PrefetchPipelineRunnerTests
         await Assert.That(positions.Distinct().Count())
             .IsEqualTo(positions.Count)
             .Because("every fetch must read a unique position; duplicates cause duplicate records");
+    }
+
+    private static Task YieldOnDedicatedThreadAsync()
+    {
+        // Task.Yield depends on ThreadPool availability and can starve under full CI runs.
+        var completion = new TaskCompletionSource();
+        var thread = new Thread(static state => ((TaskCompletionSource)state!).SetResult())
+        {
+            IsBackground = true,
+            Name = "prefetch-position-test-yield"
+        };
+        thread.Start(completion);
+        return completion.Task;
     }
 
     #endregion
