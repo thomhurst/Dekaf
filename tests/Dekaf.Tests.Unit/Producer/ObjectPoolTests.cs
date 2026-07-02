@@ -83,7 +83,7 @@ public class ObjectPoolTests
     }
 
     [Test]
-    public async Task Return_WhenPoolFull_DiscardsItem()
+    public async Task Return_WhenPoolFull_DiscardsResetItem()
     {
         var pool = new TestPool(2);
         var item1 = pool.Rent();
@@ -94,7 +94,7 @@ public class ObjectPoolTests
         pool.Return(item3); // Pool is full (max 2), this should be discarded
 
         await Assert.That(pool.ApproximateCount).IsEqualTo(2);
-        await Assert.That(item3.WasReset).IsFalse(); // Discarded items skip Reset
+        await Assert.That(item3.WasReset).IsTrue(); // Reset runs before TryPush capacity check
         var rented = pool.Rent();
         await Assert.That(rented).IsNotSameReferenceAs(item3); // Discarded item is not returned
     }
