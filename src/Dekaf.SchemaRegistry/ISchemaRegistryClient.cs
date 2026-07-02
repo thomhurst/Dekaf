@@ -78,6 +78,20 @@ public interface ISchemaRegistryClient : IDisposable
 }
 
 /// <summary>
+/// Optional Schema Registry client cache access used by hot deserialization paths.
+/// </summary>
+public interface ISchemaRegistryCache
+{
+    /// <summary>
+    /// Attempts to get a schema by global ID from the local cache without allocating.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="schema">The cached schema, when found.</param>
+    /// <returns>True when the schema is already cached.</returns>
+    bool TryGetCachedSchema(int id, out Schema schema);
+}
+
+/// <summary>
 /// Represents a schema.
 /// </summary>
 public sealed class Schema

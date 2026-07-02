@@ -140,4 +140,26 @@ public static class SchemaRegistryExtensions
 
         return builder.WithValueDeserializer(deserializer);
     }
+
+    /// <summary>
+    /// Configures the consumer to use a custom Schema Registry deserializer for values
+    /// using a ReadOnlyMemory payload.
+    /// </summary>
+    /// <typeparam name="TKey">Key type.</typeparam>
+    /// <typeparam name="TValue">Value type.</typeparam>
+    /// <param name="builder">The consumer builder.</param>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="deserialize">Function to deserialize bytes to value using the schema without copying the payload.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static ConsumerBuilder<TKey, TValue> UseSchemaRegistryMemory<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Func<ReadOnlyMemory<byte>, Schema, TValue> deserialize)
+    {
+        var deserializer = SchemaRegistryDeserializer.Create(
+            schemaRegistry,
+            deserialize);
+
+        return builder.WithValueDeserializer(deserializer);
+    }
 }

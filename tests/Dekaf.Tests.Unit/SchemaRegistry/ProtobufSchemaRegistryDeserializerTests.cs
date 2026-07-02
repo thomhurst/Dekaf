@@ -49,6 +49,38 @@ public class ProtobufSchemaRegistryDeserializerTests
     }
 
     [Test]
+    public async Task Deserialize_UsesCachedSchema_WhenValidationEnabled()
+    {
+        // Arrange
+        var schemaRegistry = new MockSchemaRegistryClient();
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "syntax = \"proto3\";"
+        });
+
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(schemaRegistry);
+
+        var originalMessage = new TestMessage { Id = 42, Name = "Hello", Value = 3.14 };
+        var protoBytes = originalMessage.ToByteArray();
+        var wireBytes = new byte[1 + 4 + 2 + protoBytes.Length];
+
+        wireBytes[0] = 0x00;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), schemaId);
+        wireBytes[5] = 1;
+        wireBytes[6] = 0;
+        protoBytes.CopyTo(wireBytes.AsSpan(7));
+
+        // Act
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        // Assert
+        await Assert.That(result.Id).IsEqualTo(42);
+        await Assert.That(schemaRegistry.TryGetCachedSchemaCallCount).IsEqualTo(1);
+        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Deserialize_ThrowsOnInvalidMagicByte()
     {
         // Arrange

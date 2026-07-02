@@ -193,7 +193,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
-    private readonly Func<byte[], Schema, T> _deserialize;
+    private readonly Func<ReadOnlyMemory<byte>, Schema, T> _deserialize;
     private readonly bool _ownsClient;
 
     /// <summary>
@@ -206,6 +206,23 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         ISchemaRegistryClient schemaRegistry,
         Func<byte[], Schema, T> deserialize,
         bool ownsClient = false)
+        : this(
+            schemaRegistry,
+            (ReadOnlyMemory<byte> payload, Schema schema) => deserialize(payload.ToArray(), schema),
+            ownsClient)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry deserializer.
+    /// </summary>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="deserialize">Function to deserialize bytes to value using the schema.</param>
+    /// <param name="ownsClient">Whether this deserializer owns the client and should dispose it.</param>
+    internal SchemaRegistryDeserializer(
+        ISchemaRegistryClient schemaRegistry,
+        Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
+        bool ownsClient)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
@@ -224,17 +241,23 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
-        // Get schema from registry (cached, with timeout to prevent indefinite hang)
-        var schema = _schemaRegistry.GetSchemaAsync(schemaId)
+        var schema = GetSchemaSync(schemaId);
+        var payload = data.Slice(5);
+
+        return _deserialize(payload, schema);
+    }
+
+    private Schema GetSchemaSync(int schemaId)
+    {
+        if (_schemaRegistry is ISchemaRegistryCache cache
+            && cache.TryGetCachedSchema(schemaId, out var cached))
+            return cached;
+
+        return _schemaRegistry.GetSchemaAsync(schemaId)
             .WaitAsync(SchemaRegistryTimeout)
             .ConfigureAwait(false)
             .GetAwaiter()
             .GetResult();
-
-        // Extract payload
-        var payload = span.Slice(5).ToArray();
-
-        return _deserialize(payload, schema);
     }
 
     public ValueTask DisposeAsync()
@@ -243,6 +266,26 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
     }
+}
+
+/// <summary>
+/// Factory methods for Schema Registry deserializers.
+/// </summary>
+public static class SchemaRegistryDeserializer
+{
+    /// <summary>
+    /// Creates a Schema Registry deserializer that receives the payload as ReadOnlyMemory without copying it.
+    /// </summary>
+    /// <typeparam name="T">The type to deserialize.</typeparam>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="deserialize">Function to deserialize bytes to value using the schema.</param>
+    /// <param name="ownsClient">Whether this deserializer owns the client and should dispose it.</param>
+    /// <returns>The deserializer.</returns>
+    public static SchemaRegistryDeserializer<T> Create<T>(
+        ISchemaRegistryClient schemaRegistry,
+        Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
+        bool ownsClient = false)
+        => new(schemaRegistry, deserialize, ownsClient);
 }
 
 /// <summary>

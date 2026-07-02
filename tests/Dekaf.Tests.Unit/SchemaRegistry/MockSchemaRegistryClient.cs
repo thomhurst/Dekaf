@@ -6,12 +6,15 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 /// <summary>
 /// Mock implementation of ISchemaRegistryClient for unit testing.
 /// </summary>
-internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient
+internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
     private int _nextId = 1;
     private bool _disposed;
+
+    public int GetSchemaCallCount { get; private set; }
+    public int TryGetCachedSchemaCallCount { get; private set; }
 
     /// <summary>
     /// Normalizes a JSON schema string by parsing and re-serializing.
@@ -58,11 +61,19 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient
     public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        GetSchemaCallCount++;
 
         if (_schemasById.TryGetValue(id, out var schema))
             return Task.FromResult(schema);
 
         throw new SchemaRegistryException(40403, $"Schema {id} not found");
+    }
+
+    public bool TryGetCachedSchema(int id, out Schema schema)
+    {
+        ThrowIfDisposed();
+        TryGetCachedSchemaCallCount++;
+        return _schemasById.TryGetValue(id, out schema!);
     }
 
     public Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)

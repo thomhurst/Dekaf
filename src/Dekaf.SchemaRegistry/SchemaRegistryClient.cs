@@ -11,7 +11,7 @@ namespace Dekaf.SchemaRegistry;
 /// <summary>
 /// HTTP client for Confluent Schema Registry.
 /// </summary>
-public sealed class SchemaRegistryClient : ISchemaRegistryClient
+public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
 {
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
 
@@ -125,6 +125,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient
         CacheSchema(id, subject: null, schema);
         return schema;
     }
+
+    public bool TryGetCachedSchema(int id, out Schema schema)
+        => _schemaByIdCache.TryGetValue(id, out schema!);
 
     public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
     {
