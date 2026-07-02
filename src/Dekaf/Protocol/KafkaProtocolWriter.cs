@@ -22,6 +22,11 @@ public ref struct KafkaProtocolWriter
 
     public readonly int BytesWritten => _bytesWritten;
 
+    internal readonly IBufferWriter<byte> BufferWriter => _output;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AddBytesWritten(int byteCount) => _bytesWritten = checked(_bytesWritten + byteCount);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteInt8(sbyte value)
     {

@@ -453,6 +453,8 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal CompressionType PreCompressedType { get; private set; }
 
+    internal bool HasPreCompressedRecords => PreCompressedRecords is not null;
+
     /// <summary>
     /// Pre-compresses the records in this batch. Called at seal time on partition-affine
     /// append workers to move compression work off the single-threaded send loop.
@@ -760,6 +762,45 @@ public sealed class RecordBatch : IDisposable
             if (cache is not null)
                 ReturnSerializationCache(cache);
         }
+    }
+
+    internal int GetEncodedSize(CompressionType compression = CompressionType.None)
+    {
+        var recordsLength = GetEncodedRecordsLength(compression);
+        return checked(TotalBatchHeaderSize + recordsLength);
+    }
+
+    private int GetEncodedRecordsLength(CompressionType compression)
+    {
+        if (PreCompressedRecords is not null)
+            return PreCompressedLength;
+
+        if (compression != CompressionType.None)
+            throw new InvalidOperationException("Compressed RecordBatch size requires pre-compressed records.");
+
+        var recordsLength = 0;
+        for (var i = 0; i < Records.Count; i++)
+        {
+            var record = Records[i];
+            var bodySize = record.CachedBodySize > 0
+                ? record.CachedBodySize
+                : Record.ComputeBodySize(
+                    record.TimestampDelta,
+                    record.OffsetDelta,
+                    record.IsKeyNull,
+                    record.Key.Length,
+                    record.IsValueNull,
+                    record.Value.Length,
+                    record.Headers,
+                    record.EffectiveHeaderCount);
+
+            checked
+            {
+                recordsLength += Record.VarIntSize(bodySize) + bodySize;
+            }
+        }
+
+        return recordsLength;
     }
 
     /// <summary>
