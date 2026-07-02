@@ -182,7 +182,7 @@ public class RecordAccumulatorConcurrencyTests
     [Test]
     public async Task ConcurrentTryReserveAndReleaseMemory_AccountingRemainsConsistent()
     {
-        // TryReserveMemory and ReleaseMemory use CAS loops. Under contention,
+        // TryReserveMemory and ReleaseMemory use atomic updates. Under contention,
         // the final BufferedBytes must equal (reserved - released).
 
         const int taskCount = 8;

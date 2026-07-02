@@ -2762,7 +2762,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Attempts to reserve buffer memory for a record without blocking.
-    /// Uses lock-free CAS loop for thread-safe reservation.
+    /// Uses atomic add with rollback so contention cannot be misreported as exhaustion.
     /// </summary>
     /// <param name="recordSize">Size in bytes to reserve</param>
     /// <returns>True if memory was reserved; false if BufferMemory limit would be exceeded</returns>
@@ -2776,40 +2776,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hoisted once per call — rebalancing is rare and one-cycle staleness is acceptable
         // (matches the snapshot semantics already used for _bufferedBytes).
         var max = (ulong)Volatile.Read(ref _maxBufferMemory);
+        var newValue = Interlocked.Add(ref _bufferedBytes, recordSize);
 
-        while (true)
-        {
-            var current = Volatile.Read(ref _bufferedBytes);
-            var newValue = current + recordSize;
+        if ((ulong)newValue <= max)
+            return true;
 
-            if ((ulong)newValue > max)
-                return false;
-
-            if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
-                return true;
-
-            // CAS failed due to contention — fall through to spin path
-            break;
-        }
-
-        // Contention path: progressive backoff only when there's actual contention.
-        // Capped at the no-yield phase to stay lightweight — callers (ReserveMemoryAsync)
-        // already wrap this in their own retry loops with proper async waiting.
-        var spinner = new SpinWait();
-        while (!spinner.NextSpinWillYield)
-        {
-            spinner.SpinOnce();
-
-            var current = Volatile.Read(ref _bufferedBytes);
-            var newValue = current + recordSize;
-
-            if ((ulong)newValue > max)
-                return false;
-
-            if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
-                return true;
-        }
-
+        Interlocked.Add(ref _bufferedBytes, -recordSize);
         return false;
     }
 
