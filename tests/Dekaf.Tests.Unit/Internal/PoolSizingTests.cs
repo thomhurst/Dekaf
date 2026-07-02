@@ -177,6 +177,19 @@ public class PoolSizingTests
         await Assert.That(sizes.FetchDataPool).IsLessThanOrEqualTo(512);
     }
 
+    [Test]
+    public async Task ForConsumerPrefetchBuffer_PathologicalPipelineInputs_ClampsToMax()
+    {
+        var capacity = PoolSizing.ForConsumerPrefetchBuffer(
+            queuedMaxMessagesKbytes: 1,
+            maxPartitionFetchBytes: 1,
+            fetchMaxBytes: int.MaxValue,
+            prefetchPipelineDepth: int.MaxValue,
+            connectionsPerBroker: int.MaxValue);
+
+        await Assert.That(capacity).IsEqualTo(1024);
+    }
+
     // --- ForSharedPools tests ---
 
     [Test]

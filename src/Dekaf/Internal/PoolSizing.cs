@@ -18,6 +18,8 @@ internal static class PoolSizing
     private const int EstimatedMessagesPerBatch = 1024;
     private const int MinValueTaskSources = 256;
     private const int MaxValueTaskSources = 65536;
+    private const int MinConsumerPrefetchBufferCapacity = 16;
+    private const int MaxConsumerPrefetchBufferCapacity = 1024;
 
     /// <summary>
     /// Approximate number of coalesced partitions per batch — used to scale
@@ -107,6 +109,34 @@ internal static class PoolSizing
             CancellationTokenSources = Math.Clamp(maxPartitionCount * 4, 64, 2048),
         };
     }
+
+    internal static int ForConsumerPrefetchBuffer(
+        int queuedMaxMessagesKbytes,
+        int maxPartitionFetchBytes,
+        int fetchMaxBytes,
+        int prefetchPipelineDepth,
+        int connectionsPerBroker)
+    {
+        var queuedMaxBytes = Math.Max(1L, (long)queuedMaxMessagesKbytes * 1024L);
+        var partitionFetchBytes = Math.Max(1L, (long)maxPartitionFetchBytes);
+        var byteBoundItems = CeilingDivide(queuedMaxBytes, partitionFetchBytes);
+
+        var responseMaxBytes = Math.Max(1L, (long)fetchMaxBytes);
+        var fetchResponseItems = CeilingDivide(responseMaxBytes, partitionFetchBytes);
+        var pipelineDepth = Math.Max((long)prefetchPipelineDepth, 1L);
+        var connectionCount = Math.Max((long)connectionsPerBroker, 1L);
+        var pipelineItems = fetchResponseItems * (pipelineDepth + 1L);
+        var pipelineFloor = pipelineDepth * connectionCount;
+        var capacity = Math.Max(Math.Max(byteBoundItems, pipelineItems), pipelineFloor);
+
+        return (int)Math.Clamp(
+            capacity,
+            MinConsumerPrefetchBufferCapacity,
+            MaxConsumerPrefetchBufferCapacity);
+    }
+
+    private static long CeilingDivide(long value, long divisor) =>
+        (value + divisor - 1L) / divisor;
 
     /// <summary>
     /// Pool sizes that scale with the number of brokers sharing a global/shared pool.

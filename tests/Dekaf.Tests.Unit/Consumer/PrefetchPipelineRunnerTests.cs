@@ -971,6 +971,66 @@ public class PrefetchPipelineRunnerTests
 
     #endregion
 
+    #region Scenario: CalculatePrefetchBufferCapacity slot sizing
+
+    [Test]
+    public async Task CalculatePrefetchBufferCapacity_DefaultOptions_UsesFetchPipelineBound()
+    {
+        var result = KafkaConsumer<string, string>.CalculatePrefetchBufferCapacity(new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        });
+
+        await Assert.That(result).IsEqualTo(200);
+    }
+
+    [Test]
+    public async Task CalculatePrefetchBufferCapacity_IgnoresQueuedMinMessagesForSlotCount()
+    {
+        var result = KafkaConsumer<string, string>.CalculatePrefetchBufferCapacity(new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            QueuedMinMessages = 100_000,
+            QueuedMaxMessagesKbytes = 65_536,
+            MaxPartitionFetchBytes = 1_048_576,
+            FetchMaxBytes = 1_048_576,
+            PrefetchPipelineDepth = 1
+        });
+
+        await Assert.That(result).IsEqualTo(64);
+    }
+
+    [Test]
+    public async Task CalculatePrefetchBufferCapacity_ClampsExtremeByteBudget()
+    {
+        var result = KafkaConsumer<string, string>.CalculatePrefetchBufferCapacity(new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            QueuedMaxMessagesKbytes = int.MaxValue,
+            MaxPartitionFetchBytes = 1
+        });
+
+        await Assert.That(result).IsEqualTo(1024);
+    }
+
+    [Test]
+    public async Task CalculatePrefetchBufferCapacity_KeepsSmallBudgetsUsable()
+    {
+        var result = KafkaConsumer<string, string>.CalculatePrefetchBufferCapacity(new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            QueuedMaxMessagesKbytes = 1,
+            MaxPartitionFetchBytes = 1_048_576,
+            FetchMaxBytes = 1,
+            PrefetchPipelineDepth = 1,
+            ConnectionsPerBroker = 1
+        });
+
+        await Assert.That(result).IsEqualTo(16);
+    }
+
+    #endregion
+
     #region Scenario: Fast-drain pipeline fill acceleration
 
     [Test]

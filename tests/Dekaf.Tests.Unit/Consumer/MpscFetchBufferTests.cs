@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 
@@ -14,6 +15,18 @@ public class MpscFetchBufferTests
     private static PendingFetchData CreateDummy(string topic = "test-topic", int partition = 0)
     {
         return PendingFetchData.Create(topic, partition, Array.Empty<RecordBatch>());
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (stopwatch.Elapsed >= timeout)
+                throw new TimeoutException("Condition was not reached before the timeout.");
+
+            await Task.Delay(10);
+        }
     }
 
     #region TryWrite / TryRead basic operations
@@ -91,6 +104,37 @@ public class MpscFetchBufferTests
         item1.Dispose();
         item2.Dispose();
         item3.Dispose();
+    }
+
+    #endregion
+
+    #region WaitToWrite
+
+    [Test]
+    public async Task WaitToWriteAsync_MultipleWaiters_RemainSignaled()
+    {
+        var buffer = new MpscFetchBuffer(1);
+        var first = CreateDummy("topic", 0);
+        await Assert.That(buffer.TryWrite(first)).IsTrue();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var waiter1 = Task.Run(async () => await buffer.WaitToWriteAsync(cts.Token));
+        var waiter2 = Task.Run(async () => await buffer.WaitToWriteAsync(cts.Token));
+
+        await WaitUntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(5));
+
+        await Assert.That(buffer.TryRead(out var readFirst)).IsTrue();
+        readFirst!.Dispose();
+
+        var firstReleased = await Task.WhenAny(waiter1, waiter2, Task.Delay(TimeSpan.FromSeconds(5), cts.Token));
+        await Assert.That(firstReleased == waiter1 || firstReleased == waiter2).IsTrue();
+
+        var second = CreateDummy("topic", 1);
+        await Assert.That(buffer.TryWrite(second)).IsTrue();
+        await Assert.That(buffer.TryRead(out var readSecond)).IsTrue();
+        readSecond!.Dispose();
+
+        await Task.WhenAll(waiter1, waiter2).WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
     }
 
     #endregion
@@ -335,6 +379,7 @@ public class MpscFetchBufferTests
     {
         // Capacity 3 should round up to 4
         var buffer = new MpscFetchBuffer(3);
+        await Assert.That(buffer.Capacity).IsEqualTo(4);
 
         var items = new List<PendingFetchData>();
         for (var i = 0; i < 4; i++)
