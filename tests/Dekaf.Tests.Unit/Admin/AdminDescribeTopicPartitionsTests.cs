@@ -1,9 +1,9 @@
-using System.Collections.Concurrent;
 using Dekaf.Admin;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Admin;
 
@@ -13,7 +13,7 @@ public sealed class AdminDescribeTopicPartitionsTests
     public async Task DescribeTopicPartitionsPageAsync_SendsCursorAndReturnsNextCursor()
     {
         await using var context = new AdminTestContext();
-        context.Connection.Enqueue(PageResponse(
+        context.Enqueue(PageResponse(
             "topic-a",
             partitionIndex: 5,
             nextCursor: new DescribeTopicPartitionsResponseCursor
@@ -34,7 +34,7 @@ public sealed class AdminDescribeTopicPartitionsTests
                 }
             });
 
-        var request = context.Connection.SingleRequest<DescribeTopicPartitionsRequest>();
+        var request = context.SingleRequest<DescribeTopicPartitionsRequest>();
         await Assert.That(request.ResponsePartitionLimit).IsEqualTo(1);
         await Assert.That(request.Cursor).IsNotNull();
         await Assert.That(request.Cursor!.TopicName).IsEqualTo("topic-a");
@@ -48,7 +48,7 @@ public sealed class AdminDescribeTopicPartitionsTests
     public async Task DescribeTopicPartitionsAsync_FollowsCursorsAndMergesTopicPartitions()
     {
         await using var context = new AdminTestContext();
-        context.Connection.Enqueue(PageResponse(
+        context.Enqueue(PageResponse(
             "topic-a",
             partitionIndex: 0,
             nextCursor: new DescribeTopicPartitionsResponseCursor
@@ -56,7 +56,7 @@ public sealed class AdminDescribeTopicPartitionsTests
                 TopicName = "topic-a",
                 PartitionIndex = 1
             }));
-        context.Connection.Enqueue(PageResponse(
+        context.Enqueue(PageResponse(
             "topic-a",
             partitionIndex: 1,
             nextCursor: null));
@@ -68,7 +68,7 @@ public sealed class AdminDescribeTopicPartitionsTests
                 ResponsePartitionLimit = 1
             });
 
-        var requests = context.Connection.RequestsOfType<DescribeTopicPartitionsRequest>();
+        var requests = context.RequestsOfType<DescribeTopicPartitionsRequest>();
         await Assert.That(requests.Count).IsEqualTo(2);
         await Assert.That(requests[0].Cursor).IsNull();
         await Assert.That(requests[1].Cursor).IsNotNull();
@@ -86,11 +86,11 @@ public sealed class AdminDescribeTopicPartitionsTests
             TopicName = "topic-a",
             PartitionIndex = 1
         };
-        context.Connection.Enqueue(PageResponse(
+        context.Enqueue(PageResponse(
             "topic-a",
             partitionIndex: 0,
             nextCursor: repeatedCursor));
-        context.Connection.Enqueue(PageResponse(
+        context.Enqueue(PageResponse(
             "topic-a",
             partitionIndex: 1,
             nextCursor: repeatedCursor));
@@ -103,7 +103,7 @@ public sealed class AdminDescribeTopicPartitionsTests
             });
 
         await Assert.That(Act).Throws<InvalidOperationException>();
-        await Assert.That(context.Connection.RequestsOfType<DescribeTopicPartitionsRequest>().Count).IsEqualTo(2);
+        await Assert.That(context.RequestsOfType<DescribeTopicPartitionsRequest>().Count).IsEqualTo(2);
     }
 
     [Test]
@@ -140,7 +140,7 @@ public sealed class AdminDescribeTopicPartitionsTests
     public async Task DescribeTopicPartitionsPageAsync_MapsElrAndAuthorizedOperations()
     {
         await using var context = new AdminTestContext();
-        context.Connection.Enqueue(new DescribeTopicPartitionsResponse
+        context.Enqueue(new DescribeTopicPartitionsResponse
         {
             ThrottleTimeMs = 3,
             Topics =
@@ -191,7 +191,7 @@ public sealed class AdminDescribeTopicPartitionsTests
 
         await context.Client.DisposeAsync();
 
-        await Assert.That(context.PoolDisposeCount).IsEqualTo(0);
+        await context.AssertPoolNotDisposedAsync();
     }
 
     private static DescribeTopicPartitionsResponse PageResponse(
@@ -230,12 +230,44 @@ public sealed class AdminDescribeTopicPartitionsTests
 
     private sealed class AdminTestContext : IAsyncDisposable
     {
-        private readonly TestConnectionPool _pool;
+        private readonly IConnectionPool _pool;
+        private readonly IKafkaConnection _connection;
         private readonly MetadataManager _metadataManager;
+        private readonly Queue<DescribeTopicPartitionsResponse> _responses = new();
+        private readonly List<object> _requests = [];
 
         public AdminTestContext()
         {
-            _pool = new TestConnectionPool();
+            _connection = Substitute.For<IKafkaConnection>();
+            _connection.BrokerId.Returns(0);
+            _connection.Host.Returns("localhost");
+            _connection.Port.Returns(9092);
+            _connection.IsConnected.Returns(true);
+            _connection
+                .SendAsync<DescribeTopicPartitionsRequest, DescribeTopicPartitionsResponse>(
+                    Arg.Any<DescribeTopicPartitionsRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(callInfo =>
+                {
+                    var request = callInfo.ArgAt<DescribeTopicPartitionsRequest>(0);
+                    _requests.Add(request);
+                    if (!_responses.TryDequeue(out var response))
+                    {
+                        throw new InvalidOperationException($"No queued response for {nameof(DescribeTopicPartitionsRequest)}.");
+                    }
+
+                    return new ValueTask<DescribeTopicPartitionsResponse>((DescribeTopicPartitionsResponse)response);
+                });
+
+            _pool = Substitute.For<IConnectionPool>();
+            _pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+                .Returns(new ValueTask<IKafkaConnection>(_connection));
+            _pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+                .Returns(new ValueTask<IKafkaConnection>(_connection));
+            _pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+                .Returns(new ValueTask<IKafkaConnection>(_connection));
+
             _metadataManager = new MetadataManager(_pool, ["localhost:9092"]);
             _metadataManager.SetApiVersion(ApiKey.DescribeTopicPartitions, 0, 0);
             _metadataManager.Metadata.Update(new MetadataResponse
@@ -264,8 +296,14 @@ public sealed class AdminDescribeTopicPartitionsTests
         }
 
         public AdminClient Client { get; }
-        public TestKafkaConnection Connection => _pool.Connection;
-        public int PoolDisposeCount => _pool.DisposeCount;
+
+        public void Enqueue(DescribeTopicPartitionsResponse response) => _responses.Enqueue(response);
+
+        public T SingleRequest<T>() => RequestsOfType<T>().Single();
+
+        public IReadOnlyList<T> RequestsOfType<T>() => _requests.OfType<T>().ToArray();
+
+        public async ValueTask AssertPoolNotDisposedAsync() => await _pool.DidNotReceive().DisposeAsync();
 
         public async ValueTask DisposeAsync()
         {
@@ -273,112 +311,5 @@ public sealed class AdminDescribeTopicPartitionsTests
             await _metadataManager.DisposeAsync().ConfigureAwait(false);
             await _pool.DisposeAsync().ConfigureAwait(false);
         }
-    }
-
-    private sealed class TestConnectionPool : IConnectionPool
-    {
-        public TestKafkaConnection Connection { get; } = new();
-        public int DisposeCount { get; private set; }
-
-        public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<IKafkaConnection>(Connection);
-
-        public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<IKafkaConnection>(Connection);
-
-        public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<IKafkaConnection>(Connection);
-
-        public void RegisterBroker(int brokerId, string host, int port)
-        {
-        }
-
-        public ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(newCount);
-
-        public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<IKafkaConnection?>(null);
-
-        public ValueTask RemoveConnectionAsync(int brokerId) => ValueTask.CompletedTask;
-
-        public ValueTask CloseAllAsync() => ValueTask.CompletedTask;
-
-        public ValueTask DisposeAsync()
-        {
-            DisposeCount++;
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class TestKafkaConnection : IKafkaConnection
-    {
-        private readonly ConcurrentQueue<object> _responses = new();
-        private readonly ConcurrentQueue<object> _requests = new();
-
-        public int BrokerId => 0;
-        public string Host => "localhost";
-        public int Port => 9092;
-        public bool IsConnected => true;
-
-        public void Enqueue<TResponse>(TResponse response)
-            where TResponse : IKafkaResponse =>
-            _responses.Enqueue(response);
-
-        public T SingleRequest<T>() => RequestsOfType<T>().Single();
-
-        public IReadOnlyList<T> RequestsOfType<T>() =>
-            _requests.ToArray().OfType<T>().ToArray();
-
-        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
-            TRequest request,
-            short apiVersion,
-            CancellationToken cancellationToken = default)
-            where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse
-        {
-            _requests.Enqueue(request);
-            if (!_responses.TryDequeue(out var response))
-            {
-                throw new InvalidOperationException($"No queued response for {typeof(TRequest).Name}.");
-            }
-
-            return ValueTask.FromResult((TResponse)response);
-        }
-
-        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
-            TRequest request,
-            short apiVersion,
-            CancellationToken cancellationToken = default)
-            where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse =>
-            ValueTask.CompletedTask;
-
-        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
-            TRequest request,
-            short apiVersion,
-            CancellationToken cancellationToken = default)
-            where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse =>
-            Task.FromResult(default(TResponse)!);
-
-        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
-            TRequest request,
-            short apiVersion,
-            CancellationToken cancellationToken = default)
-            where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse =>
-            ValueTask.CompletedTask;
-
-        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
-            TRequest request,
-            short apiVersion,
-            CancellationToken cancellationToken = default)
-            where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse =>
-            Task.FromResult(default(TResponse)!);
-
-        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

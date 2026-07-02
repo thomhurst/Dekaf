@@ -822,6 +822,26 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a compact nullable array with unsigned varint length prefix (flexible format).
+    /// </summary>
+    public T[]? ReadCompactNullableArray<T>(ReadFunc<T> readItem)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length < 0)
+            return null;
+
+        if (length == 0)
+            return [];
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Skips tagged fields (for flexible versions).
     /// </summary>
     public void SkipTaggedFields()
@@ -902,6 +922,27 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
+            return [];
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a compact nullable array with unsigned varint length prefix (flexible format).
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public T[]? ReadCompactNullableArray<T, TState>(ReadFunc<T, TState> readItem, TState state)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length < 0)
+            return null;
+
+        if (length == 0)
             return [];
 
         var result = new T[length];

@@ -170,10 +170,22 @@ public class ArrayEncodingTests
     {
         var data = new byte[] { 0x00 };
         var reader = new KafkaProtocolReader(data);
-        var result = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
+        var result = reader.ReadCompactNullableArray((ref KafkaProtocolReader r) => r.ReadInt32());
 
-        // ReadCompactArray returns empty array for 0 length
-        await Assert.That(result).IsEmpty();
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task CompactNullableArray_NonNull_RoundTrip()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteCompactNullableArray<int>([1, 2, 3], static (ref KafkaProtocolWriter w, int v) => w.WriteInt32(v));
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var result = reader.ReadCompactNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
+
+        await Assert.That(result).IsEquivalentTo([1, 2, 3]);
     }
 
     #endregion

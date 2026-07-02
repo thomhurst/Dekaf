@@ -85,8 +85,8 @@ public sealed class DescribeTopicPartitionsResponsePartition
         var leaderEpoch = reader.ReadInt32();
         var replicaNodes = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
         var isrNodes = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var eligibleLeaderReplicas = ReadCompactNullableInt32Array(ref reader);
-        var lastKnownElr = ReadCompactNullableInt32Array(ref reader);
+        var eligibleLeaderReplicas = reader.ReadCompactNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
+        var lastKnownElr = reader.ReadCompactNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
         var offlineReplicas = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
 
         reader.SkipTaggedFields();
@@ -103,28 +103,6 @@ public sealed class DescribeTopicPartitionsResponsePartition
             LastKnownElr = lastKnownElr,
             OfflineReplicas = offlineReplicas
         };
-    }
-
-    private static IReadOnlyList<int>? ReadCompactNullableInt32Array(ref KafkaProtocolReader reader)
-    {
-        var length = reader.ReadUnsignedVarInt() - 1;
-        if (length < 0)
-        {
-            return null;
-        }
-
-        if (length == 0)
-        {
-            return [];
-        }
-
-        var result = new int[length];
-        for (var i = 0; i < length; i++)
-        {
-            result[i] = reader.ReadInt32();
-        }
-
-        return result;
     }
 }
 
