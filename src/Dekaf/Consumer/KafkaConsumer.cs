@@ -483,7 +483,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Initial count 1: at startup, memory IS available (_prefetchedBytes = 0). Starting at 0
     // causes a deadlock if the prefetch loop fills memory before the consumer reads anything —
     // the loop waits for a Release() that never comes because the consumer has no data yet.
-    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(1, int.MaxValue);
+    // Max count 1: the semaphore is an edge-triggered memory-available signal, not a permit
+    // counter. Extra releases while nobody is waiting must not accumulate and later spin the
+    // prefetch loop through stale permits.
+    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(1, 1);
 
     // Per-fetch reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
     // Keyed by (brokerId, connectionIndex) since PrefetchFromBrokerAsync runs concurrently
@@ -1971,11 +1974,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             Interlocked.Add(ref _prefetchedBytes, -bytes);
             // Signal prefetch loop that memory is now available (skip for empty responses to avoid spurious wakeups)
             if (bytes > 0)
-                _prefetchMemoryAvailable.Release();
+                SignalPrefetchMemoryAvailable();
         }
         else
         {
             Interlocked.Add(ref _prefetchedBytes, bytes);
+        }
+    }
+
+    private void SignalPrefetchMemoryAvailable()
+    {
+        if (_prefetchMemoryAvailable.CurrentCount != 0)
+            return;
+
+        try
+        {
+            _prefetchMemoryAvailable.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // Another release won the race after CurrentCount was observed as 0.
         }
     }
 
