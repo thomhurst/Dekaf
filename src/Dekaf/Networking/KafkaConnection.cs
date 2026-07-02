@@ -15,6 +15,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
@@ -174,6 +175,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
+    private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     // Partial frame assembly state for incremental response consumption.
@@ -253,7 +255,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ulong bufferMemory,
         int connectionsPerBroker,
         int brokerCount,
-        ResponseBufferPool responseBufferPool)
+        ResponseBufferPool responseBufferPool,
+        ClientTelemetryMetricCollector? telemetryMetricCollector = null)
     {
         _host = host;
         _port = port;
@@ -269,6 +272,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _connectionsPerBroker = connectionsPerBroker;
         _brokerCount = Math.Max(1, brokerCount);
         _responseBufferPool = responseBufferPool;
+        _telemetryMetricCollector = telemetryMetricCollector;
     }
 
     public KafkaConnection(
@@ -304,8 +308,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         int connectionsPerBroker,
         int brokerCount,
         ResponseBufferPool responseBufferPool,
-        PipeMemoryPool? sharedPipeMemoryPool = null)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool)
+        PipeMemoryPool? sharedPipeMemoryPool = null,
+        ClientTelemetryMetricCollector? telemetryMetricCollector = null)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool, telemetryMetricCollector)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -467,6 +472,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
         Volatile.Write(ref _connected, 1);
+        _telemetryMetricCollector?.RecordConnectionCreated();
 
         LogConnected(_host, _port);
     }
@@ -506,6 +512,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         try
         {
+            var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+
             // Write phase
             LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
 
@@ -515,8 +523,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
             LogRequestSentWaitingForResponse(correlationId);
 
             // Response phase: await response with timeout and parse
-            return await AwaitAndParseResponseAsync<TRequest, TResponse>(
+            var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
                 pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
+            _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
+            return response;
         }
         catch
         {
@@ -649,12 +659,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         try
         {
+            var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+
             await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
                 .ConfigureAwait(false);
 
             // Response phase: await response with timeout, then parse
-            return await AwaitAndParseResponseAsync<TRequest, TResponse>(
+            var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
                 pending, correlationId, apiVersion, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
+            _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
+            return response;
         }
         catch
         {

@@ -618,14 +618,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         MetadataManager metadataManager,
         ILoggerFactory? loggerFactory = null)
         : this(options, keyDeserializer, valueDeserializer,
-            (connectionPool, metadataManager),
+            (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
             loggerFactory)
     {
     }
 
-    private static (IConnectionPool, MetadataManager) CreateInfrastructure(
+    private static (IConnectionPool, MetadataManager, ClientTelemetryMetricCollector) CreateInfrastructure(
         ConsumerOptions options, ILoggerFactory? loggerFactory, MetadataOptions? metadataOptions)
     {
+        var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
         var connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
@@ -644,7 +645,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(options.FetchMaxBytes));
+            ResponseBufferPool.Create(options.FetchMaxBytes),
+            telemetryMetricCollector: telemetryMetricCollector);
 
         var metadataManager = new MetadataManager(
             connectionPool,
@@ -652,14 +654,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        return (connectionPool, metadataManager);
+        return (connectionPool, metadataManager, telemetryMetricCollector);
     }
 
     private KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
-        (IConnectionPool Pool, MetadataManager Metadata) infrastructure,
+        (IConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
         ILoggerFactory? loggerFactory)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
@@ -696,7 +698,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
-            loggerFactory?.CreateLogger<ClientTelemetryManager>());
+            loggerFactory?.CreateLogger<ClientTelemetryManager>(),
+            infrastructure.TelemetryMetricCollector);
 
         _compressionCodecs = CompressionCodecRegistry.Default;
 

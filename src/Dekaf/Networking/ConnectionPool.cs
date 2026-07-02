@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Dekaf.Security.Sasl;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
@@ -16,6 +17,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
     private readonly ResponseBufferPool _responseBufferPool;
+    private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly OAuthBearerTokenProvider? _sharedOAuthBearerTokenProvider;
 
     /// <summary>
@@ -90,7 +92,8 @@ public sealed partial class ConnectionPool : IConnectionPool
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
         ResponseBufferPool responseBufferPool,
-        int? pipeMemoryBucketCapacity = null)
+        int? pipeMemoryBucketCapacity = null,
+        ClientTelemetryMetricCollector? telemetryMetricCollector = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -100,6 +103,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
+        _telemetryMetricCollector = telemetryMetricCollector;
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
@@ -612,7 +616,8 @@ public sealed partial class ConnectionPool : IConnectionPool
             DefaultBufferMemory, _connectionsPerBroker,
             BrokerCount,
             _responseBufferPool,
-            _sharedPipeMemoryPool);
+            _sharedPipeMemoryPool,
+            _telemetryMetricCollector);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -730,7 +735,8 @@ public sealed partial class ConnectionPool : IConnectionPool
             DefaultBufferMemory, _connectionsPerBroker,
             BrokerCount,
             _responseBufferPool,
-            _sharedPipeMemoryPool);
+            _sharedPipeMemoryPool,
+            _telemetryMetricCollector);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 

@@ -224,6 +224,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _ => new DefaultPartitioner()
         };
 
+        var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+
         _connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
@@ -244,7 +246,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             loggerFactory,
             options.ConnectionsPerBroker,
             ResponseBufferPool.Default,
-            pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket);
+            pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket,
+            telemetryMetricCollector: telemetryMetricCollector);
 
         _metadataManager = new MetadataManager(
             _connectionPool,
@@ -255,7 +258,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
-            loggerFactory?.CreateLogger<ClientTelemetryManager>());
+            loggerFactory?.CreateLogger<ClientTelemetryManager>(),
+            telemetryMetricCollector);
 
         // Re-ratchet shared pool sizes after metadata refresh discovers the real broker count.
         // Bootstrap servers are seed nodes — the actual cluster may have more brokers.

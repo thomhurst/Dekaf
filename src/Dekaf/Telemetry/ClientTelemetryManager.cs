@@ -18,14 +18,20 @@ internal sealed record ClientTelemetrySubscription(
 
 internal interface IClientTelemetryPayloadProvider
 {
-    ReadOnlyMemory<byte> Collect(ClientTelemetrySubscription subscription, bool terminating);
+    ReadOnlyMemory<byte> Collect(
+        ClientTelemetrySubscription subscription,
+        ClientTelemetryMetricSnapshot metrics,
+        bool terminating);
 }
 
 internal sealed class EmptyClientTelemetryPayloadProvider : IClientTelemetryPayloadProvider
 {
     public static EmptyClientTelemetryPayloadProvider Instance { get; } = new();
 
-    public ReadOnlyMemory<byte> Collect(ClientTelemetrySubscription subscription, bool terminating) =>
+    public ReadOnlyMemory<byte> Collect(
+        ClientTelemetrySubscription subscription,
+        ClientTelemetryMetricSnapshot metrics,
+        bool terminating) =>
         ReadOnlyMemory<byte>.Empty;
 }
 
@@ -35,6 +41,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ClientTelemetryMetricCollector? _metricCollector;
     private readonly IClientTelemetryPayloadProvider _payloadProvider;
     private readonly ILogger<ClientTelemetryManager> _logger;
     private readonly SemaphoreSlim _startLock = new(1, 1);
@@ -51,10 +58,12 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         ILogger<ClientTelemetryManager>? logger = null,
+        ClientTelemetryMetricCollector? metricCollector = null,
         IClientTelemetryPayloadProvider? payloadProvider = null)
     {
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
+        _metricCollector = metricCollector;
         _logger = logger ?? NullLogger<ClientTelemetryManager>.Instance;
         _payloadProvider = payloadProvider ?? EmptyClientTelemetryPayloadProvider.Instance;
     }
@@ -319,11 +328,13 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 return ErrorCode.BrokerNotAvailable;
             }
 
-            var metrics = _payloadProvider.Collect(subscription, terminating);
-            if (subscription.TelemetryMaxBytes > 0 && metrics.Length > subscription.TelemetryMaxBytes)
+            var metricSnapshot = _metricCollector?.Collect(subscription) ??
+                ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality);
+            var payload = _payloadProvider.Collect(subscription, metricSnapshot, terminating);
+            if (subscription.TelemetryMaxBytes > 0 && payload.Length > subscription.TelemetryMaxBytes)
             {
-                LogTelemetryPayloadTooLarge(metrics.Length, subscription.TelemetryMaxBytes);
-                metrics = ReadOnlyMemory<byte>.Empty;
+                LogTelemetryPayloadTooLarge(payload.Length, subscription.TelemetryMaxBytes);
+                payload = ReadOnlyMemory<byte>.Empty;
             }
 
             var response = await connection.SendAsync<PushTelemetryRequest, PushTelemetryResponse>(
@@ -333,7 +344,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                     SubscriptionId = subscription.SubscriptionId,
                     Terminating = terminating,
                     CompressionType = subscription.CompressionType,
-                    Metrics = metrics
+                    Metrics = payload
                 },
                 apiVersion,
                 cancellationToken).ConfigureAwait(false);
