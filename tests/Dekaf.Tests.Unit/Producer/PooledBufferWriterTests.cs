@@ -7,6 +7,31 @@ namespace Dekaf.Tests.Unit.Producer;
 public class PooledBufferWriterTests
 {
     [Test]
+    public async Task ReusableBufferWriter_WrittenSpan_UsesLiveOversizedBuffer()
+    {
+        byte[]? cachedBuffer = new byte[16];
+        var writer = new ReusableBufferWriter(ref cachedBuffer, initialCapacity: 16);
+        var data = new byte[(1024 * 1024) + 1];
+        data[0] = 42;
+        data[^1] = 24;
+
+        data.CopyTo(writer.GetSpan(data.Length));
+        writer.Advance(data.Length);
+
+        var writtenSpan = writer.WrittenSpan;
+        var writtenLength = writtenSpan.Length;
+        var firstByte = writtenSpan[0];
+        var lastByte = writtenSpan[^1];
+
+        writer.UpdateBufferRef(ref cachedBuffer);
+
+        await Assert.That(cachedBuffer!.Length).IsEqualTo(16);
+        await Assert.That(writtenLength).IsEqualTo(data.Length);
+        await Assert.That(firstByte).IsEqualTo((byte)42);
+        await Assert.That(lastByte).IsEqualTo((byte)24);
+    }
+
+    [Test]
     public async Task Constructor_CreatesBufferWithInitialCapacity()
     {
         var writer = new PooledBufferWriter(initialCapacity: 128);

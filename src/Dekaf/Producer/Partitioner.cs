@@ -10,6 +10,7 @@ public interface IPartitioner
 {
     /// <summary>
     /// Selects a partition for a message.
+    /// The key span is valid only for the duration of this call.
     /// </summary>
     int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount);
 }

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
@@ -130,6 +131,207 @@ public class RecordAccumulatorTests
 
             // Must return the exact same instance to prevent duplicate resource tracking
             await Assert.That(ReferenceEquals(readyBatch1, readyBatch2)).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFromSpansWithCompletion_UsesArenaAndCompletesSource()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            var key = "key"u8.ToArray();
+            var value = "value"u8.ToArray();
+
+            var result = accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                key,
+                keyIsNull: false,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion);
+
+            await Assert.That(result).IsTrue();
+
+            var readyBatch = CompleteCurrentBatch(accumulator, topicPartition);
+            var pooledDataArraysCount = GetPrivateField<int>(readyBatch, "_pooledDataArraysCount");
+            var record = readyBatch.RecordBatch.Records[0];
+
+            await Assert.That(readyBatch.CompletionSourcesCount).IsEqualTo(1);
+            await Assert.That(pooledDataArraysCount).IsEqualTo(0);
+            await Assert.That(record.Key.ToArray()).IsEquivalentTo(key);
+            await Assert.That(record.Value.ToArray()).IsEquivalentTo(value);
+
+            var timestamp = DateTimeOffset.UtcNow;
+            readyBatch.CompleteSend(baseOffset: 12, timestamp);
+            var metadata = await completionTask;
+
+            await Assert.That(metadata.Topic).IsEqualTo(topicPartition.Topic);
+            await Assert.That(metadata.Partition).IsEqualTo(topicPartition.Partition);
+            await Assert.That(metadata.Offset).IsEqualTo(12L);
+            await Assert.That(metadata.Timestamp).IsEqualTo(timestamp);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFromSpansWithCompletion_BufferFull_ReturnsFalseWithoutPendingCount()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = 1,
+            BatchSize = 1024,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var completion = pool.Rent();
+
+            var result = accumulator.TryAppendFromSpansWithCompletion(
+                "test-topic",
+                0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion);
+
+            await Assert.That(result).IsFalse();
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+            await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(0);
+
+            pool.Return(completion);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFromSpansWithCompletion_DisposedAccumulator_ReturnsFalseWithoutPendingCount()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var completion = pool.Rent();
+
+        await accumulator.DisposeAsync();
+
+        try
+        {
+            var result = accumulator.TryAppendFromSpansWithCompletion(
+                "test-topic",
+                0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion);
+
+            await Assert.That(result).IsFalse();
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+            await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(0);
+
+            pool.Return(completion);
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFromSpansWithCompletion_FullBatch_SealsAndAppendsToNewBatch()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = PartitionBatch.EstimateRecordSize(0, 16, null, 0) + 8,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var firstCompletion = pool.Rent();
+            var secondCompletion = pool.Rent();
+            var firstCompletionTask = firstCompletion.Task;
+            var secondCompletionTask = secondCompletion.Task;
+            var value = new byte[16];
+
+            var firstResult = accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                firstCompletion);
+
+            var secondResult = accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                secondCompletion);
+
+            await Assert.That(firstResult).IsTrue();
+            await Assert.That(secondResult).IsTrue();
+            await Assert.That(accumulator.TryDrainBatch(out var sealedBatch)).IsTrue();
+            await Assert.That(sealedBatch!.CompletionSourcesCount).IsEqualTo(1);
+
+            var currentBatch = CompleteCurrentBatch(accumulator, topicPartition);
+            await Assert.That(currentBatch.CompletionSourcesCount).IsEqualTo(1);
+
+            var timestamp = DateTimeOffset.UtcNow;
+            sealedBatch.CompleteSend(baseOffset: 10, timestamp);
+            currentBatch.CompleteSend(baseOffset: 11, timestamp);
+            _ = await firstCompletionTask;
+            _ = await secondCompletionTask;
         }
         finally
         {
@@ -343,8 +545,8 @@ public class RecordAccumulatorTests
             if (found)
             {
                 var partitionDeque = parameters[1];
-            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
-            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
+                var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+                var partitionBatch = currentBatchField!.GetValue(partitionDeque);
                 var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
                 var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
 
@@ -1884,4 +2086,29 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    private static ReadyBatch CompleteCurrentBatch(RecordAccumulator accumulator, TopicPartition topicPartition)
+    {
+        var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        var deques = dequesField!.GetValue(accumulator)!;
+
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
+        if (!found)
+            throw new InvalidOperationException("Partition deque was not found.");
+
+        var partitionDeque = parameters[1];
+        var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+        var partitionBatch = currentBatchField!.GetValue(partitionDeque);
+        var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
+        return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        return (T)field!.GetValue(instance)!;
+    }
 }
