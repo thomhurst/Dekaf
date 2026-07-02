@@ -28,8 +28,6 @@ public sealed class DeleteTopicsRequest : IKafkaRequest<DeleteTopicsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 4;
-
         if (version >= 6)
         {
             // v6+: Use Topics array
@@ -43,26 +41,14 @@ public sealed class DeleteTopicsRequest : IKafkaRequest<DeleteTopicsResponse>
         {
             // v0-v5: Use TopicNames array
             var topicNames = TopicNames ?? [];
-            if (isFlexible)
-            {
-                writer.WriteCompactArray(
-                    topicNames,
-                    (ref KafkaProtocolWriter w, string name) => w.WriteCompactString(name));
-            }
-            else
-            {
-                writer.WriteArray(
-                    topicNames,
-                    (ref KafkaProtocolWriter w, string name) => w.WriteString(name));
-            }
+            writer.WriteCompactArray(
+            topicNames,
+            (ref KafkaProtocolWriter w, string name) => w.WriteCompactString(name));
         }
 
         writer.WriteInt32(TimeoutMs);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 

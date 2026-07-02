@@ -32,17 +32,12 @@ public sealed class InitProducerIdResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
         var producerId = reader.ReadInt64();
         var producerEpoch = reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new InitProducerIdResponse
         {

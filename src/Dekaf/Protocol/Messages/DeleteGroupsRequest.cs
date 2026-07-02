@@ -17,24 +17,10 @@ public sealed class DeleteGroupsRequest : IKafkaRequest<DeleteGroupsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
+        writer.WriteCompactArray(
+            GroupsNames,
+            (ref KafkaProtocolWriter w, string g) => w.WriteCompactString(g));
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                GroupsNames,
-                (ref KafkaProtocolWriter w, string g) => w.WriteCompactString(g));
-        }
-        else
-        {
-            writer.WriteArray(
-                GroupsNames,
-                (ref KafkaProtocolWriter w, string g) => w.WriteString(g));
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

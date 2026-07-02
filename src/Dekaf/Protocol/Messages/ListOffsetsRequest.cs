@@ -27,30 +27,15 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 6;
-
         writer.WriteInt32(ReplicaId);
 
-        if (version >= 2)
-        {
-            writer.WriteInt8((sbyte)IsolationLevel);
-        }
+        writer.WriteInt8((sbyte)IsolationLevel);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, ListOffsetsRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-            writer.WriteEmptyTaggedFields();
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, ListOffsetsRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+                    Topics,
+                    static (ref KafkaProtocolWriter w, ListOffsetsRequestTopic t, short v) => t.Write(ref w, v),
+                    version);
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -64,28 +49,13 @@ public sealed class ListOffsetsRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 6;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, ListOffsetsRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-            writer.WriteEmptyTaggedFields();
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, ListOffsetsRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            Partitions,
+            static (ref KafkaProtocolWriter w, ListOffsetsRequestPartition p, short v) => p.Write(ref w, v),
+            version);
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -108,14 +78,9 @@ public sealed class ListOffsetsRequestPartition
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 6;
-
         writer.WriteInt32(PartitionIndex);
 
-        if (version >= 4)
-        {
-            writer.WriteInt32(CurrentLeaderEpoch);
-        }
+        writer.WriteInt32(CurrentLeaderEpoch);
 
         writer.WriteInt64(Timestamp);
 
@@ -125,9 +90,6 @@ public sealed class ListOffsetsRequestPartition
             writer.WriteInt32(1); // max_num_offsets
         }
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

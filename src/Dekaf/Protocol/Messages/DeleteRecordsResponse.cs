@@ -23,26 +23,13 @@ public sealed class DeleteRecordsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<DeleteRecordsResponseTopic> topics;
-        if (isFlexible)
-        {
-            topics = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DeleteRecordsResponseTopic.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            topics = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DeleteRecordsResponseTopic.Read(ref r, version)) ?? [];
-        }
+        topics = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DeleteRecordsResponseTopic.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteRecordsResponse
         {
@@ -69,28 +56,13 @@ public sealed class DeleteRecordsResponseTopic
 
     public static DeleteRecordsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
-        var name = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var name = reader.ReadCompactString() ?? string.Empty;
 
         IReadOnlyList<DeleteRecordsResponsePartition> partitions;
-        if (isFlexible)
-        {
-            partitions = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DeleteRecordsResponsePartition.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            partitions = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DeleteRecordsResponsePartition.Read(ref r, version)) ?? [];
-        }
+        partitions = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DeleteRecordsResponsePartition.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteRecordsResponseTopic
         {
@@ -122,16 +94,11 @@ public sealed class DeleteRecordsResponsePartition
 
     public static DeleteRecordsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var partitionIndex = reader.ReadInt32();
         var lowWatermark = reader.ReadInt64();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteRecordsResponsePartition
         {

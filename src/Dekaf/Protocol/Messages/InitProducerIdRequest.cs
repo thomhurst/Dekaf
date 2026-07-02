@@ -32,12 +32,7 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
-        if (isFlexible)
-            writer.WriteCompactNullableString(TransactionalId);
-        else
-            writer.WriteString(TransactionalId);
+        writer.WriteCompactNullableString(TransactionalId);
 
         writer.WriteInt32(TransactionTimeoutMs);
 
@@ -47,9 +42,6 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
             writer.WriteInt16(ProducerEpoch);
         }
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

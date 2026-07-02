@@ -23,26 +23,13 @@ public sealed class CreatePartitionsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<CreatePartitionsResponseResult> results;
-        if (isFlexible)
-        {
-            results = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => CreatePartitionsResponseResult.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            results = reader.ReadArray(
-                (ref KafkaProtocolReader r) => CreatePartitionsResponseResult.Read(ref r, version)) ?? [];
-        }
+        results = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => CreatePartitionsResponseResult.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new CreatePartitionsResponse
         {
@@ -74,22 +61,13 @@ public sealed class CreatePartitionsResponseResult
 
     public static CreatePartitionsResponseResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
-        var name = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var name = reader.ReadCompactString() ?? string.Empty;
 
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        var errorMessage = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var errorMessage = reader.ReadCompactString();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new CreatePartitionsResponseResult
         {

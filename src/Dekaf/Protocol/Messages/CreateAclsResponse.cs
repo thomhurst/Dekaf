@@ -22,26 +22,13 @@ public sealed class CreateAclsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<AclCreationResult> results;
-        if (isFlexible)
-        {
-            results = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => AclCreationResult.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            results = reader.ReadArray(
-                (ref KafkaProtocolReader r) => AclCreationResult.Read(ref r, version)) ?? [];
-        }
+        results = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => AclCreationResult.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new CreateAclsResponse
         {
@@ -68,20 +55,12 @@ public sealed class AclCreationResult
 
     public static AclCreationResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         string? errorMessage;
-        if (isFlexible)
-            errorMessage = reader.ReadCompactString();
-        else
-            errorMessage = reader.ReadString();
+        errorMessage = reader.ReadCompactString();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new AclCreationResult
         {

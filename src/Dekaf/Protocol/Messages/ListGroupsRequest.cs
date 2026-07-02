@@ -22,8 +22,6 @@ public sealed class ListGroupsRequest : IKafkaRequest<ListGroupsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 3;
-
         if (version >= 4)
         {
             var states = StatesFilter ?? [];
@@ -40,9 +38,6 @@ public sealed class ListGroupsRequest : IKafkaRequest<ListGroupsResponse>
                 (ref KafkaProtocolWriter w, string t) => w.WriteCompactString(t));
         }
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

@@ -27,34 +27,16 @@ public sealed class CreateTopicsRequest : IKafkaRequest<CreateTopicsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 5;
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, CreateTopicData t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, CreateTopicData t, short v) => t.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            Topics,
+            static (ref KafkaProtocolWriter w, CreateTopicData t, short v) => t.Write(ref w, v),
+            version);
 
         writer.WriteInt32(TimeoutMs);
 
-        if (version >= 1)
-        {
-            writer.WriteBoolean(ValidateOnly);
-        }
+        writer.WriteBoolean(ValidateOnly);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -90,54 +72,26 @@ public sealed class CreateTopicData
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 5;
-
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactString(Name);
 
         writer.WriteInt32(NumPartitions);
         writer.WriteInt16(ReplicationFactor);
 
         // Assignments
         var assignments = Assignments ?? [];
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                assignments,
-                static (ref KafkaProtocolWriter w, CreateTopicAssignment a, short v) => a.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                assignments,
-                static (ref KafkaProtocolWriter w, CreateTopicAssignment a, short v) => a.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            assignments,
+            static (ref KafkaProtocolWriter w, CreateTopicAssignment a, short v) => a.Write(ref w, v),
+            version);
 
         // Configs
         var configs = Configs ?? [];
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                configs,
-                static (ref KafkaProtocolWriter w, CreateTopicConfig c, short v) => c.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                configs,
-                static (ref KafkaProtocolWriter w, CreateTopicConfig c, short v) => c.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            configs,
+            static (ref KafkaProtocolWriter w, CreateTopicConfig c, short v) => c.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -158,27 +112,13 @@ public sealed class CreateTopicAssignment
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 5;
-
         writer.WriteInt32(PartitionIndex);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                BrokerIds,
-                (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
-        }
-        else
-        {
-            writer.WriteArray(
-                BrokerIds,
-                (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
-        }
+        writer.WriteCompactArray(
+            BrokerIds,
+            (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -199,22 +139,9 @@ public sealed class CreateTopicConfig
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 5;
+        writer.WriteCompactString(Name);
+        writer.WriteCompactNullableString(Value);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactString(Name);
-            writer.WriteCompactNullableString(Value);
-        }
-        else
-        {
-            writer.WriteString(Name);
-            writer.WriteString(Value);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

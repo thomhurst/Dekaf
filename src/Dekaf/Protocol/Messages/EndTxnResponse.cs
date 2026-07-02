@@ -31,33 +31,28 @@ public sealed class EndTxnResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
-
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         var producerId = -1L;
         var producerEpoch = (short)-1;
 
-        if (isFlexible)
+        var numTaggedFields = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < numTaggedFields; i++)
         {
-            var numTaggedFields = reader.ReadUnsignedVarInt();
-            for (var i = 0; i < numTaggedFields; i++)
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            switch (tag)
             {
-                var tag = reader.ReadUnsignedVarInt();
-                var size = reader.ReadUnsignedVarInt();
-                switch (tag)
-                {
-                    case 0:
-                        producerId = reader.ReadInt64();
-                        break;
-                    case 1:
-                        producerEpoch = reader.ReadInt16();
-                        break;
-                    default:
-                        reader.Skip(size);
-                        break;
-                }
+                case 0:
+                    producerId = reader.ReadInt64();
+                    break;
+                case 1:
+                    producerEpoch = reader.ReadInt16();
+                    break;
+                default:
+                    reader.Skip(size);
+                    break;
             }
         }
 

@@ -23,26 +23,13 @@ public sealed class DeleteTopicsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 4;
-
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<DeleteTopicsResponseTopic> responses;
-        if (isFlexible)
-        {
-            responses = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DeleteTopicsResponseTopic.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            responses = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DeleteTopicsResponseTopic.Read(ref r, version)) ?? [];
-        }
+        responses = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DeleteTopicsResponseTopic.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteTopicsResponse
         {
@@ -79,11 +66,7 @@ public sealed class DeleteTopicsResponseTopic
 
     public static DeleteTopicsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 4;
-
-        var name = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var name = reader.ReadCompactString() ?? string.Empty;
 
         var topicId = version >= 6 ? reader.ReadUuid() : Guid.Empty;
 
@@ -92,15 +75,10 @@ public sealed class DeleteTopicsResponseTopic
         string? errorMessage = null;
         if (version >= 5)
         {
-            errorMessage = isFlexible
-                ? reader.ReadCompactString()
-                : reader.ReadString();
+            errorMessage = reader.ReadCompactString();
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteTopicsResponseTopic
         {

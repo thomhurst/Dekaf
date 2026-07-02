@@ -22,26 +22,13 @@ public sealed class IncrementalAlterConfigsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 1;
-
         var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<IncrementalAlterConfigsResourceResponse> responses;
-        if (isFlexible)
-        {
-            responses = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => IncrementalAlterConfigsResourceResponse.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            responses = reader.ReadArray(
-                (ref KafkaProtocolReader r) => IncrementalAlterConfigsResourceResponse.Read(ref r, version)) ?? [];
-        }
+        responses = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => IncrementalAlterConfigsResourceResponse.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new IncrementalAlterConfigsResponse
         {
@@ -78,36 +65,17 @@ public sealed class IncrementalAlterConfigsResourceResponse
 
     public static IncrementalAlterConfigsResourceResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 1;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         string? errorMessage;
-        if (isFlexible)
-        {
-            errorMessage = reader.ReadCompactString();
-        }
-        else
-        {
-            errorMessage = reader.ReadString();
-        }
+        errorMessage = reader.ReadCompactString();
 
         var resourceType = reader.ReadInt8();
 
         string resourceName;
-        if (isFlexible)
-        {
-            resourceName = reader.ReadCompactString() ?? string.Empty;
-        }
-        else
-        {
-            resourceName = reader.ReadString() ?? string.Empty;
-        }
+        resourceName = reader.ReadCompactString() ?? string.Empty;
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new IncrementalAlterConfigsResourceResponse
         {

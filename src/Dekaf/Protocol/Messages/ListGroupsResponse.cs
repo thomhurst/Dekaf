@@ -28,27 +28,14 @@ public sealed class ListGroupsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
-
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         IReadOnlyList<ListGroupsResponseGroup> groups;
-        if (isFlexible)
-        {
-            groups = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => ListGroupsResponseGroup.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            groups = reader.ReadArray(
-                (ref KafkaProtocolReader r) => ListGroupsResponseGroup.Read(ref r, version)) ?? [];
-        }
+        groups = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => ListGroupsResponseGroup.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new ListGroupsResponse
         {
@@ -86,15 +73,9 @@ public sealed class ListGroupsResponseGroup
 
     public static ListGroupsResponseGroup Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
+        var groupId = reader.ReadCompactString() ?? string.Empty;
 
-        var groupId = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
-
-        var protocolType = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var protocolType = reader.ReadCompactString();
 
         string? groupState = null;
         if (version >= 4)
@@ -108,10 +89,7 @@ public sealed class ListGroupsResponseGroup
             groupType = reader.ReadCompactString();
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new ListGroupsResponseGroup
         {

@@ -23,26 +23,13 @@ public sealed class DescribeGroupsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 5;
-
-        var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<DescribeGroupsResponseGroup> groups;
-        if (isFlexible)
-        {
-            groups = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DescribeGroupsResponseGroup.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            groups = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DescribeGroupsResponseGroup.Read(ref r, version)) ?? [];
-        }
+        groups = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DescribeGroupsResponseGroup.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeGroupsResponse
         {
@@ -94,44 +81,23 @@ public sealed class DescribeGroupsResponseGroup
 
     public static DescribeGroupsResponseGroup Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 5;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        var groupId = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var groupId = reader.ReadCompactString() ?? string.Empty;
 
-        var groupState = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var groupState = reader.ReadCompactString() ?? string.Empty;
 
-        var protocolType = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var protocolType = reader.ReadCompactString();
 
-        var protocolData = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var protocolData = reader.ReadCompactString();
 
         IReadOnlyList<DescribeGroupsResponseMember> members;
-        if (isFlexible)
-        {
-            members = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DescribeGroupsResponseMember.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            members = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DescribeGroupsResponseMember.Read(ref r, version)) ?? [];
-        }
+        members = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DescribeGroupsResponseMember.Read(ref r, version)) ?? [];
 
-        var authorizedOperations = version >= 3 ? reader.ReadInt32() : int.MinValue;
+        var authorizedOperations = reader.ReadInt32();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeGroupsResponseGroup
         {
@@ -183,40 +149,20 @@ public sealed class DescribeGroupsResponseMember
 
     public static DescribeGroupsResponseMember Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 5;
-
-        var memberId = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var memberId = reader.ReadCompactString() ?? string.Empty;
 
         string? groupInstanceId = null;
-        if (version >= 4)
-        {
-            groupInstanceId = isFlexible
-                ? reader.ReadCompactString()
-                : reader.ReadString();
-        }
+        groupInstanceId = reader.ReadCompactString();
 
-        var clientId = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var clientId = reader.ReadCompactString();
 
-        var clientHost = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var clientHost = reader.ReadCompactString();
 
-        var memberMetadata = isFlexible
-            ? reader.ReadCompactBytes()
-            : reader.ReadBytes();
+        var memberMetadata = reader.ReadCompactBytes();
 
-        var memberAssignment = isFlexible
-            ? reader.ReadCompactBytes()
-            : reader.ReadBytes();
+        var memberAssignment = reader.ReadCompactBytes();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeGroupsResponseMember
         {

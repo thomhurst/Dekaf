@@ -29,46 +29,25 @@ public sealed class ElectLeadersRequest : IKafkaRequest<ElectLeadersResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
         // ElectionType is only in v1+
-        if (version >= 1)
-        {
-            writer.WriteInt8((sbyte)ElectionType);
-        }
+        writer.WriteInt8((sbyte)ElectionType);
 
         // TopicPartitions (nullable array)
         if (TopicPartitions is null)
         {
-            if (isFlexible)
-                writer.WriteUnsignedVarInt(0); // 0 means null for compact nullable arrays
-            else
-                writer.WriteInt32(-1);
+            writer.WriteUnsignedVarInt(0); // 0 means null for compact nullable arrays
         }
         else
         {
-            if (isFlexible)
-            {
-                writer.WriteCompactArray(
-                    TopicPartitions,
-                    static (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t, short v) => t.Write(ref w, v),
-                    version);
-            }
-            else
-            {
-                writer.WriteArray(
-                    TopicPartitions,
-                    static (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t, short v) => t.Write(ref w, v),
-                    version);
-            }
+            writer.WriteCompactArray(
+            TopicPartitions,
+            static (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t, short v) => t.Write(ref w, v),
+            version);
         }
 
         writer.WriteInt32(TimeoutMs);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -89,25 +68,11 @@ public sealed class ElectLeadersRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
+        writer.WriteCompactString(Topic);
 
-        if (isFlexible)
-            writer.WriteCompactString(Topic);
-        else
-            writer.WriteString(Topic);
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-            writer.WriteEmptyTaggedFields();
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
+        writer.WriteCompactArray(
+            Partitions,
+            (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
+        writer.WriteEmptyTaggedFields();
     }
 }

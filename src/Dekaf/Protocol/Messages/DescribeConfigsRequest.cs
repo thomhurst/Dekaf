@@ -27,37 +27,16 @@ public sealed class DescribeConfigsRequest : IKafkaRequest<DescribeConfigsRespon
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 4;
+        writer.WriteCompactArray(
+            Resources,
+            static (ref KafkaProtocolWriter w, DescribeConfigsResource r, short v) => r.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Resources,
-                static (ref KafkaProtocolWriter w, DescribeConfigsResource r, short v) => r.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Resources,
-                static (ref KafkaProtocolWriter w, DescribeConfigsResource r, short v) => r.Write(ref w, v),
-                version);
-        }
+        writer.WriteBoolean(IncludeSynonyms);
 
-        if (version >= 1)
-        {
-            writer.WriteBoolean(IncludeSynonyms);
-        }
+        writer.WriteBoolean(IncludeDocumentation);
 
-        if (version >= 3)
-        {
-            writer.WriteBoolean(IncludeDocumentation);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -83,35 +62,14 @@ public sealed class DescribeConfigsResource
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 4;
-
         writer.WriteInt8(ResourceType);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactString(ResourceName);
-        }
-        else
-        {
-            writer.WriteString(ResourceName);
-        }
+        writer.WriteCompactString(ResourceName);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactNullableArray(
-                ConfigurationKeys,
-                (ref KafkaProtocolWriter w, string s) => w.WriteCompactString(s));
-        }
-        else
-        {
-            writer.WriteNullableArray(
-                ConfigurationKeys,
-                (ref KafkaProtocolWriter w, string s) => w.WriteString(s));
-        }
+        writer.WriteCompactNullableArray(
+            ConfigurationKeys,
+            (ref KafkaProtocolWriter w, string s) => w.WriteCompactString(s));
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

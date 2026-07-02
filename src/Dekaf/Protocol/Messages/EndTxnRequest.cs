@@ -32,20 +32,12 @@ public sealed class EndTxnRequest : IKafkaRequest<EndTxnResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 3;
-
-        if (isFlexible)
-            writer.WriteCompactString(TransactionalId);
-        else
-            writer.WriteString(TransactionalId);
+        writer.WriteCompactString(TransactionalId);
 
         writer.WriteInt64(ProducerId);
         writer.WriteInt16(ProducerEpoch);
         writer.WriteInt8(Committed ? (sbyte)1 : (sbyte)0);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

@@ -26,11 +26,8 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        if (version >= 3)
-        {
-            writer.WriteCompactString(ClientSoftwareName ?? string.Empty);
-            writer.WriteCompactString(ClientSoftwareVersion ?? string.Empty);
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteCompactString(ClientSoftwareName ?? string.Empty);
+        writer.WriteCompactString(ClientSoftwareVersion ?? string.Empty);
+        writer.WriteEmptyTaggedFields();
     }
 }

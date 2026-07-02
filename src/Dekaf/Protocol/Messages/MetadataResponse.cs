@@ -36,7 +36,7 @@ public sealed class MetadataResponse : IKafkaResponse
         var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version);
 
         var clusterAuthorizedOperations = int.MinValue;
-        if (version >= 8 && version <= 10)
+        if (version <= 10)
         {
             clusterAuthorizedOperations = reader.ReadInt32();
         }

@@ -17,14 +17,7 @@ public sealed class SaslAuthenticateRequest : IKafkaRequest<SaslAuthenticateResp
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        if (version >= 2)
-        {
-            writer.WriteCompactBytes(AuthBytes);
-            writer.WriteEmptyTaggedFields();
-        }
-        else
-        {
-            writer.WriteBytes(AuthBytes);
-        }
+        writer.WriteCompactBytes(AuthBytes);
+        writer.WriteEmptyTaggedFields();
     }
 }

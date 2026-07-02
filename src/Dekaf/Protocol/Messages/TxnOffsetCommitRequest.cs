@@ -52,47 +52,23 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 3;
+        writer.WriteCompactString(TransactionalId);
 
-        if (isFlexible)
-            writer.WriteCompactString(TransactionalId);
-        else
-            writer.WriteString(TransactionalId);
-
-        if (isFlexible)
-            writer.WriteCompactString(GroupId);
-        else
-            writer.WriteString(GroupId);
+        writer.WriteCompactString(GroupId);
 
         writer.WriteInt64(ProducerId);
         writer.WriteInt16(ProducerEpoch);
 
-        if (version >= 3)
-        {
-            writer.WriteInt32(GenerationId);
-            writer.WriteCompactString(MemberId);
-            writer.WriteCompactNullableString(GroupInstanceId);
-        }
+        writer.WriteInt32(GenerationId);
+        writer.WriteCompactString(MemberId);
+        writer.WriteCompactNullableString(GroupInstanceId);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, TxnOffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, TxnOffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+                    Topics,
+                    static (ref KafkaProtocolWriter w, TxnOffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
+                    version);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -106,32 +82,14 @@ public sealed class TxnOffsetCommitRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 3;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactArray(
+            Partitions,
+            static (ref KafkaProtocolWriter w, TxnOffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, TxnOffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, TxnOffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -155,24 +113,13 @@ public sealed class TxnOffsetCommitRequestPartition
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 3;
-
         writer.WriteInt32(PartitionIndex);
         writer.WriteInt64(CommittedOffset);
 
-        if (version >= 2)
-        {
-            writer.WriteInt32(CommittedLeaderEpoch);
-        }
+        writer.WriteInt32(CommittedLeaderEpoch);
 
-        if (isFlexible)
-            writer.WriteCompactNullableString(CommittedMetadata);
-        else
-            writer.WriteString(CommittedMetadata);
+        writer.WriteCompactNullableString(CommittedMetadata);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

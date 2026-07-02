@@ -17,27 +17,12 @@ public sealed class DeleteAclsRequest : IKafkaRequest<DeleteAclsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
+        writer.WriteCompactArray(
+            Filters,
+            static (ref KafkaProtocolWriter w, DeleteAclsFilter f, short v) => f.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Filters,
-                static (ref KafkaProtocolWriter w, DeleteAclsFilter f, short v) => f.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Filters,
-                static (ref KafkaProtocolWriter w, DeleteAclsFilter f, short v) => f.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -83,37 +68,18 @@ public sealed class DeleteAclsFilter
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
         writer.WriteInt8(ResourceTypeFilter);
 
-        if (isFlexible)
-            writer.WriteCompactNullableString(ResourceNameFilter);
-        else
-            writer.WriteString(ResourceNameFilter);
+        writer.WriteCompactNullableString(ResourceNameFilter);
 
-        if (version >= 1)
-        {
-            writer.WriteInt8(PatternTypeFilter);
-        }
+        writer.WriteInt8(PatternTypeFilter);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactNullableString(PrincipalFilter);
-            writer.WriteCompactNullableString(HostFilter);
-        }
-        else
-        {
-            writer.WriteString(PrincipalFilter);
-            writer.WriteString(HostFilter);
-        }
+        writer.WriteCompactNullableString(PrincipalFilter);
+        writer.WriteCompactNullableString(HostFilter);
 
         writer.WriteInt8(Operation);
         writer.WriteInt8(PermissionType);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

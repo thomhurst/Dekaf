@@ -27,30 +27,15 @@ public sealed class CreatePartitionsRequest : IKafkaRequest<CreatePartitionsResp
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, CreatePartitionsTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, CreatePartitionsTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            Topics,
+            static (ref KafkaProtocolWriter w, CreatePartitionsTopic t, short v) => t.Write(ref w, v),
+            version);
 
         writer.WriteInt32(TimeoutMs);
         writer.WriteBoolean(ValidateOnly);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -76,34 +61,16 @@ public sealed class CreatePartitionsTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactString(Name);
 
         writer.WriteInt32(Count);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactNullableArray(
-                Assignments,
-                static (ref KafkaProtocolWriter w, CreatePartitionsAssignment a, short v) => a.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteNullableArray(
-                Assignments,
-                static (ref KafkaProtocolWriter w, CreatePartitionsAssignment a, short v) => a.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactNullableArray(
+            Assignments,
+            static (ref KafkaProtocolWriter w, CreatePartitionsAssignment a, short v) => a.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -119,24 +86,10 @@ public sealed class CreatePartitionsAssignment
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
+        writer.WriteCompactArray(
+            BrokerIds,
+            (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                BrokerIds,
-                (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
-        }
-        else
-        {
-            writer.WriteArray(
-                BrokerIds,
-                (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

@@ -21,18 +21,11 @@ public sealed class TxnOffsetCommitResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
-
         var throttleTimeMs = reader.ReadInt32();
 
-        var topics = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponseTopic.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponseTopic.Read(ref r, v), version);
+        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponseTopic.Read(ref r, v), version);
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new TxnOffsetCommitResponse
         {
@@ -52,18 +45,11 @@ public sealed class TxnOffsetCommitResponseTopic
 
     public static TxnOffsetCommitResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
+        var name = reader.ReadCompactNonNullableString();
 
-        var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
+        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponsePartition.Read(ref r, v), version);
 
-        var partitions = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponsePartition.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponsePartition.Read(ref r, v), version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new TxnOffsetCommitResponseTopic
         {
@@ -83,15 +69,10 @@ public sealed class TxnOffsetCommitResponsePartition
 
     public static TxnOffsetCommitResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
-
         var partitionIndex = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new TxnOffsetCommitResponsePartition
         {

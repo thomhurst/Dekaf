@@ -22,29 +22,14 @@ public sealed class IncrementalAlterConfigsRequest : IKafkaRequest<IncrementalAl
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 1;
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Resources,
-                static (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r, short v) => r.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Resources,
-                static (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r, short v) => r.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            Resources,
+            static (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r, short v) => r.Write(ref w, v),
+            version);
 
         writer.WriteBoolean(ValidateOnly);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -70,31 +55,15 @@ public sealed class IncrementalAlterConfigsResource
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 1;
-
         writer.WriteInt8(ResourceType);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactString(ResourceName);
-            writer.WriteCompactArray(
-                Configs,
-                static (ref KafkaProtocolWriter w, IncrementalAlterableConfig c, short v) => c.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteString(ResourceName);
-            writer.WriteArray(
-                Configs,
-                static (ref KafkaProtocolWriter w, IncrementalAlterableConfig c, short v) => c.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactString(ResourceName);
+        writer.WriteCompactArray(
+            Configs,
+            static (ref KafkaProtocolWriter w, IncrementalAlterableConfig c, short v) => c.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -120,31 +89,12 @@ public sealed class IncrementalAlterableConfig
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 1;
-
-        if (isFlexible)
-        {
-            writer.WriteCompactString(Name);
-        }
-        else
-        {
-            writer.WriteString(Name);
-        }
+        writer.WriteCompactString(Name);
 
         writer.WriteInt8(ConfigOperation);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactNullableString(Value);
-        }
-        else
-        {
-            writer.WriteString(Value);
-        }
+        writer.WriteCompactNullableString(Value);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

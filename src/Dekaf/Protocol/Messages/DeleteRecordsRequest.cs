@@ -22,29 +22,14 @@ public sealed class DeleteRecordsRequest : IKafkaRequest<DeleteRecordsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Topics,
-                static (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t, short v) => t.Write(ref w, v),
-                version);
-        }
+        writer.WriteCompactArray(
+            Topics,
+            static (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t, short v) => t.Write(ref w, v),
+            version);
 
         writer.WriteInt32(TimeoutMs);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -65,32 +50,14 @@ public sealed class DeleteRecordsRequestTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactArray(
+            Partitions,
+            static (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p, short v) => p.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p, short v) => p.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -111,14 +78,9 @@ public sealed class DeleteRecordsRequestPartition
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
         writer.WriteInt32(PartitionIndex);
         writer.WriteInt64(Offset);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

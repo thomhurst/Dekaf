@@ -32,24 +32,13 @@ public sealed class AddOffsetsToTxnRequest : IKafkaRequest<AddOffsetsToTxnRespon
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 3;
-
-        if (isFlexible)
-            writer.WriteCompactString(TransactionalId);
-        else
-            writer.WriteString(TransactionalId);
+        writer.WriteCompactString(TransactionalId);
 
         writer.WriteInt64(ProducerId);
         writer.WriteInt16(ProducerEpoch);
 
-        if (isFlexible)
-            writer.WriteCompactString(GroupId);
-        else
-            writer.WriteString(GroupId);
+        writer.WriteCompactString(GroupId);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

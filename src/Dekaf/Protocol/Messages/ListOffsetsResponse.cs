@@ -21,22 +21,12 @@ public sealed class ListOffsetsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 6;
-
-        var throttleTimeMs = version >= 2 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<ListOffsetsResponseTopic> topics;
-        if (isFlexible)
-        {
-            topics = reader.ReadCompactArray((ref KafkaProtocolReader r) =>
-                ListOffsetsResponseTopic.Read(ref r, version));
-            reader.SkipTaggedFields();
-        }
-        else
-        {
-            topics = reader.ReadArray((ref KafkaProtocolReader r) =>
-                ListOffsetsResponseTopic.Read(ref r, version));
-        }
+        topics = reader.ReadCompactArray((ref KafkaProtocolReader r) =>
+    ListOffsetsResponseTopic.Read(ref r, version));
+        reader.SkipTaggedFields();
 
         return new ListOffsetsResponse
         {
@@ -56,22 +46,12 @@ public sealed class ListOffsetsResponseTopic
 
     public static ListOffsetsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 6;
-
-        var name = isFlexible ? reader.ReadCompactString()! : reader.ReadString()!;
+        var name = reader.ReadCompactString()!;
 
         IReadOnlyList<ListOffsetsResponsePartition> partitions;
-        if (isFlexible)
-        {
-            partitions = reader.ReadCompactArray((ref KafkaProtocolReader r) =>
-                ListOffsetsResponsePartition.Read(ref r, version));
-            reader.SkipTaggedFields();
-        }
-        else
-        {
-            partitions = reader.ReadArray((ref KafkaProtocolReader r) =>
-                ListOffsetsResponsePartition.Read(ref r, version));
-        }
+        partitions = reader.ReadCompactArray((ref KafkaProtocolReader r) =>
+    ListOffsetsResponsePartition.Read(ref r, version));
+        reader.SkipTaggedFields();
 
         return new ListOffsetsResponseTopic
         {
@@ -111,8 +91,6 @@ public sealed class ListOffsetsResponsePartition
 
     public static ListOffsetsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 6;
-
         var partitionIndex = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
@@ -135,16 +113,10 @@ public sealed class ListOffsetsResponsePartition
             timestamp = reader.ReadInt64();
             offset = reader.ReadInt64();
 
-            if (version >= 4)
-            {
-                leaderEpoch = reader.ReadInt32();
-            }
+            leaderEpoch = reader.ReadInt32();
         }
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new ListOffsetsResponsePartition
         {

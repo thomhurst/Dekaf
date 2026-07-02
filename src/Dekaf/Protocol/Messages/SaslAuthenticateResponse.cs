@@ -33,24 +33,15 @@ public sealed class SaslAuthenticateResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        var errorMessage = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var errorMessage = reader.ReadCompactString();
 
-        var authBytes = isFlexible
-            ? reader.ReadCompactBytes()
-            : reader.ReadBytes();
+        var authBytes = reader.ReadCompactBytes();
 
-        var sessionLifetimeMs = version >= 1 ? reader.ReadInt64() : 0L;
+        var sessionLifetimeMs = reader.ReadInt64();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new SaslAuthenticateResponse
         {

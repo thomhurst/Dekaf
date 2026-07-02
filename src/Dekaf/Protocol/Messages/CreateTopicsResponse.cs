@@ -23,26 +23,13 @@ public sealed class CreateTopicsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 5;
-
-        var throttleTimeMs = version >= 2 ? reader.ReadInt32() : 0;
+        var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<CreateTopicsResponseTopic> topics;
-        if (isFlexible)
-        {
-            topics = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => CreateTopicsResponseTopic.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            topics = reader.ReadArray(
-                (ref KafkaProtocolReader r) => CreateTopicsResponseTopic.Read(ref r, version)) ?? [];
-        }
+        topics = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => CreateTopicsResponseTopic.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new CreateTopicsResponse
         {
@@ -94,41 +81,23 @@ public sealed class CreateTopicsResponseTopic
 
     public static CreateTopicsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 5;
-
-        var name = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var name = reader.ReadCompactString() ?? string.Empty;
 
         var topicId = version >= 7 ? reader.ReadUuid() : Guid.Empty;
 
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         string? errorMessage = null;
-        if (version >= 1)
-        {
-            errorMessage = isFlexible
-                ? reader.ReadCompactString()
-                : reader.ReadString();
-        }
+        errorMessage = reader.ReadCompactString();
 
-        var numPartitions = version >= 5 ? reader.ReadInt32() : -1;
-        var replicationFactor = version >= 5 ? reader.ReadInt16() : (short)-1;
+        var numPartitions = reader.ReadInt32();
+        var replicationFactor = reader.ReadInt16();
 
         IReadOnlyList<CreateTopicsResponseConfig>? configs = null;
-        if (version >= 5)
-        {
-            configs = isFlexible
-                ? reader.ReadCompactArray(
-                    (ref KafkaProtocolReader r) => CreateTopicsResponseConfig.Read(ref r, version))
-                : reader.ReadArray(
-                    (ref KafkaProtocolReader r) => CreateTopicsResponseConfig.Read(ref r, version));
-        }
+        configs = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => CreateTopicsResponseConfig.Read(ref r, version));
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new CreateTopicsResponseTopic
         {
@@ -175,24 +144,15 @@ public sealed class CreateTopicsResponseConfig
 
     public static CreateTopicsResponseConfig Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 5;
+        var name = reader.ReadCompactString() ?? string.Empty;
 
-        var name = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
-
-        var value = isFlexible
-            ? reader.ReadCompactString()
-            : reader.ReadString();
+        var value = reader.ReadCompactString();
 
         var readOnly = reader.ReadBoolean();
-        var configSource = version >= 5 ? reader.ReadInt8() : (sbyte)-1;
+        var configSource = reader.ReadInt8();
         var isSensitive = reader.ReadBoolean();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new CreateTopicsResponseConfig
         {

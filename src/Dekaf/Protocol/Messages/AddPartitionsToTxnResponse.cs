@@ -77,16 +77,9 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
 
     private static IKafkaResponse ReadV0ToV3(ref KafkaProtocolReader reader, short version, int throttleTimeMs)
     {
-        var isFlexible = version >= 3;
+        var results = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version);
 
-        var results = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new AddPartitionsToTxnResponse
         {
@@ -106,18 +99,11 @@ public sealed class AddPartitionsToTxnTopicResult
 
     public static AddPartitionsToTxnTopicResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
+        var name = reader.ReadCompactNonNullableString();
 
-        var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
+        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version);
 
-        var partitions = isFlexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version)
-            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version);
-
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new AddPartitionsToTxnTopicResult
         {
@@ -137,15 +123,10 @@ public sealed class AddPartitionsToTxnPartitionResult
 
     public static AddPartitionsToTxnPartitionResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 3;
-
         var partitionIndex = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new AddPartitionsToTxnPartitionResult
         {

@@ -17,27 +17,12 @@ public sealed class CreateAclsRequest : IKafkaRequest<CreateAclsResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
+        writer.WriteCompactArray(
+            Creations,
+            static (ref KafkaProtocolWriter w, AclCreation c, short v) => c.Write(ref w, v),
+            version);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Creations,
-                static (ref KafkaProtocolWriter w, AclCreation c, short v) => c.Write(ref w, v),
-                version);
-        }
-        else
-        {
-            writer.WriteArray(
-                Creations,
-                static (ref KafkaProtocolWriter w, AclCreation c, short v) => c.Write(ref w, v),
-                version);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -83,37 +68,18 @@ public sealed class AclCreation
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 2;
-
         writer.WriteInt8(ResourceType);
 
-        if (isFlexible)
-            writer.WriteCompactString(ResourceName);
-        else
-            writer.WriteString(ResourceName);
+        writer.WriteCompactString(ResourceName);
 
-        if (version >= 1)
-        {
-            writer.WriteInt8(ResourcePatternType);
-        }
+        writer.WriteInt8(ResourcePatternType);
 
-        if (isFlexible)
-        {
-            writer.WriteCompactString(Principal);
-            writer.WriteCompactString(Host);
-        }
-        else
-        {
-            writer.WriteString(Principal);
-            writer.WriteString(Host);
-        }
+        writer.WriteCompactString(Principal);
+        writer.WriteCompactString(Host);
 
         writer.WriteInt8(Operation);
         writer.WriteInt8(PermissionType);
 
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

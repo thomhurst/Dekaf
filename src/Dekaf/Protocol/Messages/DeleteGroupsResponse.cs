@@ -23,26 +23,13 @@ public sealed class DeleteGroupsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<DeleteGroupsResponseResult> results;
-        if (isFlexible)
-        {
-            results = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DeleteGroupsResponseResult.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            results = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DeleteGroupsResponseResult.Read(ref r, version)) ?? [];
-        }
+        results = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DeleteGroupsResponseResult.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteGroupsResponse
         {
@@ -69,18 +56,11 @@ public sealed class DeleteGroupsResponseResult
 
     public static DeleteGroupsResponseResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
-        var groupId = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var groupId = reader.ReadCompactString() ?? string.Empty;
 
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DeleteGroupsResponseResult
         {

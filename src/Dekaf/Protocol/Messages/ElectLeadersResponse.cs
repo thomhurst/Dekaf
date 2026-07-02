@@ -27,25 +27,15 @@ public sealed class ElectLeadersResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
 
         // ErrorCode is only in v1+
-        var errorCode = version >= 1 ? (ErrorCode)reader.ReadInt16() : ErrorCode.None;
+        var errorCode = (ErrorCode)reader.ReadInt16();
 
         IReadOnlyList<ElectLeadersResponseTopic> results;
-        if (isFlexible)
-        {
-            results = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => ElectLeadersResponseTopic.Read(ref r, version)) ?? [];
-            reader.SkipTaggedFields();
-        }
-        else
-        {
-            results = reader.ReadArray(
-                (ref KafkaProtocolReader r) => ElectLeadersResponseTopic.Read(ref r, version)) ?? [];
-        }
+        results = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => ElectLeadersResponseTopic.Read(ref r, version)) ?? [];
+        reader.SkipTaggedFields();
 
         return new ElectLeadersResponse
         {
@@ -73,24 +63,12 @@ public sealed class ElectLeadersResponseTopic
 
     public static ElectLeadersResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
-        var topic = isFlexible
-            ? reader.ReadCompactString() ?? string.Empty
-            : reader.ReadString() ?? string.Empty;
+        var topic = reader.ReadCompactString() ?? string.Empty;
 
         IReadOnlyList<ElectLeadersResponsePartition> partitions;
-        if (isFlexible)
-        {
-            partitions = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => ElectLeadersResponsePartition.Read(ref r, version)) ?? [];
-            reader.SkipTaggedFields();
-        }
-        else
-        {
-            partitions = reader.ReadArray(
-                (ref KafkaProtocolReader r) => ElectLeadersResponsePartition.Read(ref r, version)) ?? [];
-        }
+        partitions = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => ElectLeadersResponsePartition.Read(ref r, version)) ?? [];
+        reader.SkipTaggedFields();
 
         return new ElectLeadersResponseTopic
         {
@@ -122,23 +100,13 @@ public sealed class ElectLeadersResponsePartition
 
     public static ElectLeadersResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var partitionId = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         string? errorMessage = null;
-        if (version >= 1)
-        {
-            errorMessage = isFlexible
-                ? reader.ReadCompactString()
-                : reader.ReadString();
-        }
+        errorMessage = reader.ReadCompactString();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new ElectLeadersResponsePartition
         {

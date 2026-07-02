@@ -32,33 +32,17 @@ public sealed class DescribeAclsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         string? errorMessage;
-        if (isFlexible)
-            errorMessage = reader.ReadCompactString();
-        else
-            errorMessage = reader.ReadString();
+        errorMessage = reader.ReadCompactString();
 
         IReadOnlyList<DescribeAclsResource> resources;
-        if (isFlexible)
-        {
-            resources = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DescribeAclsResource.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            resources = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DescribeAclsResource.Read(ref r, version)) ?? [];
-        }
+        resources = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DescribeAclsResource.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeAclsResponse
         {
@@ -97,34 +81,18 @@ public sealed class DescribeAclsResource
 
     public static DescribeAclsResource Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         var resourceType = reader.ReadInt8();
 
         string resourceName;
-        if (isFlexible)
-            resourceName = reader.ReadCompactString() ?? string.Empty;
-        else
-            resourceName = reader.ReadString() ?? string.Empty;
+        resourceName = reader.ReadCompactString() ?? string.Empty;
 
-        var patternType = version >= 1 ? reader.ReadInt8() : (sbyte)3;
+        var patternType = reader.ReadInt8();
 
         IReadOnlyList<AclDescription> acls;
-        if (isFlexible)
-        {
-            acls = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => AclDescription.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            acls = reader.ReadArray(
-                (ref KafkaProtocolReader r) => AclDescription.Read(ref r, version)) ?? [];
-        }
+        acls = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => AclDescription.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeAclsResource
         {
@@ -163,29 +131,16 @@ public sealed class AclDescription
 
     public static AclDescription Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 2;
-
         string principal;
         string host;
 
-        if (isFlexible)
-        {
-            principal = reader.ReadCompactString() ?? string.Empty;
-            host = reader.ReadCompactString() ?? string.Empty;
-        }
-        else
-        {
-            principal = reader.ReadString() ?? string.Empty;
-            host = reader.ReadString() ?? string.Empty;
-        }
+        principal = reader.ReadCompactString() ?? string.Empty;
+        host = reader.ReadCompactString() ?? string.Empty;
 
         var operation = reader.ReadInt8();
         var permissionType = reader.ReadInt8();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new AclDescription
         {

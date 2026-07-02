@@ -22,29 +22,12 @@ public sealed class DescribeGroupsRequest : IKafkaRequest<DescribeGroupsResponse
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        var isFlexible = version >= 5;
+        writer.WriteCompactArray(
+            Groups,
+            (ref KafkaProtocolWriter w, string g) => w.WriteCompactString(g));
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Groups,
-                (ref KafkaProtocolWriter w, string g) => w.WriteCompactString(g));
-        }
-        else
-        {
-            writer.WriteArray(
-                Groups,
-                (ref KafkaProtocolWriter w, string g) => w.WriteString(g));
-        }
+        writer.WriteBoolean(IncludeAuthorizedOperations);
 
-        if (version >= 3)
-        {
-            writer.WriteBoolean(IncludeAuthorizedOperations);
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

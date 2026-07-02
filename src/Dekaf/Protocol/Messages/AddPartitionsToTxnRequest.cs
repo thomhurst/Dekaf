@@ -64,35 +64,17 @@ public sealed class AddPartitionsToTxnRequest : IKafkaRequest<AddPartitionsToTxn
         }
         else
         {
-            var isFlexible = version >= 3;
-
-            if (isFlexible)
-                writer.WriteCompactString(TransactionalId);
-            else
-                writer.WriteString(TransactionalId);
+            writer.WriteCompactString(TransactionalId);
 
             writer.WriteInt64(ProducerId);
             writer.WriteInt16(ProducerEpoch);
 
-            if (isFlexible)
-            {
-                writer.WriteCompactArray(
-                    Topics,
-                    static (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t, short v) => t.Write(ref w, v),
-                    version);
-            }
-            else
-            {
-                writer.WriteArray(
-                    Topics,
-                    static (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t, short v) => t.Write(ref w, v),
-                    version);
-            }
+            writer.WriteCompactArray(
+            Topics,
+            static (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t, short v) => t.Write(ref w, v),
+            version);
 
-            if (isFlexible)
-            {
-                writer.WriteEmptyTaggedFields();
-            }
+            writer.WriteEmptyTaggedFields();
         }
     }
 }
@@ -107,30 +89,12 @@ public sealed class AddPartitionsToTxnTopic
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        // v3+ and v4+ are both flexible
-        var isFlexible = version >= 3;
+        writer.WriteCompactString(Name);
 
-        if (isFlexible)
-            writer.WriteCompactString(Name);
-        else
-            writer.WriteString(Name);
+        writer.WriteCompactArray(
+            Partitions,
+            static (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
 
-        if (isFlexible)
-        {
-            writer.WriteCompactArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
-        else
-        {
-            writer.WriteArray(
-                Partitions,
-                static (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
-        }
-
-        if (isFlexible)
-        {
-            writer.WriteEmptyTaggedFields();
-        }
+        writer.WriteEmptyTaggedFields();
     }
 }

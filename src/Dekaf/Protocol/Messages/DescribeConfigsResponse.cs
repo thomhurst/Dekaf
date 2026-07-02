@@ -22,26 +22,13 @@ public sealed class DescribeConfigsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 4;
-
         var throttleTimeMs = reader.ReadInt32();
 
         IReadOnlyList<DescribeConfigsResult> results;
-        if (isFlexible)
-        {
-            results = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DescribeConfigsResult.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            results = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DescribeConfigsResult.Read(ref r, version)) ?? [];
-        }
+        results = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DescribeConfigsResult.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeConfigsResponse
         {
@@ -83,48 +70,21 @@ public sealed class DescribeConfigsResult
 
     public static DescribeConfigsResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 4;
-
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         string? errorMessage;
-        if (isFlexible)
-        {
-            errorMessage = reader.ReadCompactString();
-        }
-        else
-        {
-            errorMessage = reader.ReadString();
-        }
+        errorMessage = reader.ReadCompactString();
 
         var resourceType = reader.ReadInt8();
 
         string resourceName;
-        if (isFlexible)
-        {
-            resourceName = reader.ReadCompactString() ?? string.Empty;
-        }
-        else
-        {
-            resourceName = reader.ReadString() ?? string.Empty;
-        }
+        resourceName = reader.ReadCompactString() ?? string.Empty;
 
         IReadOnlyList<DescribeConfigsResourceResult> configs;
-        if (isFlexible)
-        {
-            configs = reader.ReadCompactArray(
-                (ref KafkaProtocolReader r) => DescribeConfigsResourceResult.Read(ref r, version)) ?? [];
-        }
-        else
-        {
-            configs = reader.ReadArray(
-                (ref KafkaProtocolReader r) => DescribeConfigsResourceResult.Read(ref r, version)) ?? [];
-        }
+        configs = reader.ReadCompactArray(
+            (ref KafkaProtocolReader r) => DescribeConfigsResourceResult.Read(ref r, version)) ?? [];
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeConfigsResult
         {
@@ -189,27 +149,11 @@ public sealed class DescribeConfigsResourceResult
 
     public static DescribeConfigsResourceResult Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 4;
-
         string name;
-        if (isFlexible)
-        {
-            name = reader.ReadCompactString() ?? string.Empty;
-        }
-        else
-        {
-            name = reader.ReadString() ?? string.Empty;
-        }
+        name = reader.ReadCompactString() ?? string.Empty;
 
         string? value;
-        if (isFlexible)
-        {
-            value = reader.ReadCompactString();
-        }
-        else
-        {
-            value = reader.ReadString();
-        }
+        value = reader.ReadCompactString();
 
         var readOnly = reader.ReadBoolean();
 
@@ -217,47 +161,20 @@ public sealed class DescribeConfigsResourceResult
         var isDefault = version == 0 && reader.ReadBoolean();
 
         sbyte configSource = -1;
-        if (version >= 1)
-        {
-            configSource = reader.ReadInt8();
-        }
+        configSource = reader.ReadInt8();
 
         var isSensitive = reader.ReadBoolean();
 
         IReadOnlyList<DescribeConfigsSynonym>? synonyms = null;
-        if (version >= 1)
-        {
-            if (isFlexible)
-            {
-                synonyms = reader.ReadCompactArray(
-                    (ref KafkaProtocolReader r) => DescribeConfigsSynonym.Read(ref r, version));
-            }
-            else
-            {
-                synonyms = reader.ReadArray(
-                    (ref KafkaProtocolReader r) => DescribeConfigsSynonym.Read(ref r, version));
-            }
-        }
+        synonyms = reader.ReadCompactArray(
+(ref KafkaProtocolReader r) => DescribeConfigsSynonym.Read(ref r, version));
 
         sbyte configType = 0;
         string? documentation = null;
-        if (version >= 3)
-        {
-            configType = reader.ReadInt8();
-            if (isFlexible)
-            {
-                documentation = reader.ReadCompactString();
-            }
-            else
-            {
-                documentation = reader.ReadString();
-            }
-        }
+        configType = reader.ReadInt8();
+        documentation = reader.ReadCompactString();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeConfigsResourceResult
         {
@@ -296,28 +213,15 @@ public sealed class DescribeConfigsSynonym
 
     public static DescribeConfigsSynonym Read(ref KafkaProtocolReader reader, short version)
     {
-        var isFlexible = version >= 4;
-
         string name;
         string? value;
 
-        if (isFlexible)
-        {
-            name = reader.ReadCompactString() ?? string.Empty;
-            value = reader.ReadCompactString();
-        }
-        else
-        {
-            name = reader.ReadString() ?? string.Empty;
-            value = reader.ReadString();
-        }
+        name = reader.ReadCompactString() ?? string.Empty;
+        value = reader.ReadCompactString();
 
         var source = reader.ReadInt8();
 
-        if (isFlexible)
-        {
-            reader.SkipTaggedFields();
-        }
+        reader.SkipTaggedFields();
 
         return new DescribeConfigsSynonym
         {
