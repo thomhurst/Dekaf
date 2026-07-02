@@ -23,6 +23,7 @@ public sealed class AdminClient : IAdminClient
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly ILogger<AdminClient>? _logger;
+    private int _telemetryStartAttempted;
     private int _disposed;
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
@@ -1966,7 +1967,28 @@ public sealed class AdminClient : IAdminClient
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await _telemetryManager.StartAsync(cancellationToken).ConfigureAwait(false);
+        if (Volatile.Read(ref _telemetryStartAttempted) == 0)
+        {
+            await StartTelemetryOnceAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask StartTelemetryOnceAsync(CancellationToken cancellationToken)
+    {
+        if (Interlocked.CompareExchange(ref _telemetryStartAttempted, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _telemetryManager.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Volatile.Write(ref _telemetryStartAttempted, 0);
+            throw;
+        }
     }
 
     private ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
