@@ -194,6 +194,8 @@ When a consumer leaves gracefully (`await using` or `CloseAsync`):
 1. Consumer commits offsets and leaves group
 2. Remaining consumers get its partitions
 
+Cancel the token passed to `ConsumeAsync` before closing when you need to stop a pending fetch promptly during shutdown.
+
 ### Maximum Parallelism
 
 The maximum number of active consumers in a group equals the number of partitions:

@@ -58,7 +58,7 @@ await foreach (var message in consumer.ConsumeAsync(cancellationToken))
 }
 ```
 
-The loop continues until the cancellation token is triggered or an error occurs.
+The loop continues until the cancellation token is triggered or an error occurs. Cancel the token to unblock an in-flight fetch and stop the consume loop.
 
 ## ConsumeResult Properties
 
@@ -158,7 +158,7 @@ await using var consumer = await Kafka.CreateConsumer<string, string>()
 
 using var cts = new CancellationTokenSource();
 
-// Handle shutdown signals
+// Handle shutdown signals by cancelling the consume token
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;

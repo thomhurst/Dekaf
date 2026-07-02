@@ -155,11 +155,6 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     IReadOnlySet<TopicPartition> Paused { get; }
 
     /// <summary>
-    /// Wakes up the consumer if it's blocked on a fetch.
-    /// </summary>
-    void Wakeup();
-
-    /// <summary>
     /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
     /// commits pending offsets, leaves the consumer group, and releases resources.
     /// </summary>

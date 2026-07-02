@@ -517,7 +517,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
 
 
-    private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeWakeupSources = new();
+    private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeConsumeCancellationSources = new();
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
@@ -1539,21 +1539,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
     {
-        // Rent wakeup CTS from pool — used as the combined cancellation source
+        // Rent a CTS from the pool for the combined consume cancellation source
         // instead of allocating a LinkedCTS
-        var wakeupCts = _ctsPool.Rent();
-        _activeWakeupSources.TryAdd(wakeupCts, 0);
+        var consumeCts = _ctsPool.Rent();
+        _activeConsumeCancellationSources.TryAdd(consumeCts, 0);
 
         try
         {
-            // Forward outer cancellation and wakeup into the pooled CTS via registrations
+            // Forward outer cancellation into the pooled CTS via registration
             using var reg1 = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), consumeCts)
                 : default;
 
             // Close any race window: if token was cancelled between method entry and registration
             if (cancellationToken.IsCancellationRequested)
-                wakeupCts.Cancel();
+                consumeCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
             var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -1609,7 +1609,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                         fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
                             brokerId, partitions, startIndex, count, connectionIndex,
-                            wakeupCts.Token, wakeupCts.Token);
+                            consumeCts.Token, consumeCts.Token);
                     }
                 }
 
@@ -1632,7 +1632,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
                         key.BrokerId, [], 0, 0, key.ConnectionIndex,
-                        wakeupCts.Token, wakeupCts.Token);
+                        consumeCts.Token, consumeCts.Token);
                 }
 
                 if (taskCount == 0)
@@ -1659,8 +1659,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _activeWakeupSources.TryRemove(wakeupCts, out _);
-            wakeupCts.Dispose();
+            _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
+            consumeCts.Dispose();
         }
     }
 
@@ -1671,15 +1671,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         int partitionCount,
         int connectionIndex,
         CancellationToken linkedToken,
-        CancellationToken wakeupToken)
+        CancellationToken consumeCancellationToken)
     {
         try
         {
             await PrefetchFromBrokerAsync(brokerId, partitions, partitionStartIndex, partitionCount, connectionIndex, linkedToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (consumeCancellationToken.IsCancellationRequested)
         {
-            // Wakeup requested, exit silently
+            // Consume cancellation requested, exit silently
         }
         catch (Exception ex) when (IsFatalPrefetchError(ex))
         {
@@ -2082,7 +2082,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (release)
         {
             Interlocked.Add(ref _prefetchedBytes, -bytes);
-            // Signal prefetch loop that memory is now available (skip for empty responses to avoid spurious wakeups)
+            // Signal prefetch loop that memory is now available (skip for empty responses to avoid spurious signals)
             if (bytes > 0)
                 SignalPrefetchMemoryAvailable();
         }
@@ -2479,11 +2479,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return this;
     }
 
-    public void Wakeup() => CancelAllActiveWakeupSources();
-
-    private void CancelAllActiveWakeupSources()
+    private void CancelActiveConsumeOperations()
     {
-        foreach (var cts in _activeWakeupSources.Keys)
+        foreach (var cts in _activeConsumeCancellationSources.Keys)
         {
             try { cts.Cancel(); }
             catch (ObjectDisposedException) { }
@@ -3047,21 +3045,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
     {
-        // Rent wakeup CTS from pool to avoid allocation
-        var wakeupCts = _ctsPool.Rent();
-        _activeWakeupSources.TryAdd(wakeupCts, 0);
+        // Rent a CTS from the pool to avoid allocating a LinkedCTS
+        var consumeCts = _ctsPool.Rent();
+        _activeConsumeCancellationSources.TryAdd(consumeCts, 0);
 
         try
         {
-            // Forward outer cancellation into the pooled wakeup CTS via registration
+            // Forward outer cancellation into the pooled CTS via registration
             // instead of allocating a LinkedCTS (matches the prefetch path pattern)
             using var reg = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), consumeCts)
                 : default;
 
             // Close any race window: if token was cancelled between method entry and registration
             if (cancellationToken.IsCancellationRequested)
-                wakeupCts.Cancel();
+                consumeCts.Cancel();
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
             var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -3088,7 +3086,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 {
                     scheduledFetchSessionBrokers?.Add(brokerId);
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
-                        brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
+                        brokerId, partitions, consumeCts.Token, consumeCts.Token);
                 }
 
                 foreach (var (key, handler) in fetchSessionSnapshot)
@@ -3109,7 +3107,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         continue;
 
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
-                        key.BrokerId, [], wakeupCts.Token, wakeupCts.Token);
+                        key.BrokerId, [], consumeCts.Token, consumeCts.Token);
                 }
 
                 if (taskCount == 0)
@@ -3149,8 +3147,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _activeWakeupSources.TryRemove(wakeupCts, out _);
-            wakeupCts.Dispose();
+            _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
+            consumeCts.Dispose();
         }
     }
 
@@ -3158,15 +3156,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         int brokerId,
         List<TopicPartition> partitions,
         CancellationToken linkedToken,
-        CancellationToken wakeupToken)
+        CancellationToken consumeCancellationToken)
     {
         try
         {
             return await FetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (consumeCancellationToken.IsCancellationRequested)
         {
-            // Wakeup requested, exit silently
+            // Consume cancellation requested, exit silently
             return null;
         }
         catch (Exception ex)
@@ -4042,8 +4040,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Step 6: Wake up any blocked operations
-        CancelAllActiveWakeupSources();
+        // Step 6: Cancel any blocked fetch operations
+        CancelActiveConsumeOperations();
 
         // Step 7: Clear pending fetch data and dispose to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
@@ -4228,7 +4226,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         var closeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogConsumerCloseCompleted(closeElapsedMs);
 
-        CancelAllActiveWakeupSources();
+        CancelActiveConsumeOperations();
         _autoCommitCts?.Cancel();
         _prefetchCts?.Cancel();
 
@@ -4260,7 +4258,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _prefetchCts?.Dispose();
 
         // Clear and dispose CancellationTokenSource pool
-        // Note: active wakeup sources are managed by the pool and should not be disposed here
+        // Note: active consume cancellation sources are managed by the pool and should not be disposed here
         _ctsPool.Clear();
 
         // Clear and dispose any pending fetch data to release pooled memory
