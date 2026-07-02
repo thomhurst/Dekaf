@@ -993,6 +993,36 @@ public class RecordBatchTests
         await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
     }
 
+    [Test]
+    public async Task Record_Read_HeaderCountExceedsRemainingRecordBody_ThrowsMalformedProtocolData()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(-1); // null key
+        bodyWriter.WriteVarInt(-1); // null value
+        bodyWriter.WriteVarInt(1024); // impossible: no bytes remain for headers
+
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteVarInt(bodyWriter.BytesWritten);
+        writer.WriteRawBytes(body.WrittenSpan);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        try
+        {
+            Record.Read(ref reader);
+            throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
+        }
+        catch (MalformedProtocolDataException ex)
+        {
+            await Assert.That(ex.Message).Contains("header count");
+        }
+    }
+
     #endregion
 
     #region Header Copy Correctness Tests
