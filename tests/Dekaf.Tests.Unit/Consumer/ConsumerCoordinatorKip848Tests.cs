@@ -81,6 +81,20 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await _metadataManager.DisposeAsync();
     }
 
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var timeoutMs = (long)timeout.TotalMilliseconds;
+        var start = Environment.TickCount64;
+
+        while (!condition())
+        {
+            if (Environment.TickCount64 - start >= timeoutMs)
+                throw new TimeoutException("Condition was not reached before the timeout.");
+
+            await Task.Delay(10);
+        }
+    }
+
     private static ConsumerOptions CreateConsumerProtocolOptions(
         string groupId = "test-group",
         IRebalanceListener? rebalanceListener = null,
@@ -567,15 +581,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 100);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var topics = new HashSet<string> { "test-topic" };
+        var timeout = TimeSpan.FromSeconds(30);
 
         // Initial join succeeds (epoch=5)
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.GenerationId).IsEqualTo(5);
 
         // Wait for heartbeat loop to process the fencing response (deterministic signal)
-        await fencingProcessed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        // Brief yield to let the heartbeat loop complete its state transition after the mock returns
-        await Task.Delay(50);
+        await fencingProcessed.Task.WaitAsync(timeout);
+        await WaitUntilAsync(
+            () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == 0,
+            timeout);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         // With fix: _generationId reset to 0 by fencing handler (not stale 5)
@@ -646,15 +662,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", heartbeatIntervalMs: 100);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var topics = new HashSet<string> { "test-topic" };
+        var timeout = TimeSpan.FromSeconds(30);
 
         // Initial join succeeds (epoch=3)
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.GenerationId).IsEqualTo(3);
 
         // Wait for heartbeat loop to process the fencing response (deterministic signal)
-        await fencingProcessed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        // Brief yield to let the heartbeat loop complete its state transition after the mock returns
-        await Task.Delay(50);
+        await fencingProcessed.Task.WaitAsync(timeout);
+        await WaitUntilAsync(
+            () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == -2,
+            timeout);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         // With fix: _generationId reset to -2 for static member (triggers MemberEpoch=-2 on rejoin)
