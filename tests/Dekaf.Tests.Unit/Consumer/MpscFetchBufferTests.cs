@@ -118,8 +118,8 @@ public class MpscFetchBufferTests
         await Assert.That(buffer.TryWrite(first)).IsTrue();
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var waiter1 = Task.Run(async () => await buffer.WaitToWriteAsync(cts.Token));
-        var waiter2 = Task.Run(async () => await buffer.WaitToWriteAsync(cts.Token));
+        var waiter1 = buffer.WaitToWriteAsync(cts.Token).AsTask();
+        var waiter2 = buffer.WaitToWriteAsync(cts.Token).AsTask();
 
         await WaitUntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(5));
 
@@ -167,7 +167,8 @@ public class MpscFetchBufferTests
         {
             Thread.Sleep(50);
             buffer.TryWrite(item);
-        }) { IsBackground = true };
+        })
+        { IsBackground = true };
         writerThread.Start();
 
         try
