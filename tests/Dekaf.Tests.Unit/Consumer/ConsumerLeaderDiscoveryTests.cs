@@ -125,6 +125,72 @@ public sealed class ConsumerLeaderDiscoveryTests
         await WaitForLeaderRefreshToDrainAsync(consumer);
     }
 
+    [Test]
+    public async Task DisposeAsync_WithInFlightLeaderRefresh_WaitsBeforeDisposingDependencies()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var poolDisposeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+
+        pool.DisposeAsync()
+            .Returns(_ =>
+            {
+                poolDisposeStarted.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                refreshStarted.TrySetResult();
+                return new ValueTask<MetadataResponse>(refreshResponse.Task);
+            });
+
+        var metadataManager = CreateMetadataManager(pool);
+        SetMetadataApiVersion(metadataManager);
+        var consumer = CreateConsumer(pool, metadataManager);
+        Task? disposeTask = null;
+
+        try
+        {
+            var partitionResponse = new FetchResponsePartition
+            {
+                PartitionIndex = 0,
+                ErrorCode = ErrorCode.NotLeaderOrFollower
+            };
+
+            await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
+            await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            disposeTask = consumer.DisposeAsync().AsTask();
+            await Task.Delay(100);
+
+            await Assert.That(poolDisposeStarted.Task.IsCompleted).IsFalse();
+
+            refreshResponse.SetResult(CreateMetadataResponse());
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(poolDisposeStarted.Task.IsCompleted).IsTrue();
+        }
+        finally
+        {
+            refreshResponse.TrySetCanceled();
+
+            if (disposeTask is not null)
+                await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            else
+                await consumer.DisposeAsync();
+        }
+    }
+
     private static MetadataManager CreateMetadataManager(IConnectionPool pool)
         => new(pool, ["localhost:9092"]);
 
@@ -190,10 +256,10 @@ public sealed class ConsumerLeaderDiscoveryTests
     private static async Task WaitForLeaderRefreshToDrainAsync(KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>)
-            .GetField("_pendingLeaderRefreshTopics", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_pendingLeaderRefreshTopics field not found");
+            .GetField("_pendingLeaderRefreshTasks", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pendingLeaderRefreshTasks field not found");
 
-        var pending = (ConcurrentDictionary<string, byte>)field.GetValue(consumer)!;
+        var pending = (ConcurrentDictionary<string, Task>)field.GetValue(consumer)!;
         var stopAt = DateTime.UtcNow + TimeSpan.FromSeconds(5);
 
         while (DateTime.UtcNow < stopAt)
