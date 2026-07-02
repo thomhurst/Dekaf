@@ -4601,7 +4601,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
     // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
     // Never faults - uses SetResult(true) for success, SetResult(false) for failure
-    private ManualResetValueTaskSourceCore<bool> _doneCore;
+    private ManualResetValueTaskSourceCore<bool> _doneCore = new() { RunContinuationsAsynchronously = true };
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup in Cleanup())
     private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)

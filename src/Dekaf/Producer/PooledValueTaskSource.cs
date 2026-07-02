@@ -18,7 +18,7 @@ namespace Dekaf.Producer;
 /// <typeparam name="T">The result type.</typeparam>
 public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
 {
-    private ManualResetValueTaskSourceCore<T> _core;
+    private ManualResetValueTaskSourceCore<T> _core = new() { RunContinuationsAsynchronously = true };
     private ValueTaskSourcePool<T>? _pool;
     private Action<T, Exception?>? _deliveryHandler;
     private int _hasCompleted; // 0 = not completed, 1 = completed

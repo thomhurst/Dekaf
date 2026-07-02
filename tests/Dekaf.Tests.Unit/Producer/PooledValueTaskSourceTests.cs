@@ -1,5 +1,6 @@
 using System.Threading.Tasks.Sources;
 using Dekaf.Producer;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -670,5 +671,88 @@ public class PooledValueTaskSourceTests
 
         await Assert.That(receivedValue).IsEqualTo(default(int));
         await Assert.That(receivedException).IsSameReferenceAs(expectedException);
+    }
+
+    [Test]
+    public async Task RunContinuationsAsynchronously_SurvivesResetAndReuse()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        var source = pool.Rent();
+
+        source.SetResult(1);
+        await source.Task.ConfigureAwait(false);
+
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+
+        var result = await CompleteWithoutRunningContinuationInlineAsync(
+            reused.Task,
+            () => reused.SetResult(2)).ConfigureAwait(false);
+
+        await Assert.That(result).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ReadyBatchDoneTask_RunContinuationsAsynchronously_SurvivesResetAndReuse()
+    {
+        var batch = new ReadyBatch();
+
+        InitializeBatch(batch);
+        var firstTask = batch.DoneTask;
+        batch.CompleteDelivery();
+        await firstTask.ConfigureAwait(false);
+        batch.Reset();
+
+        InitializeBatch(batch);
+        var result = await CompleteWithoutRunningContinuationInlineAsync(
+            batch.DoneTask,
+            batch.CompleteDelivery).ConfigureAwait(false);
+
+        await Assert.That(result).IsTrue();
+
+        batch.Reset();
+    }
+
+    private static async Task<T> CompleteWithoutRunningContinuationInlineAsync<T>(
+        ValueTask<T> valueTask,
+        Action complete)
+    {
+        var awaiter = valueTask.GetAwaiter();
+        using var releaseContinuation = new ManualResetEventSlim();
+        var continuationFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        awaiter.UnsafeOnCompleted(() =>
+        {
+            releaseContinuation.Wait();
+            continuationFinished.SetResult();
+        });
+
+        var completionTask = Task.Run(complete);
+        var completedBeforeRelease = await Task.WhenAny(
+                completionTask,
+                Task.Delay(TimeSpan.FromSeconds(2)))
+            .ConfigureAwait(false) == completionTask;
+
+        releaseContinuation.Set();
+
+        await completionTask.ConfigureAwait(false);
+        await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        await Assert.That(completedBeforeRelease).IsTrue();
+        return awaiter.GetResult();
+    }
+
+    private static void InitializeBatch(ReadyBatch batch)
+    {
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            completionSourcesArray: null,
+            completionSourcesCount: 0,
+            pooledDataArrays: null,
+            pooledDataArraysCount: 0,
+            pooledHeaderArrays: null,
+            pooledHeaderArraysCount: 0,
+            dataSize: 0);
     }
 }
