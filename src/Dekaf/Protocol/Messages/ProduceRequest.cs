@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 
@@ -84,25 +85,6 @@ public sealed class ProduceRequestTopicData
 /// </summary>
 public sealed class ProduceRequestPartitionData
 {
-    // Thread-local reusable buffer for record serialization
-    [ThreadStatic]
-    private static System.Buffers.ArrayBufferWriter<byte>? t_recordsBuffer;
-
-    private static System.Buffers.ArrayBufferWriter<byte> GetRecordsBuffer()
-    {
-        var buffer = t_recordsBuffer;
-        if (buffer is null)
-        {
-            buffer = new System.Buffers.ArrayBufferWriter<byte>(8192);
-            t_recordsBuffer = buffer;
-        }
-        else
-        {
-            buffer.Clear();
-        }
-        return buffer;
-    }
-
     /// <summary>
     /// Partition index.
     /// </summary>
@@ -128,15 +110,49 @@ public sealed class ProduceRequestPartitionData
     {
         writer.WriteInt32(Index);
 
-        // Serialize records to a thread-local buffer to avoid per-partition allocation
-        var recordsBuffer = GetRecordsBuffer();
-        foreach (var batch in Records)
-        {
-            batch.Write(recordsBuffer, Compression, CompressionCodecs);
-        }
+        RecordBatch[]? temporaryPreCompressed = null;
+        var temporaryPreCompressedCount = 0;
 
-        // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
-        writer.WriteCompactNullableBytes(recordsBuffer.WrittenSpan, isNull: false);
+        try
+        {
+            var recordsLength = 0;
+            for (var i = 0; i < Records.Count; i++)
+            {
+                var batch = Records[i];
+                if (Compression != CompressionType.None && !batch.HasPreCompressedRecords)
+                {
+                    batch.PreCompress(Compression, CompressionCodecs);
+                    temporaryPreCompressed ??= ArrayPool<RecordBatch>.Shared.Rent(Records.Count);
+                    temporaryPreCompressed[temporaryPreCompressedCount++] = batch;
+                }
+
+                checked
+                {
+                    recordsLength += batch.GetEncodedSize(Compression);
+                }
+            }
+
+            // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null).
+            writer.WriteUnsignedVarInt(checked(recordsLength + 1));
+            var output = writer.BufferWriter;
+            for (var i = 0; i < Records.Count; i++)
+            {
+                Records[i].Write(output, Compression, CompressionCodecs);
+            }
+            writer.AddBytesWritten(recordsLength);
+        }
+        finally
+        {
+            if (temporaryPreCompressed is not null)
+            {
+                for (var i = 0; i < temporaryPreCompressedCount; i++)
+                {
+                    temporaryPreCompressed[i].ReturnPreCompressedBuffer();
+                }
+
+                ArrayPool<RecordBatch>.Shared.Return(temporaryPreCompressed, clearArray: true);
+            }
+        }
 
         writer.WriteEmptyTaggedFields();
     }

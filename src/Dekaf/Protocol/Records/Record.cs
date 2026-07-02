@@ -49,7 +49,7 @@ public readonly record struct Record
     /// When Headers is a pooled array (from Record.Read), HeaderCount &lt; Headers.Length is expected.
     /// When Headers is an exact-sized array (from producer path), HeaderCount == Headers.Length.
     /// </remarks>
-    private int EffectiveHeaderCount => Headers is null ? 0 : HeaderCount;
+    internal int EffectiveHeaderCount => Headers is null ? 0 : HeaderCount;
 
     /// <summary>
     /// Writes the record to the protocol writer.
