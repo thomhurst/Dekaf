@@ -549,6 +549,8 @@ public sealed class PartitionInfo
     public int LeaderEpoch { get; init; } = -1;
     public required IReadOnlyList<int> ReplicaNodes { get; init; }
     public required IReadOnlyList<int> IsrNodes { get; init; }
+    public IReadOnlyList<int>? EligibleLeaderReplicas { get; init; }
+    public IReadOnlyList<int>? LastKnownElr { get; init; }
     public IReadOnlyList<int>? OfflineReplicas { get; init; }
     public ErrorCode ErrorCode { get; init; }
 }

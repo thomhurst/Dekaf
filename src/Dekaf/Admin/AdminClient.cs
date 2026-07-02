@@ -60,6 +60,18 @@ public sealed class AdminClient : IAdminClient
             loggerFactory?.CreateLogger<ClientTelemetryManager>());
     }
 
+    internal AdminClient(
+        AdminClientOptions options,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILoggerFactory? loggerFactory = null)
+    {
+        _options = options;
+        _logger = loggerFactory?.CreateLogger<AdminClient>();
+        _connectionPool = connectionPool;
+        _metadataManager = metadataManager;
+    }
+
     public ClusterMetadata Metadata => _metadataManager.Metadata;
 
     public async ValueTask CreateTopicsAsync(
@@ -296,6 +308,119 @@ public sealed class AdminClient : IAdminClient
         return result;
     }
 
+    public async ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicPartitionsAsync(
+        IEnumerable<string> topicNames,
+        DescribeTopicPartitionsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var topicList = topicNames.ToList();
+        if (topicList.Count == 0)
+        {
+            return new Dictionary<string, TopicDescription>();
+        }
+
+        var opts = options ?? new DescribeTopicPartitionsOptions();
+        ArgumentOutOfRangeException.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
+
+        var result = new Dictionary<string, TopicDescription>(StringComparer.Ordinal);
+        DescribeTopicPartitionsCursor? cursor = null;
+
+        do
+        {
+            var page = await DescribeTopicPartitionsPageAsync(
+                topicList,
+                new DescribeTopicPartitionsPageOptions
+                {
+                    ResponsePartitionLimit = opts.ResponsePartitionLimit,
+                    Cursor = cursor
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            MergeTopicPartitionPage(result, page.Topics.Values);
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+
+        return result;
+    }
+
+    public async ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageAsync(
+        IEnumerable<string> topicNames,
+        DescribeTopicPartitionsPageOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var topicList = topicNames.ToList();
+        if (topicList.Count == 0)
+        {
+            return new DescribeTopicPartitionsPage
+            {
+                Topics = new Dictionary<string, TopicDescription>()
+            };
+        }
+
+        var opts = options ?? new DescribeTopicPartitionsPageOptions();
+        ArgumentOutOfRangeException.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeTopicPartitions))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support DescribeTopicPartitions (API key 75).");
+        }
+
+        return await WithRetryAsync(async () =>
+        {
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new InvalidOperationException("No brokers available");
+            }
+
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            var request = new DescribeTopicPartitionsRequest
+            {
+                Topics = topicList.Select(static name => new DescribeTopicPartitionsRequestTopic
+                {
+                    Name = name
+                }).ToList(),
+                ResponsePartitionLimit = opts.ResponsePartitionLimit,
+                Cursor = opts.Cursor is null
+                    ? null
+                    : new DescribeTopicPartitionsRequestCursor
+                    {
+                        TopicName = opts.Cursor.TopicName,
+                        PartitionIndex = opts.Cursor.PartitionIndex
+                    }
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeTopicPartitions,
+                DescribeTopicPartitionsRequest.LowestSupportedVersion,
+                DescribeTopicPartitionsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<DescribeTopicPartitionsRequest, DescribeTopicPartitionsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var topics = response.Topics
+                .Select(ToTopicDescription)
+                .ToDictionary(static t => t.Name, StringComparer.Ordinal);
+
+            return new DescribeTopicPartitionsPage
+            {
+                ThrottleTimeMs = response.ThrottleTimeMs,
+                Topics = topics,
+                NextCursor = response.NextCursor is null
+                    ? null
+                    : new DescribeTopicPartitionsCursor
+                    {
+                        TopicName = response.NextCursor.TopicName,
+                        PartitionIndex = response.NextCursor.PartitionIndex
+                    }
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
@@ -307,6 +432,51 @@ public sealed class AdminClient : IAdminClient
             Nodes = _metadataManager.Metadata.GetBrokers()
         };
     }
+
+    private static void MergeTopicPartitionPage(
+        Dictionary<string, TopicDescription> result,
+        IEnumerable<TopicDescription> pageTopics)
+    {
+        foreach (var topic in pageTopics)
+        {
+            if (!result.TryGetValue(topic.Name, out var existing))
+            {
+                result[topic.Name] = topic;
+                continue;
+            }
+
+            result[topic.Name] = new TopicDescription
+            {
+                Name = topic.Name,
+                TopicId = topic.TopicId,
+                IsInternal = topic.IsInternal,
+                ErrorCode = topic.ErrorCode,
+                TopicAuthorizedOperations = topic.TopicAuthorizedOperations,
+                Partitions = existing.Partitions.Concat(topic.Partitions).ToList()
+            };
+        }
+    }
+
+    private static TopicDescription ToTopicDescription(DescribeTopicPartitionsResponseTopic topic) => new()
+    {
+        Name = topic.Name ?? string.Empty,
+        TopicId = topic.TopicId,
+        IsInternal = topic.IsInternal,
+        ErrorCode = topic.ErrorCode,
+        TopicAuthorizedOperations = topic.TopicAuthorizedOperations,
+        Partitions = topic.Partitions.Select(static p => new PartitionInfo
+        {
+            PartitionIndex = p.PartitionIndex,
+            LeaderId = p.LeaderId,
+            LeaderEpoch = p.LeaderEpoch,
+            ReplicaNodes = p.ReplicaNodes,
+            IsrNodes = p.IsrNodes,
+            EligibleLeaderReplicas = p.EligibleLeaderReplicas,
+            LastKnownElr = p.LastKnownElr,
+            OfflineReplicas = p.OfflineReplicas,
+            ErrorCode = p.ErrorCode
+        }).ToList()
+    };
 
     public async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(
         IEnumerable<string> groupIds,

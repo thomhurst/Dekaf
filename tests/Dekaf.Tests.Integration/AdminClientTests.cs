@@ -840,5 +840,38 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(description.Partitions.Count).IsEqualTo(3);
     }
 
+    [Test]
+    [SupportsKafka(370)]
+    public async Task DescribeTopicPartitionsAsync_WithPagination_ReturnsAllPartitions()
+    {
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5).ConfigureAwait(false);
+        await using var admin = CreateAdminClient();
+
+        // Act
+        var firstPage = await admin.DescribeTopicPartitionsPageAsync(
+            [topic],
+            new DescribeTopicPartitionsPageOptions { ResponsePartitionLimit = 2 })
+            .ConfigureAwait(false);
+        var descriptions = await admin.DescribeTopicPartitionsAsync(
+            [topic],
+            new DescribeTopicPartitionsOptions { ResponsePartitionLimit = 2 })
+            .ConfigureAwait(false);
+
+        // Assert
+        await Assert.That(firstPage.Topics).ContainsKey(topic);
+        await Assert.That(firstPage.Topics[topic].Partitions.Count).IsLessThanOrEqualTo(2);
+        await Assert.That(firstPage.NextCursor).IsNotNull();
+
+        await Assert.That(descriptions).ContainsKey(topic);
+        var description = descriptions[topic];
+        await Assert.That(description.Name).IsEqualTo(topic);
+        var partitionIndexes = description.Partitions.Select(static p => p.PartitionIndex).ToList();
+        await Assert.That(partitionIndexes.Count).IsEqualTo(5);
+        await Assert.That(partitionIndexes.Distinct().Count()).IsEqualTo(5);
+        await Assert.That(partitionIndexes.Min()).IsEqualTo(0);
+        await Assert.That(partitionIndexes.Max()).IsEqualTo(4);
+    }
+
     #endregion
 }

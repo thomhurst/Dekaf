@@ -29,6 +29,23 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicsAsync(IEnumerable<string> topicNames, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes topic partitions using the paginated DescribeTopicPartitions API.
+    /// Automatically follows broker cursors until all pages are read.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicPartitionsAsync(
+        IEnumerable<string> topicNames,
+        DescribeTopicPartitionsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes a single page of topic partitions using the DescribeTopicPartitions API.
+    /// </summary>
+    ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageAsync(
+        IEnumerable<string> topicNames,
+        DescribeTopicPartitionsPageOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes the cluster.
     /// </summary>
     ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default);
@@ -329,6 +346,47 @@ public sealed class TopicDescription
     /// <see cref="Protocol.ErrorCode.TopicAuthorizationFailed"/>) rather than failing the whole call.
     /// </summary>
     public Protocol.ErrorCode ErrorCode { get; init; }
+
+    /// <summary>
+    /// 32-bit bitfield representing authorized operations for this topic.
+    /// </summary>
+    public int TopicAuthorizedOperations { get; init; } = int.MinValue;
+}
+
+/// <summary>
+/// Options for auto-paginated DescribeTopicPartitions.
+/// </summary>
+public sealed class DescribeTopicPartitionsOptions
+{
+    public int ResponsePartitionLimit { get; init; } = 2000;
+}
+
+/// <summary>
+/// Options for a single DescribeTopicPartitions page.
+/// </summary>
+public sealed class DescribeTopicPartitionsPageOptions
+{
+    public int ResponsePartitionLimit { get; init; } = 2000;
+    public DescribeTopicPartitionsCursor? Cursor { get; init; }
+}
+
+/// <summary>
+/// A pagination cursor returned by DescribeTopicPartitions.
+/// </summary>
+public sealed class DescribeTopicPartitionsCursor
+{
+    public required string TopicName { get; init; }
+    public int PartitionIndex { get; init; }
+}
+
+/// <summary>
+/// A single DescribeTopicPartitions response page.
+/// </summary>
+public sealed class DescribeTopicPartitionsPage
+{
+    public int ThrottleTimeMs { get; init; }
+    public required IReadOnlyDictionary<string, TopicDescription> Topics { get; init; }
+    public DescribeTopicPartitionsCursor? NextCursor { get; init; }
 }
 
 /// <summary>
