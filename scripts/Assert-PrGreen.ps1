@@ -7,6 +7,7 @@
 #   - mergeStateStatus == CLEAN
 #   - every status check is terminal AND passing (CheckRun: status=COMPLETED and
 #     conclusion in SUCCESS/SKIPPED/NEUTRAL; StatusContext: state=SUCCESS)
+#   - no latest top-level review has actionable finding headings
 #   - no unresolved review threads
 #
 # Any other state — pending/queued/in-progress checks, an empty rollup, a failed
@@ -38,7 +39,7 @@ $repoArgs = @()
 if ($Repo) { $repoArgs = @('--repo', $Repo) }
 
 # Re-fetch fresh — survey output goes stale within seconds.
-$raw = gh pr view $Pr @repoArgs --json number,state,mergeable,mergeStateStatus,statusCheckRollup 2>$null
+$raw = gh pr view $Pr @repoArgs --json number,state,mergeable,mergeStateStatus,statusCheckRollup,latestReviews 2>$null
 if ($LASTEXITCODE -ne 0) { Deny "gh pr view failed (exit $LASTEXITCODE)" }
 try {
     $view = $raw | ConvertFrom-Json
@@ -81,6 +82,31 @@ foreach ($c in $checks) {
 }
 if ($bad.Count -gt 0) {
     Deny ("checks not green: " + ($bad -join '; '))
+}
+
+# Top-level review comments are not review threads, so GitHub does not expose a
+# resolved flag for them. Fail closed on common review-finding headings instead
+# of treating a COMMENTED review as automatically safe.
+$latestReviews = @($view.latestReviews | Where-Object { $null -ne $_ })
+$requestedChanges = @($latestReviews | Where-Object { $_.state -eq 'CHANGES_REQUESTED' })
+if ($requestedChanges.Count -gt 0) {
+    $authors = ($requestedChanges | ForEach-Object { $_.author.login }) -join ', '
+    Deny "latest review requests changes from: $authors"
+}
+
+$actionableHeadingPattern = '(?im)^\s*#{2,4}\s*(Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Blocking|Blocker|Test coverage gap|Required|Must fix)\b'
+$actionableReviews = @()
+foreach ($review in $latestReviews) {
+    if ($review.state -ne 'COMMENTED') { continue }
+    $body = [string]$review.body
+    if (-not $body) { continue }
+    if ($body -match $actionableHeadingPattern) {
+        $heading = $Matches[0].Trim()
+        $actionableReviews += "$($review.author.login): $heading"
+    }
+}
+if ($actionableReviews.Count -gt 0) {
+    Deny ("latest top-level review comment has actionable finding(s): " + ($actionableReviews -join '; '))
 }
 
 # Unresolved review threads block merge even when a review's state is COMMENTED.
