@@ -3693,10 +3693,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            if (_pendingLeaderRefreshTasks.TryGetValue(topic, out var task)
-                && ReferenceEquals(task, refreshCompletion.Task))
+            lock (_leaderRefreshTasksLock)
             {
-                _pendingLeaderRefreshTasks.TryRemove(topic, out _);
+                if (_pendingLeaderRefreshTasks.TryGetValue(topic, out var task)
+                    && ReferenceEquals(task, refreshCompletion.Task))
+                {
+                    _pendingLeaderRefreshTasks.TryRemove(topic, out _);
+                }
             }
 
             refreshCompletion.TrySetResult();
