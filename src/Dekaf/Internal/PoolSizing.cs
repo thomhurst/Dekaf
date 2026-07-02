@@ -152,6 +152,13 @@ internal static class PoolSizing
         public required int ProducerDataArraysPerBucket { get; init; }
 
         /// <summary>
+        /// <c>maxArraysPerBucket</c> for per-message <c>Header[]</c> arrays.
+        /// Header arrays have the same in-flight lifetime as producer data arrays:
+        /// rent on append, return after batch response cleanup.
+        /// </summary>
+        public required int HeaderArraysPerBucket { get; init; }
+
+        /// <summary>
         /// <c>maxArraysPerBucket</c> for the shared <c>PipeMemoryPool</c> in ConnectionPool.
         /// Scales by total connections (brokers x connections-per-broker) since all
         /// connections share the same pool instance.
@@ -207,6 +214,10 @@ internal static class PoolSizing
         var peakInFlightBatches = totalMaxConnections * maxInFlightRequestsPerConnection;
         var producerDataArrays = Math.Clamp(estimatedMessagesPerBatch * peakInFlightBatches, 64, 4096);
 
+        // Header[] arrays are rented once per header-bearing message and held until
+        // the owning batch completes, so they need the same working-set depth.
+        var headerArrays = producerDataArrays;
+
         // PipeMemoryPool: 32 arrays per connection (covers pipelined segments),
         // scaled by total connections, capped at 256.
         var pipeMemoryArrays = Math.Clamp(totalConnections * 32, 32, 256);
@@ -226,6 +237,7 @@ internal static class PoolSizing
         return new SharedPoolSizes
         {
             ProducerDataArraysPerBucket = producerDataArrays,
+            HeaderArraysPerBucket = headerArrays,
             PipeMemoryArraysPerBucket = pipeMemoryArrays,
             SerializationArraysPerBucket = serializationArrays,
             ProduceResponsePoolSize = responsePoolSize,

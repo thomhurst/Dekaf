@@ -203,6 +203,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             batchSize: options.BatchSize,
             maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
         ProducerDataPool.RatchetBucketCapacity(sharedPoolSizes.ProducerDataArraysPerBucket);
+        ProducerContainerPools.RatchetHeaderBucketCapacity(sharedPoolSizes.HeaderArraysPerBucket);
         DekafPools.RatchetSerializationBucketCapacity(sharedPoolSizes.SerializationArraysPerBucket);
         ProduceResponse.RatchetPoolSize(sharedPoolSizes.ProduceResponsePoolSize);
 
@@ -260,6 +261,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight, batchSize, maxConns);
             ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
+            ProducerContainerPools.RatchetHeaderBucketCapacity(sizes.HeaderArraysPerBucket);
             DekafPools.RatchetSerializationBucketCapacity(sizes.SerializationArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
             _connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);

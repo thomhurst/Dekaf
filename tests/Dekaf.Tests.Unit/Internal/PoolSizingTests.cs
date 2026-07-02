@@ -203,6 +203,7 @@ public class PoolSizingTests
         // producerDataArrays = clamp(512 * 50, 64, 4096) = 4096 (capped)
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
+        await Assert.That(sizes.HeaderArraysPerBucket).IsEqualTo(sizes.ProducerDataArraysPerBucket);
         // 1 broker * 1 conn * 32 = 32
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
         // SerializationBuffers: 1 * 10 * 8 = 80
@@ -234,6 +235,7 @@ public class PoolSizingTests
         // producerDataArrays = clamp(64 * 5, 64, 4096) = 320
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(512);
+        await Assert.That(sizes.HeaderArraysPerBucket).IsLessThanOrEqualTo(512);
     }
 
     [Test]
@@ -268,6 +270,7 @@ public class PoolSizingTests
         var sizes = PoolSizing.ForSharedPools(brokerCount: 20, connectionsPerBroker: 10);
 
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
+        await Assert.That(sizes.HeaderArraysPerBucket).IsLessThanOrEqualTo(4096);
         // 16 * 10 * 32 = 5120, capped at 256
         await Assert.That(sizes.PipeMemoryArraysPerBucket).IsLessThanOrEqualTo(256);
         // SerializationBuffers capped at 256
@@ -293,6 +296,39 @@ public class PoolSizingTests
 
         await Assert.That(largeConns.SerializationArraysPerBucket)
             .IsGreaterThan(smallConns.SerializationArraysPerBucket);
+    }
+
+    [Test]
+    public async Task ForSharedPools_HeaderArrays_ScalesWithInFlightMessages()
+    {
+        var smallConns = PoolSizing.ForSharedPools(
+            brokerCount: 1,
+            batchSize: 16 * 1024,
+            maxConnectionsPerBroker: 1);
+        var largeConns = PoolSizing.ForSharedPools(
+            brokerCount: 1,
+            batchSize: 16 * 1024,
+            maxConnectionsPerBroker: 10);
+
+        await Assert.That(largeConns.HeaderArraysPerBucket)
+            .IsGreaterThan(smallConns.HeaderArraysPerBucket);
+    }
+
+    [Test]
+    [NotInParallel("ProducerContainerPools")]
+    public async Task HeaderPool_RatchetBucketCapacity_GrowsMonotonically()
+    {
+        var target = ProducerContainerPools.CurrentHeaderArraysPerBucket + 16;
+
+        ProducerContainerPools.RatchetHeaderBucketCapacity(target);
+
+        await Assert.That(ProducerContainerPools.CurrentHeaderArraysPerBucket)
+            .IsGreaterThanOrEqualTo(target);
+
+        ProducerContainerPools.RatchetHeaderBucketCapacity(target - 1);
+
+        await Assert.That(ProducerContainerPools.CurrentHeaderArraysPerBucket)
+            .IsGreaterThanOrEqualTo(target);
     }
 
     [Test]

@@ -249,18 +249,23 @@ internal static class ProducerDataPool
 /// the fallback path must use <c>ArrayPool</c>. Using <c>ArrayPool&lt;T&gt;.Create()</c> for the
 /// fallback ensures cross-thread rent/return does not cause TLS accumulation.
 /// <para/>
-/// Each pool uses <c>maxArraysPerBucket: 16</c> — sufficient for concurrent access from
-/// producer threads and BrokerSender threads, while bounding total retention.
-/// <c>maxArrayLength</c> values are set to accommodate both the initial capacity and
-/// one round of doubling via <c>GrowArray</c>. Arrays that grow beyond this (extremely
-/// rare — requires more records per batch than <c>_initialRecordCapacity × 2</c>) fall
-/// through to unpooled allocations, which is acceptable.
+/// Most pools use <c>maxArraysPerBucket: 16</c> — sufficient for concurrent access from
+/// producer threads and BrokerSender threads while bounding total retention. The per-message
+/// <c>Header[]</c> pool is ratcheted separately because header arrays stay in-flight for
+/// the whole batch round trip, and header-heavy workloads can have thousands outstanding.
+/// <c>maxArrayLength</c> values are set to accommodate both the initial capacity and one
+/// round of doubling via <c>GrowArray</c>. Arrays that grow beyond this (extremely rare —
+/// requires more records per batch than <c>_initialRecordCapacity × 2</c>) fall through to
+/// unpooled allocations, which is acceptable.
 /// </summary>
 internal static class ProducerContainerPools
 {
     // Max initial record capacity is 16384 (from ComputeInitialRecordCapacity).
     // GrowArray doubles, so allow up to 32768 to cover one growth step.
     private const int MaxRecordArrayLength = 32768;
+    private static readonly RatchetableArrayPool<Header> s_headers = new(
+        maxArrayLength: 1024,
+        initialArraysPerBucket: 16);
 
     /// <summary>Pool for Record[] container arrays used by PartitionBatch/ReadyBatch.</summary>
     internal static readonly ArrayPool<Record> Records = ArrayPool<Record>.Create(
@@ -280,8 +285,13 @@ internal static class ProducerContainerPools
         maxArrayLength: 1024, maxArraysPerBucket: 16);
 
     /// <summary>Pool for Header[] arrays (per-message headers).</summary>
-    internal static readonly ArrayPool<Header> Headers = ArrayPool<Header>.Create(
-        maxArrayLength: 1024, maxArraysPerBucket: 16);
+    internal static ArrayPool<Header> Headers => s_headers.Pool;
+
+    internal static int CurrentHeaderArraysPerBucket => s_headers.CurrentArraysPerBucket;
+
+    /// <inheritdoc cref="RatchetableArrayPool{T}.RatchetBucketCapacity"/>
+    internal static void RatchetHeaderBucketCapacity(int arraysPerBucket) =>
+        s_headers.RatchetBucketCapacity(arraysPerBucket);
 
     /// <summary>Pool for callback arrays (Send with callback pattern).</summary>
     internal static readonly ArrayPool<Action<RecordMetadata, Exception?>?> Callbacks =
