@@ -8,6 +8,9 @@ namespace Dekaf.Internal;
 /// </summary>
 internal static class PoolSizing
 {
+    private const int SharedArrayPoolDepthCeiling = 4096;
+    private const int ProduceResponsePoolSizeCeiling = 512;
+
     /// <summary>
     /// Serialization buffer arrays per connection. Each RentedBufferWriter growth step
     /// (4KB → doubling → final size) rents/returns through the pool; 8 covers the
@@ -160,8 +163,9 @@ internal static class PoolSizing
 
         /// <summary>
         /// <c>maxArraysPerBucket</c> for the shared <c>PipeMemoryPool</c> in ConnectionPool.
-        /// Scales by total connections (brokers x connections-per-broker) since all
-        /// connections share the same pool instance.
+        /// Scales by peak total connections (brokers x max-connections-per-broker)
+        /// since all connections share the same pool instance and adaptive scaling can
+        /// concentrate load before metadata discovers more brokers.
         /// </summary>
         public required int PipeMemoryArraysPerBucket { get; init; }
 
@@ -201,8 +205,9 @@ internal static class PoolSizing
         var clampedBrokers = Math.Clamp(brokerCount, 1, 16);
         var clampedConnections = Math.Max(1, connectionsPerBroker);
         var clampedMaxConnections = Math.Max(clampedConnections, maxConnectionsPerBroker);
-        var totalConnections = clampedBrokers * clampedConnections;
-        var totalMaxConnections = clampedBrokers * clampedMaxConnections;
+        var clampedMaxInFlight = Math.Max(1, maxInFlightRequestsPerConnection);
+        var totalConnections = (long)clampedBrokers * clampedConnections;
+        var totalMaxConnections = (long)clampedBrokers * clampedMaxConnections;
 
         // ProducerDataPool: depth must cover in-flight PooledMemory arrays on the cold path.
         // When buffer pressure forces messages through AppendFromSpansAsync's cold path,
@@ -211,28 +216,40 @@ internal static class PoolSizing
         // Use maxConnectionsPerBroker (not current) since adaptive scaling can ramp up.
         var clampedBatchSize = Math.Clamp(batchSize, 1024, 4 * 1024 * 1024);
         var estimatedMessagesPerBatch = Math.Clamp(clampedBatchSize / 256, 8, 512);
-        var peakInFlightBatches = totalMaxConnections * maxInFlightRequestsPerConnection;
-        var producerDataArrays = Math.Clamp(estimatedMessagesPerBatch * peakInFlightBatches, 64, 4096);
+        var peakInFlightBatches = SaturatingMultiply(totalMaxConnections, clampedMaxInFlight);
+        var producerDataArrays = ClampPoolDepth(
+            SaturatingMultiply(estimatedMessagesPerBatch, peakInFlightBatches),
+            floor: 64,
+            ceiling: SharedArrayPoolDepthCeiling);
 
         // Header[] arrays are rented once per header-bearing message and held until
         // the owning batch completes, so they need the same working-set depth.
         var headerArrays = producerDataArrays;
 
-        // PipeMemoryPool: 32 arrays per connection (covers pipelined segments),
-        // scaled by total connections, capped at 256.
-        var pipeMemoryArrays = Math.Clamp(totalConnections * 32, 32, 256);
+        // PipeMemoryPool: 32 arrays per peak connection (covers pipelined segments).
+        // Use max connections because adaptive single-broker load concentrates all
+        // traffic on one shared pool before metadata/broker spread can help.
+        // ArrayPool<T>.Create eagerly allocates per-bucket metadata based on depth,
+        // so keep even producer-driven sizing bounded for pathological options.
+        var pipeMemoryArrays = ClampPoolDepth(
+            SaturatingMultiply(totalMaxConnections, 32L),
+            floor: 32,
+            ceiling: SharedArrayPoolDepthCeiling);
 
         // SerializationBuffers: covers concurrent request serialization across all connections.
         // Each RentedBufferWriter growth step rents/returns arrays; with multiple connections
         // serializing concurrently, the pool needs depth proportional to peak connections.
-        var serializationArrays = Math.Clamp(
-            totalMaxConnections * SerializationArraysPerConnection, 16, 256);
+        var serializationArrays = ClampPoolDepth(
+            SaturatingMultiply(totalMaxConnections, SerializationArraysPerConnection),
+            floor: 16,
+            ceiling: SharedArrayPoolDepthCeiling);
 
         // ProduceResponsePool: one response per in-flight request per connection,
         // with 2x headroom for concurrent rent/return overlap.
-        var responsePoolSize = Math.Clamp(
-            totalConnections * maxInFlightRequestsPerConnection * 2,
-            64, 512);
+        var responsePoolSize = ClampPoolDepth(
+            SaturatingMultiply(SaturatingMultiply(totalConnections, clampedMaxInFlight), 2L),
+            floor: 64,
+            ceiling: ProduceResponsePoolSizeCeiling);
 
         return new SharedPoolSizes
         {
@@ -242,5 +259,18 @@ internal static class PoolSizing
             SerializationArraysPerBucket = serializationArrays,
             ProduceResponsePoolSize = responsePoolSize,
         };
+    }
+
+    private static int ClampPoolDepth(long value, int floor, int ceiling) =>
+        (int)Math.Clamp(value, floor, (long)ceiling);
+
+    private static long SaturatingMultiply(long left, long right)
+    {
+        if (left <= 0 || right <= 0)
+            return 0;
+
+        return left > long.MaxValue / right
+            ? long.MaxValue
+            : left * right;
     }
 }

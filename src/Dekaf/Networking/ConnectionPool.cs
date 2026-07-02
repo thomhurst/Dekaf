@@ -22,8 +22,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Shared memory pool for all connections. Bounds total retained memory to one set of
     /// array buckets regardless of connection count, preventing multi-GB WorkingSet growth
     /// in multi-broker scenarios with adaptive scaling. See <see cref="PipeMemoryPool"/>.
-    /// Bucket capacity is scaled by <c>_connectionsPerBroker</c> to prevent pool saturation
-    /// under high concurrent load (capped at 256 to bound memory).
+    /// Bucket capacity is either provided by broker-aware producer sizing or falls back to
+    /// scaling by <c>_connectionsPerBroker</c> for direct ConnectionPool use.
     /// </summary>
     private PipeMemoryPool? _sharedPipeMemoryPool;
     private int _currentPipeMemoryBucketCapacity;

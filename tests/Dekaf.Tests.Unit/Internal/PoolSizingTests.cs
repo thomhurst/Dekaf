@@ -204,10 +204,10 @@ public class PoolSizingTests
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
         await Assert.That(sizes.HeaderArraysPerBucket).IsEqualTo(sizes.ProducerDataArraysPerBucket);
-        // 1 broker * 1 conn * 32 = 32
-        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+        // 1 broker * max 10 conns * 32 = 320
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(320);
         // SerializationBuffers: 1 * 10 * 8 = 80
-        await Assert.That(sizes.SerializationArraysPerBucket).IsGreaterThanOrEqualTo(16);
+        await Assert.That(sizes.SerializationArraysPerBucket).IsEqualTo(80);
         // 1 * 1 * 5 * 2 = 10, clamped to min 64
         await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(64);
     }
@@ -247,8 +247,8 @@ public class PoolSizingTests
         var singleBroker = PoolSizing.ForSharedPools(brokerCount: 1);
         await Assert.That(sizes.ProducerDataArraysPerBucket)
             .IsGreaterThanOrEqualTo(singleBroker.ProducerDataArraysPerBucket);
-        // 3 * 1 * 32 = 96
-        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(96);
+        // 3 brokers * max 10 conns * 32 = 960
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(960);
         // 3 * 1 * 5 * 2 = 30, clamped to min 64
         await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(64);
     }
@@ -258,25 +258,25 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 3, connectionsPerBroker: 3);
 
-        // 3 * 3 * 32 = 288, capped at 256
-        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(256);
+        // 3 brokers * max 10 conns * 32 = 960
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(960);
         // 3 * 3 * 5 * 2 = 90
         await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(90);
     }
 
     [Test]
-    public async Task ForSharedPools_ManyBrokers_ClampsToMax()
+    public async Task ForSharedPools_ManyBrokers_ScalesSharedDepthsAndClampsBoundedPools()
     {
         var sizes = PoolSizing.ForSharedPools(brokerCount: 20, connectionsPerBroker: 10);
 
-        await Assert.That(sizes.ProducerDataArraysPerBucket).IsLessThanOrEqualTo(4096);
-        await Assert.That(sizes.HeaderArraysPerBucket).IsLessThanOrEqualTo(4096);
-        // 16 * 10 * 32 = 5120, capped at 256
-        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsLessThanOrEqualTo(256);
-        // SerializationBuffers capped at 256
-        await Assert.That(sizes.SerializationArraysPerBucket).IsLessThanOrEqualTo(256);
+        await Assert.That(sizes.ProducerDataArraysPerBucket).IsEqualTo(4096);
+        await Assert.That(sizes.HeaderArraysPerBucket).IsEqualTo(4096);
+        // 16 brokers * max 10 conns * 32 = 5120, capped at 4096
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(4096);
+        // 16 brokers * max 10 conns * 8 = 1280
+        await Assert.That(sizes.SerializationArraysPerBucket).IsEqualTo(1280);
         // 16 * 10 * 5 * 2 = 1600, capped at 512
-        await Assert.That(sizes.ProduceResponsePoolSize).IsLessThanOrEqualTo(512);
+        await Assert.That(sizes.ProduceResponsePoolSize).IsEqualTo(512);
     }
 
     [Test]
@@ -285,7 +285,7 @@ public class PoolSizingTests
         var sizes = PoolSizing.ForSharedPools(brokerCount: 0);
 
         await Assert.That(sizes.ProducerDataArraysPerBucket).IsGreaterThanOrEqualTo(64);
-        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(32);
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(320);
     }
 
     [Test]
@@ -296,6 +296,30 @@ public class PoolSizingTests
 
         await Assert.That(largeConns.SerializationArraysPerBucket)
             .IsGreaterThan(smallConns.SerializationArraysPerBucket);
+    }
+
+    [Test]
+    public async Task ForSharedPools_SingleBrokerHighMaxConnections_ExceedsLegacySharedPoolCap()
+    {
+        var sizes = PoolSizing.ForSharedPools(
+            brokerCount: 1,
+            connectionsPerBroker: 1,
+            maxConnectionsPerBroker: 40);
+
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(1280);
+        await Assert.That(sizes.SerializationArraysPerBucket).IsEqualTo(320);
+    }
+
+    [Test]
+    public async Task ForSharedPools_PathologicalMaxConnections_ClampsSharedArrayPools()
+    {
+        var sizes = PoolSizing.ForSharedPools(
+            brokerCount: 16,
+            connectionsPerBroker: 1,
+            maxConnectionsPerBroker: 100_000);
+
+        await Assert.That(sizes.PipeMemoryArraysPerBucket).IsEqualTo(4096);
+        await Assert.That(sizes.SerializationArraysPerBucket).IsEqualTo(4096);
     }
 
     [Test]
