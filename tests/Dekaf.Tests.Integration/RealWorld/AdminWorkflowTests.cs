@@ -264,10 +264,10 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             var group = descriptions[groupId];
             await Assert.That(group.GroupId).IsEqualTo(groupId);
             await Assert.That(group.State).IsNotNull();
-            // Note: DescribeGroups (API key 15) does not return member details for
-            // KIP-848 consumer groups. Full member info requires ConsumerGroupDescribe
-            // (API key 69) which is not yet implemented.
-            await Assert.That(group.Members).IsNotNull();
+            await Assert.That(group.ProtocolType).IsEqualTo("consumer");
+            await Assert.That(group.GroupEpoch).IsNotNull();
+            await Assert.That(group.AssignmentEpoch).IsNotNull();
+            await Assert.That(group.Members.Count).IsGreaterThan(0);
         }
         catch (Exception ex) when (
             ex is TimeoutException ||
@@ -692,11 +692,13 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             var descriptions = await admin.DescribeConsumerGroupsAsync([groupId]).ConfigureAwait(false);
             var group = descriptions[groupId];
 
-            // DescribeGroups (API key 15) does not return member/assignment details for
-            // KIP-848 consumer groups. Verify group metadata is present; full member/assignment
-            // verification requires ConsumerGroupDescribe (API key 69).
+            // ConsumerGroupDescribe (API key 69) returns KIP-848 group metadata
+            // and member descriptions for active consumer groups.
             await Assert.That(group.GroupId).IsEqualTo(groupId);
             await Assert.That(group.State).IsNotNull();
+            await Assert.That(group.GroupEpoch).IsNotNull();
+            await Assert.That(group.AssignmentEpoch).IsNotNull();
+            await Assert.That(group.Members.Count).IsGreaterThan(0);
         }
         catch (Exception ex) when (
             ex is TimeoutException ||
@@ -765,9 +767,8 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Assert.That(descriptions).ContainsKey(groupId2);
             await Assert.That(descriptions[groupId1].GroupId).IsEqualTo(groupId1);
             await Assert.That(descriptions[groupId2].GroupId).IsEqualTo(groupId2);
-            // DescribeGroups (API key 15) does not return member details for KIP-848 groups
-            await Assert.That(descriptions[groupId1].Members).IsNotNull();
-            await Assert.That(descriptions[groupId2].Members).IsNotNull();
+            await Assert.That(descriptions[groupId1].GroupEpoch).IsNotNull();
+            await Assert.That(descriptions[groupId2].GroupEpoch).IsNotNull();
         }
         catch (Exception ex) when (
             ex is TimeoutException ||

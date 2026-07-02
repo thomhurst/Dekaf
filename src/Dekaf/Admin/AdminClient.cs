@@ -23,6 +23,7 @@ public sealed class AdminClient : IAdminClient
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly ILogger<AdminClient>? _logger;
+    private readonly bool _ownsResources;
     private int _telemetryStartAttempted;
     private int _disposed;
 
@@ -58,6 +59,22 @@ public sealed class AdminClient : IAdminClient
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>());
+        _ownsResources = true;
+    }
+
+    internal AdminClient(
+        AdminClientOptions options,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILogger<AdminClient>? logger = null,
+        bool ownsResources = false)
+    {
+        _options = options;
+        _connectionPool = connectionPool;
+        _metadataManager = metadataManager;
+        _logger = logger;
+        _telemetryManager = new ClientTelemetryManager(connectionPool, metadataManager);
+        _ownsResources = ownsResources;
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
@@ -318,7 +335,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<string, GroupDescription>>(async () =>
         {
-            // Find coordinator for each group and batch groups by coordinator
+            // Find coordinator for each group and batch groups by coordinator.
             var groupsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var groupId in groupIdList)
             {
@@ -331,60 +348,182 @@ public sealed class AdminClient : IAdminClient
                 groups.Add(groupId);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.DescribeGroups,
-                DescribeGroupsRequest.LowestSupportedVersion,
-                DescribeGroupsRequest.HighestSupportedVersion);
+            return await DescribeConsumerGroupsWithBestAvailableApiAsync(
+                groupsByCoordinator,
+                cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+    }
 
-            var result = new Dictionary<string, GroupDescription>();
+    private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsWithBestAvailableApiAsync(
+        IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
+        CancellationToken cancellationToken)
+    {
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ConsumerGroupDescribe))
+        {
+            return await DescribeConsumerGroupsWithClassicApiAsync(groupsByCoordinator, cancellationToken).ConfigureAwait(false);
+        }
 
-            // Send requests per coordinator
-            foreach (var (coordinatorId, groups) in groupsByCoordinator)
+        var (descriptions, classicFallbackGroups) = await DescribeConsumerGroupsWithKip848Async(
+            groupsByCoordinator,
+            cancellationToken).ConfigureAwait(false);
+
+        if (classicFallbackGroups.Count > 0)
+        {
+            var classicDescriptions = await DescribeConsumerGroupsWithClassicApiAsync(
+                classicFallbackGroups,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var (groupId, description) in classicDescriptions)
+                descriptions[groupId] = description;
+        }
+
+        return descriptions;
+    }
+
+    private async ValueTask<(Dictionary<string, GroupDescription> Descriptions, Dictionary<int, List<string>> ClassicFallbackGroups)> DescribeConsumerGroupsWithKip848Async(
+        IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
+        CancellationToken cancellationToken)
+    {
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.ConsumerGroupDescribe,
+            ConsumerGroupDescribeRequest.LowestSupportedVersion,
+            ConsumerGroupDescribeRequest.HighestSupportedVersion);
+
+        var result = new Dictionary<string, GroupDescription>();
+        var classicFallbackGroups = new Dictionary<int, List<string>>();
+
+        foreach (var (coordinatorId, groups) in groupsByCoordinator)
+        {
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+            var request = new ConsumerGroupDescribeRequest
             {
-                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                GroupIds = groups,
+                IncludeAuthorizedOperations = true
+            };
 
-                var request = new DescribeGroupsRequest
+            var response = await connection.SendAsync<ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var group in response.Groups)
+            {
+                if (ShouldFallbackToClassicConsumerGroupApi(group.ErrorCode))
                 {
-                    Groups = groups
-                };
-
-                var response = await connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
-                    request,
-                    apiVersion,
-                    cancellationToken).ConfigureAwait(false);
-
-                foreach (var group in response.Groups)
-                {
-                    if (group.ErrorCode != Protocol.ErrorCode.None)
+                    if (!classicFallbackGroups.TryGetValue(coordinatorId, out var fallbackGroups))
                     {
-                        throw new Errors.GroupException(group.ErrorCode,
-                            $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
-                        {
-                            GroupId = group.GroupId
-                        };
+                        fallbackGroups = [];
+                        classicFallbackGroups[coordinatorId] = fallbackGroups;
                     }
 
-                    result[group.GroupId] = new GroupDescription
+                    fallbackGroups.Add(group.GroupId);
+                    continue;
+                }
+
+                if (group.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new Errors.GroupException(group.ErrorCode,
+                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
                     {
-                        GroupId = group.GroupId,
-                        ProtocolType = group.ProtocolType,
-                        ProtocolData = group.ProtocolData,
-                        State = group.GroupState,
-                        CoordinatorId = coordinatorId,
-                        Members = group.Members.Select(m => new MemberDescription
-                        {
-                            MemberId = m.MemberId,
-                            GroupInstanceId = m.GroupInstanceId,
-                            ClientId = m.ClientId,
-                            ClientHost = m.ClientHost,
-                            Assignment = ParseMemberAssignment(m.MemberAssignment)
-                        }).ToList()
+                        GroupId = group.GroupId
                     };
                 }
-            }
 
-            return result;
-        }, cancellationToken).ConfigureAwait(false);
+                result[group.GroupId] = new GroupDescription
+                {
+                    GroupId = group.GroupId,
+                    ProtocolType = "consumer",
+                    // Legacy shape: classic DescribeGroups exposes the assignor in ProtocolData.
+                    ProtocolData = group.AssignorName,
+                    State = group.GroupState,
+                    CoordinatorId = coordinatorId,
+                    GroupEpoch = group.GroupEpoch,
+                    AssignmentEpoch = group.AssignmentEpoch,
+                    AssignorName = group.AssignorName,
+                    AuthorizedOperations = group.AuthorizedOperations,
+                    Members = group.Members.Select(m => new MemberDescription
+                    {
+                        MemberId = m.MemberId,
+                        GroupInstanceId = m.InstanceId,
+                        RackId = m.RackId,
+                        MemberEpoch = m.MemberEpoch,
+                        ClientId = m.ClientId,
+                        ClientHost = m.ClientHost,
+                        SubscribedTopicNames = m.SubscribedTopicNames,
+                        SubscribedTopicRegex = m.SubscribedTopicRegex,
+                        Assignment = FlattenAssignment(m.Assignment),
+                        TargetAssignment = FlattenAssignment(m.TargetAssignment),
+                        MemberType = m.MemberType
+                    }).ToList()
+                };
+            }
+        }
+
+        return (result, classicFallbackGroups);
+    }
+
+    private static bool ShouldFallbackToClassicConsumerGroupApi(Protocol.ErrorCode errorCode) =>
+        errorCode is Protocol.ErrorCode.GroupIdNotFound or Protocol.ErrorCode.UnsupportedVersion;
+
+    private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsWithClassicApiAsync(
+        IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
+        CancellationToken cancellationToken)
+    {
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.DescribeGroups,
+            DescribeGroupsRequest.LowestSupportedVersion,
+            DescribeGroupsRequest.HighestSupportedVersion);
+
+        var result = new Dictionary<string, GroupDescription>();
+
+        foreach (var (coordinatorId, groups) in groupsByCoordinator)
+        {
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+            var request = new DescribeGroupsRequest
+            {
+                Groups = groups,
+                IncludeAuthorizedOperations = true
+            };
+
+            var response = await connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var group in response.Groups)
+            {
+                if (group.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new Errors.GroupException(group.ErrorCode,
+                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                    {
+                        GroupId = group.GroupId
+                    };
+                }
+
+                result[group.GroupId] = new GroupDescription
+                {
+                    GroupId = group.GroupId,
+                    ProtocolType = group.ProtocolType,
+                    ProtocolData = group.ProtocolData,
+                    State = group.GroupState,
+                    CoordinatorId = coordinatorId,
+                    AuthorizedOperations = group.AuthorizedOperations,
+                    Members = group.Members.Select(m => new MemberDescription
+                    {
+                        MemberId = m.MemberId,
+                        GroupInstanceId = m.GroupInstanceId,
+                        ClientId = m.ClientId,
+                        ClientHost = m.ClientHost,
+                        Assignment = ParseMemberAssignment(m.MemberAssignment)
+                    }).ToList()
+                };
+            }
+        }
+
+        return result;
     }
 
     public async ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
@@ -2088,6 +2227,16 @@ public sealed class AdminClient : IAdminClient
         }
     }
 
+    private static IReadOnlyList<TopicPartition>? FlattenAssignment(ConsumerGroupDescribeAssignment assignment)
+    {
+        if (assignment.TopicPartitions.Count == 0)
+            return null;
+
+        return assignment.TopicPartitions
+            .SelectMany(topic => topic.Partitions.Select(partition => new TopicPartition(topic.TopicName, partition)))
+            .ToList();
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -2096,8 +2245,12 @@ public sealed class AdminClient : IAdminClient
         var telemetryStopMs = Math.Max(1, Math.Min(_options.RequestTimeoutMs, 5000));
         await _telemetryManager.StopAsync(TimeSpan.FromMilliseconds(telemetryStopMs)).ConfigureAwait(false);
         await _telemetryManager.DisposeAsync().ConfigureAwait(false);
-        await _metadataManager.DisposeAsync().ConfigureAwait(false);
-        await _connectionPool.DisposeAsync().ConfigureAwait(false);
+
+        if (_ownsResources)
+        {
+            await _metadataManager.DisposeAsync().ConfigureAwait(false);
+            await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }
 
