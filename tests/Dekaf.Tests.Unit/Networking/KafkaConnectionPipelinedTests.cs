@@ -1,3 +1,5 @@
+using System.Reflection;
+using Dekaf.Internal;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 
@@ -61,15 +63,28 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
-    public async Task PendingRequests_UsesPreallocatedSlotTable()
+    public async Task PendingRequests_RemoveReleasesReservedSlot()
     {
-        var field = typeof(KafkaConnection).GetField(
-            "_pendingRequests",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var connection = new KafkaConnection("localhost", 9092);
+        var capacity = PoolSizing.ForConnection(maxInFlightRequestsPerConnection: 5).PendingRequests;
 
-        await Assert.That(field).IsNotNull();
-        await Assert.That(field!.FieldType.IsArray).IsTrue();
-        await Assert.That(field.FieldType.GetElementType()!.Name).IsEqualTo("PendingRequestSlot");
+        for (var i = 0; i < capacity; i++)
+        {
+            await ReservePendingRequestSlotAsync(connection);
+            var request = new PooledPendingRequest();
+            request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+            AddPendingRequest(connection, i + 1, request);
+        }
+
+        var waitingForSlot = ReservePendingRequestSlotAsync(connection).AsTask();
+        await Task.Delay(50);
+        await Assert.That(waitingForSlot.IsCompleted).IsFalse();
+
+        await Assert.That(TryRemovePendingRequest(connection, correlationId: 1)).IsTrue();
+        await waitingForSlot.WaitAsync(TimeSpan.FromSeconds(1));
+        ReleasePendingRequestSlot(connection);
+
+        await connection.DisposeAsync();
     }
 
     [Test]
@@ -99,5 +114,39 @@ public sealed class KafkaConnectionPipelinedTests
             12);
 
         await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    private static async ValueTask ReservePendingRequestSlotAsync(KafkaConnection connection)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "ReservePendingRequestSlotAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var valueTask = (ValueTask)method.Invoke(connection, [CancellationToken.None])!;
+        await valueTask;
+    }
+
+    private static void ReleasePendingRequestSlot(KafkaConnection connection)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "ReleasePendingRequestSlot",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(connection, []);
+    }
+
+    private static void AddPendingRequest(KafkaConnection connection, int correlationId, PooledPendingRequest request)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "AddPendingRequest",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(connection, [correlationId, request]);
+    }
+
+    private static bool TryRemovePendingRequest(KafkaConnection connection, int correlationId)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "TryRemovePendingRequest",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        object?[] args = [correlationId, null];
+        return (bool)method.Invoke(connection, args)!;
     }
 }
