@@ -166,6 +166,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private static int s_globalCorrelationId;
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
+    private readonly CancellationTokenSource _pendingRequestSlotCts = new();
+    private int _pendingRequestSlotWaiterCount;
     private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
@@ -1013,7 +1015,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
                     // Mark connection as failed to trigger reconnection
-                    Volatile.Write(ref _disposed, 1);
+                    MarkDisposed();
 
                     throw new KafkaException(
                         $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
@@ -1028,7 +1030,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                     {
                         LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
-                        Volatile.Write(ref _disposed, 1);
+                        MarkDisposed();
 
                         throw new KafkaException(
                             $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
@@ -1088,7 +1090,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 if (result.IsCompleted)
                 {
                     LogReceiveLoopCompleted(_host, _port);
-                    Volatile.Write(ref _disposed, 1); // Prevent new requests from being queued on a dead connection
+                    MarkDisposed(); // Prevent new requests from being queued on a dead connection
                     FailAllPendingRequests(new KafkaException(
                         "Connection closed by remote peer (EOF)"));
                     break;
@@ -1099,20 +1101,20 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Two cases: cancellation between iterations, or EOF break (already handled above).
             if (cancellationToken.IsCancellationRequested)
             {
-                Volatile.Write(ref _disposed, 1);
+                MarkDisposed();
                 FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Expected during shutdown — fail any pending requests so callers don't hang
-            Volatile.Write(ref _disposed, 1);
+            MarkDisposed();
             FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (Exception ex)
         {
             LogReceiveLoopError(ex);
-            Volatile.Write(ref _disposed, 1); // Prevent new requests from being queued on a dead connection
+            MarkDisposed(); // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
         }
     }
@@ -1142,26 +1144,113 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private ValueTask ReservePendingRequestSlotAsync(CancellationToken cancellationToken)
     {
-        if (_pendingRequestSlots.Wait(0, cancellationToken))
-            return ValueTask.CompletedTask;
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+
+        try
+        {
+            if (_pendingRequestSlots.Wait(0, cancellationToken))
+            {
+                if (Volatile.Read(ref _disposed) == 0)
+                    return ValueTask.CompletedTask;
+
+                ReleasePendingRequestSlot();
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
+        }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
 
         return ReservePendingRequestSlotSlowAsync(cancellationToken);
     }
 
     private async ValueTask ReservePendingRequestSlotSlowAsync(CancellationToken cancellationToken)
     {
-        await _pendingRequestSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _pendingRequestSlotWaiterCount);
+        try
+        {
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _pendingRequestSlotCts.Token);
+
+            await _pendingRequestSlots.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0 && !cancellationToken.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _pendingRequestSlotWaiterCount);
+        }
+
+        if (Volatile.Read(ref _disposed) == 0)
+            return;
+
+        ReleasePendingRequestSlot();
+        throw new ObjectDisposedException(nameof(KafkaConnection));
     }
 
     private void ReleasePendingRequestSlot()
     {
-        _pendingRequestSlots.Release();
+        try
+        {
+            _pendingRequestSlots.Release();
+        }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        {
+        }
     }
 
     private void ReleasePendingRequestSlots(int count)
     {
         if (count > 0)
-            _pendingRequestSlots.Release(count);
+        {
+            try
+            {
+                _pendingRequestSlots.Release(count);
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+            }
+        }
+    }
+
+    private void MarkDisposed()
+    {
+        Volatile.Write(ref _disposed, 1);
+        CancelPendingRequestSlotWaiters();
+    }
+
+    private void CancelPendingRequestSlotWaiters()
+    {
+        try
+        {
+            _pendingRequestSlotCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private async ValueTask<bool> WaitForPendingRequestSlotWaitersToDrainAsync()
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (Volatile.Read(ref _pendingRequestSlotWaiterCount) != 0)
+        {
+            if (stopwatch.Elapsed >= TimeSpan.FromSeconds(1))
+                return false;
+
+            await Task.Delay(1).ConfigureAwait(false);
+        }
+
+        return true;
     }
 
     private void AddPendingRequest(int correlationId, PooledPendingRequest request)
@@ -2071,6 +2160,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        CancelPendingRequestSlotWaiters();
+
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             var pendingRequestCount = GetPendingRequestCount();
@@ -2172,7 +2263,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
         // cleaned up by a continuation since none was registered.
         ReturnAllPendingRequestsToPool();
 
-        _pendingRequestSlots.Dispose();
+        if (await WaitForPendingRequestSlotWaitersToDrainAsync().ConfigureAwait(false))
+        {
+            _pendingRequestSlots.Dispose();
+            _pendingRequestSlotCts.Dispose();
+        }
+
         _cancelledCorrelationIds.Clear();
     }
 

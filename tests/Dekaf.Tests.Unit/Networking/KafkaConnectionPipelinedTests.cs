@@ -88,6 +88,38 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
+    public async Task PendingRequests_DisposeCancelsBlockedSlotWaiters()
+    {
+        var connection = new KafkaConnection("localhost", 9092);
+        var capacity = PoolSizing.ForConnection(maxInFlightRequestsPerConnection: 5).PendingRequests;
+
+        for (var i = 0; i < capacity; i++)
+        {
+            await ReservePendingRequestSlotAsync(connection);
+            var request = new PooledPendingRequest();
+            request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+            AddPendingRequest(connection, i + 1, request);
+        }
+
+        var waiters = new Task[capacity + 2];
+        for (var i = 0; i < waiters.Length; i++)
+        {
+            waiters[i] = ReservePendingRequestSlotAsync(connection).AsTask();
+        }
+
+        await Task.Delay(50);
+        await Assert.That(waiters.Any(static waiter => !waiter.IsCompleted)).IsTrue();
+
+        await connection.DisposeAsync();
+
+        foreach (var waiter in waiters)
+        {
+            await Assert.That(async () => await waiter.WaitAsync(TimeSpan.FromSeconds(1)))
+                .Throws<ObjectDisposedException>();
+        }
+    }
+
+    [Test]
     public async Task SendPipelinedAsync_Cancellation_Throws()
     {
         var connection = new KafkaConnection("localhost", 9092);
