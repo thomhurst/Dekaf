@@ -5,7 +5,7 @@ namespace Dekaf.Consumer;
 
 internal static class AutoOffsetResetStrategy
 {
-    public static long GetListOffsetsTimestamp(ConsumerOptions options, DateTimeOffset now)
+    public static long GetListOffsetsTimestamp(ConsumerOptions options, DateTimeOffset now, TopicPartition? partition = null)
     {
         return options.AutoOffsetReset switch
         {
@@ -14,10 +14,15 @@ internal static class AutoOffsetResetStrategy
             AutoOffsetReset.ByDuration => GetByDurationTimestamp(options.AutoOffsetResetDuration, now),
             AutoOffsetReset.None => throw new KafkaException(
                 ErrorCode.OffsetOutOfRange,
-                "No committed offset and auto.offset.reset is 'none'"),
+                GetOffsetResetNoneMessage(partition)),
             _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {options.AutoOffsetReset}")
         };
     }
+
+    private static string GetOffsetResetNoneMessage(TopicPartition? partition) =>
+        partition is { } tp
+            ? $"No committed offset for {tp.Topic}-{tp.Partition} and auto.offset.reset is 'none'"
+            : "No committed offset and auto.offset.reset is 'none'";
 
     public static long GetByDurationTimestamp(TimeSpan? duration, DateTimeOffset now)
     {

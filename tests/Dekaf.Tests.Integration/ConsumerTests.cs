@@ -1298,6 +1298,81 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Consumer_AutoOffsetResetByDuration_AfterNewestMessage_StartsFromEnd()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "old-key",
+            Value = "old-value",
+            Timestamp = DateTimeOffset.UtcNow.AddMinutes(-10)
+        }, CancellationToken.None);
+        await producer.FlushAsync(CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetResetByDuration(TimeSpan.Zero)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consumeTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token).AsTask();
+
+        await Task.Delay(2000, cts.Token);
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "new-key",
+            Value = "new-value"
+        }, CancellationToken.None);
+        await producer.FlushAsync(CancellationToken.None);
+
+        var result = await consumeTask;
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("new-key");
+        await Assert.That(result.Value.Value).IsEqualTo("new-value");
+    }
+
+    [Test]
+    public async Task Consumer_AutoOffsetResetNone_NoCommittedOffset_ThrowsException()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.None)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await Assert.That(async () =>
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+            {
+                // Should throw before yielding
+            }
+        }).Throws<KafkaException>()
+            .WithMessageContaining($"{topic}-0");
+    }
+
+    [Test]
     public async Task Consumer_OffsetOutOfRange_WithNone_ThrowsException()
     {
         // This tests that when AutoOffsetReset.None is configured and OffsetOutOfRange occurs,

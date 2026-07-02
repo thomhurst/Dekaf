@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
 using System.Xml;
 
 namespace Dekaf.Extensions.DependencyInjection;
@@ -700,16 +701,16 @@ internal static class DekafConfigurationBinding
             throw new InvalidOperationException($"{key} must specify a duration.");
         }
 
-        if (TimeSpan.TryParse(value, out var timeSpan))
+        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var timeSpan))
         {
-            ValidateAutoOffsetResetDuration(timeSpan);
+            AutoOffsetResetStrategy.ValidateDuration(timeSpan);
             return timeSpan;
         }
 
         try
         {
             var duration = XmlConvert.ToTimeSpan(value);
-            ValidateAutoOffsetResetDuration(duration);
+            AutoOffsetResetStrategy.ValidateDuration(duration);
             return duration;
         }
         catch (FormatException ex)
@@ -717,14 +718,6 @@ internal static class DekafConfigurationBinding
             throw new InvalidOperationException(
                 $"{key} must be a TimeSpan or ISO-8601 duration such as 'PT24H'.",
                 ex);
-        }
-    }
-
-    private static void ValidateAutoOffsetResetDuration(TimeSpan duration)
-    {
-        if (duration < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(duration), duration, "Duration-based offset reset does not allow negative durations.");
         }
     }
 }

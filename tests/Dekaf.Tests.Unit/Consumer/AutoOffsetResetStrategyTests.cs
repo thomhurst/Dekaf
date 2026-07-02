@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -32,5 +33,22 @@ public class AutoOffsetResetStrategyTests
     {
         await Assert.That(() => AutoOffsetResetStrategy.ValidateDuration(TimeSpan.FromSeconds(-1)))
             .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task GetListOffsetsTimestamp_NoneIncludesPartitionInExceptionMessage()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            AutoOffsetReset = AutoOffsetReset.None
+        };
+
+        await Assert.That(() => AutoOffsetResetStrategy.GetListOffsetsTimestamp(
+                options,
+                DateTimeOffset.Parse("2026-07-02T12:00:00Z"),
+                new TopicPartition("orders", 5)))
+            .Throws<KafkaException>()
+            .WithMessageContaining("orders-5");
     }
 }
