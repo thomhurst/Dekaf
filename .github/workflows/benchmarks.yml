@@ -38,11 +38,13 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
+      - name: Build
+        run: dotnet build --configuration Release
+
       - name: Run Unit Benchmarks
         run: |
-          dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Unit*" --exporters json --artifacts ./BenchmarkResults/Unit
+          dotnet run -c Release --no-build -- --filter "*Unit*" --exporters json --artifacts ./BenchmarkResults/Unit
         continue-on-error: true
 
       - name: Upload Results
@@ -85,13 +87,15 @@ jobs:
             sleep 2
           done
 
+      - name: Build
+        run: dotnet build --configuration Release
+
       - name: Run Client Benchmarks
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
-          dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
+          dotnet run -c Release --no-build -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
         continue-on-error: true
 
       - name: Stop Kafka
