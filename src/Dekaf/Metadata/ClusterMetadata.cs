@@ -31,6 +31,12 @@ internal sealed class ClusterMetadataSnapshot
     /// </summary>
     public IReadOnlyDictionary<int, IReadOnlyList<TopicPartition>> PartitionsByBroker { get; }
 
+    /// <summary>
+    /// Topic name → partition metadata array indexed by PartitionIndex.
+    /// Built at snapshot creation time so partition-leader lookup is O(1).
+    /// </summary>
+    public IReadOnlyDictionary<string, PartitionInfo?[]> PartitionsByTopicIndex { get; }
+
     public ClusterMetadataSnapshot(
         string? clusterId,
         int controllerId,
@@ -46,6 +52,7 @@ internal sealed class ClusterMetadataSnapshot
         Topics = topics;
         TopicsById = topicsById;
         PartitionsByBroker = BuildPartitionsByBroker(topics);
+        PartitionsByTopicIndex = BuildPartitionsByTopicIndex(topics);
     }
 
     private static Dictionary<int, IReadOnlyList<TopicPartition>> BuildPartitionsByBroker(
@@ -66,6 +73,38 @@ internal sealed class ClusterMetadataSnapshot
         var result = new Dictionary<int, IReadOnlyList<TopicPartition>>(builder.Count);
         foreach (var (key, list) in builder)
             result[key] = list.ToArray();
+        return result;
+    }
+
+    private static Dictionary<string, PartitionInfo?[]> BuildPartitionsByTopicIndex(
+        Dictionary<string, TopicInfo> topics)
+    {
+        var result = new Dictionary<string, PartitionInfo?[]>(topics.Count);
+        foreach (var topic in topics.Values)
+        {
+            var maxPartitionIndex = -1;
+            foreach (var partition in topic.Partitions)
+            {
+                if (partition.PartitionIndex > maxPartitionIndex)
+                    maxPartitionIndex = partition.PartitionIndex;
+            }
+
+            if (maxPartitionIndex < 0)
+            {
+                result[topic.Name] = [];
+                continue;
+            }
+
+            var partitionsByIndex = new PartitionInfo?[maxPartitionIndex + 1];
+            foreach (var partition in topic.Partitions)
+            {
+                if ((uint)partition.PartitionIndex < (uint)partitionsByIndex.Length)
+                    partitionsByIndex[partition.PartitionIndex] = partition;
+            }
+
+            result[topic.Name] = partitionsByIndex;
+        }
+
         return result;
     }
 }
@@ -146,6 +185,15 @@ public sealed class ClusterMetadata
     }
 
     /// <summary>
+    /// Gets partition metadata by topic and partition index.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal PartitionInfo? GetPartitionInfo(string topicName, int partition)
+    {
+        return GetPartitionInfo(_snapshot, topicName, partition);
+    }
+
+    /// <summary>
     /// Gets all known topics.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -189,25 +237,26 @@ public sealed class ClusterMetadata
     public BrokerNode? GetPartitionLeader(string topicName, int partition)
     {
         var snapshot = _snapshot;
-
-        if (!snapshot.Topics.TryGetValue(topicName, out var topic))
-            return null;
-
-        // Manual loop to avoid closure allocation from FirstOrDefault lambda
-        PartitionInfo? partitionInfo = null;
-        foreach (var p in topic.Partitions)
-        {
-            if (p.PartitionIndex == partition)
-            {
-                partitionInfo = p;
-                break;
-            }
-        }
+        var partitionInfo = GetPartitionInfo(snapshot, topicName, partition);
 
         if (partitionInfo is null)
             return null;
 
         return snapshot.Brokers.TryGetValue(partitionInfo.LeaderId, out var broker) ? broker : null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static PartitionInfo? GetPartitionInfo(
+        ClusterMetadataSnapshot snapshot,
+        string topicName,
+        int partition)
+    {
+        if (!snapshot.PartitionsByTopicIndex.TryGetValue(topicName, out var partitionsByIndex))
+            return null;
+
+        return (uint)partition < (uint)partitionsByIndex.Length
+            ? partitionsByIndex[partition]
+            : null;
     }
 
     /// <summary>

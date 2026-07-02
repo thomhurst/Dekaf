@@ -280,6 +280,44 @@ public sealed class ClusterMetadataTests
         await Assert.That(leader).IsNull();
     }
 
+    [Test]
+    public async Task GetPartitionInfo_HighPartitionIndex_ReturnsPartition()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLargePartitionMetadataResponse(partitionCount: 1024));
+
+        var partition = metadata.GetPartitionInfo("large-topic", 1023);
+
+        await Assert.That(partition).IsNotNull();
+        await Assert.That(partition!.PartitionIndex).IsEqualTo(1023);
+        await Assert.That(partition.LeaderId).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetPartitionLeader_HighPartitionIndex_ReturnsBroker()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLargePartitionMetadataResponse(partitionCount: 1024));
+
+        var leader = metadata.GetPartitionLeader("large-topic", 1023);
+
+        await Assert.That(leader).IsNotNull();
+        await Assert.That(leader!.NodeId).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetPartitionInfo_UpdateRefreshesIndex()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLargePartitionMetadataResponse(partitionCount: 1024));
+        await Assert.That(metadata.GetPartitionInfo("large-topic", 1023)).IsNotNull();
+
+        metadata.Update(CreateLargePartitionMetadataResponse(partitionCount: 8));
+
+        await Assert.That(metadata.GetPartitionInfo("large-topic", 1023)).IsNull();
+        await Assert.That(metadata.GetPartitionInfo("large-topic", 7)).IsNotNull();
+    }
+
     #endregion
 
     #region GetPartitionsForBroker
@@ -636,6 +674,42 @@ public sealed class ClusterMetadataTests
                     [
                         new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }
                     ]
+                }
+            ]
+        };
+    }
+
+    private static MetadataResponse CreateLargePartitionMetadataResponse(int partitionCount)
+    {
+        var partitions = new List<PartitionMetadata>(partitionCount);
+        for (var i = 0; i < partitionCount; i++)
+        {
+            partitions.Add(new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = i,
+                LeaderId = i % 2 == 0 ? 1 : 2,
+                ReplicaNodes = [1, 2],
+                IsrNodes = [1, 2]
+            });
+        }
+
+        return new MetadataResponse
+        {
+            ClusterId = "test-cluster",
+            ControllerId = 1,
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092 },
+                new BrokerMetadata { NodeId = 2, Host = "broker2", Port = 9092 }
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "large-topic",
+                    Partitions = partitions
                 }
             ]
         };
