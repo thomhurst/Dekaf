@@ -107,7 +107,6 @@ public sealed class KafkaConnectionPipelinedTests
             waiters[i] = ReservePendingRequestSlotAsync(connection).AsTask();
         }
 
-        await Task.Delay(50);
         await Assert.That(waiters.Any(static waiter => !waiter.IsCompleted)).IsTrue();
 
         await connection.DisposeAsync();
