@@ -36,6 +36,26 @@ public sealed class ProducerExtensionsTests
     }
 
     [Test]
+    public async Task ProduceAsync_WithHeaders_UsesFastPath_WhenProducerSupportsIt()
+    {
+        var producer = new FastPathProducerSpy<string, string>();
+        var headers = Headers.Create("h1", "v1");
+        using var cts = new CancellationTokenSource();
+
+        var result = await producer.ProduceAsync("my-topic", "key", "value", headers, cts.Token);
+
+        await Assert.That(result.Offset).IsEqualTo(42);
+        await Assert.That(producer.FastPathCalls).IsEqualTo(1);
+        await Assert.That(producer.MessageCalls).IsEqualTo(0);
+        await Assert.That(producer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(producer.CapturedKey).IsEqualTo("key");
+        await Assert.That(producer.CapturedValue).IsEqualTo("value");
+        await Assert.That(producer.CapturedHeaders).IsSameReferenceAs(headers);
+        await Assert.That(producer.CapturedPartition).IsNull();
+        await Assert.That(producer.CapturedCancellationToken).IsEqualTo(cts.Token);
+    }
+
+    [Test]
     public async Task ProduceAsync_WithHeaders_NullProducer_ThrowsArgumentNullException()
     {
         IKafkaProducer<string, string>? producer = null;
@@ -83,6 +103,23 @@ public sealed class ProducerExtensionsTests
                 m.Key == "key" &&
                 m.Value == "value"),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ProduceAsync_WithPartition_UsesFastPath_WhenProducerSupportsIt()
+    {
+        var producer = new FastPathProducerSpy<string, string>();
+
+        var result = await producer.ProduceAsync("my-topic", partition: 3, "key", "value");
+
+        await Assert.That(result.Offset).IsEqualTo(42);
+        await Assert.That(producer.FastPathCalls).IsEqualTo(1);
+        await Assert.That(producer.MessageCalls).IsEqualTo(0);
+        await Assert.That(producer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(producer.CapturedKey).IsEqualTo("key");
+        await Assert.That(producer.CapturedValue).IsEqualTo("value");
+        await Assert.That(producer.CapturedHeaders).IsNull();
+        await Assert.That(producer.CapturedPartition).IsEqualTo(3);
     }
 
     [Test]

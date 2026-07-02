@@ -30,6 +30,9 @@ public static class ProducerExtensions
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(topic);
 
+        if (producer is IProducerFastPath<TKey, TValue> fastPath)
+            return fastPath.ProduceAsync(topic, key, value, headers, partition: null, timestamp: null, cancellationToken);
+
         return producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
             Topic = topic,
@@ -61,6 +64,9 @@ public static class ProducerExtensions
     {
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(topic);
+
+        if (producer is IProducerFastPath<TKey, TValue> fastPath)
+            return fastPath.ProduceAsync(topic, key, value, headers: null, partition: partition, timestamp: null, cancellationToken);
 
         return producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {

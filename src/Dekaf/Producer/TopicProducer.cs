@@ -63,6 +63,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+            return fastPath.ProduceAsync(Topic, key, value, headers, partition: null, timestamp: null, cancellationToken);
+
         return _producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
             Topic = Topic,
@@ -80,6 +83,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+            return fastPath.ProduceAsync(Topic, key, value, headers: null, partition: partition, timestamp: null, cancellationToken);
+
         return _producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
             Topic = Topic,
@@ -96,6 +102,18 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(message);
+
+        if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
+            return fastPath.ProduceAsync(
+                Topic,
+                message.Key,
+                message.Value,
+                message.Headers,
+                message.Partition,
+                message.Timestamp,
+                cancellationToken);
+        }
 
         return _producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {

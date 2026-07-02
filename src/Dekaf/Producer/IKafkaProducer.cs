@@ -50,6 +50,8 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// <para>See <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/> for
     /// important information about <see cref="ValueTask{TResult}"/> usage rules.</para>
+    /// <para>Implementations may optimize this overload to avoid allocating a
+    /// <see cref="ProducerMessage{TKey, TValue}"/> object on the hot path.</para>
     /// </remarks>
     ValueTask<RecordMetadata> ProduceAsync(
         string topic,

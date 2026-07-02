@@ -91,6 +91,25 @@ public class TopicProducerTests
     }
 
     [Test]
+    public async Task ProduceAsync_WithHeaders_UsesInnerFastPath_WhenAvailable()
+    {
+        var innerProducer = new FastPathProducerSpy<string, string>();
+        var topicProducer = new TopicProducer<string, string>(innerProducer, "my-topic", ownsProducer: false);
+        var headers = Headers.Create("header-key", "header-value");
+
+        var result = await topicProducer.ProduceAsync("key", "value", headers, CancellationToken.None);
+
+        await Assert.That(result.Offset).IsEqualTo(42);
+        await Assert.That(innerProducer.FastPathCalls).IsEqualTo(1);
+        await Assert.That(innerProducer.MessageCalls).IsEqualTo(0);
+        await Assert.That(innerProducer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(innerProducer.CapturedKey).IsEqualTo("key");
+        await Assert.That(innerProducer.CapturedValue).IsEqualTo("value");
+        await Assert.That(innerProducer.CapturedHeaders).IsSameReferenceAs(headers);
+        await Assert.That(innerProducer.CapturedPartition).IsNull();
+    }
+
+    [Test]
     public async Task ProduceAsync_WithPartition_DelegatesToInnerProducer()
     {
         // Arrange
@@ -117,6 +136,24 @@ public class TopicProducerTests
                 m.Topic == "my-topic" &&
                 m.Partition == 2),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ProduceAsync_WithPartition_UsesInnerFastPath_WhenAvailable()
+    {
+        var innerProducer = new FastPathProducerSpy<string, string>();
+        var topicProducer = new TopicProducer<string, string>(innerProducer, "my-topic", ownsProducer: false);
+
+        var result = await topicProducer.ProduceAsync(partition: 2, "key", "value");
+
+        await Assert.That(result.Offset).IsEqualTo(42);
+        await Assert.That(innerProducer.FastPathCalls).IsEqualTo(1);
+        await Assert.That(innerProducer.MessageCalls).IsEqualTo(0);
+        await Assert.That(innerProducer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(innerProducer.CapturedKey).IsEqualTo("key");
+        await Assert.That(innerProducer.CapturedValue).IsEqualTo("value");
+        await Assert.That(innerProducer.CapturedHeaders).IsNull();
+        await Assert.That(innerProducer.CapturedPartition).IsEqualTo(2);
     }
 
     [Test]
@@ -155,6 +192,35 @@ public class TopicProducerTests
                 m.Partition == 1 &&
                 m.Timestamp == timestamp),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ProduceAsync_WithTopicProducerMessage_UsesInnerFastPath_WhenAvailable()
+    {
+        var innerProducer = new FastPathProducerSpy<string, string>();
+        var topicProducer = new TopicProducer<string, string>(innerProducer, "my-topic", ownsProducer: false);
+        var headers = Headers.Create("header-key", "header-value");
+        var timestamp = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var message = new TopicProducerMessage<string, string>
+        {
+            Key = "key",
+            Value = "value",
+            Headers = headers,
+            Partition = 1,
+            Timestamp = timestamp
+        };
+
+        var result = await topicProducer.ProduceAsync(message);
+
+        await Assert.That(result.Offset).IsEqualTo(42);
+        await Assert.That(innerProducer.FastPathCalls).IsEqualTo(1);
+        await Assert.That(innerProducer.MessageCalls).IsEqualTo(0);
+        await Assert.That(innerProducer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(innerProducer.CapturedKey).IsEqualTo("key");
+        await Assert.That(innerProducer.CapturedValue).IsEqualTo("value");
+        await Assert.That(innerProducer.CapturedHeaders).IsSameReferenceAs(headers);
+        await Assert.That(innerProducer.CapturedPartition).IsEqualTo(1);
+        await Assert.That(innerProducer.CapturedTimestamp).IsEqualTo(timestamp);
     }
 
     [Test]

@@ -22,7 +22,7 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IBudgetedInstance
+public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerFastPath<TKey, TValue>, IBudgetedInstance
 {
     /// <summary>
     /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
@@ -375,35 +375,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-
-        ThrowIfNotInitialized();
-
-        // KIP-1050 fail-fast: once a transaction is broken, reject new produces so the caller must
-        // abort (abortable) or close the producer (fatal) before continuing. Single volatile read
-        // on the hot path; only transactional producers ever reach the error states.
-        if (_options.TransactionalId is not null)
-        {
-            var txnState = _transactionState;
-            if (txnState == TransactionState.AbortableError)
-            {
-                throw new AbortableTransactionException(_lastTransactionError,
-                    "Cannot produce: the current transaction has an abortable error and must be aborted.")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
-            }
-
-            if (txnState == TransactionState.FatalError)
-            {
-                throw new FatalTransactionException(_lastTransactionError,
-                    "Cannot produce: the producer is in a fatal error state and must be closed.")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
-            }
-        }
+        ThrowIfProduceCannotStart();
 
         // Check cancellation upfront before any work
         cancellationToken.ThrowIfCancellationRequested();
@@ -437,6 +409,72 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, activity, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        CancellationToken cancellationToken)
+    {
+        if (_retryPolicy is not null || _interceptors is not null || Diagnostics.DekafDiagnostics.Source.HasListeners())
+        {
+            return ProduceAsync(new ProducerMessage<TKey, TValue>
+            {
+                Topic = topic,
+                Key = key,
+                Value = value,
+                Headers = headers,
+                Partition = partition,
+                Timestamp = timestamp
+            }, cancellationToken);
+        }
+
+        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> ProduceAsyncCore(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfProduceCannotStart();
+
+        // Check cancellation upfront before any work
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (TryProduceSyncForAsync(topic, key, value, headers, partition, timestamp, out var completion))
+        {
+            // POST-QUEUE: Message appended to batch, committed to being sent
+            // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            if (ProducerMetricsEnabled())
+            {
+                return AwaitWithMetrics(completion!, topic, cancellationToken);
+            }
+            if (cancellationToken.CanBeCanceled)
+            {
+                return AwaitWithCancellation(completion!, cancellationToken);
+            }
+            return completion!.Task;
+        }
+
+        // Cold path: allocate the full message only when async metadata/backpressure handling needs it.
+        return ProduceAsyncSlow(new ProducerMessage<TKey, TValue>
+        {
+            Topic = topic,
+            Key = key,
+            Value = value,
+            Headers = headers,
+            Partition = partition,
+            Timestamp = timestamp
+        }, activity: null, cancellationToken);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -572,6 +610,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncForAsync(ProducerMessage<TKey, TValue> message, out PooledValueTaskSource<RecordMetadata>? completion)
+        => TryProduceSyncForAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, out completion);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSyncForAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        out PooledValueTaskSource<RecordMetadata>? completion)
     {
         completion = null;
 
@@ -586,16 +635,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // FAST PATH: Check thread-local cached topic metadata first.
         // Avoids MetadataManager dictionary lookup for consecutive messages to the same topic.
         TopicInfo? topicInfo;
-        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo))
+        if (!TryGetCachedTopicInfo(topic, out topicInfo))
         {
             // Cache miss - try MetadataManager
-            if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
+            if (!_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) || topicInfo is null)
             {
                 return false; // Cache miss, need async refresh
             }
 
             // Update thread-local cache for next call
-            UpdateCachedTopicInfo(message.Topic, topicInfo);
+            UpdateCachedTopicInfo(topic, topicInfo);
         }
 
         if (topicInfo!.PartitionCount == 0)
@@ -608,7 +657,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var result = SyncProduceResult.Success;
         try
         {
-            result = TryProduceSyncCore(message, topicInfo, completion);
+            result = TryProduceSyncCore(topic, key, value, headers, partition, timestamp, topicInfo, completion);
         }
         catch (Exception ex)
         {
@@ -848,6 +897,25 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerMessage<TKey, TValue> message,
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion)
+        => TryProduceSyncCore(
+            message.Topic,
+            message.Key,
+            message.Value,
+            message.Headers,
+            message.Partition,
+            message.Timestamp,
+            topicInfo,
+            completion);
+
+    private SyncProduceResult TryProduceSyncCore(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        TopicInfo topicInfo,
+        PooledValueTaskSource<RecordMetadata> completion)
     {
         Header[]? pooledHeaderArray = null;
         var customPartitionerKey = PooledMemory.Null;
@@ -856,37 +924,37 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         try
         {
             var cache = GetOrCreateCache();
-            var keyIsNull = message.Key is null;
+            var keyIsNull = key is null;
             var keySpan = ReadOnlySpan<byte>.Empty;
             if (!keyIsNull)
             {
                 var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-                cache.SerializationContext.Topic = message.Topic;
+                cache.SerializationContext.Topic = topic;
                 cache.SerializationContext.Component = SerializationComponent.Key;
-                cache.SerializationContext.Headers = message.Headers;
-                _keySerializer.Serialize(message.Key!, ref keyWriter, cache.SerializationContext);
+                cache.SerializationContext.Headers = headers;
+                _keySerializer.Serialize(key!, ref keyWriter, cache.SerializationContext);
                 keySpan = keyWriter.WrittenSpan;
                 keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
             }
 
-            var valueIsNull = message.Value is null;
+            var valueIsNull = value is null;
             var valueSpan = ReadOnlySpan<byte>.Empty;
             if (!valueIsNull)
             {
                 var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
-                cache.SerializationContext.Topic = message.Topic;
+                cache.SerializationContext.Topic = topic;
                 cache.SerializationContext.Component = SerializationComponent.Value;
-                cache.SerializationContext.Headers = message.Headers;
-                _valueSerializer.Serialize(message.Value!, ref valueWriter, cache.SerializationContext);
+                cache.SerializationContext.Headers = headers;
+                _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
                 valueSpan = valueWriter.WrittenSpan;
                 valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
             }
 
             // Determine partition
-            int partition;
-            if (message.Partition is { } explicitPartition)
+            int resolvedPartition;
+            if (partition is { } explicitPartition)
             {
-                partition = explicitPartition;
+                resolvedPartition = explicitPartition;
             }
             else
             {
@@ -907,28 +975,28 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     }
                 }
 
-                partition = _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+                resolvedPartition = _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
             }
 
-            var batchCompletionPartitionCount = message.Partition is null && keyIsNull
+            var batchCompletionPartitionCount = partition is null && keyIsNull
                 ? topicInfo.PartitionCount
                 : 0;
 
             // Get timestamp - use fast cached timestamp when no override provided
-            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+            var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
             var headerCount = 0;
-            if (message.Headers is not null && message.Headers.Count > 0)
+            if (headers is not null && headers.Count > 0)
             {
-                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+                RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
             }
 
             // Append to accumulator synchronously (non-blocking memory reservation).
             // Returns false when buffer is full OR accumulator is disposed.
             if (!_accumulator.TryAppendFromSpansWithCompletion(
-                message.Topic,
-                partition,
+                topic,
+                resolvedPartition,
                 timestampMs,
                 keySpan,
                 keyIsNull,
@@ -1205,13 +1273,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        return ProduceAsync(new ProducerMessage<TKey, TValue>
-        {
-            Topic = topic,
-            Key = key,
-            Value = value
-        }, cancellationToken);
+        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, cancellationToken);
     }
+
+    ValueTask<RecordMetadata> IProducerFastPath<TKey, TValue>.ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        CancellationToken cancellationToken)
+        => ProduceAsync(topic, key, value, headers, partition, timestamp, cancellationToken);
 
     /// <inheritdoc />
     public async Task<RecordMetadata[]> ProduceAllAsync(
@@ -2321,6 +2394,46 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         if (!_initialized)
             ThrowNotInitialized();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfProduceCannotStart()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        ThrowIfNotInitialized();
+
+        // KIP-1050 fail-fast: once a transaction is broken, reject new produces so the caller must
+        // abort (abortable) or close the producer (fatal) before continuing. Single volatile read
+        // on the hot path; only transactional producers ever reach the error states.
+        if (_options.TransactionalId is not null)
+        {
+            ThrowIfTransactionCannotProduce();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ThrowIfTransactionCannotProduce()
+    {
+        var txnState = _transactionState;
+        if (txnState == TransactionState.AbortableError)
+        {
+            throw new AbortableTransactionException(_lastTransactionError,
+                "Cannot produce: the current transaction has an abortable error and must be aborted.")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        if (txnState == TransactionState.FatalError)
+        {
+            throw new FatalTransactionException(_lastTransactionError,
+                "Cannot produce: the producer is in a fatal error state and must be closed.")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

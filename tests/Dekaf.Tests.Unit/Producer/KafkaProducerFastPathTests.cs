@@ -3,6 +3,8 @@ using System.Runtime.ExceptionServices;
 using System.Text;
 using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -72,6 +74,44 @@ public class KafkaProducerFastPathTests
         _ = await outerTask;
     }
 
+    [Test]
+    public async Task ProduceAsync_TopicKeyValue_UsesHotPathWithCachedMetadata()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var produceTask = producer.ProduceAsync(Topic, "key", "value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("key");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("value");
+
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        var metadata = await produceTask;
+
+        await Assert.That(metadata.Topic).IsEqualTo(Topic);
+        await Assert.That(metadata.Partition).IsEqualTo(0);
+        await Assert.That(metadata.Offset).IsEqualTo(7);
+    }
+
     private static TopicInfo CreateTopicInfo() => new()
     {
         Name = Topic,
@@ -87,6 +127,44 @@ public class KafkaProducerFastPathTests
         ]
     };
 
+    private static void SeedProducerMetadata(KafkaProducer<string, string> producer)
+    {
+        var metadataManager = GetInstanceField<MetadataManager>(producer, "_metadataManager");
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata
+                {
+                    NodeId = 0,
+                    Host = "localhost",
+                    Port = 9092
+                }
+            ],
+            ClusterId = "test-cluster",
+            ControllerId = 0,
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = Topic,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 0,
+                            ReplicaNodes = [0],
+                            IsrNodes = [0]
+                        }
+                    ]
+                }
+            ]
+        });
+    }
+
     private static object InvokeTryProduceSyncCore(
         KafkaProducer<string, string> producer,
         ProducerMessage<string, string> message,
@@ -95,7 +173,10 @@ public class KafkaProducerFastPathTests
     {
         var method = typeof(KafkaProducer<string, string>).GetMethod(
             "TryProduceSyncCore",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            binder: null,
+            [typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>)],
+            modifiers: null);
 
         try
         {
@@ -149,6 +230,14 @@ public class KafkaProducerFastPathTests
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         var field = target.GetType().GetField(name, instanceFieldFlags);
         return (T)field!.GetValue(target)!;
+    }
+
+    private static void SetInstanceField<T>(object target, string name, T value)
+    {
+        const BindingFlags instanceFieldFlags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var field = target.GetType().GetField(name, instanceFieldFlags);
+        field!.SetValue(target, value);
     }
 
     private static string GetKeyString(Dekaf.Protocol.Records.Record record)
