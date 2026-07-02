@@ -25,9 +25,9 @@ namespace Dekaf.Consumer;
 /// With depth 3 (the default), two eager fetches can overlap with processing, keeping
 /// the network saturated even when individual fetches stall briefly.
 /// Higher depths (up to 8) allow more overlapping fetches for improved throughput.
-/// Each in-flight fetch registers its own <c>CancellationTokenSource</c> in
-/// <c>KafkaConsumer._activeWakeupSources</c>, so <c>Wakeup()</c> correctly cancels
-/// all concurrent fetches regardless of pipeline depth.</para>
+/// Each in-flight fetch registers its own <c>CancellationTokenSource</c> so
+/// shutdown and consume cancellation can stop all concurrent fetches regardless
+/// of pipeline depth.</para>
 ///
 /// <para><b>Position safety:</b> Only one eager fetch is started per iteration to prevent
 /// reading stale <c>_fetchPositions</c>. Each fetch updates positions inside its task
@@ -282,7 +282,7 @@ internal sealed class PrefetchPipelineRunner
             }
             catch (OperationCanceledException)
             {
-                // Cancellation is not an error — expected during shutdown/wakeup
+                // Cancellation is not an error — expected during shutdown
             }
             catch (Exception inFlightEx)
             {
