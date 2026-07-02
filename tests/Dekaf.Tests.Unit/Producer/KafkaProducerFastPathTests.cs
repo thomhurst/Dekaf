@@ -12,7 +12,7 @@ public class KafkaProducerFastPathTests
     private const string Topic = "test-topic";
 
     [Test]
-    public async Task TryProduceSyncCore_CustomPartitionerReentry_PreservesOuterKey()
+    public async Task TryProduceSyncCore_CustomPartitionerReentry_PreservesOuterKeyAndValue()
     {
         var partitioner = new ReentrantPartitioner();
         var options = new ProducerOptions
@@ -59,7 +59,9 @@ public class KafkaProducerFastPathTests
         var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
         await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
         await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
         await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
 
         readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
         _ = await innerTask;
@@ -123,6 +125,9 @@ public class KafkaProducerFastPathTests
 
     private static string GetKeyString(Dekaf.Protocol.Records.Record record)
         => Encoding.UTF8.GetString(record.Key.Span);
+
+    private static string GetValueString(Dekaf.Protocol.Records.Record record)
+        => Encoding.UTF8.GetString(record.Value.Span);
 
     private sealed class ReentrantPartitioner : IPartitioner
     {

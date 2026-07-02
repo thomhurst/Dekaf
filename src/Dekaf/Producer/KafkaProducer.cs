@@ -825,6 +825,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         Header[]? pooledHeaderArray = null;
         var customPartitionerKey = PooledMemory.Null;
+        var customPartitionerValue = PooledMemory.Null;
 
         try
         {
@@ -863,12 +864,21 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
             else
             {
-                if (_usesCustomPartitioner && !keyIsNull && keySpan.Length > 0)
+                if (_usesCustomPartitioner)
                 {
                     // User partitioners can run arbitrary code, including reentrant ProduceAsync.
-                    // Keep key bytes independent of the thread-local serialization buffer until append copies them.
-                    customPartitionerKey = CopySpanToPooledMemory(keySpan);
-                    keySpan = customPartitionerKey.Span;
+                    // Keep serialized bytes independent of thread-local buffers until append copies them.
+                    if (!keyIsNull && keySpan.Length > 0)
+                    {
+                        customPartitionerKey = CopySpanToPooledMemory(keySpan);
+                        keySpan = customPartitionerKey.Span;
+                    }
+
+                    if (!valueIsNull && valueSpan.Length > 0)
+                    {
+                        customPartitionerValue = CopySpanToPooledMemory(valueSpan);
+                        valueSpan = customPartitionerValue.Span;
+                    }
                 }
 
                 partition = _partitioner.Partition(message.Topic, keySpan, keyIsNull, topicInfo.PartitionCount);
@@ -907,16 +917,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
                 _valueTaskSourcePool.Return(completion);
                 customPartitionerKey.Return();
+                customPartitionerValue.Return();
                 return SyncProduceResult.BufferFull;
             }
 
             customPartitionerKey.Return();
+            customPartitionerValue.Return();
             return SyncProduceResult.Success;
         }
         catch (Exception ex)
         {
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
             customPartitionerKey.Return();
+            customPartitionerValue.Return();
             if (ex is not ObjectDisposedException)
                 completion.TrySetException(ex);
             throw;
