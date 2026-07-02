@@ -3263,7 +3263,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (true)
         {
             var waitForRotation = false;
-            var requeueForLinger = false;
 
             {
                 using var guard = new SpinLockGuard(ref pd.Lock);
@@ -3288,15 +3287,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (batchCreatedTicks < newOldestTicks)
                         newOldestTicks = batchCreatedTicks;
 
-                    requeueForLinger = !sealAll;
+                    if (!sealAll)
+                        QueueLingerPartition(pd, topicPartition);
                     break;
                 }
-            }
-
-            if (requeueForLinger)
-            {
-                QueueLingerPartition(pd, topicPartition);
-                break;
             }
 
             if (!waitForRotation)

@@ -643,11 +643,13 @@ public class RecordAccumulatorReadyTests
             var createdTicks = GetPrivateField<long>(accumulator, "_oldestBatchCreatedTicks");
             var olderHint = Math.Max(0, createdTicks - Stopwatch.Frequency);
             SetPrivateField(accumulator, "_oldestBatchCreatedTicks", olderHint);
+            var lingerQueue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions");
 
             await accumulator.ExpireLingerAsync(CancellationToken.None);
 
             await Assert.That(GetPrivateField<long>(accumulator, "_oldestBatchCreatedTicks"))
                 .IsEqualTo(olderHint);
+            await Assert.That(lingerQueue.Count).IsEqualTo(1);
         }
         finally
         {
