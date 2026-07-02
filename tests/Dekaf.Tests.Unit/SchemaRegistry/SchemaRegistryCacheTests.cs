@@ -346,7 +346,7 @@ public sealed class SchemaRegistryCacheTests
         var actualPayload = written.AsSpan(5).ToArray();
 
         await Assert.That(written[0]).IsEqualTo((byte)0);
-        await Assert.That(schemaId).IsEqualTo(2);
+        await Assert.That(schemaId).IsEqualTo(registry.GetSchemaId("topic-value"));
 
         var expectedPayload = JsonSerializer.SerializeToUtf8Bytes(payload, CamelCaseJsonOptions);
         await Assert.That(actualPayload).IsEquivalentTo(expectedPayload);
