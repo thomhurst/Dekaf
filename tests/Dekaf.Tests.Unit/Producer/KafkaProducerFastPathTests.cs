@@ -22,6 +22,9 @@ public class KafkaProducerFastPathTests
             BufferMemory = ulong.MaxValue,
             BatchSize = 4096,
             LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
             CustomPartitioner = partitioner
         };
 
@@ -29,6 +32,7 @@ public class KafkaProducerFastPathTests
             options,
             Serializers.String,
             Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicInfo = CreateTopicInfo();
         var innerCompletion = pool.Rent();
@@ -106,9 +110,7 @@ public class KafkaProducerFastPathTests
 
     private static ReadyBatch CompleteCurrentBatch(RecordAccumulator accumulator, TopicPartition topicPartition)
     {
-        var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        var deques = dequesField!.GetValue(accumulator)!;
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
 
         var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
         var parameters = new object[] { topicPartition, null! };
@@ -117,10 +119,36 @@ public class KafkaProducerFastPathTests
             throw new InvalidOperationException("Partition deque was not found.");
 
         var partitionDeque = parameters[1];
-        var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
-        var partitionBatch = currentBatchField!.GetValue(partitionDeque);
-        var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
-        return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+        var partitionBatch = GetInstanceField<object?>(partitionDeque!, "CurrentBatch");
+        if (partitionBatch is not null)
+        {
+            var completeMethod = partitionBatch.GetType().GetMethod("Complete");
+            return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+        }
+
+        var peekFirstMethod = partitionDeque.GetType().GetMethod("PeekFirst");
+        if (peekFirstMethod!.Invoke(partitionDeque, null) is ReadyBatch readyBatch)
+            return readyBatch;
+
+        throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
+    }
+
+    private static async Task StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)
+    {
+        var cts = GetInstanceField<CancellationTokenSource>(producer, "_senderCts");
+        var senderTask = GetInstanceField<Task>(producer, "_senderTask");
+        var lingerTask = GetInstanceField<Task>(producer, "_lingerTask");
+
+        await cts.CancelAsync();
+        await Task.WhenAll(senderTask, lingerTask).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private static T GetInstanceField<T>(object target, string name)
+    {
+        const BindingFlags instanceFieldFlags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var field = target.GetType().GetField(name, instanceFieldFlags);
+        return (T)field!.GetValue(target)!;
     }
 
     private static string GetKeyString(Dekaf.Protocol.Records.Record record)
