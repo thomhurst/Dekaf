@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 
@@ -160,7 +161,35 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
-    public async Task ConnectAsync_DoesNotAllocateRetainedRequestWriter(CancellationToken cancellationToken)
+    public async Task IsConnected_StreamAssignedBeforeConnectionReady_ReturnsFalse(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            using var clientSocket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            var acceptTask = listener.AcceptSocketAsync(cancellationToken);
+            await clientSocket.ConnectAsync(IPAddress.Loopback, port, cancellationToken);
+            using var serverSocket = await acceptTask.ConfigureAwait(false);
+            await using var stream = new NetworkStream(clientSocket, ownsSocket: false);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+
+            SetPrivateField(connection, "_socket", clientSocket);
+            SetPrivateField(connection, "_stream", stream);
+
+            await Assert.That(connection.IsConnected).IsFalse();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ConnectAsync_AfterPipeSetup_IsConnectedTrue(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -174,11 +203,7 @@ public sealed class KafkaConnectionTests
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
 
-            var writerField = typeof(KafkaConnection).GetField(
-                "_writer",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            await Assert.That(writerField?.GetValue(connection)).IsNull();
+            await Assert.That(connection.IsConnected).IsTrue();
         }
         finally
         {
@@ -251,5 +276,14 @@ public sealed class KafkaConnectionTests
 
         // All concurrent disposals should complete without throwing
         await Task.WhenAll(tasks);
+    }
+
+    private static void SetPrivateField<T>(KafkaConnection connection, string name, T value)
+    {
+        var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field is null)
+            throw new InvalidOperationException($"Field '{name}' was not found.");
+
+        field.SetValue(connection, value);
     }
 }

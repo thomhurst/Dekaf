@@ -184,6 +184,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
+    private int _connected;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
@@ -205,7 +206,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
-    public bool IsConnected => Volatile.Read(ref _disposed) == 0 && (_socket?.Connected ?? false) && _stream is not null;
+    public bool IsConnected => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _connected) != 0 && (_socket?.Connected ?? false);
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -465,6 +466,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
+        Volatile.Write(ref _connected, 1);
 
         LogConnected(_host, _port);
     }
@@ -2205,6 +2207,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        Volatile.Write(ref _connected, 0);
         var pendingRequestSlotOperationsDrained = ClosePendingRequestSlotsAsync();
         CancelPendingRequestSlotWaiters();
 
