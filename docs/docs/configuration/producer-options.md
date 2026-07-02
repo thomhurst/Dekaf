@@ -29,6 +29,73 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
+## Configuration Binding
+
+`Dekaf.Extensions.DependencyInjection` can bind producer settings from an `IConfiguration` section. Keys use `ProducerOptions` property names:
+
+```json
+{
+  "Kafka": {
+    "Producers": {
+      "Orders": {
+        "BootstrapServers": "broker1:9092,broker2:9092",
+        "ClientId": "orders-producer",
+        "Acks": "All",
+        "LingerMs": 5,
+        "BatchSize": 65536,
+        "CompressionType": "Lz4",
+        "EnableIdempotence": true,
+        "UseTls": true,
+        "SaslMechanism": "ScramSha512",
+        "SaslUsername": "user",
+        "SaslPassword": "password"
+      }
+    }
+  }
+}
+```
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, Order>(
+        builder.Configuration.GetSection("Kafka:Producers:Orders"),
+        producer => producer.WithValueSerializer(new JsonSerializer<Order>()));
+});
+```
+
+Configuration is applied before the optional fluent callback, so fluent calls can override values from `appsettings.json`.
+
+| Fluent API | Config key | Notes |
+|------------|------------|-------|
+| `WithBootstrapServers(...)` | `BootstrapServers` | Comma-separated string or JSON array |
+| `WithClientId(...)` | `ClientId` | String |
+| `WithAcks(...)` | `Acks` | `None`, `Leader`, `All` |
+| `WithLinger(...)` | `LingerMs` | Milliseconds |
+| `WithBatchSize(...)` | `BatchSize` | Bytes |
+| `WithBufferMemory(...)` | `BufferMemory` | Bytes; omit to keep auto-tuning |
+| `WithMaxBlock(...)` | `MaxBlockMs` | Milliseconds |
+| `WithDeliveryTimeout(...)` | `DeliveryTimeoutMs` | Milliseconds |
+| `WithRequestTimeout(...)` | `RequestTimeoutMs` | Milliseconds |
+| `WithIdempotence(...)` | `EnableIdempotence` | Boolean |
+| `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
+| `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
+| `WithTransactionalId(...)` | `TransactionalId` | String |
+| `WithTransactionTimeout(...)` | `TransactionTimeoutMs` | Milliseconds |
+| `UseCompression(...)` | `CompressionType` | `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd` |
+| `WithCompressionLevel(...)` | `CompressionLevel` | Codec-specific integer |
+| `WithPartitioner(...)` | `Partitioner` | `Default`, `Sticky`, `RoundRobin` |
+| `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
+| `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
+| `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
+| `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
+| `WithSocketSendBufferBytes(...)` | `SocketSendBufferBytes` | Bytes |
+| `WithSocketReceiveBufferBytes(...)` | `SocketReceiveBufferBytes` | Bytes |
+| `WithMetadataRecoveryStrategy(...)` | `MetadataRecoveryStrategy` | `None` or `Rebootstrap` |
+| `WithMetadataRecoveryRebootstrapTrigger(...)` | `MetadataRecoveryRebootstrapTriggerMs` | Milliseconds |
+
+Serializers, custom partitioners, interceptors, and retry policies are objects, so configure those in the fluent callback.
+
 ## Connection Settings
 
 ### WithBootstrapServers
@@ -66,24 +133,23 @@ Controls when the broker considers a message delivered:
 .WithAcks(Acks.None)    // Don't wait (fastest, may lose messages)
 ```
 
-### EnableIdempotence
+### WithIdempotence
 
 Prevents duplicate messages during retries:
 
 ```csharp
-.EnableIdempotence()
+.WithIdempotence(true)
 ```
 
 Automatically sets `Acks.All` and enables sequence numbers.
 
 ## Batching Settings
 
-### WithLingerMs / WithLinger
+### WithLinger
 
 Time to wait before sending a batch:
 
 ```csharp
-.WithLingerMs(5)                    // Wait up to 5ms
 .WithLinger(TimeSpan.FromMilliseconds(5))  // Same, using TimeSpan
 ```
 
@@ -238,18 +304,6 @@ Enable logging:
 .WithLoggerFactory(loggerFactory)
 ```
 
-### WithStatisticsInterval / WithStatisticsHandler
-
-Enable periodic statistics:
-
-```csharp
-.WithStatisticsInterval(TimeSpan.FromSeconds(30))
-.WithStatisticsHandler(stats =>
-{
-    Console.WriteLine($"Messages sent: {stats.TotalMessagesSent}");
-})
-```
-
 ## All Options Reference
 
 | Method | Default | Description |
@@ -257,18 +311,23 @@ Enable periodic statistics:
 | `WithBootstrapServers` | (required) | Broker addresses |
 | `WithClientId` | "dekaf-producer" | Client identifier |
 | `WithAcks` | All | Acknowledgment mode |
-| `WithLingerMs` | 5 | Batch wait time (ms) |
-| `WithBatchSize` | 16384 | Max batch size (bytes) |
-| `EnableIdempotence` | false | Prevent duplicates |
+| `WithLinger` | 0ms | Batch wait time |
+| `WithBatchSize` | 1048576 | Max batch size in bytes |
+| `WithIdempotence` | true | Prevent duplicates |
 | `WithTransactionalId` | null | Transaction ID |
+| `WithTransactionTimeout` | 60000ms | Transaction timeout |
 | `UseCompression` | None | Compression codec |
+| `WithCompressionLevel` | null | Codec-specific compression level |
 | `WithPartitioner` | Default | Partition strategy |
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
 | `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
-| `WithoutAdaptiveConnections` | — | Disable adaptive scaling |
-| `WithBufferMemory` | 2GB | Max buffer for unsent messages |
-| `WithSocketSendBufferBytes` | (OS default) | TCP send buffer size |
-| `WithSocketReceiveBufferBytes` | (OS default) | TCP receive buffer size |
+| `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
+| `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
+| `WithMaxBlock` | 60000ms | Max time produce calls wait for metadata or buffer space |
+| `WithDeliveryTimeout` | 120000ms | Max time for delivery success or failure |
+| `WithRequestTimeout` | 30000ms | Per-request timeout |
+| `WithSocketSendBufferBytes` | OS default | TCP send buffer size |
+| `WithSocketReceiveBufferBytes` | OS default | TCP receive buffer size |
 | `UseTls` | false | Enable TLS |
-| `WithKeySerializer` | (auto) | Key serializer |
-| `WithValueSerializer` | (auto) | Value serializer |
+| `WithKeySerializer` | inferred | Key serializer |
+| `WithValueSerializer` | inferred | Value serializer |

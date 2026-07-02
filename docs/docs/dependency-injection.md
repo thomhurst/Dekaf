@@ -198,13 +198,30 @@ builder.Services.AddHostedService<OrderConsumerService>();
 ```json
 {
   "Kafka": {
-    "BootstrapServers": "localhost:9092",
-    "Producer": {
-      "ClientId": "my-service-producer"
+    "Producers": {
+      "Orders": {
+        "BootstrapServers": "broker1:9092,broker2:9092",
+        "ClientId": "orders-producer",
+        "Acks": "All",
+        "LingerMs": 5,
+        "CompressionType": "Lz4"
+      }
     },
-    "Consumer": {
-      "ClientId": "my-service-consumer",
-      "GroupId": "my-service"
+    "Consumers": {
+      "Orders": {
+        "BootstrapServers": [
+          "broker1:9092",
+          "broker2:9092"
+        ],
+        "ClientId": "orders-consumer",
+        "GroupId": "orders",
+        "AutoOffsetReset": "Earliest",
+        "FetchMinBytes": 1024
+      }
+    },
+    "Admin": {
+      "BootstrapServers": "broker1:9092,broker2:9092",
+      "ClientId": "orders-admin"
     }
   }
 }
@@ -213,18 +230,23 @@ builder.Services.AddHostedService<OrderConsumerService>();
 ```csharp
 builder.Services.AddDekaf(dekaf =>
 {
-    var config = builder.Configuration.GetSection("Kafka");
+    var kafka = builder.Configuration.GetSection("Kafka");
 
-    dekaf.AddProducer<string, string>(producer => producer
-        .WithBootstrapServers(config["BootstrapServers"]!)
-        .WithClientId(config["Producer:ClientId"]!));
+    dekaf.AddProducer<string, Order>(
+        kafka.GetSection("Producers:Orders"),
+        producer => producer.WithValueSerializer(new JsonSerializer<Order>()));
 
-    dekaf.AddConsumer<string, string>(consumer => consumer
-        .WithBootstrapServers(config["BootstrapServers"]!)
-        .WithClientId(config["Consumer:ClientId"]!)
-        .WithGroupId(config["Consumer:GroupId"]!));
+    dekaf.AddConsumer<string, Order>(
+        kafka.GetSection("Consumers:Orders"),
+        consumer => consumer
+            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .SubscribeTo("orders"));
+
+    dekaf.AddAdminClient(kafka.GetSection("Admin"));
 });
 ```
+
+The section keys match `ProducerOptions`, `ConsumerOptions`, and `AdminClientOptions` property names. Configuration is applied first; the optional fluent callback runs after binding, so it can override values or attach objects that cannot be represented in JSON, such as serializers, deserializers, interceptors, retry policies, and rebalance listeners.
 
 ## Lifetime Management
 

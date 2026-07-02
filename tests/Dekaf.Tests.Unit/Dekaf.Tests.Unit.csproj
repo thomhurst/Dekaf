@@ -24,6 +24,7 @@
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.35.1" />
     <PackageReference Include="OpenTelemetry" Version="1.16.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="2.2.3" />
     <PackageReference Include="NSubstitute" Version="5.3.0" />

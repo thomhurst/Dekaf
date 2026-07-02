@@ -186,11 +186,49 @@ catch (OperationCanceledException) { }
 Console.WriteLine("Done!");
 ```
 
+## Configuration-First Services
+
+For ASP.NET Core or worker services, add `Dekaf.Extensions.DependencyInjection` and bind clients from `appsettings.json`:
+
+```json
+{
+  "Kafka": {
+    "Producers": {
+      "Orders": {
+        "BootstrapServers": "localhost:9092",
+        "ClientId": "orders-producer",
+        "LingerMs": 5
+      }
+    },
+    "Consumers": {
+      "Orders": {
+        "BootstrapServers": "localhost:9092",
+        "GroupId": "orders",
+        "AutoOffsetReset": "Earliest"
+      }
+    }
+  }
+}
+```
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, string>(
+        builder.Configuration.GetSection("Kafka:Producers:Orders"));
+
+    dekaf.AddConsumer<string, string>(
+        builder.Configuration.GetSection("Kafka:Consumers:Orders"),
+        consumer => consumer.SubscribeTo("orders"));
+});
+```
+
 ## Next Steps
 
 That's the basics. From here:
 
 - **[Producer Guide](./producer/basics)** - Batching, compression, delivery guarantees
 - **[Consumer Guide](./consumer/basics)** - Offset management, consumer groups, rebalancing
+- **[Dependency Injection](./dependency-injection)** - Register clients in hosted services
 - **[Configuration Presets](./configuration/presets)** - Pre-tuned configs for common scenarios
 - **[Performance Tips](./performance)** - Squeezing out more throughput

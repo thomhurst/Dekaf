@@ -2127,6 +2127,7 @@ public sealed class AdminClientBuilder
 {
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
+    private int _requestTimeoutMs = 30000;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -2310,6 +2311,32 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    internal AdminClientBuilder WithRequestTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _requestTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    internal AdminClientBuilder WithSaslOptions(
+        SaslMechanism mechanism,
+        string? username,
+        string? password,
+        GssapiConfig? gssapiConfig,
+        OAuthBearerConfig? oauthConfig)
+    {
+        _saslMechanism = mechanism;
+        _saslUsername = username;
+        _saslPassword = password;
+        _gssapiConfig = gssapiConfig;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        return this;
+    }
+
     public IAdminClient Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -2319,6 +2346,7 @@ public sealed class AdminClientBuilder
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
+            RequestTimeoutMs = _requestTimeoutMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,

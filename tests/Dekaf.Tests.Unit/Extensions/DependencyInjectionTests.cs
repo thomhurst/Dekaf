@@ -4,7 +4,12 @@ using Dekaf.Compression.Lz4;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.DependencyInjection;
+using Dekaf.Metadata;
+using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Producer;
+using Dekaf.Security.Sasl;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -190,6 +195,262 @@ public class DependencyInjectionTests
         await Assert.That(options.TopicSuffix).IsEqualTo(".dead");
         await Assert.That(options.MaxFailures).IsEqualTo(3);
         await Assert.That(options.BootstrapServers).IsEqualTo("localhost:9092");
+    }
+
+    #endregion
+
+    #region Configuration Binding Tests
+
+    [Test]
+    public async Task AddProducer_WithConfigurationSection_BindsConfiguredOptions()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:Producers:Orders:BootstrapServers"] = "broker1:9092, broker2:9092",
+            ["Kafka:Producers:Orders:ClientId"] = "orders-producer",
+            ["Kafka:Producers:Orders:Acks"] = "Leader",
+            ["Kafka:Producers:Orders:LingerMs"] = "5",
+            ["Kafka:Producers:Orders:BatchSize"] = "65536",
+            ["Kafka:Producers:Orders:BufferMemory"] = "1048576",
+            ["Kafka:Producers:Orders:MaxInFlightRequestsPerConnection"] = "2",
+            ["Kafka:Producers:Orders:Retries"] = "7",
+            ["Kafka:Producers:Orders:RetryBackoffMs"] = "25",
+            ["Kafka:Producers:Orders:RetryBackoffMaxMs"] = "250",
+            ["Kafka:Producers:Orders:MaxBlockMs"] = "1000",
+            ["Kafka:Producers:Orders:DeliveryTimeoutMs"] = "2000",
+            ["Kafka:Producers:Orders:RequestTimeoutMs"] = "3000",
+            ["Kafka:Producers:Orders:EnableIdempotence"] = "false",
+            ["Kafka:Producers:Orders:ConnectionsPerBroker"] = "3",
+            ["Kafka:Producers:Orders:MaxConnectionsPerBroker"] = "6",
+            ["Kafka:Producers:Orders:CompressionType"] = "Gzip",
+            ["Kafka:Producers:Orders:CompressionLevel"] = "4",
+            ["Kafka:Producers:Orders:Partitioner"] = "RoundRobin",
+            ["Kafka:Producers:Orders:UseTls"] = "true",
+            ["Kafka:Producers:Orders:SaslMechanism"] = "ScramSha512",
+            ["Kafka:Producers:Orders:SaslUsername"] = "user",
+            ["Kafka:Producers:Orders:SaslPassword"] = "password",
+            ["Kafka:Producers:Orders:SocketSendBufferBytes"] = "1024",
+            ["Kafka:Producers:Orders:SocketReceiveBufferBytes"] = "2048",
+            ["Kafka:Producers:Orders:ValueTaskSourcePoolSize"] = "128",
+            ["Kafka:Producers:Orders:ArenaCapacity"] = "131072",
+            ["Kafka:Producers:Orders:InitialBatchRecordCapacity"] = "32",
+            ["Kafka:Producers:Orders:MetadataRecoveryStrategy"] = "None",
+            ["Kafka:Producers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "60000"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(configuration.GetSection("Kafka:Producers:Orders"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var options = GetProducerOptions(producer);
+
+        await Assert.That(options.BootstrapServers.Count).IsEqualTo(2);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+        await Assert.That(options.ClientId).IsEqualTo("orders-producer");
+        await Assert.That(options.Acks).IsEqualTo(Acks.Leader);
+        await Assert.That(options.LingerMs).IsEqualTo(5);
+        await Assert.That(options.BatchSize).IsEqualTo(65536);
+        await Assert.That(options.BufferMemory).IsEqualTo(1048576UL);
+        await Assert.That(options.IsAutoTuned).IsFalse();
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(2);
+        await Assert.That(options.Retries).IsEqualTo(7);
+        await Assert.That(options.RetryBackoffMs).IsEqualTo(25);
+        await Assert.That(options.RetryBackoffMaxMs).IsEqualTo(250);
+        await Assert.That(options.MaxBlockMs).IsEqualTo(1000);
+        await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(2000);
+        await Assert.That(options.RequestTimeoutMs).IsEqualTo(3000);
+        await Assert.That(options.EnableIdempotence).IsFalse();
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(3);
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(6);
+        await Assert.That(options.CompressionType).IsEqualTo(CompressionType.Gzip);
+        await Assert.That(options.CompressionLevel).IsEqualTo(4);
+        await Assert.That(options.Partitioner).IsEqualTo(PartitionerType.RoundRobin);
+        await Assert.That(options.UseTls).IsTrue();
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
+        await Assert.That(options.SaslUsername).IsEqualTo("user");
+        await Assert.That(options.SaslPassword).IsEqualTo("password");
+        await Assert.That(options.SocketSendBufferBytes).IsEqualTo(1024);
+        await Assert.That(options.SocketReceiveBufferBytes).IsEqualTo(2048);
+        await Assert.That(options.ValueTaskSourcePoolSize).IsEqualTo(128);
+        await Assert.That(options.ArenaCapacity).IsEqualTo(131072);
+        await Assert.That(options.InitialBatchRecordCapacity).IsEqualTo(32);
+        await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(60000);
+    }
+
+    [Test]
+    public async Task AddProducer_WithConfigurationSection_FluentConfigurationOverridesBoundValues()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:BootstrapServers"] = "broker1:9092",
+            ["Kafka:LingerMs"] = "50",
+            ["Kafka:BatchSize"] = "65536"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(
+                configuration.GetSection("Kafka"),
+                producer => producer
+                    .WithLinger(TimeSpan.FromMilliseconds(2))
+                    .WithBatchSize(1024));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var options = GetProducerOptions(producer);
+
+        await Assert.That(options.LingerMs).IsEqualTo(2);
+        await Assert.That(options.BatchSize).IsEqualTo(1024);
+        await Assert.That(options.IsAutoTuned).IsTrue();
+    }
+
+    [Test]
+    public async Task AddConsumer_WithConfigurationSection_BindsConfiguredOptions()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:Consumers:Orders:BootstrapServers:0"] = "broker1:9092",
+            ["Kafka:Consumers:Orders:BootstrapServers:1"] = "broker2:9092",
+            ["Kafka:Consumers:Orders:ClientId"] = "orders-consumer",
+            ["Kafka:Consumers:Orders:GroupId"] = "orders",
+            ["Kafka:Consumers:Orders:GroupInstanceId"] = "orders-1",
+            ["Kafka:Consumers:Orders:GroupRemoteAssignor"] = "uniform",
+            ["Kafka:Consumers:Orders:OffsetCommitMode"] = "Manual",
+            ["Kafka:Consumers:Orders:AutoCommitIntervalMs"] = "2000",
+            ["Kafka:Consumers:Orders:AutoOffsetReset"] = "Earliest",
+            ["Kafka:Consumers:Orders:FetchMinBytes"] = "1024",
+            ["Kafka:Consumers:Orders:FetchMaxBytes"] = "2097152",
+            ["Kafka:Consumers:Orders:MaxPartitionFetchBytes"] = "1048576",
+            ["Kafka:Consumers:Orders:FetchMaxWaitMs"] = "150",
+            ["Kafka:Consumers:Orders:EnableFetchSessions"] = "false",
+            ["Kafka:Consumers:Orders:MaxPollRecords"] = "250",
+            ["Kafka:Consumers:Orders:MaxPollIntervalMs"] = "120000",
+            ["Kafka:Consumers:Orders:SessionTimeoutMs"] = "30000",
+            ["Kafka:Consumers:Orders:HeartbeatIntervalMs"] = "10000",
+            ["Kafka:Consumers:Orders:RebalanceTimeoutMs"] = "45000",
+            ["Kafka:Consumers:Orders:IsolationLevel"] = "ReadCommitted",
+            ["Kafka:Consumers:Orders:RequestTimeoutMs"] = "15000",
+            ["Kafka:Consumers:Orders:CheckCrcs"] = "true",
+            ["Kafka:Consumers:Orders:UseTls"] = "true",
+            ["Kafka:Consumers:Orders:SaslMechanism"] = "Plain",
+            ["Kafka:Consumers:Orders:SaslUsername"] = "user",
+            ["Kafka:Consumers:Orders:SaslPassword"] = "password",
+            ["Kafka:Consumers:Orders:EnablePartitionEof"] = "true",
+            ["Kafka:Consumers:Orders:SocketSendBufferBytes"] = "4096",
+            ["Kafka:Consumers:Orders:SocketReceiveBufferBytes"] = "8192",
+            ["Kafka:Consumers:Orders:QueuedMinMessages"] = "1000",
+            ["Kafka:Consumers:Orders:QueuedMaxMessagesKbytes"] = "32768",
+            ["Kafka:Consumers:Orders:MetadataRecoveryStrategy"] = "None",
+            ["Kafka:Consumers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "90000",
+            ["Kafka:Consumers:Orders:PrefetchPipelineDepth"] = "4",
+            ["Kafka:Consumers:Orders:ConnectionsPerBroker"] = "2",
+            ["Kafka:Consumers:Orders:EnableAdaptiveConnections"] = "false",
+            ["Kafka:Consumers:Orders:EnableAdaptiveFetchSizing"] = "true",
+            ["Kafka:Consumers:Orders:AdaptiveFetchSizingOptions:MaxFetchMaxBytes"] = "67108864"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumer<string, string>(
+                configuration.GetSection("Kafka:Consumers:Orders"),
+                configureDeadLetterQueue: dlq => dlq.WithTopicSuffix(".dead"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        var options = GetConsumerOptions(consumer);
+        var deadLetterOptions = provider.GetRequiredService<DeadLetterOptions>();
+
+        await Assert.That(options.BootstrapServers.Count).IsEqualTo(2);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.BootstrapServers[1]).IsEqualTo("broker2:9092");
+        await Assert.That(options.ClientId).IsEqualTo("orders-consumer");
+        await Assert.That(options.GroupId).IsEqualTo("orders");
+        await Assert.That(options.GroupInstanceId).IsEqualTo("orders-1");
+        await Assert.That(options.GroupRemoteAssignor).IsEqualTo("uniform");
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Manual);
+        await Assert.That(options.AutoCommitIntervalMs).IsEqualTo(2000);
+        await Assert.That(options.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Earliest);
+        await Assert.That(options.FetchMinBytes).IsEqualTo(1024);
+        await Assert.That(options.FetchMaxBytes).IsEqualTo(2097152);
+        await Assert.That(options.MaxPartitionFetchBytes).IsEqualTo(1048576);
+        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(150);
+        await Assert.That(options.EnableFetchSessions).IsFalse();
+        await Assert.That(options.MaxPollRecords).IsEqualTo(250);
+        await Assert.That(options.MaxPollIntervalMs).IsEqualTo(120000);
+        await Assert.That(options.SessionTimeoutMs).IsEqualTo(30000);
+        await Assert.That(options.HeartbeatIntervalMs).IsEqualTo(10000);
+        await Assert.That(options.RebalanceTimeoutMs).IsEqualTo(45000);
+        await Assert.That(options.IsolationLevel).IsEqualTo(IsolationLevel.ReadCommitted);
+        await Assert.That(options.RequestTimeoutMs).IsEqualTo(15000);
+        await Assert.That(options.CheckCrcs).IsTrue();
+        await Assert.That(options.UseTls).IsTrue();
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(options.SaslUsername).IsEqualTo("user");
+        await Assert.That(options.SaslPassword).IsEqualTo("password");
+        await Assert.That(options.EnablePartitionEof).IsTrue();
+        await Assert.That(options.SocketSendBufferBytes).IsEqualTo(4096);
+        await Assert.That(options.SocketReceiveBufferBytes).IsEqualTo(8192);
+        await Assert.That(options.QueuedMinMessages).IsEqualTo(1000);
+        await Assert.That(options.QueuedMaxMessagesKbytes).IsEqualTo(32768);
+        await Assert.That(options.IsAutoTuned).IsFalse();
+        await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(90000);
+        await Assert.That(options.PrefetchPipelineDepth).IsEqualTo(4);
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(2);
+        await Assert.That(options.EnableAdaptiveConnections).IsFalse();
+        await Assert.That(options.EnableAdaptiveFetchSizing).IsTrue();
+        await Assert.That(options.AdaptiveFetchSizingOptions).IsNotNull();
+        await Assert.That(options.AdaptiveFetchSizingOptions!.MaxFetchMaxBytes).IsEqualTo(67108864);
+        await Assert.That(deadLetterOptions.BootstrapServers).IsEqualTo("broker1:9092,broker2:9092");
+        await Assert.That(deadLetterOptions.TopicSuffix).IsEqualTo(".dead");
+    }
+
+    [Test]
+    public async Task AddAdminClient_WithConfigurationSection_BindsConfiguredOptions()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:Admin:BootstrapServers"] = "broker1:9092",
+            ["Kafka:Admin:ClientId"] = "admin-client",
+            ["Kafka:Admin:RequestTimeoutMs"] = "45000",
+            ["Kafka:Admin:UseTls"] = "true",
+            ["Kafka:Admin:SaslMechanism"] = "Plain",
+            ["Kafka:Admin:SaslUsername"] = "admin",
+            ["Kafka:Admin:SaslPassword"] = "secret",
+            ["Kafka:Admin:MetadataRecoveryStrategy"] = "None",
+            ["Kafka:Admin:MetadataRecoveryRebootstrapTriggerMs"] = "120000"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddAdminClient(configuration.GetSection("Kafka:Admin"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var admin = provider.GetRequiredService<IAdminClient>();
+        var options = GetAdminOptions(admin);
+
+        await Assert.That(options.BootstrapServers.Count).IsEqualTo(1);
+        await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
+        await Assert.That(options.ClientId).IsEqualTo("admin-client");
+        await Assert.That(options.RequestTimeoutMs).IsEqualTo(45000);
+        await Assert.That(options.UseTls).IsTrue();
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(options.SaslUsername).IsEqualTo("admin");
+        await Assert.That(options.SaslPassword).IsEqualTo("secret");
+        await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(120000);
     }
 
     #endregion
@@ -458,6 +719,32 @@ public class DependencyInjectionTests
     }
 
     #endregion
+
+    private static IConfigurationRoot BuildConfiguration(Dictionary<string, string?> values) =>
+        new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+    private static ProducerOptions GetProducerOptions<TKey, TValue>(IKafkaProducer<TKey, TValue> producer)
+    {
+        var field = producer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (ProducerOptions)field.GetValue(producer)!;
+    }
+
+    private static ConsumerOptions GetConsumerOptions<TKey, TValue>(IKafkaConsumer<TKey, TValue> consumer)
+    {
+        var field = consumer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (ConsumerOptions)field.GetValue(consumer)!;
+    }
+
+    private static AdminClientOptions GetAdminOptions(IAdminClient admin)
+    {
+        var field = admin.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (AdminClientOptions)field.GetValue(admin)!;
+    }
 
     #region Test Interceptor Implementations
 

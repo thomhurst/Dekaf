@@ -29,6 +29,15 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _transactionTimeoutMs;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private int? _compressionLevel;
+    private int _maxInFlightRequestsPerConnection = 5;
+    private int _retries = int.MaxValue;
+    private int _retryBackoffMs = 100;
+    private int _retryBackoffMaxMs = 1000;
+    private int _closeTimeoutMs = 30000;
+    private int _maxRequestSize = 1048576;
+    private int _valueTaskSourcePoolSize;
+    private int _arenaCapacity;
+    private int _initialBatchRecordCapacity;
     private PartitionerType _partitionerType = PartitionerType.Default;
     private IPartitioner? _customPartitioner;
     private bool _useTls;
@@ -608,6 +617,94 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    internal ProducerBuilder<TKey, TValue> WithMaxInFlightRequestsPerConnection(int maxInFlightRequestsPerConnection)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
+        _maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithRetries(int retries)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(retries);
+        _retries = retries;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithRetryBackoff(TimeSpan backoff)
+    {
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+
+        _retryBackoffMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithRetryBackoffMax(TimeSpan backoff)
+    {
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+
+        _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithCloseTimeout(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Close timeout cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _closeTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithMaxRequestSize(int maxRequestSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxRequestSize, 1);
+        _maxRequestSize = maxRequestSize;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithValueTaskSourcePoolSize(int poolSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(poolSize);
+        _valueTaskSourcePoolSize = poolSize;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithArenaCapacity(int arenaCapacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(arenaCapacity);
+        _arenaCapacity = arenaCapacity;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithInitialBatchRecordCapacity(int capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        _initialBatchRecordCapacity = capacity;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithSaslOptions(
+        SaslMechanism mechanism,
+        string? username,
+        string? password,
+        GssapiConfig? gssapiConfig,
+        OAuthBearerConfig? oauthConfig)
+    {
+        _saslMechanism = mechanism;
+        _saslUsername = username;
+        _saslPassword = password;
+        _gssapiConfig = gssapiConfig;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        return this;
+    }
+
     /// <summary>
     /// Builds and initializes the producer, ready for immediate use.
     /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaProducer{TKey,TValue}.InitializeAsync"/>.
@@ -700,6 +797,10 @@ public sealed class ProducerBuilder<TKey, TValue>
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? DekafMemoryBudget.PreviewProducerLimit(),
             IsAutoTuned = _bufferMemory is null,
+            MaxInFlightRequestsPerConnection = _maxInFlightRequestsPerConnection,
+            Retries = _retries,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs,
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
@@ -707,6 +808,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             ConnectionsPerBroker = _connectionsPerBroker,
             TransactionalId = _transactionalId,
             TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
+            CloseTimeoutMs = _closeTimeoutMs,
+            MaxRequestSize = _maxRequestSize,
             CompressionType = _compressionType,
             CompressionLevel = _compressionLevel,
             Partitioner = _partitionerType,
@@ -723,6 +826,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
+            ValueTaskSourcePoolSize = _valueTaskSourcePoolSize,
+            ArenaCapacity = _arenaCapacity,
+            InitialBatchRecordCapacity = _initialBatchRecordCapacity,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
             EnableAdaptiveConnections = _enableAdaptiveConnections,
@@ -809,8 +915,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxPartitionFetchBytes = 1048576;
     private int _fetchMaxWaitMs = 200;
     private int _maxPollRecords = 500;
+    private int _maxPollIntervalMs = 300000;
     private int _sessionTimeoutMs = 45000;
     private int? _heartbeatIntervalMs;
+    private int _rebalanceTimeoutMs = 60000;
+    private int _requestTimeoutMs = 30000;
+    private bool _checkCrcs;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private List<IConsumerInterceptor<TKey, TValue>>? _interceptors;
@@ -825,6 +935,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
+    private int _socketSendBufferBytes;
+    private int _socketReceiveBufferBytes;
     private int _queuedMinMessages = 100000;
     private int? _queuedMaxMessagesKbytes;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
@@ -1468,6 +1580,72 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    internal ConsumerBuilder<TKey, TValue> WithMaxPollInterval(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Max poll interval must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
+
+        _maxPollIntervalMs = (int)interval.TotalMilliseconds;
+        return this;
+    }
+
+    internal ConsumerBuilder<TKey, TValue> WithRebalanceTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Rebalance timeout must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _rebalanceTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    internal ConsumerBuilder<TKey, TValue> WithRequestTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _requestTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    internal ConsumerBuilder<TKey, TValue> WithCheckCrcs(bool checkCrcs)
+    {
+        _checkCrcs = checkCrcs;
+        return this;
+    }
+
+    internal ConsumerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        _socketSendBufferBytes = bytes;
+        return this;
+    }
+
+    internal ConsumerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        _socketReceiveBufferBytes = bytes;
+        return this;
+    }
+
+    internal ConsumerBuilder<TKey, TValue> WithSaslOptions(
+        SaslMechanism mechanism,
+        string? username,
+        string? password,
+        GssapiConfig? gssapiConfig,
+        OAuthBearerConfig? oauthConfig)
+    {
+        _saslMechanism = mechanism;
+        _saslUsername = username;
+        _saslPassword = password;
+        _gssapiConfig = gssapiConfig;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        return this;
+    }
+
     /// <summary>
     /// Builds and initializes the consumer, ready for immediate use.
     /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaConsumer{TKey,TValue}.InitializeAsync"/>.
@@ -1529,8 +1707,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
             FetchMaxWaitMs = _fetchMaxWaitMs,
             EnableFetchSessions = _enableFetchSessions,
             MaxPollRecords = _maxPollRecords,
+            MaxPollIntervalMs = _maxPollIntervalMs,
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,
+            RebalanceTimeoutMs = _rebalanceTimeoutMs,
+            RequestTimeoutMs = _requestTimeoutMs,
+            CheckCrcs = _checkCrcs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
@@ -1541,6 +1723,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             OAuthBearerTokenProvider = _oauthTokenProvider,
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
+            SocketSendBufferBytes = _socketSendBufferBytes,
+            SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             QueuedMinMessages = _queuedMinMessages,
             QueuedMaxMessagesKbytes = _queuedMaxMessagesKbytes
                 ?? (int)Math.Min(DekafMemoryBudget.PreviewConsumerLimit() / 1024, int.MaxValue),

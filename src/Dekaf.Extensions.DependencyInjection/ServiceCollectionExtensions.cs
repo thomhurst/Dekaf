@@ -1,8 +1,13 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
+using Dekaf.Metadata;
+using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Producer;
-using Dekaf.Serialization;
+using Dekaf.Security;
+using Dekaf.Security.Sasl;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -148,6 +153,25 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds a producer configured from an <see cref="IConfiguration"/> section.
+    /// Fluent configuration runs after binding, so it can override config values and add services such as serializers.
+    /// </summary>
+    /// <param name="configuration">Configuration section using <see cref="ProducerOptions"/> property names.</param>
+    /// <param name="configure">Optional additional producer configuration.</param>
+    public DekafBuilder AddProducer<TKey, TValue>(
+        IConfiguration configuration,
+        Action<ProducerBuilder<TKey, TValue>>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddProducer<TKey, TValue>(producer =>
+        {
+            DekafConfigurationBinding.ApplyProducer(configuration, producer);
+            configure?.Invoke(producer);
+        });
+    }
+
+    /// <summary>
     /// Adds a consumer to the service collection.
     /// </summary>
     /// <param name="configure">Configures the full consumer builder surface.</param>
@@ -212,6 +236,29 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds a consumer configured from an <see cref="IConfiguration"/> section.
+    /// Fluent configuration runs after binding, so it can override config values and add services such as deserializers.
+    /// </summary>
+    /// <param name="configuration">Configuration section using <see cref="ConsumerOptions"/> property names.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    public DekafBuilder AddConsumer<TKey, TValue>(
+        IConfiguration configuration,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddConsumer<TKey, TValue>(
+            consumer =>
+            {
+                DekafConfigurationBinding.ApplyConsumer(configuration, consumer);
+                configure?.Invoke(consumer);
+            },
+            configureDeadLetterQueue);
+    }
+
+    /// <summary>
     /// Adds an admin client to the service collection.
     /// </summary>
     public DekafBuilder AddAdminClient(Action<AdminClientServiceBuilder> configure)
@@ -226,6 +273,25 @@ public sealed class DekafBuilder
         });
 
         return this;
+    }
+
+    /// <summary>
+    /// Adds an admin client configured from an <see cref="IConfiguration"/> section.
+    /// Fluent configuration runs after binding, so it can override config values.
+    /// </summary>
+    /// <param name="configuration">Configuration section using <see cref="AdminClientOptions"/> property names.</param>
+    /// <param name="configure">Optional additional admin client configuration.</param>
+    public DekafBuilder AddAdminClient(
+        IConfiguration configuration,
+        Action<AdminClientServiceBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddAdminClient(admin =>
+        {
+            admin.ApplyConfiguration(configuration);
+            configure?.Invoke(admin);
+        });
     }
 }
 
@@ -254,6 +320,12 @@ public sealed class AdminClientServiceBuilder
         return this;
     }
 
+    internal AdminClientServiceBuilder ApplyConfiguration(IConfiguration configuration)
+    {
+        DekafConfigurationBinding.ApplyAdmin(configuration, _builder);
+        return this;
+    }
+
     internal IAdminClient Build(Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory)
     {
         if (loggerFactory is not null)
@@ -261,5 +333,303 @@ public sealed class AdminClientServiceBuilder
             _builder.WithLoggerFactory(loggerFactory);
         }
         return _builder.Build();
+    }
+}
+
+internal static class DekafConfigurationBinding
+{
+    public static void ApplyProducer<TKey, TValue>(
+        IConfiguration configuration,
+        ProducerBuilder<TKey, TValue> builder)
+    {
+        if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+            builder.WithBootstrapServers(bootstrapServers);
+        if (TryGetValue<string>(configuration, nameof(ProducerOptions.ClientId), out var clientId))
+            builder.WithClientId(clientId);
+        if (TryGetValue<Acks>(configuration, nameof(ProducerOptions.Acks), out var acks))
+            builder.WithAcks(acks);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.LingerMs), out var lingerMs))
+            builder.WithLinger(TimeSpan.FromMilliseconds(lingerMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.BatchSize), out var batchSize))
+            builder.WithBatchSize(batchSize);
+        if (TryGetValue<ulong>(configuration, nameof(ProducerOptions.BufferMemory), out var bufferMemory))
+            builder.WithBufferMemory(bufferMemory);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxInFlightRequestsPerConnection), out var maxInFlight))
+            builder.WithMaxInFlightRequestsPerConnection(maxInFlight);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.Retries), out var retries))
+            builder.WithRetries(retries);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.RetryBackoffMs), out var retryBackoffMs))
+            builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+            builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxBlockMs), out var maxBlockMs))
+            builder.WithMaxBlock(TimeSpan.FromMilliseconds(maxBlockMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.DeliveryTimeoutMs), out var deliveryTimeoutMs))
+            builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(deliveryTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.RequestTimeoutMs), out var requestTimeoutMs))
+            builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<bool>(configuration, nameof(ProducerOptions.EnableIdempotence), out var enableIdempotence))
+            builder.WithIdempotence(enableIdempotence);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
+            builder.WithConnectionsPerBroker(connectionsPerBroker);
+        if (TryGetValue<string>(configuration, nameof(ProducerOptions.TransactionalId), out var transactionalId))
+            builder.WithTransactionalId(transactionalId);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.TransactionTimeoutMs), out var transactionTimeoutMs))
+            builder.WithTransactionTimeout(TimeSpan.FromMilliseconds(transactionTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.CloseTimeoutMs), out var closeTimeoutMs))
+            builder.WithCloseTimeout(TimeSpan.FromMilliseconds(closeTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxRequestSize), out var maxRequestSize))
+            builder.WithMaxRequestSize(maxRequestSize);
+        if (TryGetValue<CompressionType>(configuration, nameof(ProducerOptions.CompressionType), out var compressionType))
+            builder.UseCompression(compressionType);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.CompressionLevel), out var compressionLevel))
+            builder.WithCompressionLevel(compressionLevel);
+        if (TryGetValue<PartitionerType>(configuration, nameof(ProducerOptions.Partitioner), out var partitioner))
+            builder.WithPartitioner(partitioner);
+        ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketSendBufferBytes), out var sendBuffer))
+            builder.WithSocketSendBufferBytes(sendBuffer);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
+            builder.WithSocketReceiveBufferBytes(receiveBuffer);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.ValueTaskSourcePoolSize), out var poolSize))
+            builder.WithValueTaskSourcePoolSize(poolSize);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.ArenaCapacity), out var arenaCapacity))
+            builder.WithArenaCapacity(arenaCapacity);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.InitialBatchRecordCapacity), out var initialBatchRecordCapacity))
+            builder.WithInitialBatchRecordCapacity(initialBatchRecordCapacity);
+        if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ProducerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
+            builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
+            builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        ApplyAdaptiveConnections(
+            configuration,
+            nameof(ProducerOptions.EnableAdaptiveConnections),
+            nameof(ProducerOptions.MaxConnectionsPerBroker),
+            builder.WithAdaptiveConnections,
+            builder.WithoutAdaptiveConnections);
+    }
+
+    public static void ApplyConsumer<TKey, TValue>(
+        IConfiguration configuration,
+        ConsumerBuilder<TKey, TValue> builder)
+    {
+        if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+            builder.WithBootstrapServers(bootstrapServers);
+        if (TryGetValue<string>(configuration, nameof(ConsumerOptions.ClientId), out var clientId))
+            builder.WithClientId(clientId);
+        if (TryGetValue<string>(configuration, nameof(ConsumerOptions.GroupId), out var groupId))
+            builder.WithGroupId(groupId);
+        if (TryGetValue<string>(configuration, nameof(ConsumerOptions.GroupInstanceId), out var groupInstanceId))
+            builder.WithGroupInstanceId(groupInstanceId);
+        if (TryGetValue<string>(configuration, nameof(ConsumerOptions.GroupRemoteAssignor), out var groupRemoteAssignor))
+            builder.WithGroupRemoteAssignor(groupRemoteAssignor);
+        if (TryGetValue<OffsetCommitMode>(configuration, nameof(ConsumerOptions.OffsetCommitMode), out var offsetCommitMode))
+            builder.WithOffsetCommitMode(offsetCommitMode);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.AutoCommitIntervalMs), out var autoCommitIntervalMs))
+            builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(autoCommitIntervalMs));
+        if (TryGetValue<AutoOffsetReset>(configuration, nameof(ConsumerOptions.AutoOffsetReset), out var autoOffsetReset))
+            builder.WithAutoOffsetReset(autoOffsetReset);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMinBytes), out var fetchMinBytes))
+            builder.WithFetchMinBytes(fetchMinBytes);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMaxBytes), out var fetchMaxBytes))
+            builder.WithFetchMaxBytes(fetchMaxBytes);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MaxPartitionFetchBytes), out var maxPartitionFetchBytes))
+            builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMaxWaitMs), out var fetchMaxWaitMs))
+            builder.WithFetchMaxWait(TimeSpan.FromMilliseconds(fetchMaxWaitMs));
+        if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnableFetchSessions), out var enableFetchSessions))
+            builder.WithFetchSessions(enableFetchSessions);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MaxPollRecords), out var maxPollRecords))
+            builder.WithMaxPollRecords(maxPollRecords);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MaxPollIntervalMs), out var maxPollIntervalMs))
+            builder.WithMaxPollInterval(TimeSpan.FromMilliseconds(maxPollIntervalMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SessionTimeoutMs), out var sessionTimeoutMs))
+            builder.WithSessionTimeout(TimeSpan.FromMilliseconds(sessionTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.HeartbeatIntervalMs), out var heartbeatIntervalMs))
+            builder.WithHeartbeatInterval(TimeSpan.FromMilliseconds(heartbeatIntervalMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RebalanceTimeoutMs), out var rebalanceTimeoutMs))
+            builder.WithRebalanceTimeout(TimeSpan.FromMilliseconds(rebalanceTimeoutMs));
+        if (TryGetValue<IsolationLevel>(configuration, nameof(ConsumerOptions.IsolationLevel), out var isolationLevel))
+            builder.WithIsolationLevel(isolationLevel);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
+            builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.CheckCrcs), out var checkCrcs))
+            builder.WithCheckCrcs(checkCrcs);
+        ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
+        if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnablePartitionEof), out var enablePartitionEof))
+            builder.WithPartitionEof(enablePartitionEof);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SocketSendBufferBytes), out var sendBuffer))
+            builder.WithSocketSendBufferBytes(sendBuffer);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
+            builder.WithSocketReceiveBufferBytes(receiveBuffer);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.QueuedMinMessages), out var queuedMinMessages))
+            builder.WithQueuedMinMessages(queuedMinMessages);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.QueuedMaxMessagesKbytes), out var queuedMaxMessagesKbytes))
+            builder.WithQueuedMaxMessagesKbytes(queuedMaxMessagesKbytes);
+        if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ConsumerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
+            builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
+            builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.PrefetchPipelineDepth), out var prefetchPipelineDepth))
+            builder.WithPrefetchPipelineDepth(prefetchPipelineDepth);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
+            builder.WithConnectionsPerBroker(connectionsPerBroker);
+        ApplyAdaptiveConnections(
+            configuration,
+            nameof(ConsumerOptions.EnableAdaptiveConnections),
+            nameof(ConsumerOptions.MaxConnectionsPerBroker),
+            builder.WithAdaptiveConnections,
+            builder.WithoutAdaptiveConnections);
+        ApplyAdaptiveFetchSizing(configuration, builder);
+    }
+
+    public static void ApplyAdmin(IConfiguration configuration, AdminClientBuilder builder)
+    {
+        if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+            builder.WithBootstrapServers(bootstrapServers);
+        if (TryGetValue<string>(configuration, nameof(AdminClientOptions.ClientId), out var clientId))
+            builder.WithClientId(clientId);
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RequestTimeoutMs), out var requestTimeoutMs))
+            builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
+        if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(AdminClientOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
+            builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
+            builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+    }
+
+    private static void ApplyTls<TBuilder>(
+        IConfiguration configuration,
+        Func<TBuilder> useTls,
+        Func<TlsConfig, TBuilder> useTlsConfig)
+    {
+        if (TryGetValue<TlsConfig>(configuration, nameof(ProducerOptions.TlsConfig), out var tlsConfig))
+        {
+            useTlsConfig(tlsConfig);
+            return;
+        }
+
+        if (TryGetValue<bool>(configuration, nameof(ProducerOptions.UseTls), out var useTlsValue) && useTlsValue)
+        {
+            useTls();
+        }
+    }
+
+    private static void ApplyAdaptiveConnections<TBuilder>(
+        IConfiguration configuration,
+        string enabledKey,
+        string maxKey,
+        Func<int, TBuilder> withAdaptiveConnections,
+        Func<TBuilder> withoutAdaptiveConnections)
+    {
+        var hasEnabled = TryGetValue<bool>(configuration, enabledKey, out var enabled);
+        var hasMax = TryGetValue<int>(configuration, maxKey, out var maxConnections);
+
+        if (hasEnabled && !enabled)
+        {
+            withoutAdaptiveConnections();
+            return;
+        }
+
+        if (hasMax)
+        {
+            withAdaptiveConnections(maxConnections);
+        }
+    }
+
+    private static void ApplyAdaptiveFetchSizing<TKey, TValue>(
+        IConfiguration configuration,
+        ConsumerBuilder<TKey, TValue> builder)
+    {
+        var hasEnabled = TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnableAdaptiveFetchSizing), out var enabled);
+        var hasOptions = TryGetValue<AdaptiveFetchSizingOptions>(
+            configuration,
+            nameof(ConsumerOptions.AdaptiveFetchSizingOptions),
+            out var options);
+
+        if ((hasEnabled && enabled) || (!hasEnabled && hasOptions))
+        {
+            builder.WithAdaptiveFetchSizing(hasOptions ? options : null);
+        }
+    }
+
+    private static bool TryReadSasl(
+        IConfiguration configuration,
+        out SaslMechanism mechanism,
+        out string? username,
+        out string? password,
+        out GssapiConfig? gssapiConfig,
+        out OAuthBearerConfig? oauthConfig)
+    {
+        var hasMechanism = TryGetValue<SaslMechanism>(configuration, nameof(ProducerOptions.SaslMechanism), out mechanism);
+        var hasUsername = TryGetValue<string>(configuration, nameof(ProducerOptions.SaslUsername), out username);
+        var hasPassword = TryGetValue<string>(configuration, nameof(ProducerOptions.SaslPassword), out password);
+        var hasGssapi = TryGetValue<GssapiConfig>(configuration, nameof(ProducerOptions.GssapiConfig), out gssapiConfig);
+        var hasOAuth = TryGetValue<OAuthBearerConfig>(configuration, nameof(ProducerOptions.OAuthBearerConfig), out oauthConfig);
+
+        if (!hasMechanism)
+        {
+            mechanism = oauthConfig is not null
+                ? SaslMechanism.OAuthBearer
+                : gssapiConfig is not null
+                    ? SaslMechanism.Gssapi
+                    : hasUsername || hasPassword
+                        ? SaslMechanism.Plain
+                        : SaslMechanism.None;
+        }
+
+        return hasMechanism || hasUsername || hasPassword || hasGssapi || hasOAuth;
+    }
+
+    private static bool TryGetBootstrapServers(IConfiguration configuration, out string[] servers)
+    {
+        var section = configuration.GetSection(nameof(ProducerOptions.BootstrapServers));
+        if (!section.Exists())
+        {
+            servers = [];
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(section.Value))
+        {
+            servers = SplitBootstrapServers(section.Value);
+            return servers.Length > 0;
+        }
+
+        servers = section.Get<string[]>()?
+            .Where(server => !string.IsNullOrWhiteSpace(server))
+            .Select(server => server.Trim())
+            .ToArray() ?? [];
+
+        return servers.Length > 0;
+    }
+
+    private static string[] SplitBootstrapServers(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static bool TryGetValue<T>(IConfiguration configuration, string key, out T value)
+    {
+        var section = configuration.GetSection(key);
+        if (!section.Exists())
+        {
+            value = default!;
+            return false;
+        }
+
+        var bound = section.Get<T>();
+        if (bound is null)
+        {
+            value = default!;
+            return false;
+        }
+
+        value = bound;
+        return true;
     }
 }

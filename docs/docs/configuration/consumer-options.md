@@ -31,6 +31,82 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
+## Configuration Binding
+
+`Dekaf.Extensions.DependencyInjection` can bind consumer settings from an `IConfiguration` section. Keys use `ConsumerOptions` property names:
+
+```json
+{
+  "Kafka": {
+    "Consumers": {
+      "Orders": {
+        "BootstrapServers": [
+          "broker1:9092",
+          "broker2:9092"
+        ],
+        "ClientId": "orders-consumer",
+        "GroupId": "orders",
+        "AutoOffsetReset": "Earliest",
+        "OffsetCommitMode": "Manual",
+        "FetchMinBytes": 1024,
+        "FetchMaxBytes": 52428800,
+        "FetchMaxWaitMs": 200,
+        "MaxPollRecords": 500,
+        "UseTls": true
+      }
+    }
+  }
+}
+```
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumer<string, Order>(
+        builder.Configuration.GetSection("Kafka:Consumers:Orders"),
+        consumer => consumer
+            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .SubscribeTo("orders"));
+});
+```
+
+Configuration is applied before the optional fluent callback, so fluent calls can override values from `appsettings.json`.
+
+| Fluent API | Config key | Notes |
+|------------|------------|-------|
+| `WithBootstrapServers(...)` | `BootstrapServers` | Comma-separated string or JSON array |
+| `WithClientId(...)` | `ClientId` | String |
+| `WithGroupId(...)` | `GroupId` | String |
+| `WithGroupInstanceId(...)` | `GroupInstanceId` | String |
+| `WithGroupRemoteAssignor(...)` | `GroupRemoteAssignor` | Common values: `uniform`, `range` |
+| `WithOffsetCommitMode(...)` | `OffsetCommitMode` | `Auto` or `Manual` |
+| `WithAutoCommitInterval(...)` | `AutoCommitIntervalMs` | Milliseconds |
+| `WithAutoOffsetReset(...)` | `AutoOffsetReset` | `Latest`, `Earliest`, `None` |
+| `WithFetchMinBytes(...)` | `FetchMinBytes` | Bytes |
+| `WithFetchMaxBytes(...)` | `FetchMaxBytes` | Bytes |
+| `WithMaxPartitionFetchBytes(...)` | `MaxPartitionFetchBytes` | Bytes |
+| `WithFetchMaxWait(...)` | `FetchMaxWaitMs` | Milliseconds |
+| `WithFetchSessions(...)` | `EnableFetchSessions` | Boolean |
+| `WithMaxPollRecords(...)` | `MaxPollRecords` | Integer |
+| `WithSessionTimeout(...)` | `SessionTimeoutMs` | Milliseconds |
+| `WithHeartbeatInterval(...)` | `HeartbeatIntervalMs` | Milliseconds |
+| `WithIsolationLevel(...)` | `IsolationLevel` | `ReadUncommitted` or `ReadCommitted` |
+| `WithPartitionEof(...)` | `EnablePartitionEof` | Boolean |
+| `WithQueuedMinMessages(...)` | `QueuedMinMessages` | Integer |
+| `WithQueuedMaxMessagesKbytes(...)` | `QueuedMaxMessagesKbytes` | KiB; omit to keep auto-tuning |
+| `WithPrefetchPipelineDepth(...)` | `PrefetchPipelineDepth` | Integer |
+| `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
+| `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
+| `WithAdaptiveFetchSizing(...)` | `EnableAdaptiveFetchSizing`, `AdaptiveFetchSizingOptions` | Bind nested adaptive sizing fields |
+| `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
+| `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
+| `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
+| `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
+| `WithMetadataRecoveryStrategy(...)` | `MetadataRecoveryStrategy` | `None` or `Rebootstrap` |
+| `WithMetadataRecoveryRebootstrapTrigger(...)` | `MetadataRecoveryRebootstrapTriggerMs` | Milliseconds |
+
+Topics, deserializers, rebalance listeners, interceptors, and retry policies are objects or runtime choices, so configure those in the fluent callback.
+
 ## Connection Settings
 
 ### WithBootstrapServers
@@ -84,7 +160,6 @@ How offsets are committed (matches Kafka's `enable.auto.commit`):
 Control how often offsets are committed in Auto mode:
 
 ```csharp
-.WithAutoCommitInterval(5000)                      // Commit every 5 seconds (default)
 .WithAutoCommitInterval(TimeSpan.FromSeconds(5))  // Same, using TimeSpan
 ```
 
@@ -108,12 +183,17 @@ Maximum messages per poll:
 .WithMaxPollRecords(500)  // Default: 500
 ```
 
-### Fetch Tuning (via presets or internal settings)
+### Fetch Tuning
 
-Control how data is fetched from brokers. These are set by presets:
+Control how data is fetched from brokers:
 
-- **FetchMinBytes** - Minimum data to return (wait for more)
-- **FetchMaxWaitMs** - Maximum wait time for FetchMinBytes
+```csharp
+.WithFetchMinBytes(1024)
+.WithFetchMaxBytes(50 * 1024 * 1024)
+.WithMaxPartitionFetchBytes(4 * 1024 * 1024)
+.WithFetchMaxWait(TimeSpan.FromMilliseconds(200))
+.WithFetchSessions(enabled: true)
+```
 
 ## Session Settings
 
@@ -145,16 +225,6 @@ Get notified of partition changes:
 
 ```csharp
 .WithRebalanceListener(new MyRebalanceListener())
-```
-
-### WithPartitionAssignmentStrategy
-
-Partition assignment algorithm:
-
-```csharp
-.WithPartitionAssignmentStrategy(PartitionAssignmentStrategy.CooperativeSticky)  // Default
-.WithPartitionAssignmentStrategy(PartitionAssignmentStrategy.Range)
-.WithPartitionAssignmentStrategy(PartitionAssignmentStrategy.RoundRobin)
 ```
 
 ## Security
@@ -215,13 +285,6 @@ For transactional reads:
 .WithLoggerFactory(loggerFactory)
 ```
 
-### WithStatisticsInterval / WithStatisticsHandler
-
-```csharp
-.WithStatisticsInterval(TimeSpan.FromSeconds(30))
-.WithStatisticsHandler(stats => { /* ... */ })
-```
-
 ## All Options Reference
 
 | Method | Default | Description |
@@ -233,9 +296,20 @@ For transactional reads:
 | `WithOffsetCommitMode` | Auto | Offset management mode |
 | `WithAutoCommitInterval` | 5000ms | Auto-commit interval |
 | `WithAutoOffsetReset` | Latest | Start position |
+| `WithFetchMinBytes` | 1 | Minimum fetch bytes |
+| `WithFetchMaxBytes` | 52428800 | Maximum total fetch bytes |
+| `WithMaxPartitionFetchBytes` | 1048576 | Maximum fetch bytes per partition |
+| `WithFetchMaxWait` | 200ms | Maximum fetch wait |
+| `WithFetchSessions` | true | Enable incremental fetch sessions |
 | `WithMaxPollRecords` | 500 | Max messages per poll |
 | `WithSessionTimeout` | 45000ms | Session timeout |
+| `WithHeartbeatInterval` | 3000ms | Group heartbeat interval |
 | `SubscribeTo` | (none) | Topics to subscribe |
 | `WithRebalanceListener` | null | Rebalance callbacks |
 | `WithPartitionEof` | false | EOF notifications |
+| `WithQueuedMinMessages` | 100000 | Prefetch target count |
+| `WithQueuedMaxMessagesKbytes` | auto-tuned | Prefetch memory limit |
+| `WithPrefetchPipelineDepth` | 3 | Overlapping prefetch operations |
+| `WithConnectionsPerBroker` | 2 | TCP connections per broker |
+| `WithAdaptiveConnections` | enabled (max 4) | Auto-scale connections under load |
 | `UseTls` | false | Enable TLS |
