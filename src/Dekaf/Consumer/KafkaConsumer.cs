@@ -516,8 +516,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
 
-
     private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeConsumeCancellationSources = new();
+    private readonly CancellationTokenSource _leaderRefreshCts = new();
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
@@ -564,7 +564,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly object _fetchCacheLock = new();
     private Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? _cachedTopicPartitions;
     private List<TopicPartition>? _cachedPartitionsList;
-    private readonly ConcurrentDictionary<string, byte> _pendingLeaderRefreshTopics = new();
+    private readonly object _leaderRefreshTasksLock = new();
+    private readonly ConcurrentDictionary<string, Task> _pendingLeaderRefreshTasks = new();
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -1882,8 +1883,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 await HandleNotLeaderOrFollowerAsync(
                                     topic,
                                     partitionResponse,
-                                    response.NodeEndpoints,
-                                    cancellationToken).ConfigureAwait(false);
+                                    response.NodeEndpoints).ConfigureAwait(false);
                             }
                             else
                             {
@@ -3411,8 +3411,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                             await HandleNotLeaderOrFollowerAsync(
                                 topic,
                                 partitionResponse,
-                                response.NodeEndpoints,
-                                cancellationToken).ConfigureAwait(false);
+                                response.NodeEndpoints).ConfigureAwait(false);
                         }
                         else
                         {
@@ -3619,8 +3618,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private ValueTask HandleNotLeaderOrFollowerAsync(
         string topic,
         FetchResponsePartition partitionResponse,
-        IReadOnlyList<NodeEndpoint> nodeEndpoints,
-        CancellationToken cancellationToken)
+        IReadOnlyList<NodeEndpoint> nodeEndpoints)
     {
         var currentLeader = partitionResponse.CurrentLeader;
         var endpoint = currentLeader is null
@@ -3639,18 +3637,47 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
 
         if (!updated)
-            ScheduleLeaderRefresh(topic, cancellationToken);
+            ScheduleLeaderRefresh(topic);
 
         return ValueTask.CompletedTask;
     }
 
-    private void ScheduleLeaderRefresh(string topic, CancellationToken cancellationToken)
+    private void ScheduleLeaderRefresh(string topic)
     {
-        if (_pendingLeaderRefreshTopics.TryAdd(topic, 0))
-            _ = ObserveLeaderRefreshAsync(topic, cancellationToken);
+        if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+            return;
+
+        TaskCompletionSource refreshCompletion;
+        CancellationToken cancellationToken;
+
+        lock (_leaderRefreshTasksLock)
+        {
+            if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+                return;
+
+            if (_pendingLeaderRefreshTasks.ContainsKey(topic))
+                return;
+
+            try
+            {
+                cancellationToken = _leaderRefreshCts.Token;
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            refreshCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingLeaderRefreshTasks[topic] = refreshCompletion.Task;
+        }
+
+        _ = ExecuteLeaderRefreshAsync(topic, refreshCompletion, cancellationToken);
     }
 
-    private async Task ObserveLeaderRefreshAsync(string topic, CancellationToken cancellationToken)
+    private async Task ExecuteLeaderRefreshAsync(
+        string topic,
+        TaskCompletionSource refreshCompletion,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -3663,7 +3690,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         finally
         {
-            _pendingLeaderRefreshTopics.TryRemove(topic, out _);
+            lock (_leaderRefreshTasksLock)
+            {
+                if (_pendingLeaderRefreshTasks.TryGetValue(topic, out var task)
+                    && ReferenceEquals(task, refreshCompletion.Task))
+                {
+                    _pendingLeaderRefreshTasks.TryRemove(topic, out _);
+                }
+            }
+
+            refreshCompletion.TrySetResult();
+        }
+    }
+
+    private async ValueTask WaitForLeaderRefreshTasksAsync(CancellationToken cancellationToken = default)
+    {
+        Task[] refreshTasks;
+        lock (_leaderRefreshTasksLock)
+        {
+            if (_pendingLeaderRefreshTasks.IsEmpty)
+                return;
+
+            refreshTasks = [.. _pendingLeaderRefreshTasks.Values];
+        }
+
+        try
+        {
+            await Task.WhenAll(refreshTasks)
+                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Leader refresh is best-effort. Shutdown cancels the refresh token before this wait;
+            // if it still outlives the bound, teardown continues and the refresh task observes
+            // any late dependency-disposal exception internally.
         }
     }
 
@@ -3967,7 +4028,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             await _coordinator.StopHeartbeatAsync().ConfigureAwait(false);
         }
 
-        // Step 2: Stop auto-commit task
+        // Step 2: Stop leader-refresh tasks before metadata dependencies are disposed
+        _leaderRefreshCts.Cancel();
+        await WaitForLeaderRefreshTasksAsync(cancellationToken).ConfigureAwait(false);
+
+        // Step 3: Stop auto-commit task
         // Use WaitAsync with both a hard timeout and the caller's cancellation token so that
         // DisposeAsync's 30s CTS actually bounds this step. Without this, a mid-flight
         // CommitAsync (which waits up to RequestTimeoutMs=30s for network I/O) would cause
@@ -3986,8 +4051,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Step 3: Stop prefetch task
-        // Same rationale as Step 2: a mid-flight FetchAsync network operation could hang for
+        // Step 4: Stop prefetch task
+        // Same rationale as Step 3: a mid-flight FetchAsync network operation could hang for
         // up to RequestTimeoutMs without the WaitAsync timeout bounding it.
         _prefetchCts?.Cancel();
         if (_prefetchTask is not null)
@@ -4002,7 +4067,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
         }
 
-        // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
+        // Step 5: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_positions.IsEmpty)
         {
             for (var attempt = 0; attempt < 3; attempt++)
@@ -4227,8 +4292,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         LogConsumerCloseCompleted(closeElapsedMs);
 
         CancelActiveConsumeOperations();
+        _leaderRefreshCts.Cancel();
         _autoCommitCts?.Cancel();
         _prefetchCts?.Cancel();
+
+        await WaitForLeaderRefreshTasksAsync().ConfigureAwait(false);
 
         if (_autoCommitTask is not null)
         {
@@ -4256,6 +4324,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _autoCommitCts?.Dispose();
         _prefetchCts?.Dispose();
+        _leaderRefreshCts.Dispose();
 
         // Clear and dispose CancellationTokenSource pool
         // Note: active consume cancellation sources are managed by the pool and should not be disposed here
