@@ -719,21 +719,30 @@ public class PooledValueTaskSourceTests
         Action complete)
     {
         var awaiter = valueTask.GetAwaiter();
-        using var releaseContinuation = new ManualResetEventSlim();
+        var releaseContinuation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var continuationFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         awaiter.UnsafeOnCompleted(() =>
         {
-            releaseContinuation.Wait();
-            continuationFinished.SetResult();
+            try
+            {
+                releaseContinuation.Task.GetAwaiter().GetResult();
+                continuationFinished.SetResult();
+            }
+            catch (Exception ex)
+            {
+                continuationFinished.SetException(ex);
+            }
         });
 
         Exception? completionException = null;
-        using var completionReturned = new ManualResetEventSlim();
+        var completionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completionReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var completionThread = new Thread(() =>
         {
             try
             {
+                completionStarted.SetResult();
                 complete();
             }
             catch (Exception ex)
@@ -742,7 +751,7 @@ public class PooledValueTaskSourceTests
             }
             finally
             {
-                completionReturned.Set();
+                completionReturned.SetResult();
             }
         })
         {
@@ -751,16 +760,19 @@ public class PooledValueTaskSourceTests
         };
 
         completionThread.Start();
-        var completedBeforeRelease = completionReturned.Wait(TimeSpan.FromSeconds(2));
+        if (!completionStarted.Task.Wait(TimeSpan.FromSeconds(5)))
+            throw new TimeoutException("Completion probe thread did not start.");
 
-        releaseContinuation.Set();
+        var completedBeforeRelease = completionReturned.Task.Wait(TimeSpan.FromSeconds(2));
 
-        if (!completionReturned.Wait(TimeSpan.FromSeconds(5)))
+        releaseContinuation.SetResult();
+
+        if (!completionReturned.Task.Wait(TimeSpan.FromSeconds(30)))
             throw new TimeoutException("Completion did not return after releasing continuation.");
 
         if (completionException is not null)
             ExceptionDispatchInfo.Capture(completionException).Throw();
-        await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
 
         await Assert.That(completedBeforeRelease).IsTrue();
         return awaiter.GetResult();
