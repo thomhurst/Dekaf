@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Networking;
@@ -138,19 +139,33 @@ public sealed class KafkaConnectionTests
 
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
-            using var callerTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+            using var callerTimeout = new CancellationTokenSource();
 
-            var act = async () => await connection.SendPipelinedWithCallerTimeoutAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            var sendTask = connection.SendPipelinedWithCallerTimeoutAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
                 apiVersion: 3,
                 callerTimeout.Token);
 
+            await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            await callerTimeout.CancelAsync();
+
+            var act = async () => await sendTask;
             await Assert.That(act).Throws<TimeoutException>();
         }
         finally
         {
             listener.Stop();
         }
+    }
+
+    private static async Task ReadRequestFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
+    {
+        var lengthBuffer = new byte[4];
+        await stream.ReadExactlyAsync(lengthBuffer, cancellationToken).ConfigureAwait(false);
+
+        var frameLength = BinaryPrimitives.ReadInt32BigEndian(lengthBuffer);
+        var frameBuffer = new byte[frameLength];
+        await stream.ReadExactlyAsync(frameBuffer, cancellationToken).ConfigureAwait(false);
     }
 
     [Test]
