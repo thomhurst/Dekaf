@@ -1042,7 +1042,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
                 var hasInterceptors = _interceptors is not null;
                 var rawTrackingEnabled = _rawRecordTrackingEnabled;
-                var manualCommit = _options.OffsetCommitMode == OffsetCommitMode.Manual;
 
                 while (_pendingFetches.Count > 0)
                 {
@@ -1131,13 +1130,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                 valueDeserializer: _valueDeserializer);
 
                             pending.TrackConsumed(offset, messageBytes);
-
-                            // Manual-commit: update _positions per-message so GetPosition()/
-                            // CommitAsync() reflect the latest message mid-batch.
-                            // Auto-commit: skip per-message write (~60-100ns ConcurrentDictionary
-                            // cost); _positions is flushed once per batch in FlushConsumedPositions().
-                            if (manualCommit)
-                                _positions[pending.TopicPartition] = offset + 1;
+                            // Position dictionaries are flushed once per fetch; manual readers
+                            // flush this pending state on demand in GetPosition()/CommitAsync().
 
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
@@ -1173,10 +1167,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     previousActivity?.Dispose();
                     previousActivity = null;
 
-                    // Batch-level position flush. In manual-commit mode _positions was
-                    // already updated per-message; in auto-commit mode this is the first
-                    // _positions write. _fetchPositions is updated here once per partition-fetch
-                    // (in prefetch mode it is managed by UpdateFetchPositionsFromPrefetch).
+                    // Batch-level position flush. _positions and _fetchPositions are updated
+                    // once per partition-fetch (in prefetch mode it is managed by UpdateFetchPositionsFromPrefetch).
                     FlushConsumedPositions(pending);
 
                     // Record consumer metrics per-fetch instead of per-message.
@@ -1902,11 +1894,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// </summary>
     private void FlushConsumedPositions(PendingFetchData pending)
     {
-        if (pending.LastYieldedOffset < 0)
+        if (!TryGetConsumedPosition(pending, out var tp, out var nextOffset))
             return;
-
-        var tp = pending.TopicPartition;
-        var nextOffset = pending.LastYieldedOffset + 1;
 
         _positions[tp] = nextOffset;
 
@@ -1914,6 +1903,48 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             _fetchPositions[tp] = nextOffset;
         }
+    }
+
+    private void FlushActiveConsumedPosition()
+    {
+        if (_pendingFetches.Count == 0)
+            return;
+
+        var pending = _pendingFetches.Peek();
+        if (TryGetConsumedPosition(pending, out var tp, out var nextOffset))
+            _positions[tp] = nextOffset;
+    }
+
+    private bool TryGetActiveConsumedPosition(TopicPartition partition, out long position)
+    {
+        if (_pendingFetches.Count == 0)
+        {
+            position = 0;
+            return false;
+        }
+
+        var pending = _pendingFetches.Peek();
+        if (!TryGetConsumedPosition(pending, out var tp, out position) || !tp.Equals(partition))
+        {
+            position = 0;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetConsumedPosition(PendingFetchData pending, out TopicPartition partition, out long nextOffset)
+    {
+        if (pending.LastYieldedOffset < 0)
+        {
+            partition = default;
+            nextOffset = 0;
+            return false;
+        }
+
+        partition = pending.TopicPartition;
+        nextOffset = pending.LastYieldedOffset + 1;
+        return true;
     }
 
     private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
@@ -2045,6 +2076,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
+        if (_options.OffsetCommitMode == OffsetCommitMode.Manual)
+            FlushActiveConsumedPosition();
+
         if (_coordinator is null)
             return;
 
@@ -2131,6 +2165,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public long? GetPosition(TopicPartition partition)
     {
+        if (_options.OffsetCommitMode == OffsetCommitMode.Manual
+            && TryGetActiveConsumedPosition(partition, out var activePosition))
+        {
+            _positions[partition] = activePosition;
+            return activePosition;
+        }
+
         return _positions.TryGetValue(partition, out var position) ? position : null;
     }
 

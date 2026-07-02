@@ -82,6 +82,16 @@ public sealed class ConsumeAsyncRecoveryTests
         params PendingFetchData[] fetches)
         => CreateConsumerWithPendingFetches(loggerFactory, Topic, Partition, fetches);
 
+    private static ConcurrentDictionary<TopicPartition, long> GetPositions(
+        KafkaConsumer<string, string> consumer)
+    {
+        var positionsField = typeof(KafkaConsumer<string, string>)
+            .GetField("_positions", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_positions field not found - was it renamed?");
+
+        return (ConcurrentDictionary<TopicPartition, long>)positionsField.GetValue(consumer)!;
+    }
+
     /// <summary>
     /// Creates a valid RecordBatch with the specified records.
     /// </summary>
@@ -393,6 +403,64 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(results[0].Offset).IsEqualTo(20L);
         await Assert.That(results[1].Offset).IsEqualTo(21L);
         await Assert.That(results[2].Offset).IsEqualTo(22L);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_ManualCommit_DoesNotFlushPositionDictionaryPerRecord()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "1"),
+                CreateRecord(1, "b", "2"))
+        ]);
+
+        await using var consumer = CreateConsumerWithPendingFetches(null, fetch);
+
+        using var cts = new CancellationTokenSource();
+        var tp = new TopicPartition(Topic, Partition);
+        var positions = GetPositions(consumer);
+
+        await foreach (var result in consumer.ConsumeAsync(cts.Token))
+        {
+            await Assert.That(result.Offset).IsEqualTo(20L);
+
+            var wroteCurrentRecordPosition = positions.TryGetValue(tp, out var position) && position == 21L;
+            await Assert.That(wroteCurrentRecordPosition).IsFalse();
+
+            cts.Cancel();
+            break;
+        }
+    }
+
+    [Test]
+    public async Task CommitAsync_AfterPartialBatchConsumed_FlushesCurrentPosition()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "1"),
+                CreateRecord(1, "b", "2"))
+        ]);
+
+        await using var consumer = CreateConsumerWithPendingFetches(null, fetch);
+
+        using var cts = new CancellationTokenSource();
+        var tp = new TopicPartition(Topic, Partition);
+        var positions = GetPositions(consumer);
+
+        await foreach (var result in consumer.ConsumeAsync(cts.Token))
+        {
+            await Assert.That(result.Offset).IsEqualTo(20L);
+            await Assert.That(positions.TryGetValue(tp, out var position) && position == 21L).IsFalse();
+
+            await consumer.CommitAsync(cts.Token);
+
+            await Assert.That(positions[tp]).IsEqualTo(21L);
+
+            cts.Cancel();
+            break;
+        }
     }
 
     #endregion
