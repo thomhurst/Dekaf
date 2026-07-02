@@ -178,7 +178,33 @@ public ref struct KafkaProtocolWriter
         _bytesWritten += pos;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteVarULong(ulong value)
+    {
+        if (value < 0x80)
+        {
+            var span = _output.GetSpan(1);
+            span[0] = (byte)value;
+            _output.Advance(1);
+            _bytesWritten += 1;
+            return;
+        }
+
+        if (value < 0x4000)
+        {
+            var span = _output.GetSpan(2);
+            span[0] = (byte)(value | 0x80);
+            span[1] = (byte)(value >> 7);
+            _output.Advance(2);
+            _bytesWritten += 2;
+            return;
+        }
+
+        WriteVarULongSlow(value);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void WriteVarULongSlow(ulong value)
     {
         // Maximum 10 bytes for a 64-bit varint
         // Write directly to output span to avoid stackalloc + copy overhead
