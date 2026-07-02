@@ -93,8 +93,15 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
             return new MetadataRequest { Topics = topics };
         }
 
-        // Fallback for arbitrary enumerables - must enumerate twice or use List
-        var topicList = topicNames.Select(n => new MetadataRequestTopic { Name = n }).ToArray();
+        var topicList = topicNames.TryGetNonEnumeratedCount(out var count)
+            ? new List<MetadataRequestTopic>(count)
+            : [];
+
+        foreach (var name in topicNames)
+        {
+            topicList.Add(new MetadataRequestTopic { Name = name });
+        }
+
         return new MetadataRequest { Topics = topicList };
     }
 }

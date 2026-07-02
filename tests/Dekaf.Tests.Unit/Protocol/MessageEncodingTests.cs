@@ -72,6 +72,40 @@ public class MessageEncodingTests
     }
 
     [Test]
+    public async Task MetadataRequest_V9_Flexible_IteratorTopics()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = MetadataRequest.ForTopics(IteratorTopics());
+        request.Write(ref writer, version: 9);
+
+        var expected = new List<byte>();
+        // COMPACT_ARRAY length+1 = 3
+        expected.Add(0x03);
+        // Topic: COMPACT_NULLABLE_STRING "alpha" (length+1=6)
+        expected.Add(0x06);
+        expected.AddRange("alpha"u8.ToArray());
+        // Topic tagged fields
+        expected.Add(0x00);
+        // Topic: COMPACT_NULLABLE_STRING "beta" (length+1=5)
+        expected.Add(0x05);
+        expected.AddRange("beta"u8.ToArray());
+        // Topic tagged fields
+        expected.Add(0x00);
+        // AllowAutoTopicCreation (v4+)
+        expected.Add(0x01); // true
+        // IncludeClusterAuthorizedOperations (v8+)
+        expected.Add(0x00); // false
+        // IncludeTopicAuthorizedOperations (v8+)
+        expected.Add(0x00); // false
+        // Request tagged fields
+        expected.Add(0x00);
+
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
+    }
+
+    [Test]
     public async Task MetadataRequest_V9_NullTopics_FetchAll()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -213,4 +247,10 @@ public class MessageEncodingTests
     }
 
     #endregion
+
+    private static IEnumerable<string> IteratorTopics()
+    {
+        yield return "alpha";
+        yield return "beta";
+    }
 }
