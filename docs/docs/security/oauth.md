@@ -58,10 +58,10 @@ an access token:
 using System.Security.Cryptography;
 using Dekaf;
 
-using var privateKey = RSA.Create();
+var privateKey = RSA.Create();
 privateKey.ImportFromPem(File.ReadAllText("client-key.pem"));
 
-var producer = await Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearerJwtBearer(options =>
@@ -78,6 +78,8 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 Dekaf signs assertions with RSA or ECDSA keys, posts `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`
 and `assertion=<jwt>` to the token endpoint, then caches the returned access token until it nears expiration.
+Keep the `PrivateKey` object alive until every client configured with it has been disposed; token refreshes reuse
+the same key object to sign new assertions.
 
 ## Azure AD Example
 
