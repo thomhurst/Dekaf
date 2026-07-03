@@ -174,8 +174,13 @@ public static class Program
             Directory.CreateDirectory(outputDir);
         }
 
+        // Broker/connection counts are part of the name so runs of the same
+        // client+scenario (e.g. 1-broker vs 3-broker CI matrix jobs, which can start
+        // within the same second) never produce identically named files — flattening
+        // their outputs into one directory would silently overwrite one.
+        var connSuffix = options.ConnectionsPerBroker > 1 ? $"-{options.ConnectionsPerBroker}conn" : "";
         var fileSuffix = options.Scenario != "all" || options.Client != "all"
-            ? $"-{options.Client}-{options.Scenario}-{runStartedAt:yyyyMMdd-HHmmss}"
+            ? $"-{options.Client}-{options.Scenario}-{options.Brokers}brokers{connSuffix}-{runStartedAt:yyyyMMdd-HHmmss}"
             : $"-{runStartedAt:yyyyMMdd-HHmmss}";
         var jsonPath = Path.Combine(outputDir, $"stress-test-results{fileSuffix}.json");
         var mdPath = Path.Combine(outputDir, $"stress-test-results{fileSuffix}.md");
