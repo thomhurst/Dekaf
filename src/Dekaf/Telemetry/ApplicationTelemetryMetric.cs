@@ -31,7 +31,7 @@ public sealed class ApplicationTelemetryMetric
     /// </summary>
     /// <param name="name">Metric name exposed to broker subscription prefixes.</param>
     /// <param name="kind">Metric kind used for OpenTelemetry encoding.</param>
-    /// <param name="observe">Callback invoked when telemetry is collected.</param>
+    /// <param name="observe">Callback invoked when telemetry is collected. Keep it fast and non-blocking.</param>
     /// <param name="attributes">Optional metric attributes.</param>
     public ApplicationTelemetryMetric(
         string name,
@@ -59,7 +59,7 @@ public sealed class ApplicationTelemetryMetric
     public ApplicationTelemetryMetricKind Kind { get; }
 
     /// <summary>
-    /// Callback invoked when telemetry is collected.
+    /// Callback invoked when telemetry is collected. Keep it fast and non-blocking.
     /// </summary>
     public Func<double> Observe { get; }
 

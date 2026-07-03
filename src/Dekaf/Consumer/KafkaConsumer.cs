@@ -876,12 +876,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public IConsumerOffsets Offsets => this;
 
     /// <inheritdoc />
-    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric) =>
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
         _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+    }
 
     /// <inheritdoc />
-    public void UnregisterMetricFromSubscription(string name) =>
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
+    }
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.

@@ -1425,12 +1425,22 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric) =>
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
         _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+    }
 
     /// <inheritdoc />
-    public void UnregisterMetricFromSubscription(string name) =>
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
+    }
 
     public ITransaction<TKey, TValue> BeginTransaction()
     {

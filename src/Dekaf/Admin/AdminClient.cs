@@ -92,12 +92,22 @@ public sealed class AdminClient : IAdminClient
     public ClusterMetadata Metadata => _metadataManager.Metadata;
 
     /// <inheritdoc />
-    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric) =>
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(AdminClient));
+
         _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+    }
 
     /// <inheritdoc />
-    public void UnregisterMetricFromSubscription(string name) =>
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(AdminClient));
+
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
+    }
 
     public async ValueTask CreateTopicsAsync(
         IEnumerable<NewTopic> topics,

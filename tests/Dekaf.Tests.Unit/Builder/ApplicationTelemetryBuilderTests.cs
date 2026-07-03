@@ -83,6 +83,40 @@ public sealed class ApplicationTelemetryBuilderTests
             .Throws<ArgumentNullException>();
     }
 
+    [Test]
+    public async Task ClientMetricRegistration_AfterDispose_ThrowsObjectDisposedException()
+    {
+        var metric = Metric("com.example.disposed");
+
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await producer.DisposeAsync();
+
+        var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await consumer.DisposeAsync();
+
+        var admin = new AdminClientBuilder()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await admin.DisposeAsync();
+
+        await Assert.That(() => producer.RegisterMetricForSubscription(metric))
+            .Throws<ObjectDisposedException>();
+        await Assert.That(() => producer.UnregisterMetricFromSubscription(metric.Name))
+            .Throws<ObjectDisposedException>();
+        await Assert.That(() => consumer.RegisterMetricForSubscription(metric))
+            .Throws<ObjectDisposedException>();
+        await Assert.That(() => consumer.UnregisterMetricFromSubscription(metric.Name))
+            .Throws<ObjectDisposedException>();
+        await Assert.That(() => admin.RegisterMetricForSubscription(metric))
+            .Throws<ObjectDisposedException>();
+        await Assert.That(() => admin.UnregisterMetricFromSubscription(metric.Name))
+            .Throws<ObjectDisposedException>();
+    }
+
     private static ApplicationTelemetryMetric Metric(string name, Func<double>? observe = null) =>
         new(name, ApplicationTelemetryMetricKind.Gauge, observe ?? (() => 1));
 
