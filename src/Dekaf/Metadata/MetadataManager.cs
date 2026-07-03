@@ -51,13 +51,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly object _brokerCountDiscoveredLock = new();
     private Action<int>? _brokerCountDiscoveredCallbacks;
 
-    internal void AddBrokerCountDiscoveredCallback(Action<int> callback)
+    internal IDisposable AddBrokerCountDiscoveredCallback(Action<int> callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
 
         lock (_brokerCountDiscoveredLock)
         {
             _brokerCountDiscoveredCallbacks += callback;
+        }
+
+        return new BrokerCountDiscoveredCallbackRegistration(this, callback);
+    }
+
+    internal int BrokerCountDiscoveredCallbackCount
+    {
+        get
+        {
+            lock (_brokerCountDiscoveredLock)
+            {
+                return _brokerCountDiscoveredCallbacks?.GetInvocationList().Length ?? 0;
+            }
         }
     }
 
@@ -70,6 +83,25 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         callbacks?.Invoke(brokerCount);
+    }
+
+    private sealed class BrokerCountDiscoveredCallbackRegistration(
+        MetadataManager metadataManager,
+        Action<int> callback) : IDisposable
+    {
+        private Action<int>? _callback = callback;
+
+        public void Dispose()
+        {
+            lock (metadataManager._brokerCountDiscoveredLock)
+            {
+                if (_callback is null)
+                    return;
+
+                metadataManager._brokerCountDiscoveredCallbacks -= _callback;
+                _callback = null;
+            }
+        }
     }
 
     public MetadataManager(

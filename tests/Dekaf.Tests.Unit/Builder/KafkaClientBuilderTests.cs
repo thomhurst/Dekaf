@@ -130,6 +130,20 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_CreatedProducer_DisposeRemovesBrokerCountCallback()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        var producer = client.CreateProducer<string, string>().Build();
+        var metadataManager = GetField<MetadataManager>(producer, "_metadataManager");
+
+        await Assert.That(metadataManager.BrokerCountDiscoveredCallbackCount).IsEqualTo(1);
+
+        await producer.DisposeAsync();
+
+        await Assert.That(metadataManager.BrokerCountDiscoveredCallbackCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task RootClient_WithMemoryBudget_UsesIndependentProducerBudget()
     {
         await using var client = Kafka.Connect("localhost:9092", builder =>

@@ -44,6 +44,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly bool _usesCustomPartitioner;
     private readonly ConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly IDisposable _brokerCountDiscoveredRegistration;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly RecordAccumulator _accumulator;
     internal RecordAccumulator RecordAccumulator => _accumulator;
@@ -326,7 +327,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var batchSize = options.BatchSize;
         var maxConns = options.MaxConnectionsPerBroker;
         var connectionPool = _connectionPool;
-        _metadataManager.AddBrokerCountDiscoveredCallback(brokerCount =>
+        _brokerCountDiscoveredRegistration = _metadataManager.AddBrokerCountDiscoveredCallback(brokerCount =>
         {
             var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight, batchSize, maxConns);
             ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
@@ -3096,6 +3097,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();
+        _brokerCountDiscoveredRegistration.Dispose();
 
         // Time budget allocation within CloseTimeoutMs:
         //   40% → graceful flush (accumulator close + sender drain)
