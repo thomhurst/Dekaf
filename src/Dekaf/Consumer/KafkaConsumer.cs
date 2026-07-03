@@ -2189,6 +2189,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _dirtyPositions.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
     }
 
+    private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
+    {
+        _committed[partition] = committedOffset;
+        ClearDirtyPositionIfCommitted(partition, committedOffset);
+    }
+
     private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
     {
         // Calculate the last offset in the prefetched data
@@ -2371,8 +2377,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 foreach (var offset in offsets)
                 {
                     var partition = new TopicPartition(offset.Topic, offset.Partition);
-                    _committed[partition] = offset.Offset;
-                    ClearDirtyPositionIfCommitted(partition, offset.Offset);
+                    MarkOffsetCommitted(partition, offset.Offset);
                 }
 
                 // Invoke OnCommit interceptors - wrap array as ArraySegment to avoid Span→Array copy
@@ -2398,8 +2403,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var offset in offsetsList)
         {
             var partition = new TopicPartition(offset.Topic, offset.Partition);
-            _committed[partition] = offset.Offset;
-            ClearDirtyPositionIfCommitted(partition, offset.Offset);
+            MarkOffsetCommitted(partition, offset.Offset);
         }
 
         // Invoke OnCommit interceptors
