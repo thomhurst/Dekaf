@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -112,6 +113,80 @@ public class KafkaProducerFastPathTests
         await Assert.That(metadata.Offset).IsEqualTo(7);
     }
 
+    [Test]
+    public async Task ProduceAsync_InvalidExplicitPartition_FaultsBeforeAccumulatorAppend()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var exception = await CaptureProduceExceptionAsync(() => producer.ProduceAsync(
+            new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "key",
+                Value = "value",
+                Partition = -1
+            }));
+
+        await Assert.That(exception.Topic).IsEqualTo(Topic);
+        await Assert.That(exception.Partition).IsEqualTo(-1);
+        await Assert.That(GetPartitionDequeCount(producer.RecordAccumulator)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ProduceAsync_InvalidPartitionerResult_FaultsBeforeAccumulatorAppend()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = new FixedPartitioner(int.MaxValue)
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var exception = await CaptureProduceExceptionAsync(() => producer.ProduceAsync(
+            new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "key",
+                Value = "value"
+            }));
+
+        await Assert.That(exception.Topic).IsEqualTo(Topic);
+        await Assert.That(exception.Partition).IsEqualTo(int.MaxValue);
+        await Assert.That(GetPartitionDequeCount(producer.RecordAccumulator)).IsEqualTo(0);
+    }
+
     private static TopicInfo CreateTopicInfo() => new()
     {
         Name = Topic,
@@ -214,6 +289,26 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
 
+    private static int GetPartitionDequeCount(RecordAccumulator accumulator)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        return (int)deques.GetType().GetProperty("Count")!.GetValue(deques)!;
+    }
+
+    private static async Task<ProduceException> CaptureProduceExceptionAsync(Func<ValueTask<RecordMetadata>> action)
+    {
+        try
+        {
+            _ = await action().ConfigureAwait(false);
+        }
+        catch (ProduceException ex)
+        {
+            return ex;
+        }
+
+        throw new InvalidOperationException("Expected ProduceException was not thrown.");
+    }
+
     private static async Task StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)
     {
         var cts = GetInstanceField<CancellationTokenSource>(producer, "_senderCts");
@@ -262,5 +357,11 @@ public class KafkaProducerFastPathTests
 
             return 0;
         }
+    }
+
+    private sealed class FixedPartitioner(int partition) : IPartitioner
+    {
+        public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+            => partition;
     }
 }

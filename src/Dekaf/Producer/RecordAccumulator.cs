@@ -1876,12 +1876,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // If partition eviction is ever added, the cache must be invalidated on removal.
     [ThreadStatic]
     private static AccumulatorThreadCache? t_cache;
-    private const int TopicDequeCacheSlots = 8;
-
-    private struct CachedTopicDequeArray
+    private const int MaxDequeCacheCapacity = 65_536;
+    private sealed class CachedTopicDequeArray(string topic, PartitionDeque?[] deques)
     {
-        public string? Topic;
-        public PartitionDeque?[]? Deques;
+        public string Topic { get; } = topic;
+        public PartitionDeque?[] Deques = deques;
     }
 
     /// <summary>
@@ -1891,10 +1890,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private sealed class AccumulatorThreadCache
     {
         public RecordAccumulator? CachedAccumulator;
-        public string? CachedTopic;
-        public PartitionDeque?[]? CachedTopicDeques;
-        public CachedTopicDequeArray[]? CachedTopicEntries;
-        public int NextTopicSlot;
+        public CachedTopicDequeArray? CachedTopicEntry;
+        public Dictionary<string, CachedTopicDequeArray>? CachedTopicEntries;
     }
 
     /// <summary>
@@ -1906,13 +1903,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private PartitionDeque GetOrCreateDeque(string topic, int partition, int cachePartitionCount)
     {
         var cache = t_cache ??= new AccumulatorThreadCache();
-        var cachedTopic = cache.CachedTopic;
-        var cachedDeques = cache.CachedTopicDeques;
+        var cachedEntry = cache.CachedTopicEntry;
 
         if (cache.CachedAccumulator == this && Volatile.Read(ref _disposed) == 0)
         {
-            if (TopicMatches(cachedTopic, topic) &&
-                TryGetCachedDeque(cachedDeques, partition, out var cached))
+            if (cachedEntry is not null &&
+                TopicMatches(cachedEntry.Topic, topic) &&
+                TryGetCachedDeque(cachedEntry.Deques, partition, out var cached))
             {
                 return cached!;
             }
@@ -1933,7 +1930,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var tp = new TopicPartition(topic, partition);
         var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
-        var deques = GetOrCreateCachedDequeArray(topic, partition, cachePartitionCount, cache);
+
+        if (!TryGetDequeCacheCapacity(partition, cachePartitionCount, out var requiredCapacity))
+            return deque;
+
+        var deques = GetOrCreateCachedDequeArray(topic, requiredCapacity, cache);
         deques[partition] = deque;
         return deque;
     }
@@ -1941,45 +1942,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private PartitionDeque?[] GetOrCreateCachedDequeArray(
         string topic,
-        int partition,
-        int cachePartitionCount,
+        int requiredCapacity,
         AccumulatorThreadCache cache)
     {
-        var requiredCapacity = GetDequeCacheCapacity(partition, cachePartitionCount);
-
         if (cache.CachedAccumulator != this)
             ResetCacheForAccumulator(cache, this);
 
-        if (cache.CachedAccumulator == this &&
-            TopicMatches(cache.CachedTopic, topic) &&
-            cache.CachedTopicDeques is { } existing)
+        if (cache.CachedTopicEntry is { } cachedEntry &&
+            TopicMatches(cachedEntry.Topic, topic))
         {
-            var resizedDeques = EnsureDequeCacheCapacity(existing, requiredCapacity);
-            cache.CachedTopicDeques = resizedDeques;
-            UpdateCachedTopicEntry(cache, topic, resizedDeques);
-            return resizedDeques;
+            cachedEntry.Deques = EnsureDequeCacheCapacity(cachedEntry.Deques, requiredCapacity);
+            return cachedEntry.Deques;
         }
 
-        var entries = cache.CachedTopicEntries ??= new CachedTopicDequeArray[TopicDequeCacheSlots];
-        for (var i = 0; i < entries.Length; i++)
+        var entries = cache.CachedTopicEntries ??= new Dictionary<string, CachedTopicDequeArray>(StringComparer.Ordinal);
+        if (entries.TryGetValue(topic, out var entry))
         {
-            ref var entry = ref entries[i];
-            if (!TopicMatches(entry.Topic, topic) || entry.Deques is not { } entryDeques)
-                continue;
-
-            entryDeques = EnsureDequeCacheCapacity(entryDeques, requiredCapacity);
-            entry.Deques = entryDeques;
-            cache.CachedTopic = entry.Topic;
-            cache.CachedTopicDeques = entryDeques;
-            return entryDeques;
+            entry.Deques = EnsureDequeCacheCapacity(entry.Deques, requiredCapacity);
+            cache.CachedTopicEntry = entry;
+            return entry.Deques;
         }
 
         var newDeques = new PartitionDeque?[requiredCapacity];
-        var slot = (int)((uint)cache.NextTopicSlot++ % (uint)entries.Length);
-        entries[slot] = new CachedTopicDequeArray { Topic = topic, Deques = newDeques };
-        cache.CachedAccumulator = this;
-        cache.CachedTopic = topic;
-        cache.CachedTopicDeques = newDeques;
+        entry = new CachedTopicDequeArray(topic, newDeques);
+        entries.Add(topic, entry);
+        cache.CachedTopicEntry = entry;
         return newDeques;
     }
 
@@ -2004,20 +1991,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int partition,
         out PartitionDeque? cached)
     {
-        var entries = cache.CachedTopicEntries;
-        if (entries is not null)
+        if (cache.CachedTopicEntries is not null &&
+            cache.CachedTopicEntries.TryGetValue(topic, out var entry) &&
+            TryGetCachedDeque(entry.Deques, partition, out cached))
         {
-            for (var i = 0; i < entries.Length; i++)
-            {
-                var entry = entries[i];
-                if (TopicMatches(entry.Topic, topic) &&
-                    TryGetCachedDeque(entry.Deques, partition, out cached))
-                {
-                    cache.CachedTopic = entry.Topic;
-                    cache.CachedTopicDeques = entry.Deques;
-                    return true;
-                }
-            }
+            cache.CachedTopicEntry = entry;
+            return true;
         }
 
         cached = null;
@@ -2027,36 +2006,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static void ResetCacheForAccumulator(AccumulatorThreadCache cache, RecordAccumulator accumulator)
     {
         cache.CachedAccumulator = accumulator;
-        cache.CachedTopic = null;
-        cache.CachedTopicDeques = null;
-        cache.NextTopicSlot = 0;
-
-        if (cache.CachedTopicEntries is not null)
-            Array.Clear(cache.CachedTopicEntries);
-    }
-
-    private static void UpdateCachedTopicEntry(
-        AccumulatorThreadCache cache,
-        string topic,
-        PartitionDeque?[] deques)
-    {
-        var entries = cache.CachedTopicEntries;
-        if (entries is null)
-            return;
-
-        for (var i = 0; i < entries.Length; i++)
-        {
-            if (TopicMatches(entries[i].Topic, topic))
-            {
-                entries[i].Deques = deques;
-                return;
-            }
-        }
+        cache.CachedTopicEntry = null;
+        cache.CachedTopicEntries?.Clear();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int GetDequeCacheCapacity(int partition, int cachePartitionCount) =>
-        Math.Max(1, Math.Max(partition + 1, cachePartitionCount));
+    private static bool TryGetDequeCacheCapacity(int partition, int cachePartitionCount, out int capacity)
+    {
+        if (partition < 0)
+        {
+            capacity = 0;
+            return false;
+        }
+
+        var requestedCapacity = Math.Max((long)partition + 1, Math.Max(1, cachePartitionCount));
+        if (requestedCapacity > MaxDequeCacheCapacity)
+        {
+            capacity = 0;
+            return false;
+        }
+
+        capacity = (int)requestedCapacity;
+        return true;
+    }
 
     private static PartitionDeque?[] EnsureDequeCacheCapacity(
         PartitionDeque?[] existing,

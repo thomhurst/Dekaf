@@ -20,6 +20,7 @@ public class AccumulatorAppendBenchmarks
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
     private string[] _topics = null!;
+    private string[] _manyTopics = null!;
     private CancellationTokenSource _drainerCts = null!;
     private Task _drainerTask = null!;
 
@@ -47,6 +48,7 @@ public class AccumulatorAppendBenchmarks
             "bench-topic-2",
             "bench-topic-3"
         ];
+        _manyTopics = Enumerable.Range(0, 12).Select(static i => $"bench-many-topic-{i}").ToArray();
 
         // Warmup: fill and drain multiple complete batches to warm all pools:
         // BatchArena static pool, PartitionBatchPool, ReadyBatchPool, and BatchArrayReuseQueue.
@@ -66,6 +68,12 @@ public class AccumulatorAppendBenchmarks
         {
             for (var p = 0; p < 10; p++)
                 FillAndDrain(_topics[t], partition: p, batchCount: 1, msgsPerBatch, ts, cachePartitionCount: 10);
+        }
+
+        for (var t = 0; t < _manyTopics.Length; t++)
+        {
+            for (var p = 0; p < 10; p++)
+                FillAndDrain(_manyTopics[t], partition: p, batchCount: 1, msgsPerBatch, ts, cachePartitionCount: 10);
         }
 
         // Start background drainer to prevent buffer from filling
@@ -100,7 +108,7 @@ public class AccumulatorAppendBenchmarks
 
     /// <summary>
     /// Same as AppendHotPath but spreads across multiple partitions.
-    /// Tests whether partition-switching adds allocation (cache misses, new deques).
+    /// Tests whether partition-switching stays allocation-free after cache warmup.
     /// </summary>
     [Benchmark(OperationsPerInvoke = 100)]
     public void AppendMultiPartition()
@@ -117,8 +125,7 @@ public class AccumulatorAppendBenchmarks
 
     /// <summary>
     /// Keyed traffic uses partitionCount: 0 for batch rotation, but still has the topic
-    /// partition count as the cache sizing hint. Rotates topics on one thread to catch
-    /// per-switch allocations in the thread-local deque cache.
+    /// partition count as the cache sizing hint. Rotates a small warmed topic set on one thread.
     /// </summary>
     [Benchmark(OperationsPerInvoke = 100)]
     public void AppendKeyedMultiTopic()
@@ -128,6 +135,25 @@ public class AccumulatorAppendBenchmarks
         {
             _accumulator.AppendFromSpansAsync(
                 _topics[i % _topics.Length], i % 10, ts,
+                _keyBytes, false, _valueBytes, false,
+                null, 0, null, CancellationToken.None,
+                partitionCount: 0,
+                cachePartitionCount: 10).GetAwaiter().GetResult();
+        }
+    }
+
+    /// <summary>
+    /// Keeps a warmed working set larger than the former 8-topic thread-local cache.
+    /// Expected: zero allocation per call after warmup.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = 120)]
+    public void AppendKeyedManyTopics()
+    {
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < 120; i++)
+        {
+            _accumulator.AppendFromSpansAsync(
+                _manyTopics[i % _manyTopics.Length], i % 10, ts,
                 _keyBytes, false, _valueBytes, false,
                 null, 0, null, CancellationToken.None,
                 partitionCount: 0,

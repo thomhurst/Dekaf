@@ -70,17 +70,23 @@ public class AppendWorkerAffinityTests
         GetThreadCacheField().GetValue(null)
         ?? throw new InvalidOperationException("Accumulator thread cache not initialized.");
 
-    private static Array GetCachedTopicDeques()
+    private static object GetCachedTopicEntry()
     {
         var cache = GetThreadCache();
-        return (Array?)cache.GetType().GetField("CachedTopicDeques")!.GetValue(cache)
+        return cache.GetType().GetField("CachedTopicEntry")!.GetValue(cache)
             ?? throw new InvalidOperationException("Cached topic deque array not initialized.");
+    }
+
+    private static Array GetCachedTopicDeques()
+    {
+        var entry = GetCachedTopicEntry();
+        return (Array)entry.GetType().GetField("Deques")!.GetValue(entry)!;
     }
 
     private static string? GetCachedTopic()
     {
-        var cache = GetThreadCache();
-        return (string?)cache.GetType().GetField("CachedTopic")!.GetValue(cache);
+        var entry = GetCachedTopicEntry();
+        return (string?)entry.GetType().GetProperty("Topic")!.GetValue(entry);
     }
 
     [Test]
@@ -100,8 +106,10 @@ public class AppendWorkerAffinityTests
 
         var cache = cacheField.GetValue(null)
             ?? throw new InvalidOperationException("Accumulator thread cache not initialized.");
-        var cachedTopic = (string?)cache.GetType().GetField("CachedTopic")!.GetValue(cache);
-        var cachedDeques = (Array?)cache.GetType().GetField("CachedTopicDeques")!.GetValue(cache);
+        var cachedEntry = cache.GetType().GetField("CachedTopicEntry")!.GetValue(cache)
+            ?? throw new InvalidOperationException("Cached topic entry not initialized.");
+        var cachedTopic = (string?)cachedEntry.GetType().GetProperty("Topic")!.GetValue(cachedEntry);
+        var cachedDeques = (Array?)cachedEntry.GetType().GetField("Deques")!.GetValue(cachedEntry);
 
         await Assert.That(firstAgain).IsSameReferenceAs(first);
         await Assert.That(cachedTopic).IsEqualTo("test-topic");
@@ -196,6 +204,50 @@ public class AppendWorkerAffinityTests
         await Assert.That(GetCachedTopic()).IsEqualTo("topic-a");
         await Assert.That(firstTopicAgain).IsSameReferenceAs(firstTopicDeque);
         await Assert.That(firstArrayAgain).IsSameReferenceAs(firstArray);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task GetOrCreateDeque_WhenMoreThanEightTopicsReturn_ReusesCachedTopicArrays()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        GetThreadCacheField().SetValue(null, null);
+        var getOrCreateDeque = GetOrCreateDequeMethod();
+        var deques = new object[12];
+        var arrays = new Array[12];
+
+        for (var i = 0; i < deques.Length; i++)
+        {
+            deques[i] = getOrCreateDeque.Invoke(accumulator, [$"topic-{i}", 0, 4])!;
+            arrays[i] = GetCachedTopicDeques();
+        }
+
+        for (var i = 0; i < deques.Length; i++)
+        {
+            var deque = getOrCreateDeque.Invoke(accumulator, [$"topic-{i}", 0, 4]);
+            var cachedArray = GetCachedTopicDeques();
+
+            await Assert.That(deque).IsSameReferenceAs(deques[i]);
+            await Assert.That(cachedArray).IsSameReferenceAs(arrays[i]);
+        }
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task GetOrCreateDeque_InvalidPartition_DoesNotIndexDequeCache()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        GetThreadCacheField().SetValue(null, null);
+        var getOrCreateDeque = GetOrCreateDequeMethod();
+
+        var negative = getOrCreateDeque.Invoke(accumulator, ["test-topic", -1, 4]);
+        var negativeAgain = getOrCreateDeque.Invoke(accumulator, ["test-topic", -1, 4]);
+        var large = getOrCreateDeque.Invoke(accumulator, ["test-topic", int.MaxValue, 4]);
+
+        await Assert.That(negativeAgain).IsSameReferenceAs(negative);
+        await Assert.That(large).IsNotNull();
 
         await accumulator.DisposeAsync();
     }

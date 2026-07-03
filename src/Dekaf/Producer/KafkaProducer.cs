@@ -1024,32 +1024,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Determine partition
-            int resolvedPartition;
-            if (partition is { } explicitPartition)
+            if (partition is null && _usesCustomPartitioner)
             {
-                resolvedPartition = explicitPartition;
-            }
-            else
-            {
-                if (_usesCustomPartitioner)
+                // User partitioners can run arbitrary code, including reentrant ProduceAsync.
+                // Keep serialized bytes independent of thread-local buffers until append copies them.
+                if (!keyIsNull && keySpan.Length > 0)
                 {
-                    // User partitioners can run arbitrary code, including reentrant ProduceAsync.
-                    // Keep serialized bytes independent of thread-local buffers until append copies them.
-                    if (!keyIsNull && keySpan.Length > 0)
-                    {
-                        customPartitionerKey = CopySpanToPooledMemory(keySpan);
-                        keySpan = customPartitionerKey.Span;
-                    }
-
-                    if (!valueIsNull && valueSpan.Length > 0)
-                    {
-                        customPartitionerValue = CopySpanToPooledMemory(valueSpan);
-                        valueSpan = customPartitionerValue.Span;
-                    }
+                    customPartitionerKey = CopySpanToPooledMemory(keySpan);
+                    keySpan = customPartitionerKey.Span;
                 }
 
-                resolvedPartition = _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+                if (!valueIsNull && valueSpan.Length > 0)
+                {
+                    customPartitionerValue = CopySpanToPooledMemory(valueSpan);
+                    valueSpan = customPartitionerValue.Span;
+                }
             }
+
+            var resolvedPartition = ResolvePartition(topic, partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
             var batchCompletionPartitionCount = partition is null && keyIsNull
                 ? topicInfo.PartitionCount
@@ -1308,8 +1300,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var value = valueIsNull ? PooledMemory.Null : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
 
         // Determine partition
-        var partition = message.Partition
-            ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+        var partition = ResolvePartition(
+            message.Topic,
+            message.Partition,
+            key.Span,
+            keyIsNull,
+            topicInfo.PartitionCount);
         var batchCompletionPartitionCount = message.Partition is null && keyIsNull
             ? topicInfo.PartitionCount
             : 0;
@@ -2626,6 +2622,32 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return new ProduceException($"Topic '{topic}' not found or has no partitions") { Topic = topic };
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ResolvePartition(
+        string topic,
+        int? partition,
+        ReadOnlySpan<byte> key,
+        bool keyIsNull,
+        int partitionCount)
+    {
+        var resolvedPartition = partition
+            ?? _partitioner.Partition(topic, key, keyIsNull, partitionCount);
+
+        if ((uint)resolvedPartition >= (uint)partitionCount)
+            ThrowInvalidPartition(topic, resolvedPartition, partitionCount);
+
+        return resolvedPartition;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidPartition(string topic, int partition, int partitionCount)
+        => throw new ProduceException(
+            $"Invalid partition {partition} for topic '{topic}'. Valid partitions are 0 through {partitionCount - 1}.")
+        {
+            Topic = topic,
+            Partition = partition
+        };
+
     /// <summary>
     /// Async slow path for fire-and-forget produce with delivery callback when metadata is not cached.
     /// </summary>
@@ -2708,8 +2730,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-        var resolvedPartition = partition
-            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+        var resolvedPartition = ResolvePartition(topic, partition, keySpan, keyIsNull, topicInfo.PartitionCount);
         var batchCompletionPartitionCount = partition is null && keyIsNull
             ? topicInfo.PartitionCount
             : 0;
