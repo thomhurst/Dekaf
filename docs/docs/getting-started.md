@@ -41,6 +41,7 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 The `using Dekaf;` directive gives you access to:
 - The static `Kafka` class for creating producers and consumers
+- The `KafkaClient` root for sharing one connection pool and memory budget across related clients
 - Common types like `Headers`, `TopicPartition`, `TopicPartitionOffset`
 - Extension methods for consumers and producers
 
@@ -185,6 +186,37 @@ catch (OperationCanceledException) { }
 
 Console.WriteLine("Done!");
 ```
+
+## Sharing a Root Client
+
+When one process talks to the same Kafka cluster with multiple clients, create a root client once and build producers, consumers, and admin clients from it. The root owns the shared connection pool, metadata manager, and memory budget.
+
+Before:
+
+```csharp
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers(bootstrapServers)
+    .BuildAsync();
+
+await using var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers(bootstrapServers)
+    .WithGroupId("orders")
+    .BuildAsync();
+```
+
+After:
+
+```csharp
+await using var kafka = Kafka.Connect(bootstrapServers);
+
+await using var producer = await kafka.CreateProducer<string, string>()
+    .BuildAsync();
+
+await using var consumer = await kafka.CreateConsumer<string, string>("orders")
+    .BuildAsync();
+```
+
+Configure cluster-level connection settings such as TLS, SASL, socket buffers, and the root memory budget on `Kafka.Connect(...)`. Configure per-client behavior on the producer or consumer builders.
 
 ## Configuration-First Services
 

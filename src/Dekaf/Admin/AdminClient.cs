@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Dekaf;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -2485,6 +2486,7 @@ public sealed class AdminClientOptions
 /// </summary>
 public sealed class AdminClientBuilder
 {
+    private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private int _requestTimeoutMs = 30000;
@@ -2501,14 +2503,27 @@ public sealed class AdminClientBuilder
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private TimeSpan? _metadataMaxAge;
 
+    public AdminClientBuilder()
+    {
+    }
+
+    internal AdminClientBuilder(KafkaClientInfrastructure clientInfrastructure)
+    {
+        _clientInfrastructure = clientInfrastructure;
+        _bootstrapServers = clientInfrastructure.BootstrapServers;
+        _loggerFactory = clientInfrastructure.LoggerFactory;
+    }
+
     public AdminClientBuilder WithBootstrapServers(string servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
         return this;
     }
 
     public AdminClientBuilder WithBootstrapServers(params string[] servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = [..servers];
         return this;
     }
@@ -2723,6 +2738,18 @@ public sealed class AdminClientBuilder
             ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
-        return new AdminClient(options, _loggerFactory, metadataOptions);
+        return _clientInfrastructure is null
+            ? new AdminClient(options, _loggerFactory, metadataOptions)
+            : new AdminClient(
+                options,
+                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.MetadataManager,
+                _loggerFactory);
+    }
+
+    private void ThrowIfClientOwnedBootstrap()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
 }

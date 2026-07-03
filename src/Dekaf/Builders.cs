@@ -20,6 +20,7 @@ namespace Dekaf;
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class ProducerBuilder<TKey, TValue>
 {
+    private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private Acks _acks = Acks.All;
@@ -67,14 +68,29 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
 
+    public ProducerBuilder()
+    {
+    }
+
+    internal ProducerBuilder(KafkaClientInfrastructure clientInfrastructure)
+    {
+        _clientInfrastructure = clientInfrastructure;
+        _bootstrapServers = clientInfrastructure.BootstrapServers;
+        _loggerFactory = clientInfrastructure.LoggerFactory;
+        _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
+        _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
+    }
+
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
         return this;
     }
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = [..servers];
         return this;
     }
@@ -788,6 +804,8 @@ public sealed class ProducerBuilder<TKey, TValue>
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();
 
+        var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
+
         var options = new ProducerOptions
         {
             BootstrapServers = _bootstrapServers,
@@ -795,7 +813,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             Acks = _acks,
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
-            BufferMemory = _bufferMemory ?? DekafMemoryBudget.PreviewProducerLimit(),
+            BufferMemory = _bufferMemory ?? memoryBudget.PreviewProducerLimit(),
             IsAutoTuned = _bufferMemory is null,
             MaxInFlightRequestsPerConnection = _maxInFlightRequestsPerConnection,
             Retries = _retries,
@@ -839,7 +857,16 @@ public sealed class ProducerBuilder<TKey, TValue>
             ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
-        var producer = new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
+        var producer = _clientInfrastructure is null
+            ? new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions)
+            : new KafkaProducer<TKey, TValue>(
+                options,
+                keySerializer,
+                valueSerializer,
+                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.MetadataManager,
+                memoryBudget,
+                _loggerFactory);
 
         // The BufferMemory above is seeded from PreviewProducerLimit(), which assumes N producers.
         // RegisterProducer rebalances to N+1 and synchronously fires OnBudgetChanged on every
@@ -851,9 +878,9 @@ public sealed class ProducerBuilder<TKey, TValue>
         // caller. No code path today couples existing producers to the new producer's limit, so
         // this ordering is safe in practice.
         if (options.IsAutoTuned)
-            DekafMemoryBudget.RegisterProducer(producer);
+            memoryBudget.RegisterProducer(producer);
         else
-            DekafMemoryBudget.ReserveExplicit(_bufferMemory!.Value);
+            memoryBudget.ReserveExplicit(_bufferMemory!.Value);
 
         return producer;
     }
@@ -893,6 +920,12 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         throw new InvalidOperationException($"No default serializer for type {typeof(T)}. Please specify a serializer.");
     }
+
+    private void ThrowIfClientOwnedBootstrap()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
 }
 
 /// <summary>
@@ -902,6 +935,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class ConsumerBuilder<TKey, TValue>
 {
+    private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private string? _groupId;
@@ -954,14 +988,29 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
     private bool _enableFetchSessions = true;
 
+    public ConsumerBuilder()
+    {
+    }
+
+    internal ConsumerBuilder(KafkaClientInfrastructure clientInfrastructure)
+    {
+        _clientInfrastructure = clientInfrastructure;
+        _bootstrapServers = clientInfrastructure.BootstrapServers;
+        _loggerFactory = clientInfrastructure.LoggerFactory;
+        _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
+        _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
         return this;
     }
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = [..servers];
         return this;
     }
@@ -1708,6 +1757,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
 
+        var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
+
         var options = new ConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
@@ -1745,7 +1796,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             QueuedMinMessages = _queuedMinMessages,
             QueuedMaxMessagesKbytes = _queuedMaxMessagesKbytes
-                ?? (int)Math.Min(DekafMemoryBudget.PreviewConsumerLimit() / 1024, int.MaxValue),
+                ?? (int)Math.Min(memoryBudget.PreviewConsumerLimit() / 1024, int.MaxValue),
             IsAutoTuned = _queuedMaxMessagesKbytes is null,
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
@@ -1764,7 +1815,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
-        var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions);
+        var consumer = _clientInfrastructure is null
+            ? new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions)
+            : new KafkaConsumer<TKey, TValue>(
+                options,
+                keyDeserializer,
+                valueDeserializer,
+                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.MetadataManager,
+                memoryBudget,
+                _loggerFactory);
 
         // QueuedMaxMessagesKbytes above is seeded from PreviewConsumerLimit() assuming N consumers.
         // RegisterConsumer rebalances to N+1 and synchronously dispatches OnBudgetChanged on every
@@ -1772,9 +1832,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
         // until Build() returns, and its final OnBudgetChanged applies the confirmed limit before
         // that happens. See the matching note in the producer builder above.
         if (options.IsAutoTuned)
-            DekafMemoryBudget.RegisterConsumer(consumer);
+            memoryBudget.RegisterConsumer(consumer);
         else
-            DekafMemoryBudget.ReserveExplicit((ulong)_queuedMaxMessagesKbytes!.Value * 1024);
+            memoryBudget.ReserveExplicit((ulong)_queuedMaxMessagesKbytes!.Value * 1024);
 
         if (_topicsToSubscribe.Count > 0)
         {
@@ -1803,6 +1863,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
         throw new InvalidOperationException($"No default deserializer for type {typeof(T)}. Please specify a deserializer.");
     }
+
+    private void ThrowIfClientOwnedBootstrap()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
 }
 
 /// <summary>
@@ -1811,6 +1877,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 /// </summary>
 public sealed class ShareConsumerBuilder<TKey, TValue>
 {
+    private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private string? _groupId;
@@ -1840,14 +1907,28 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
 
+    public ShareConsumerBuilder()
+    {
+    }
+
+    internal ShareConsumerBuilder(KafkaClientInfrastructure clientInfrastructure)
+    {
+        _clientInfrastructure = clientInfrastructure;
+        _bootstrapServers = clientInfrastructure.BootstrapServers;
+        _loggerFactory = clientInfrastructure.LoggerFactory;
+        _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
+    }
+
     public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
         return this;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
+        ThrowIfClientOwnedBootstrap();
         _bootstrapServers = [..servers];
         return this;
     }
@@ -2088,7 +2169,15 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             RetryPolicy = _retryPolicy
         };
 
-        var consumer = new KafkaShareConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
+        var consumer = _clientInfrastructure is null
+            ? new KafkaShareConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory)
+            : new KafkaShareConsumer<TKey, TValue>(
+                options,
+                keyDeserializer,
+                valueDeserializer,
+                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.MetadataManager,
+                _loggerFactory);
 
         if (_topicsToSubscribe.Count > 0)
         {
@@ -2116,5 +2205,11 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             return (IDeserializer<T>)(object)Serializers.Ignore;
 
         throw new InvalidOperationException($"No default deserializer for type {typeof(T)}. Please specify a deserializer.");
+    }
+
+    private void ThrowIfClientOwnedBootstrap()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
 }

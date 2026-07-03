@@ -49,6 +49,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal RecordAccumulator RecordAccumulator => _accumulator;
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
+    private readonly IDekafMemoryBudget _memoryBudget;
+    private readonly bool _ownsInfrastructure;
 
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
@@ -162,17 +164,100 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private const int DefaultKeyBufferSize = 512;
     private const int DefaultValueBufferSize = 2048;
 
-
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer,
         ILoggerFactory? loggerFactory = null,
         MetadataOptions? metadataOptions = null)
+        : this(
+            options,
+            keySerializer,
+            valueSerializer,
+            CreateInfrastructure(options, loggerFactory, metadataOptions),
+            loggerFactory,
+            ownsInfrastructure: true,
+            DekafMemoryBudget.Global)
+    {
+    }
+
+    internal KafkaProducer(
+        ProducerOptions options,
+        ISerializer<TKey> keySerializer,
+        ISerializer<TValue> valueSerializer,
+        ConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        IDekafMemoryBudget memoryBudget,
+        ILoggerFactory? loggerFactory = null)
+        : this(
+            options,
+            keySerializer,
+            valueSerializer,
+            (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer)),
+            loggerFactory,
+            ownsInfrastructure: false,
+            memoryBudget)
+    {
+    }
+
+    private static (ConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) CreateInfrastructure(
+        ProducerOptions options,
+        ILoggerFactory? loggerFactory,
+        MetadataOptions? metadataOptions)
+    {
+        var sharedPoolSizes = PoolSizing.ForSharedPools(
+            brokerCount: options.BootstrapServers.Count,
+            connectionsPerBroker: options.ConnectionsPerBroker,
+            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection,
+            batchSize: options.BatchSize,
+            maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
+        var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+        var connectionPool = new ConnectionPool(
+            options.ClientId,
+            new ConnectionOptions
+            {
+                UseTls = options.UseTls,
+                TlsConfig = options.TlsConfig,
+                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+                SaslMechanism = options.SaslMechanism,
+                SaslUsername = options.SaslUsername,
+                SaslPassword = options.SaslPassword,
+                GssapiConfig = options.GssapiConfig,
+                OAuthBearerConfig = options.OAuthBearerConfig,
+                OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
+                SendBufferSize = options.SocketSendBufferBytes,
+                ReceiveBufferSize = options.SocketReceiveBufferBytes,
+                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
+            },
+            loggerFactory,
+            options.ConnectionsPerBroker,
+            ResponseBufferPool.Default,
+            pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket,
+            telemetryMetricCollector: telemetryMetricCollector);
+
+        var metadataManager = new MetadataManager(
+            connectionPool,
+            options.BootstrapServers,
+            options: metadataOptions,
+            logger: loggerFactory?.CreateLogger<MetadataManager>());
+
+        return (connectionPool, metadataManager, telemetryMetricCollector);
+    }
+
+    private KafkaProducer(
+        ProducerOptions options,
+        ISerializer<TKey> keySerializer,
+        ISerializer<TValue> valueSerializer,
+        (ConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
+        ILoggerFactory? loggerFactory,
+        bool ownsInfrastructure,
+        IDekafMemoryBudget memoryBudget)
     {
         _options = options;
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
+        _memoryBudget = memoryBudget;
+        _ownsInfrastructure = ownsInfrastructure;
         _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaProducer<TKey, TValue>>.Instance;
 
         // Initialize interceptors from options
@@ -224,42 +309,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _ => new DefaultPartitioner()
         };
 
-        var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
-
-        _connectionPool = new ConnectionPool(
-            options.ClientId,
-            new ConnectionOptions
-            {
-                UseTls = options.UseTls,
-                TlsConfig = options.TlsConfig,
-                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
-                SaslMechanism = options.SaslMechanism,
-                SaslUsername = options.SaslUsername,
-                SaslPassword = options.SaslPassword,
-                GssapiConfig = options.GssapiConfig,
-                OAuthBearerConfig = options.OAuthBearerConfig,
-                OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
-                SendBufferSize = options.SocketSendBufferBytes,
-                ReceiveBufferSize = options.SocketReceiveBufferBytes,
-                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
-            },
-            loggerFactory,
-            options.ConnectionsPerBroker,
-            ResponseBufferPool.Default,
-            pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket,
-            telemetryMetricCollector: telemetryMetricCollector);
-
-        _metadataManager = new MetadataManager(
-            _connectionPool,
-            options.BootstrapServers,
-            options: metadataOptions,
-            logger: loggerFactory?.CreateLogger<MetadataManager>());
+        _connectionPool = infrastructure.Pool;
+        _metadataManager = infrastructure.Metadata;
 
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>(),
-            telemetryMetricCollector);
+            infrastructure.TelemetryMetricCollector);
 
         // Re-ratchet shared pool sizes after metadata refresh discovers the real broker count.
         // Bootstrap servers are seed nodes — the actual cluster may have more brokers.
@@ -268,6 +325,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var maxInFlight = options.MaxInFlightRequestsPerConnection;
         var batchSize = options.BatchSize;
         var maxConns = options.MaxConnectionsPerBroker;
+        var connectionPool = _connectionPool;
         _metadataManager.OnBrokerCountDiscovered = brokerCount =>
         {
             var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight, batchSize, maxConns);
@@ -275,7 +333,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             ProducerContainerPools.RatchetHeaderBucketCapacity(sizes.HeaderArraysPerBucket);
             DekafPools.RatchetSerializationBucketCapacity(sizes.SerializationArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
-            _connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
+            connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
         };
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);
@@ -3032,9 +3090,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return;
 
         if (_options.IsAutoTuned)
-            DekafMemoryBudget.UnregisterProducer(this);
+            _memoryBudget.UnregisterProducer(this);
         else
-            DekafMemoryBudget.ReleaseExplicit(_options.BufferMemory);
+            _memoryBudget.ReleaseExplicit(_options.BufferMemory);
 
         var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();
@@ -3238,15 +3296,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         await DisposeWithBudgetAsync(
             _telemetryManager.DisposeAsync(), Math.Max(100, RemainingMs() / 10), "telemetryManager");
 
-        // Dispose metadata manager and connection pool in parallel.
-        // Connection pool disposal waits up to ConnectionTimeout (30s default) per connection,
-        // which can single-handedly exceed CloseTimeoutMs. Cap with remaining budget.
-        await DisposeWithBudgetAsync(
-            new ValueTask(Task.WhenAll(
-                _metadataManager.DisposeAsync().AsTask(),
-                _connectionPool.DisposeAsync().AsTask())),
-            Math.Max(500, RemainingMs()),
-            "network");
+        if (_ownsInfrastructure)
+        {
+            // Dispose metadata manager and connection pool in parallel.
+            // Connection pool disposal waits up to ConnectionTimeout (30s default) per connection,
+            // which can single-handedly exceed CloseTimeoutMs. Cap with remaining budget.
+            await DisposeWithBudgetAsync(
+                new ValueTask(Task.WhenAll(
+                    _metadataManager.DisposeAsync().AsTask(),
+                    _connectionPool.DisposeAsync().AsTask())),
+                Math.Max(500, RemainingMs()),
+                "network");
+        }
 
         var disposeElapsedMs = Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogProducerDisposed(disposeElapsedMs, gracefulShutdown);

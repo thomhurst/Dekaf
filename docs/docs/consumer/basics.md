@@ -21,6 +21,16 @@ await using var consumer = await Kafka.CreateConsumer<string, string>()
 
 The type parameters `<TKey, TValue>` define the expected key and value types.
 
+For services with multiple Kafka clients, create a root client once and build consumers from it. Bootstrap servers, TLS/SASL, and memory budgeting are owned by the root; group IDs and subscription settings stay on the consumer builder.
+
+```csharp
+await using var kafka = Kafka.Connect("localhost:9092");
+
+await using var consumer = await kafka.CreateConsumer<string, string>("my-consumer-group")
+    .SubscribeTo("my-topic")
+    .BuildAsync();
+```
+
 ## Subscribing to Topics
 
 Before consuming, subscribe to one or more topics:
