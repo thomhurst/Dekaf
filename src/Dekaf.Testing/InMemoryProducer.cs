@@ -144,8 +144,8 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        if ((options & PurgeOptions.All) == PurgeOptions.None)
-            return ValueTask.CompletedTask;
+        if ((options & ~PurgeOptions.All) != 0)
+            throw new ArgumentOutOfRangeException(nameof(options), "Unknown purge option.");
 
         return ValueTask.CompletedTask;
     }
