@@ -1,9 +1,11 @@
+using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using CompressionType = Dekaf.Protocol.Records.CompressionType;
 
 namespace Dekaf.Telemetry;
 
@@ -42,6 +44,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryMetricCollector? _metricCollector;
+    private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly IClientTelemetryPayloadProvider _payloadProvider;
     private readonly ILogger<ClientTelemetryManager> _logger;
     private readonly SemaphoreSlim _startLock = new(1, 1);
@@ -59,13 +62,15 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         MetadataManager metadataManager,
         ILogger<ClientTelemetryManager>? logger = null,
         ClientTelemetryMetricCollector? metricCollector = null,
+        CompressionCodecRegistry? compressionCodecs = null,
         IClientTelemetryPayloadProvider? payloadProvider = null)
     {
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
         _metricCollector = metricCollector;
+        _compressionCodecs = compressionCodecs ?? CompressionCodecRegistry.Default;
         _logger = logger ?? NullLogger<ClientTelemetryManager>.Instance;
-        _payloadProvider = payloadProvider ?? EmptyClientTelemetryPayloadProvider.Instance;
+        _payloadProvider = payloadProvider ?? new ClientTelemetryPayloadProvider(_compressionCodecs);
     }
 
     internal Guid ClientInstanceId => _subscription?.ClientInstanceId ?? Guid.Empty;
@@ -337,17 +342,26 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 payload = ReadOnlyMemory<byte>.Empty;
             }
 
-            var response = await connection.SendAsync<PushTelemetryRequest, PushTelemetryResponse>(
-                new PushTelemetryRequest
-                {
-                    ClientInstanceId = subscription.ClientInstanceId,
-                    SubscriptionId = subscription.SubscriptionId,
-                    Terminating = terminating,
-                    CompressionType = subscription.CompressionType,
-                    Metrics = payload
-                },
+            var response = await SendPushTelemetryAsync(
+                connection,
+                subscription,
+                terminating,
+                payload,
                 apiVersion,
                 cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode == ErrorCode.TelemetryTooLarge && payload.Length > 0)
+            {
+                LogTelemetryPayloadRejectedTooLarge(payload.Length);
+                payload = ReadOnlyMemory<byte>.Empty;
+                response = await SendPushTelemetryAsync(
+                    connection,
+                    subscription,
+                    terminating,
+                    payload,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             if (response.ErrorCode == ErrorCode.UnsupportedVersion)
             {
@@ -371,6 +385,25 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             return ErrorCode.NetworkException;
         }
     }
+
+    private static ValueTask<PushTelemetryResponse> SendPushTelemetryAsync(
+        IKafkaConnection connection,
+        ClientTelemetrySubscription subscription,
+        bool terminating,
+        ReadOnlyMemory<byte> payload,
+        short apiVersion,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync<PushTelemetryRequest, PushTelemetryResponse>(
+            new PushTelemetryRequest
+            {
+                ClientInstanceId = subscription.ClientInstanceId,
+                SubscriptionId = subscription.SubscriptionId,
+                Terminating = terminating,
+                CompressionType = subscription.CompressionType,
+                Metrics = payload
+            },
+            apiVersion,
+            cancellationToken);
 
     private async ValueTask<IKafkaConnection?> GetTelemetryConnectionAsync(CancellationToken cancellationToken)
     {
@@ -410,10 +443,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         return true;
     }
 
-    private static bool TrySelectCompression(IReadOnlyList<sbyte> acceptedCompressionTypes, out sbyte compressionType)
+    private bool TrySelectCompression(IReadOnlyList<sbyte> acceptedCompressionTypes, out sbyte compressionType)
     {
-        const sbyte noCompression = 0;
-        compressionType = noCompression;
+        compressionType = (sbyte)CompressionType.None;
 
         if (acceptedCompressionTypes.Count == 0)
         {
@@ -422,13 +454,30 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
         for (var i = 0; i < acceptedCompressionTypes.Count; i++)
         {
-            if (acceptedCompressionTypes[i] == noCompression)
+            if (TryGetTelemetryCompressionType(acceptedCompressionTypes[i], out var type) &&
+                _compressionCodecs.IsSupported(type))
             {
+                compressionType = acceptedCompressionTypes[i];
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static bool TryGetTelemetryCompressionType(sbyte compressionTypeId, out CompressionType compressionType)
+    {
+        compressionType = compressionTypeId switch
+        {
+            0 => CompressionType.None,
+            1 => CompressionType.Gzip,
+            2 => CompressionType.Snappy,
+            3 => CompressionType.Lz4,
+            4 => CompressionType.Zstd,
+            _ => default
+        };
+
+        return compressionTypeId is >= 0 and <= 4;
     }
 
     private void Disable()
@@ -459,4 +508,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Client telemetry payload too large ({PayloadSize} > {MaxSize}); sending empty payload")]
     private partial void LogTelemetryPayloadTooLarge(int payloadSize, int maxSize);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Client telemetry payload rejected as too large ({PayloadSize}); retrying with empty payload")]
+    private partial void LogTelemetryPayloadRejectedTooLarge(int payloadSize);
 }

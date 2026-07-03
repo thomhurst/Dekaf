@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -88,6 +89,98 @@ public sealed class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task StartAsync_SelectsFirstAcceptedSupportedCompression()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+        collector.RecordConnectionCreated();
+        await using var context = new TelemetryTestContext(
+            metricCollector: collector,
+            compressionCodecs: new CompressionCodecRegistry());
+        var clientInstanceId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        context.Connection.Enqueue(Subscription(
+            clientInstanceId,
+            subscriptionId: 11,
+            pushIntervalMs: 10,
+            acceptedCompressionTypes: [4, 1, 0],
+            requestedMetrics: [string.Empty]));
+
+        await context.Manager.StartAsync();
+
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 1,
+            timeout: TimeSpan.FromSeconds(2));
+
+        await Assert.That(pushes[0].CompressionType).IsEqualTo((sbyte)1);
+        await Assert.That(pushes[0].Metrics.Length).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task StartAsync_DisablesTelemetryWhenNoAcceptedCompressionIsSupported()
+    {
+        await using var context = new TelemetryTestContext(compressionCodecs: new CompressionCodecRegistry());
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("66666666-6666-6666-6666-666666666666"),
+            subscriptionId: 12,
+            pushIntervalMs: 10,
+            acceptedCompressionTypes: [4]));
+
+        await context.Manager.StartAsync();
+
+        await Assert.That(context.Manager.IsDisabled).IsTrue();
+        await Assert.That(context.Manager.IsStarted).IsFalse();
+    }
+
+    [Test]
+    public async Task PushTelemetry_DropsPayloadWhenTelemetryMaxBytesExceeded()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+        collector.RecordConnectionCreated();
+        await using var context = new TelemetryTestContext(metricCollector: collector);
+        var clientInstanceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        context.Connection.Enqueue(Subscription(
+            clientInstanceId,
+            subscriptionId: 13,
+            pushIntervalMs: 10,
+            telemetryMaxBytes: 1,
+            requestedMetrics: [string.Empty]));
+
+        await context.Manager.StartAsync();
+
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 1,
+            timeout: TimeSpan.FromSeconds(2));
+
+        await Assert.That(pushes[0].Metrics.Length).IsEqualTo(0);
+        await Assert.That(pushes[0].CompressionType).IsEqualTo((sbyte)0);
+    }
+
+    [Test]
+    public async Task PushTelemetry_RetriesWithEmptyPayloadWhenBrokerRejectsTelemetryTooLarge()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+        collector.RecordConnectionCreated();
+        await using var context = new TelemetryTestContext(metricCollector: collector);
+        var clientInstanceId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        context.Connection.Enqueue(Subscription(
+            clientInstanceId,
+            subscriptionId: 14,
+            pushIntervalMs: 10,
+            requestedMetrics: [string.Empty]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.TelemetryTooLarge });
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+
+        await context.Manager.StartAsync();
+
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 2,
+            timeout: TimeSpan.FromSeconds(2));
+
+        await Assert.That(pushes[0].Metrics.Length).IsGreaterThan(0);
+        await Assert.That(pushes[1].Metrics.Length).IsEqualTo(0);
+        await Assert.That(pushes[1].CompressionType).IsEqualTo(pushes[0].CompressionType);
+    }
+
+    [Test]
     public async Task UnsupportedVersion_DisablesBrokerPushTelemetry()
     {
         await using var context = new TelemetryTestContext();
@@ -106,16 +199,20 @@ public sealed class ClientTelemetryManagerTests
     private static GetTelemetrySubscriptionsResponse Subscription(
         Guid clientInstanceId,
         int subscriptionId,
-        int pushIntervalMs) => new()
+        int pushIntervalMs,
+        IReadOnlyList<sbyte>? acceptedCompressionTypes = null,
+        int telemetryMaxBytes = 1024,
+        bool deltaTemporality = true,
+        IReadOnlyList<string>? requestedMetrics = null) => new()
     {
         ErrorCode = ErrorCode.None,
         ClientInstanceId = clientInstanceId,
         SubscriptionId = subscriptionId,
-        AcceptedCompressionTypes = [0],
+        AcceptedCompressionTypes = acceptedCompressionTypes ?? [0],
         PushIntervalMs = pushIntervalMs,
-        TelemetryMaxBytes = 1024,
-        DeltaTemporality = true,
-        RequestedMetrics = ["kafka."]
+        TelemetryMaxBytes = telemetryMaxBytes,
+        DeltaTemporality = deltaTemporality,
+        RequestedMetrics = requestedMetrics ?? ["kafka."]
     };
 
     private sealed class TelemetryTestContext : IAsyncDisposable
@@ -123,7 +220,10 @@ public sealed class ClientTelemetryManagerTests
         private readonly MetadataManager _metadataManager;
         private readonly TestConnectionPool _pool;
 
-        public TelemetryTestContext()
+        public TelemetryTestContext(
+            ClientTelemetryMetricCollector? metricCollector = null,
+            CompressionCodecRegistry? compressionCodecs = null,
+            IClientTelemetryPayloadProvider? payloadProvider = null)
         {
             _pool = new TestConnectionPool();
             _metadataManager = new MetadataManager(_pool, ["localhost:9092"]);
@@ -145,7 +245,12 @@ public sealed class ClientTelemetryManagerTests
                 Topics = []
             });
 
-            Manager = new ClientTelemetryManager(_pool, _metadataManager);
+            Manager = new ClientTelemetryManager(
+                _pool,
+                _metadataManager,
+                metricCollector: metricCollector,
+                compressionCodecs: compressionCodecs,
+                payloadProvider: payloadProvider);
         }
 
         public ClientTelemetryManager Manager { get; }
