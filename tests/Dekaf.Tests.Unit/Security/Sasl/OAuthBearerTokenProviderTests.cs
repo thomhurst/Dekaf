@@ -66,6 +66,122 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task JwtBearerAssertion_WithExplicitRsaAlgorithms_SignsAssertion()
+    {
+        var cases = new[]
+        {
+            (OAuthBearerJwtSigningAlgorithm.Rs384, "RS384", HashAlgorithmName.SHA384, RSASignaturePadding.Pkcs1),
+            (OAuthBearerJwtSigningAlgorithm.Rs512, "RS512", HashAlgorithmName.SHA512, RSASignaturePadding.Pkcs1),
+            (OAuthBearerJwtSigningAlgorithm.Ps256, "PS256", HashAlgorithmName.SHA256, RSASignaturePadding.Pss),
+            (OAuthBearerJwtSigningAlgorithm.Ps384, "PS384", HashAlgorithmName.SHA384, RSASignaturePadding.Pss),
+            (OAuthBearerJwtSigningAlgorithm.Ps512, "PS512", HashAlgorithmName.SHA512, RSASignaturePadding.Pss)
+        };
+
+        foreach (var (algorithm, headerValue, hashAlgorithm, padding) in cases)
+        {
+            using var rsa = RSA.Create(2048);
+            var config = CreateJwtBearerConfig(rsa, signingAlgorithm: algorithm);
+
+            var assertion = OAuthBearerJwtAssertion.Create(config, DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+
+            var parts = assertion.Split('.');
+            var header = DecodeJwtPart(parts[0]);
+            await Assert.That(header.GetProperty("alg").GetString()).IsEqualTo(headerValue);
+
+            var signingInput = Encoding.ASCII.GetBytes($"{parts[0]}.{parts[1]}");
+            var signature = Base64UrlDecode(parts[2]);
+            await Assert.That(rsa.VerifyData(signingInput, signature, hashAlgorithm, padding)).IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task JwtBearerAssertion_WithEcdsaKey_InfersAlgorithmFromKeySize()
+    {
+        var cases = new[]
+        {
+            (ECCurve.NamedCurves.nistP256, "ES256", HashAlgorithmName.SHA256),
+            (ECCurve.NamedCurves.nistP384, "ES384", HashAlgorithmName.SHA384),
+            (ECCurve.NamedCurves.nistP521, "ES512", HashAlgorithmName.SHA512)
+        };
+
+        foreach (var (curve, headerValue, hashAlgorithm) in cases)
+        {
+            using var ecdsa = ECDsa.Create(curve);
+            var config = CreateJwtBearerConfig(ecdsa);
+
+            var assertion = OAuthBearerJwtAssertion.Create(config, DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+
+            var parts = assertion.Split('.');
+            var header = DecodeJwtPart(parts[0]);
+            await Assert.That(header.GetProperty("alg").GetString()).IsEqualTo(headerValue);
+
+            var signingInput = Encoding.ASCII.GetBytes($"{parts[0]}.{parts[1]}");
+            var signature = Base64UrlDecode(parts[2]);
+            await Assert.That(ecdsa.VerifyData(
+                    signingInput,
+                    signature,
+                    hashAlgorithm,
+                    DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
+                .IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task JwtBearerAssertion_WithMismatchedAlgorithmAndKey_ThrowsInvalidOperationException()
+    {
+        using var rsa = RSA.Create(2048);
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        await Assert.That(() => OAuthBearerJwtAssertion.Create(
+                CreateJwtBearerConfig(rsa, signingAlgorithm: OAuthBearerJwtSigningAlgorithm.Es256),
+                DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(() => OAuthBearerJwtAssertion.Create(
+                CreateJwtBearerConfig(ecdsa, signingAlgorithm: OAuthBearerJwtSigningAlgorithm.Rs256),
+                DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task JwtBearerAssertion_WithReservedAdditionalClaim_ThrowsInvalidOperationException()
+    {
+        using var rsa = RSA.Create(2048);
+        var config = CreateJwtBearerConfig(rsa, additionalClaims: new Dictionary<string, object?>
+        {
+            ["iss"] = "other-issuer"
+        });
+
+        await Assert.That(() => OAuthBearerJwtAssertion.Create(
+                config,
+                DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task JwtBearerAssertion_WithNonPositiveLifetime_ThrowsInvalidOperationException()
+    {
+        using var rsa = RSA.Create(2048);
+        var config = new OAuthBearerConfig
+        {
+            GrantType = OAuthBearerGrantType.JwtBearer,
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = "client",
+            JwtBearer = new OAuthBearerJwtBearerOptions
+            {
+                PrivateKey = rsa,
+                Audience = "kafka",
+                AssertionLifetime = TimeSpan.Zero
+            }
+        };
+
+        await Assert.That(() => OAuthBearerJwtAssertion.Create(
+                config,
+                DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task GetTokenAsync_WithJwtBearer_SendsAssertionGrant()
     {
         using var rsa = RSA.Create(2048);

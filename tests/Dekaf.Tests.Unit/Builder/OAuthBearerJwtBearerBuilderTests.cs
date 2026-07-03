@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using Dekaf.Security.Sasl;
 
@@ -105,6 +106,28 @@ public sealed class OAuthBearerJwtBearerBuilderTests
             .Throws<InvalidOperationException>();
     }
 
+    [Test]
+    public async Task WithOAuthBearerJwtBearer_WhenValidationFails_DoesNotChangeExistingSaslMechanism()
+    {
+        var invalidOptions = new OAuthBearerJwtBearerOptions();
+
+        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+            Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
+        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+            Kafka.CreateConsumer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
+        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+            Kafka.CreateShareConsumer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
+        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+            Kafka.CreateAdminClient().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
+        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+            Kafka.Connect().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
+    }
+
     private static OAuthBearerJwtBearerOptions CreateOptions(AsymmetricAlgorithm privateKey) => new()
     {
         TokenEndpoint = "https://auth.example.test/token",
@@ -112,4 +135,22 @@ public sealed class OAuthBearerJwtBearerBuilderTests
         PrivateKey = privateKey,
         Audience = "kafka"
     };
+
+    private static async Task AssertInvalidJwtBearerDoesNotChangeSaslMechanism<TBuilder>(
+        TBuilder builder,
+        Action<TBuilder> configure)
+    {
+        await Assert.That(GetSaslMechanism(builder!)).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(() => configure(builder)).Throws<InvalidOperationException>();
+        await Assert.That(GetSaslMechanism(builder!)).IsEqualTo(SaslMechanism.Plain);
+    }
+
+    private static SaslMechanism GetSaslMechanism(object builder)
+    {
+        var field = builder.GetType()
+            .GetField("_saslMechanism", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_saslMechanism field not found");
+
+        return (SaslMechanism)field.GetValue(builder)!;
+    }
 }

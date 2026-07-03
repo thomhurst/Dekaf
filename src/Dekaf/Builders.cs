@@ -454,8 +454,10 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
-        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
         return this;
     }
@@ -1424,8 +1426,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
-        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
         return this;
     }
@@ -2155,8 +2159,10 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
-        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
         return this;
     }
