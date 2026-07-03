@@ -233,7 +233,6 @@ public sealed class ClientTelemetryManagerTests
         await WaitUntilAsync(
             () => context.Manager.IsDisabled,
             TimeSpan.FromSeconds(2));
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
 
         await Assert.That(context.Manager.IsDisabled).IsTrue();
         await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(1);
