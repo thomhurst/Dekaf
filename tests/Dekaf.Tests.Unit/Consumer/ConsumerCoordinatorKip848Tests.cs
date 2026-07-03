@@ -87,6 +87,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         IRebalanceListener? rebalanceListener = null,
         string? groupInstanceId = null,
         string? groupRemoteAssignor = null,
+        string? clientRack = null,
         int heartbeatIntervalMs = 3000,
         int rebalanceTimeoutMs = 30000) => new()
         {
@@ -94,6 +95,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             GroupId = groupId,
             GroupRemoteAssignor = groupRemoteAssignor,
             GroupInstanceId = groupInstanceId,
+            ClientRack = clientRack,
             RebalanceListener = rebalanceListener,
             HeartbeatIntervalMs = heartbeatIntervalMs,
             RebalanceTimeoutMs = rebalanceTimeoutMs
@@ -921,6 +923,21 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.InstanceId == "static-instance-1"),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_InitialJoin_SendsClientRack()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(clientRack: "rack-a");
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.RackId == "rack-a"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }

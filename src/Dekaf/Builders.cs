@@ -1066,6 +1066,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _groupId;
     private string? _groupInstanceId;
     private string? _groupRemoteAssignor;
+    private string? _clientRack;
     private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
@@ -1158,6 +1159,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithGroupInstanceId(string groupInstanceId)
     {
         _groupInstanceId = groupInstanceId;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the consumer rack ID used for rack-aware assignment and preferred read-replica fetching.
+    /// </summary>
+    /// <param name="clientRack">The logical rack ID for this consumer.</param>
+    public ConsumerBuilder<TKey, TValue> WithClientRack(string clientRack)
+    {
+        _clientRack = clientRack ?? throw new ArgumentNullException(nameof(clientRack));
         return this;
     }
 
@@ -1997,6 +2008,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
             GroupRemoteAssignor = _groupRemoteAssignor,
+            ClientRack = _clientRack,
             OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
             AutoOffsetReset = _autoOffsetReset,

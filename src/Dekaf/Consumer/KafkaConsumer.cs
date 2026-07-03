@@ -709,7 +709,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool ShouldUseFetchSessions => _options.EnableFetchSessions && !_options.EnablePartitionEof;
 
     // Cached partition grouping by broker to avoid allocations on every fetch
-    // Invalidated whenever _assignment or _paused changes
+    // Invalidated whenever _assignment, _paused, or preferred read replicas change.
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
     private readonly object _partitionCacheLock = new();
@@ -720,11 +720,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly object _fetchCacheLock = new();
     private Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? _cachedTopicPartitions;
     private List<TopicPartition>? _cachedPartitionsList;
+    private readonly ConcurrentDictionary<TopicPartition, PreferredReadReplicaState> _preferredReadReplicas = new();
     private readonly object _leaderRefreshTasksLock = new();
     private readonly ConcurrentDictionary<string, Task> _pendingLeaderRefreshTasks = new();
     private int _assignmentEnsureVersion;
     private int _lastManualAssignmentEnsureVersion = -1;
     private int _lastCoordinatorAssignmentVersion = -1;
+
+    private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
+        (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
+
+    private readonly record struct PreferredReadReplicaState(
+        int ReplicaId,
+        DateTimeOffset MetadataLastRefreshed,
+        long ExpiresAtTimestamp);
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -1937,6 +1946,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Transient errors (connection timeouts, broker unavailable, etc.) — log and
             // suppress. The pipeline retries on the next cycle, and in multi-broker setups
             // other brokers may still succeed in this cycle.
+            ClearPreferredReadReplicasForBroker(brokerId, partitions, partitionStartIndex, partitionCount);
             LogPrefetchFromBrokerError(ex, brokerId);
         }
     }
@@ -2034,6 +2044,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             request.MinBytes = _options.FetchMinBytes;
             request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
             request.IsolationLevel = _options.IsolationLevel;
+            request.RackId = _options.ClientRack;
             request.Topics = fetchSessionBuild?.Topics ?? topicData;
             request.ForgottenTopicsData = fetchSessionBuild?.ForgottenTopicsData;
             request.SessionId = fetchSessionBuild?.SessionId ?? 0;
@@ -2069,6 +2080,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (response.ErrorCode != ErrorCode.None)
             {
                 fetchSessionHandler?.HandleResponse(response);
+                ClearPreferredReadReplicasForBroker(brokerId, partitions, partitionStartIndex, partitionCount);
                 LogFetchSessionError(brokerId, response.ErrorCode);
                 response.ReturnToPool();
                 memoryOwner?.Dispose();
@@ -2099,6 +2111,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         // Update watermark cache from fetch response (even on errors, watermarks may be valid)
                         UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+                        UpdatePreferredReadReplica(topic, partitionResponse);
 
                         if (partitionResponse.DivergingEpoch is not null)
                         {
@@ -3735,6 +3748,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         catch (Exception ex)
         {
+            ClearPreferredReadReplicasForBroker(brokerId, partitions);
             LogFetchFromBrokerError(ex, brokerId);
             return null;
         }
@@ -3793,7 +3807,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         lock (_partitionCacheLock)
         {
-            if (_cachedPartitionsByBroker is not null)
+            if (_cachedPartitionsByBroker is not null && _preferredReadReplicas.IsEmpty)
             {
                 return _cachedPartitionsByBroker;
             }
@@ -3815,17 +3829,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Build the cache outside the lock - allocate once per assignment change
-        // Resolve all partition leaders in parallel for maximum throughput
-        var leaderTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Rent(assignmentCount);
+        // Build the cache outside the lock - allocate once per assignment change.
+        // Resolve all partition fetch brokers in parallel for maximum throughput.
+        var brokerTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Broker)>>.Shared.Rent(assignmentCount);
         try
         {
             for (var i = 0; i < assignmentCount; i++)
             {
-                leaderTasks[i] = ResolvePartitionLeaderAsync(assignmentArray[i], cancellationToken);
+                brokerTasks[i] = ResolvePartitionFetchBrokerAsync(assignmentArray[i], cancellationToken);
             }
 
-            await Task.WhenAll(new ReadOnlySpan<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, assignmentCount)).ConfigureAwait(false);
+            await Task.WhenAll(new ReadOnlySpan<Task<(TopicPartition Partition, BrokerNode? Broker)>>(brokerTasks, 0, assignmentCount)).ConfigureAwait(false);
         }
         finally
         {
@@ -3836,21 +3850,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var result = new Dictionary<int, List<TopicPartition>>();
         for (var i = 0; i < assignmentCount; i++)
         {
-            var (partition, leader) = leaderTasks[i].Result;
-            if (leader is null)
+            var (partition, broker) = brokerTasks[i].Result;
+            if (broker is null)
                 continue;
 
-            if (!result.TryGetValue(leader.NodeId, out var list))
+            if (!result.TryGetValue(broker.NodeId, out var list))
             {
                 list = [];
-                result[leader.NodeId] = list;
+                result[broker.NodeId] = list;
             }
 
             list.Add(partition);
         }
 
         // Return pooled array after extracting results
-        ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Return(leaderTasks, clearArray: true);
+        ArrayPool<Task<(TopicPartition Partition, BrokerNode? Broker)>>.Shared.Return(brokerTasks, clearArray: true);
 
         // Cache the result - will be reused until assignment/paused changes.
         // Don't cache empty results: an empty dictionary means partition leaders
@@ -3860,6 +3874,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_partitionCacheLock)
         {
             if (result.Count > 0 && _cachedPartitionsByBroker is null
+                && _preferredReadReplicas.IsEmpty
                 && Volatile.Read(ref _assignmentVersion) == capturedVersion)
             {
                 _cachedPartitionsByBroker = result;
@@ -3868,13 +3883,44 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private async Task<(TopicPartition Partition, BrokerNode? Leader)> ResolvePartitionLeaderAsync(
+    private async Task<(TopicPartition Partition, BrokerNode? Broker)> ResolvePartitionFetchBrokerAsync(
         TopicPartition partition,
         CancellationToken cancellationToken)
     {
         var leader = await _metadataManager.GetPartitionLeaderAsync(
             partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
-        return (partition, leader);
+        if (leader is null)
+            return (partition, null);
+
+        return (partition, GetPreferredReadReplicaBrokerOrLeader(partition, leader));
+    }
+
+    private BrokerNode GetPreferredReadReplicaBrokerOrLeader(TopicPartition partition, BrokerNode leader)
+    {
+        if (string.IsNullOrEmpty(_options.ClientRack)
+            || !_preferredReadReplicas.TryGetValue(partition, out var preferred))
+        {
+            return leader;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        var metadata = _metadataManager.Metadata;
+        if (preferred.ExpiresAtTimestamp <= now
+            || preferred.MetadataLastRefreshed != metadata.LastRefreshed)
+        {
+            ClearPreferredReadReplica(partition);
+            return leader;
+        }
+
+        var preferredBroker = metadata.GetBroker(preferred.ReplicaId);
+        if (preferredBroker is null)
+        {
+            ClearPreferredReadReplica(partition);
+            return leader;
+        }
+
+        LogUsingPreferredReadReplica(partition.Topic, partition.Partition, preferred.ReplicaId, leader.NodeId);
+        return preferredBroker;
     }
 
     private async ValueTask<List<PendingFetchData>?> FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
@@ -3911,6 +3957,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         request.MinBytes = _options.FetchMinBytes;
         request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
         request.IsolationLevel = _options.IsolationLevel;
+        request.RackId = _options.ClientRack;
         request.Topics = fetchSessionBuild?.Topics ?? topicData;
         request.ForgottenTopicsData = fetchSessionBuild?.ForgottenTopicsData;
         request.SessionId = fetchSessionBuild?.SessionId ?? 0;
@@ -3946,6 +3993,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (response.ErrorCode != ErrorCode.None)
         {
             fetchSessionHandler?.HandleResponse(response);
+            ClearPreferredReadReplicasForBroker(brokerId, partitions);
             LogFetchSessionError(brokerId, response.ErrorCode);
             response.ReturnToPool();
             memoryOwner?.Dispose();
@@ -3971,6 +4019,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     // Update watermark cache from fetch response (even on errors, watermarks may be valid)
                     UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+                    UpdatePreferredReadReplica(topic, partitionResponse);
 
                     if (partitionResponse.DivergingEpoch is not null)
                     {
@@ -4228,6 +4277,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         FetchResponsePartition partitionResponse,
         IReadOnlyList<NodeEndpoint> nodeEndpoints)
     {
+        ClearPreferredReadReplica(new TopicPartition(topic, partitionResponse.PartitionIndex));
+
         var currentLeader = partitionResponse.CurrentLeader;
         var endpoint = currentLeader is null
             ? null
@@ -4256,6 +4307,84 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IReadOnlyList<NodeEndpoint> nodeEndpoints)
     {
         return HandleLeaderEpochRefreshAsync(topic, partitionResponse, nodeEndpoints);
+    }
+
+    private void UpdatePreferredReadReplica(string topic, FetchResponsePartition partitionResponse)
+    {
+        var partition = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
+        if (partitionResponse.ErrorCode != ErrorCode.None)
+        {
+            ClearPreferredReadReplica(partition);
+            return;
+        }
+
+        if (string.IsNullOrEmpty(_options.ClientRack)
+            || partitionResponse.PreferredReadReplica < 0)
+        {
+            ClearPreferredReadReplica(partition);
+            return;
+        }
+
+        var metadata = _metadataManager.Metadata;
+        var partitionInfo = metadata.GetPartitionInfo(topic, partitionResponse.PartitionIndex);
+        if (partitionInfo is not null && partitionResponse.PreferredReadReplica == partitionInfo.LeaderId)
+        {
+            ClearPreferredReadReplica(partition);
+            return;
+        }
+
+        if (metadata.GetBroker(partitionResponse.PreferredReadReplica) is null)
+        {
+            ClearPreferredReadReplica(partition);
+            return;
+        }
+
+        var state = new PreferredReadReplicaState(
+            partitionResponse.PreferredReadReplica,
+            metadata.LastRefreshed,
+            Stopwatch.GetTimestamp() + s_preferredReadReplicaMaxAgeTimestampDelta);
+
+        var changed = !_preferredReadReplicas.TryGetValue(partition, out var existing)
+            || existing.ReplicaId != state.ReplicaId;
+
+        _preferredReadReplicas[partition] = state;
+
+        if (changed)
+        {
+            InvalidatePartitionCache();
+            LogPreferredReadReplicaSelected(topic, partitionResponse.PartitionIndex, state.ReplicaId);
+        }
+    }
+
+    private void ClearPreferredReadReplica(TopicPartition partition)
+    {
+        if (_preferredReadReplicas.TryRemove(partition, out var existing))
+        {
+            InvalidatePartitionCache();
+            LogPreferredReadReplicaCleared(partition.Topic, partition.Partition, existing.ReplicaId);
+        }
+    }
+
+    private void ClearPreferredReadReplicasForBroker(int brokerId, IReadOnlyList<TopicPartition> partitions)
+        => ClearPreferredReadReplicasForBroker(brokerId, partitions, 0, partitions.Count);
+
+    private void ClearPreferredReadReplicasForBroker(
+        int brokerId,
+        IReadOnlyList<TopicPartition> partitions,
+        int startIndex,
+        int count)
+    {
+        var endIndex = startIndex + count;
+        for (var i = startIndex; i < endIndex; i++)
+        {
+            var partition = partitions[i];
+            if (_preferredReadReplicas.TryGetValue(partition, out var existing)
+                && existing.ReplicaId == brokerId)
+            {
+                ClearPreferredReadReplica(partition);
+            }
+        }
     }
 
     private void ScheduleLeaderRefresh(string topic)
@@ -5035,6 +5164,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "{Error} for {Topic}-{Partition}, refreshing leader metadata")]
     private partial void LogLeaderEpochRefresh(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Preferred read replica {ReplicaId} selected for {Topic}-{Partition}")]
+    private partial void LogPreferredReadReplicaSelected(string topic, int partition, int replicaId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Preferred read replica {ReplicaId} cleared for {Topic}-{Partition}")]
+    private partial void LogPreferredReadReplicaCleared(string topic, int partition, int replicaId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Fetching {Topic}-{Partition} from preferred read replica {ReplicaId} instead of leader {LeaderId}")]
+    private partial void LogUsingPreferredReadReplica(string topic, int partition, int replicaId, int leaderId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Prefetch error for {Topic}-{Partition}: {Error}")]
     private partial void LogPrefetchError(string topic, int partition, ErrorCode error);
