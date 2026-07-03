@@ -138,6 +138,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:JAVA_HOME = $env:JAVA_HOME_17_X64
+          # Set heap explicitly so kafka-server-start.bat skips its wmic-based arch probe
+          # (wmic is removed on windows-latest / Server 2025).
+          $env:KAFKA_HEAP_OPTS = '-Xmx1G -Xms1G'
           Write-Host "Using JAVA_HOME=$env:JAVA_HOME"
 
           $version = '4.0.0'
@@ -150,8 +153,10 @@ jobs:
           # Force clients (Confluent + Dekaf) to reconnect to localhost after bootstrap.
           Add-Content "$kafka\config\server.properties" "`nadvertised.listeners=PLAINTEXT://localhost:9092`n"
 
-          $clusterId = & "$kafka\bin\windows\kafka-storage.bat" random-uuid
-          & "$kafka\bin\windows\kafka-storage.bat" format --standalone -t $clusterId -c "$kafka\config\server.properties"
+          # Kafka 4.0's kafka-storage only accepts long-form flags (no -t/-c).
+          $clusterId = (& "$kafka\bin\windows\kafka-storage.bat" random-uuid).Trim()
+          & "$kafka\bin\windows\kafka-storage.bat" format --standalone --cluster-id $clusterId --config "$kafka\config\server.properties"
+          if ($LASTEXITCODE -ne 0) { throw "kafka-storage format failed (exit $LASTEXITCODE)" }
 
           $proc = Start-Process -FilePath "$kafka\bin\windows\kafka-server-start.bat" `
             -ArgumentList "`"$kafka\config\server.properties`"" `
