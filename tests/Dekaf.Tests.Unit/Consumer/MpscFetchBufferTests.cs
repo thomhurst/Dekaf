@@ -291,6 +291,37 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_AlreadyCompletedWithError_ThrowsError()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var expectedException = new InvalidOperationException("test error");
+        buffer.Complete(expectedException);
+
+        await Assert.That(async () => await buffer.WaitToReadAsync(1000, CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .WithMessage("test error");
+    }
+
+    [Test]
+    public async Task WaitToReadAsync_CompletedWithErrorWhileWaiting_ThrowsError()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var expectedException = new InvalidOperationException("test error");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        buffer.Complete(expectedException);
+
+        await Assert.That(async () => await waitTask.WaitAsync(cts.Token))
+            .Throws<InvalidOperationException>()
+            .WithMessage("test error");
+        await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
+        await Assert.That(GetDataAvailableWaiter(buffer)).IsNull();
+    }
+
+    [Test]
     public async Task WaitToReadAsync_DataArrivesAfterWait_ReturnsTrue()
     {
         var buffer = new MpscFetchBuffer(4);

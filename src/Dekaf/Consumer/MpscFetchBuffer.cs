@@ -319,7 +319,7 @@ internal sealed class MpscFetchBuffer
     public bool IsCompleted => _completed;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool HasDataAvailable() =>
+    internal bool HasDataAvailable() =>
         Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

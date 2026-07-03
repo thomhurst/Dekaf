@@ -2223,11 +2223,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask<bool> WaitForPrefetchDataAsync(CancellationToken cancellationToken)
     {
-        if (_prefetchBuffer.WaitToRead(0, cancellationToken))
-            return true;
+        cancellationToken.ThrowIfCancellationRequested();
 
-        if (_prefetchBuffer.IsCompleted)
-            return false;
+        if (_prefetchBuffer.HasDataAvailable())
+            return true;
 
         return await _prefetchBuffer.WaitToReadAsync(_options.FetchMaxWaitMs, cancellationToken)
             .ConfigureAwait(false);
