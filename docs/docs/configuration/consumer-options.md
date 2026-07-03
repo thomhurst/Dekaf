@@ -240,6 +240,18 @@ Subscribe to topics during build:
 .SubscribeTo("orders", "payments", "notifications")
 ```
 
+### SubscribeToPattern
+
+Subscribe with a broker-side topic name pattern:
+
+```csharp
+.SubscribeToPattern("orders-.*")
+```
+
+Kafka evaluates the pattern on the broker using RE2/J-compatible syntax. Dekaf sends the pattern as-is; .NET regular expression syntax is not translated.
+
+Server-side pattern subscription requires Kafka 4.1+ brokers with `ConsumerGroupHeartbeat` v1. Use `Subscribe(Func<string, bool>)` on `IKafkaConsumer` when you need arbitrary .NET predicates or compatibility with older brokers. That overload remains client-side and refreshes metadata to find matching topics.
+
 ## Rebalancing
 
 ### WithRebalanceListener
@@ -350,6 +362,7 @@ For transactional reads:
 | `WithSessionTimeout` | 45000ms | Session timeout |
 | `WithHeartbeatInterval` | 3000ms | Group heartbeat interval |
 | `SubscribeTo` | (none) | Topics to subscribe |
+| `SubscribeToPattern` | (none) | Broker-side topic regex subscription; Kafka 4.1+ |
 | `WithRebalanceListener` | null | Rebalance callbacks |
 | `WithPartitionEof` | false | EOF notifications |
 | `WithQueuedMinMessages` | 100000 | Prefetch target count |
