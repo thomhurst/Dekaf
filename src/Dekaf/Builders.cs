@@ -874,6 +874,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             _acks = Acks.All;
         }
 
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>("key", "WithKeySerializer");
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>("value", "WithValueSerializer");
 
@@ -1914,6 +1916,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
 
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+
         var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
 
         var options = new ConsumerOptions
@@ -2215,7 +2219,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
-        _gssapiConfig = config;
+        _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
         return this;
     }
 
@@ -2337,6 +2341,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
         ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
+
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");

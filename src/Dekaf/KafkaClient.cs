@@ -285,6 +285,8 @@ public sealed class KafkaClientBuilder
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}).");
 
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+
         var options = new KafkaClientOptions
         {
             BootstrapServers = _bootstrapServers,

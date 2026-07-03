@@ -43,6 +43,7 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _targetHost = targetHost ?? throw new ArgumentNullException(nameof(targetHost));
+        _config.Validate();
     }
 
     /// <inheritdoc />
@@ -62,29 +63,10 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
         // Mark state early to prevent re-entry even if authentication fails
         _state = GssapiState.TokenExchange;
 
-        // Build the Service Principal Name (SPN)
-        // Format: serviceName/hostname[@realm]
-        var spn = BuildSpn();
+        _config.ApplyKeytabEnvironment();
 
-        // Create the NegotiateAuthentication client
-        // NegotiateAuthentication automatically uses GSSAPI on Unix and SSPI on Windows
-        var clientOptions = new NegotiateAuthenticationClientOptions
-        {
-            Package = "Kerberos",
-            TargetName = spn,
-            RequiredProtectionLevel = ProtectionLevel.None, // Kafka uses authentication only, not integrity/encryption
-            AllowedImpersonationLevel = System.Security.Principal.TokenImpersonationLevel.Identification
-        };
-
-        // Note: NegotiateAuthentication always uses the credentials from the system credential cache.
-        // The Principal and KeytabPath configuration properties are provided for documentation purposes
-        // and to match librdkafka's configuration options, but they do not directly affect credential
-        // selection. To use specific credentials:
-        // - On Linux: Use kinit with the desired principal, or set KRB5_CLIENT_KTNAME for keytab-based auth
-        // - On Windows: Log in as the desired user or use runas
-        // - On macOS: Use kinit with the desired principal
-
-        _auth = new NegotiateAuthentication(clientOptions);
+        // NegotiateAuthentication automatically uses GSSAPI on Unix and SSPI on Windows.
+        _auth = new(_config.CreateClientOptions(_targetHost));
 
         // Get the initial token
         var outgoingBlob = _auth.GetOutgoingBlob(ReadOnlySpan<byte>.Empty, out var statusCode);
@@ -131,20 +113,6 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
         }
 
         throw new AuthenticationException($"GSSAPI authentication failed: {statusCode}");
-    }
-
-    private string BuildSpn()
-    {
-        // SPN format: serviceName/hostname[@REALM]
-        // Kafka brokers typically expect: kafka/broker-hostname@REALM
-        var spn = $"{_config.ServiceName}/{_targetHost}";
-
-        if (_config.Realm is not null)
-        {
-            spn = $"{spn}@{_config.Realm}";
-        }
-
-        return spn;
     }
 
     /// <inheritdoc />

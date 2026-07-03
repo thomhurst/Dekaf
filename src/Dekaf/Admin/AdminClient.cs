@@ -2825,6 +2825,8 @@ public sealed class AdminClientBuilder
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified");
 
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+
         var options = new AdminClientOptions
         {
             BootstrapServers = _bootstrapServers,
