@@ -112,6 +112,18 @@ consumer.IncrementalUnassign(new[]
 });
 ```
 
+Assignment and seek methods mutate a live consumer and return `void`, so write them as sequential commands:
+
+```csharp
+// Before
+consumer.Assign(new TopicPartition("my-topic", 0))
+    .SeekToBeginning(new TopicPartition("my-topic", 0));
+
+// After
+consumer.Assign(new TopicPartition("my-topic", 0));
+consumer.SeekToBeginning(new TopicPartition("my-topic", 0));
+```
+
 ## Seeking
 
 With manual assignment, you can freely seek to any offset:

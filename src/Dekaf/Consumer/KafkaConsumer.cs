@@ -807,7 +807,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    public IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics)
+    public void Subscribe(params string[] topics)
     {
         _topicFilter = null;
         _subscription.Clear();
@@ -836,10 +836,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         ClearFetchBuffer();
 
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> Subscribe(Func<string, bool> topicFilter)
+    public void Subscribe(Func<string, bool> topicFilter)
     {
         ArgumentNullException.ThrowIfNull(topicFilter);
 
@@ -863,10 +862,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> Unsubscribe()
+    public void Unsubscribe()
     {
         _topicFilter = null;
         _subscription.Clear();
@@ -887,10 +885,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> Assign(params TopicPartition[] partitions)
+    public void Assign(params TopicPartition[] partitions)
     {
         _subscription.Clear();
         PublishSubscriptionSnapshot();
@@ -918,10 +915,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> Unassign()
+    public void Unassign()
     {
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
@@ -939,10 +935,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
+    public void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
     {
         // Clear subscription since we're doing manual assignment
         _subscription.Clear();
@@ -973,10 +968,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
+    public void IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
         // Materialize once: the enumerable is iterated three times (assignment removal,
         // state cleanup, fetch buffer clear) and a forward-only sequence would silently
@@ -1007,7 +1001,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
     public async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(
@@ -2333,7 +2326,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         Diagnostics.DekafMetrics.BytesReceived.Add(fetch.TotalBytesConsumed, metricTags);
     }
 
-    public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
+    public void Seek(TopicPartitionOffset offset)
     {
         LogSeek(offset.Topic, offset.Partition, offset.Offset);
         var tp = new TopicPartition(offset.Topic, offset.Partition);
@@ -2344,10 +2337,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Reset EOF state for this partition so it can fire again
         _eofEmitted.TryRemove(tp, out _);
         ClearFetchBuffer();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> SeekToBeginning(params TopicPartition[] partitions)
+    public void SeekToBeginning(params TopicPartition[] partitions)
     {
         // Update positions (thread-safe with ConcurrentDictionary)
         foreach (var partition in partitions)
@@ -2362,10 +2354,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _eofEmitted.TryRemove(partition, out _);
         }
         ClearFetchBuffer();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> SeekToEnd(params TopicPartition[] partitions)
+    public void SeekToEnd(params TopicPartition[] partitions)
     {
         // Update positions (thread-safe with ConcurrentDictionary)
         foreach (var partition in partitions)
@@ -2380,7 +2371,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             _eofEmitted.TryRemove(partition, out _);
         }
         ClearFetchBuffer();
-        return this;
     }
 
     /// <summary>
@@ -2504,7 +2494,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
     }
 
-    public IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions)
+    public void Pause(params TopicPartition[] partitions)
     {
         foreach (var partition in partitions)
         {
@@ -2513,10 +2503,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
-    public IKafkaConsumer<TKey, TValue> Resume(params TopicPartition[] partitions)
+    public void Resume(params TopicPartition[] partitions)
     {
         foreach (var partition in partitions)
         {
@@ -2525,7 +2514,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         PublishPausedSnapshot();
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
-        return this;
     }
 
     private void CancelActiveConsumeOperations()

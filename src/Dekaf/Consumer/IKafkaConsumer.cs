@@ -34,27 +34,27 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Subscribes to topics.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics);
+    void Subscribe(params string[] topics);
 
     /// <summary>
     /// Subscribes to topics matching a pattern.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Subscribe(Func<string, bool> topicFilter);
+    void Subscribe(Func<string, bool> topicFilter);
 
     /// <summary>
     /// Unsubscribes from all topics.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Unsubscribe();
+    void Unsubscribe();
 
     /// <summary>
     /// Manually assigns partitions.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Assign(params TopicPartition[] partitions);
+    void Assign(params TopicPartition[] partitions);
 
     /// <summary>
     /// Unassigns all partitions.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Unassign();
+    void Unassign();
 
     /// <summary>
     /// Incrementally adds partitions to the current assignment.
@@ -62,8 +62,7 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Unlike <see cref="Assign"/>, does not replace the entire assignment.
     /// </summary>
     /// <param name="partitions">The partitions to add with optional starting offsets.</param>
-    /// <returns>This consumer for method chaining.</returns>
-    IKafkaConsumer<TKey, TValue> IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
+    void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
 
     /// <summary>
     /// Incrementally removes partitions from the current assignment.
@@ -71,8 +70,7 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Unlike <see cref="Unassign"/>, only removes the specified partitions.
     /// </summary>
     /// <param name="partitions">The partitions to remove.</param>
-    /// <returns>This consumer for method chaining.</returns>
-    IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions);
+    void IncrementalUnassign(IEnumerable<TopicPartition> partitions);
 
     /// <summary>
     /// Consumes messages as an async enumerable.
@@ -127,27 +125,27 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Seeks to a specific offset.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset);
+    void Seek(TopicPartitionOffset offset);
 
     /// <summary>
     /// Seeks to the beginning of partitions.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> SeekToBeginning(params TopicPartition[] partitions);
+    void SeekToBeginning(params TopicPartition[] partitions);
 
     /// <summary>
     /// Seeks to the end of partitions.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> SeekToEnd(params TopicPartition[] partitions);
+    void SeekToEnd(params TopicPartition[] partitions);
 
     /// <summary>
     /// Pauses consumption from partitions.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions);
+    void Pause(params TopicPartition[] partitions);
 
     /// <summary>
     /// Resumes consumption from partitions.
     /// </summary>
-    IKafkaConsumer<TKey, TValue> Resume(params TopicPartition[] partitions);
+    void Resume(params TopicPartition[] partitions);
 
     /// <summary>
     /// Gets the paused partitions.

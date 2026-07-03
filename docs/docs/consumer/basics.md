@@ -42,6 +42,17 @@ var consumer = await Kafka.CreateConsumer<string, string>()
     .BuildAsync();
 ```
 
+Consumer mutation methods are commands and return `void`. Keep live consumer operations as separate statements:
+
+```csharp
+// Before
+consumer.Subscribe("my-topic").Pause(new TopicPartition("my-topic", 0));
+
+// After
+consumer.Subscribe("my-topic");
+consumer.Pause(new TopicPartition("my-topic", 0));
+```
+
 ## Consuming Messages
 
 The primary way to consume is with `await foreach`:

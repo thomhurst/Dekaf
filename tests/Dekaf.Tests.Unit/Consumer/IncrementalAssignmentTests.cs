@@ -350,7 +350,7 @@ public class IncrementalAssignmentTests
     }
 
     [Test]
-    public async Task IncrementalAssign_MethodChaining()
+    public async Task IncrementalAssign_AllowsSequentialCalls()
     {
         // Arrange
         await using var consumer = new KafkaConsumer<string, string>(
@@ -358,19 +358,17 @@ public class IncrementalAssignmentTests
             Serializers.String,
             Serializers.String);
 
-        // Act - verify method chaining returns the consumer
-        var result = consumer
-            .IncrementalAssign(new[] { new TopicPartitionOffset("topic1", 0, 0) })
-            .IncrementalAssign(new[] { new TopicPartitionOffset("topic1", 1, 0) })
-            .IncrementalAssign(new[] { new TopicPartitionOffset("topic2", 0, 0) });
+        // Act
+        consumer.IncrementalAssign(new[] { new TopicPartitionOffset("topic1", 0, 0) });
+        consumer.IncrementalAssign(new[] { new TopicPartitionOffset("topic1", 1, 0) });
+        consumer.IncrementalAssign(new[] { new TopicPartitionOffset("topic2", 0, 0) });
 
         // Assert
-        await Assert.That(result).IsEqualTo(consumer);
         await Assert.That(consumer.Assignment).Count().IsEqualTo(3);
     }
 
     [Test]
-    public async Task IncrementalUnassign_MethodChaining()
+    public async Task IncrementalUnassign_AllowsSequentialCalls()
     {
         // Arrange
         await using var consumer = new KafkaConsumer<string, string>(
@@ -383,13 +381,11 @@ public class IncrementalAssignmentTests
             new TopicPartition("topic1", 1),
             new TopicPartition("topic2", 0));
 
-        // Act - verify method chaining returns the consumer
-        var result = consumer
-            .IncrementalUnassign(new[] { new TopicPartition("topic1", 0) })
-            .IncrementalUnassign(new[] { new TopicPartition("topic1", 1) });
+        // Act
+        consumer.IncrementalUnassign(new[] { new TopicPartition("topic1", 0) });
+        consumer.IncrementalUnassign(new[] { new TopicPartition("topic1", 1) });
 
         // Assert
-        await Assert.That(result).IsEqualTo(consumer);
         await Assert.That(consumer.Assignment).Count().IsEqualTo(1);
     }
 

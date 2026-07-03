@@ -176,6 +176,18 @@ consumer.SeekToBeginning(new TopicPartition("my-topic", 0));
 consumer.SeekToEnd(new TopicPartition("my-topic", 0));
 ```
 
+Seek and pause/resume operations mutate current consumer state and return `void`. Keep them as separate statements:
+
+```csharp
+// Before
+consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100))
+    .Pause(new TopicPartition("my-topic", 0));
+
+// After
+consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100));
+consumer.Pause(new TopicPartition("my-topic", 0));
+```
+
 ### Seek by Timestamp
 
 Find offsets for a specific time:

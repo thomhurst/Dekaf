@@ -82,13 +82,15 @@ public sealed class PatternSubscriptionTests
     }
 
     [Test]
-    public async Task Subscribe_WithFilter_ReturnsSelf()
+    public async Task Subscribe_WithFilter_LeavesExplicitSubscriptionAndAssignmentEmpty()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .Build();
 
-        var result = consumer.Subscribe(topic => topic.Contains("test"));
-        await Assert.That(result).IsEqualTo(consumer);
+        consumer.Subscribe(topic => topic.Contains("test", StringComparison.Ordinal));
+
+        await Assert.That(consumer.Subscription.Count).IsEqualTo(0);
+        await Assert.That(consumer.Assignment.Count).IsEqualTo(0);
     }
 }
