@@ -588,6 +588,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
     private readonly Dictionary<string, System.Diagnostics.TagList> _metricTagsCache = [];
 
+    private const long EarliestOffsetTimestamp = -2;
+    private const long LatestOffsetTimestamp = -1;
+
     // Cached activity names per topic to avoid repeated string interpolation in fetch paths
     // Instance-level to avoid unbounded growth with dynamic topic names across consumer instances
     private readonly ConcurrentDictionary<string, string> _activityNameCache = new();
@@ -2568,6 +2571,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
+    private static ListOffsetsRequest CreateWatermarkListOffsetsRequest(
+        TopicPartition topicPartition,
+        IsolationLevel isolationLevel,
+        long timestamp) => new()
+        {
+            ReplicaId = -1,
+            IsolationLevel = isolationLevel,
+            Topics =
+            [
+                new ListOffsetsRequestTopic
+                {
+                    Name = topicPartition.Topic,
+                    Partitions =
+                    [
+                        new ListOffsetsRequestPartition
+                        {
+                            PartitionIndex = topicPartition.Partition,
+                            Timestamp = timestamp,
+                            CurrentLeaderEpoch = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
+    private static ListOffsetsResponsePartition? FindListOffsetsPartition(
+        ListOffsetsResponse response,
+        TopicPartition topicPartition)
+    {
+        foreach (var topic in response.Topics)
+        {
+            if (topic.Name != topicPartition.Topic)
+                continue;
+
+            foreach (var partition in topic.Partitions)
+            {
+                if (partition.PartitionIndex == topicPartition.Partition)
+                    return partition;
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
     public async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
@@ -2586,50 +2635,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ListOffsetsRequest.LowestSupportedVersion,
             ListOffsetsRequest.HighestSupportedVersion);
 
-        // Query for earliest offset (low watermark) with timestamp -2
-        var earliestRequest = new ListOffsetsRequest
-        {
-            ReplicaId = -1,
-            IsolationLevel = _options.IsolationLevel,
-            Topics =
-            [
-                new ListOffsetsRequestTopic
-                {
-                    Name = topicPartition.Topic,
-                    Partitions =
-                    [
-                        new ListOffsetsRequestPartition
-                        {
-                            PartitionIndex = topicPartition.Partition,
-                            Timestamp = -2, // Earliest
-                            CurrentLeaderEpoch = -1
-                        }
-                    ]
-                }
-            ]
-        };
+        var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
+        var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
 
-        var earliestResponse = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+        var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             earliestRequest,
             listOffsetsVersion,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken).AsTask();
 
-        ListOffsetsResponsePartition? earliestPartitionResponse = null;
-        foreach (var topic in earliestResponse.Topics)
-        {
-            if (topic.Name == topicPartition.Topic)
-            {
-                foreach (var partition in topic.Partitions)
-                {
-                    if (partition.PartitionIndex == topicPartition.Partition)
-                    {
-                        earliestPartitionResponse = partition;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
+        var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+            latestRequest,
+            listOffsetsVersion,
+            cancellationToken).AsTask();
+
+        await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
+
+        var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
         if (earliestPartitionResponse?.ErrorCode != ErrorCode.None)
         {
@@ -2639,50 +2660,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
 
-        // Query for latest offset (high watermark) with timestamp -1
-        var latestRequest = new ListOffsetsRequest
-        {
-            ReplicaId = -1,
-            IsolationLevel = _options.IsolationLevel,
-            Topics =
-            [
-                new ListOffsetsRequestTopic
-                {
-                    Name = topicPartition.Topic,
-                    Partitions =
-                    [
-                        new ListOffsetsRequestPartition
-                        {
-                            PartitionIndex = topicPartition.Partition,
-                            Timestamp = -1, // Latest
-                            CurrentLeaderEpoch = -1
-                        }
-                    ]
-                }
-            ]
-        };
-
-        var latestResponse = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            latestRequest,
-            listOffsetsVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        ListOffsetsResponsePartition? latestPartitionResponse = null;
-        foreach (var topic in latestResponse.Topics)
-        {
-            if (topic.Name == topicPartition.Topic)
-            {
-                foreach (var partition in topic.Partitions)
-                {
-                    if (partition.PartitionIndex == topicPartition.Partition)
-                    {
-                        latestPartitionResponse = partition;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
+        var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
 
         if (latestPartitionResponse?.ErrorCode != ErrorCode.None)
         {
