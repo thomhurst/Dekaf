@@ -1804,31 +1804,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var reader = _appendWorkerChannels[workerIndex].Reader;
         await foreach (var workItem in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            var appendStarted = false;
             try
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
-                ValueTask<bool> appendTask;
-                try
-                {
-                    appendTask = AppendAsync(
-                        workItem.Topic,
-                        workItem.Partition,
-                        workItem.Timestamp,
-                        workItem.Key,
-                        workItem.Value,
-                        workItem.Headers,
-                        workItem.HeaderCount,
-                        workItem.Completion,
-                        null,
-                        workItem.CancellationToken,
-                        partitionCount: workItem.PartitionCount);
-                }
-                catch
-                {
-                    CleanupWorkItemResources(in workItem);
-                    throw;
-                }
+                appendStarted = true;
+                var appendTask = AppendAsync(
+                    workItem.Topic,
+                    workItem.Partition,
+                    workItem.Timestamp,
+                    workItem.Key,
+                    workItem.Value,
+                    workItem.Headers,
+                    workItem.HeaderCount,
+                    workItem.Completion,
+                    null,
+                    workItem.CancellationToken,
+                    partitionCount: workItem.PartitionCount);
 
                 if (!await appendTask.ConfigureAwait(false))
                 {
@@ -1838,7 +1831,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
             {
-                CleanupWorkItemResources(in workItem);
+                if (!appendStarted)
+                    CleanupWorkItemResources(in workItem);
                 workItem.Completion.TrySetCanceled(workItem.CancellationToken);
             }
             catch (Exception ex)
@@ -2015,7 +2009,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
 
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+        int recordSize;
+        try
+        {
+            recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+        }
+        catch
+        {
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            throw;
+        }
 
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
@@ -2065,161 +2070,189 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReadyBatch? sealedBatchToEnqueue = null;
         PartitionBatch? rentedBatch = null;
         var ownsRotation = false;
+        var ownsReservation = true;
+        var ownsRecordResources = true;
+        var ownsPendingCount = completionSource is not null;
         var spinner = new SpinWait();
 
-        while (true)
+        void ReleaseOwnedAppendState()
         {
-            PartitionBatch? batchToComplete = null;
-            PartitionBatch? batchToReturn = null;
-            ReadyBatch? batchToPublish = null;
-            ReadyBatch? batchToFail = null;
-            var waitForRotation = false;
-            var needBatch = false;
-            var appendSucceeded = false;
-            var disposed = false;
-            var messageTooLarge = false;
-
+            if (ownsPendingCount)
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ownsPendingCount = false;
+            }
+            if (ownsReservation)
+            {
+                ReleaseMemory(recordSize);
+                ownsReservation = false;
+            }
+            if (ownsRecordResources)
+            {
+                key.Return();
+                value.Return();
+                ReturnPooledHeaders(headers);
+                ownsRecordResources = false;
+            }
+        }
 
-                if (Volatile.Read(ref _disposed) != 0)
+        try
+        {
+            while (true)
+            {
+                PartitionBatch? batchToComplete = null;
+                PartitionBatch? batchToReturn = null;
+                ReadyBatch? batchToPublish = null;
+                ReadyBatch? batchToFail = null;
+                var waitForRotation = false;
+                var needBatch = false;
+                var appendSucceeded = false;
+                var disposed = false;
+                var messageTooLarge = false;
+
                 {
-                    batchToReturn = rentedBatch;
-                    rentedBatch = null;
-                    batchToFail = sealedBatchToEnqueue;
-                    sealedBatchToEnqueue = null;
-                    if (ownsRotation)
+                    using var guard = new SpinLockGuard(ref pd.Lock);
+
+                    if (Volatile.Read(ref _disposed) != 0)
                     {
-                        ClearRotationInProgressUnderLock(pd);
-                        ownsRotation = false;
-                    }
-                    disposed = true;
-                }
-                else if (pd.RotationInProgress && !ownsRotation)
-                {
-                    waitForRotation = true;
-                }
-                else
-                {
-                    if (sealedBatchToEnqueue is not null)
-                    {
-                        EnqueueCompletedBatchUnderLock(pd, sealedBatchToEnqueue);
-                        batchToPublish = sealedBatchToEnqueue;
+                        batchToReturn = rentedBatch;
+                        rentedBatch = null;
+                        batchToFail = sealedBatchToEnqueue;
                         sealedBatchToEnqueue = null;
-                    }
-
-                    if (pd.CurrentBatch is { } currentBatch)
-                    {
-                        if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                            completionSource, callback, recordSize))
+                        if (ownsRotation)
                         {
-                            if (completionSource is not null)
-                                QueueLingerPartition(pd, topicPartition);
-                            batchToReturn = rentedBatch;
-                            rentedBatch = null;
-                            appendSucceeded = true;
+                            ClearRotationInProgressUnderLock(pd);
+                            ownsRotation = false;
                         }
-                        else
-                        {
-                            batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
-                            ownsRotation = true;
-                            needBatch = true;
-                        }
+                        disposed = true;
                     }
-                    else if (rentedBatch is null)
+                    else if (pd.RotationInProgress && !ownsRotation)
                     {
-                        needBatch = true;
+                        waitForRotation = true;
                     }
                     else
                     {
-                        var newBatch = rentedBatch;
-                        rentedBatch = null;
-                        pd.CurrentBatch = newBatch;
-                        Interlocked.Increment(ref _unsealedBatchCount);
-                        TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
-
-                        if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                            completionSource, callback, recordSize))
+                        if (sealedBatchToEnqueue is not null)
                         {
-                            ClearRotationInProgressUnderLock(pd);
-                            ownsRotation = false;
-                            appendSucceeded = true;
+                            EnqueueCompletedBatchUnderLock(pd, sealedBatchToEnqueue);
+                            batchToPublish = sealedBatchToEnqueue;
+                            sealedBatchToEnqueue = null;
+                        }
+
+                        if (pd.CurrentBatch is { } currentBatch)
+                        {
+                            if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
+                                completionSource, callback, recordSize))
+                            {
+                                ownsReservation = false;
+                                ownsRecordResources = false;
+                                ownsPendingCount = false;
+                                if (completionSource is not null)
+                                    QueueLingerPartition(pd, topicPartition);
+                                batchToReturn = rentedBatch;
+                                rentedBatch = null;
+                                appendSucceeded = true;
+                            }
+                            else
+                            {
+                                batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+                                ownsRotation = true;
+                                needBatch = true;
+                            }
+                        }
+                        else if (rentedBatch is null)
+                        {
+                            needBatch = true;
                         }
                         else
                         {
-                            pd.CurrentBatch = null;
-                            MarkLingerPartitionDequeued(pd);
-                            Interlocked.Decrement(ref _unsealedBatchCount);
-                            ClearRotationInProgressUnderLock(pd);
-                            ownsRotation = false;
-                            batchToReturn = newBatch;
-                            messageTooLarge = true;
+                            var newBatch = rentedBatch;
+                            rentedBatch = null;
+                            pd.CurrentBatch = newBatch;
+                            Interlocked.Increment(ref _unsealedBatchCount);
+                            TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
+
+                            if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
+                                completionSource, callback, recordSize))
+                            {
+                                ownsReservation = false;
+                                ownsRecordResources = false;
+                                ownsPendingCount = false;
+                                ClearRotationInProgressUnderLock(pd);
+                                ownsRotation = false;
+                                appendSucceeded = true;
+                            }
+                            else
+                            {
+                                pd.CurrentBatch = null;
+                                MarkLingerPartitionDequeued(pd);
+                                Interlocked.Decrement(ref _unsealedBatchCount);
+                                ClearRotationInProgressUnderLock(pd);
+                                ownsRotation = false;
+                                batchToReturn = newBatch;
+                                messageTooLarge = true;
+                            }
                         }
                     }
                 }
-            }
 
-            if (batchToPublish is not null)
-                PublishSealedBatch(batchToPublish);
+                if (batchToPublish is not null)
+                    PublishSealedBatch(batchToPublish);
 
-            if (batchToReturn is not null)
-                _batchPool.Return(batchToReturn);
+                if (batchToReturn is not null)
+                    _batchPool.Return(batchToReturn);
 
-            if (batchToFail is not null)
-            {
-                var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-                batchToFail.Fail(disposedException);
-                if (batchToFail.TrySetMemoryReleased())
-                    ReleaseMemory(batchToFail.DataSize);
-            }
-
-            if (disposed)
-            {
-                if (completionSource is not null)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                key.Return();
-                value.Return();
-                ReturnPooledHeaders(headers);
-                return false;
-            }
-
-            if (messageTooLarge)
-            {
-                if (completionSource is not null)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                key.Return();
-                value.Return();
-                ReturnPooledHeaders(headers);
-                throw new KafkaException(ErrorCode.MessageTooLarge,
-                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
-            }
-
-            if (appendSucceeded)
-                return true;
-
-            if (waitForRotation)
-            {
-                spinner.SpinOnce();
-                continue;
-            }
-
-            if (batchToComplete is not null)
-            {
-                try
+                if (batchToFail is not null)
                 {
-                    sealedBatchToEnqueue = CompleteDetachedBatch(batchToComplete);
+                    var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+                    batchToFail.Fail(disposedException);
+                    if (batchToFail.TrySetMemoryReleased())
+                        ReleaseMemory(batchToFail.DataSize);
                 }
-                catch
-                {
-                    ClearRotationInProgress(pd);
-                    throw;
-                }
-            }
 
-            if (needBatch && rentedBatch is null)
-                rentedBatch = RentBatch(topicPartition, partitionCount);
+                if (disposed)
+                {
+                    ReleaseOwnedAppendState();
+                    return false;
+                }
+
+                if (messageTooLarge)
+                {
+                    ReleaseOwnedAppendState();
+                    throw new KafkaException(ErrorCode.MessageTooLarge,
+                        $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+                }
+
+                if (appendSucceeded)
+                    return true;
+
+                if (waitForRotation)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                if (batchToComplete is not null)
+                {
+                    try
+                    {
+                        sealedBatchToEnqueue = CompleteDetachedBatch(batchToComplete);
+                    }
+                    catch
+                    {
+                        ClearRotationInProgress(pd);
+                        throw;
+                    }
+                }
+
+                if (needBatch && rentedBatch is null)
+                    rentedBatch = RentBatch(topicPartition, partitionCount);
+            }
+        }
+        catch
+        {
+            ReleaseOwnedAppendState();
+            throw;
         }
     }
 
@@ -2378,159 +2411,187 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReadyBatch? sealedBatchToEnqueue = null;
         PartitionBatch? rentedBatch = null;
         var ownsRotation = false;
+        var ownsReservation = true;
+        var ownsHeaderResources = returnHeadersOnFailure;
+        var ownsPendingCount = completionSource is not null;
         var spinner = new SpinWait();
 
-        while (true)
+        void ReleaseOwnedAppendState()
         {
-            PartitionBatch? batchToComplete = null;
-            PartitionBatch? batchToReturn = null;
-            ReadyBatch? batchToPublish = null;
-            ReadyBatch? batchToFail = null;
-            var waitForRotation = false;
-            var needBatch = false;
-            var appendSucceeded = false;
-            var disposed = false;
-            var messageTooLarge = false;
-
+            if (ownsPendingCount)
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ownsPendingCount = false;
+            }
+            if (ownsReservation)
+            {
+                ReleaseMemory(recordSize);
+                ownsReservation = false;
+            }
+            if (ownsHeaderResources)
+            {
+                ReturnPooledHeaders(headers);
+                ownsHeaderResources = false;
+            }
+        }
 
-                if (Volatile.Read(ref _disposed) != 0)
+        try
+        {
+            while (true)
+            {
+                PartitionBatch? batchToComplete = null;
+                PartitionBatch? batchToReturn = null;
+                ReadyBatch? batchToPublish = null;
+                ReadyBatch? batchToFail = null;
+                var waitForRotation = false;
+                var needBatch = false;
+                var appendSucceeded = false;
+                var disposed = false;
+                var messageTooLarge = false;
+
                 {
-                    batchToReturn = rentedBatch;
-                    rentedBatch = null;
-                    batchToFail = sealedBatchToEnqueue;
-                    sealedBatchToEnqueue = null;
-                    if (ownsRotation)
+                    using var guard = new SpinLockGuard(ref pd.Lock);
+
+                    if (Volatile.Read(ref _disposed) != 0)
                     {
-                        ClearRotationInProgressUnderLock(pd);
-                        ownsRotation = false;
-                    }
-                    disposed = true;
-                }
-                else if (pd.RotationInProgress && !ownsRotation)
-                {
-                    waitForRotation = true;
-                }
-                else
-                {
-                    if (sealedBatchToEnqueue is not null)
-                    {
-                        EnqueueCompletedBatchUnderLock(pd, sealedBatchToEnqueue);
-                        batchToPublish = sealedBatchToEnqueue;
+                        batchToReturn = rentedBatch;
+                        rentedBatch = null;
+                        batchToFail = sealedBatchToEnqueue;
                         sealedBatchToEnqueue = null;
-                    }
-
-                    if (pd.CurrentBatch is { } currentBatch)
-                    {
-                        if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                            headers, headerCount, completionSource, callback, recordSize, returnHeadersOnFailure))
+                        if (ownsRotation)
                         {
-                            if (completionSource is not null)
-                                QueueLingerPartition(pd, topicPartition);
-                            batchToReturn = rentedBatch;
-                            rentedBatch = null;
-                            appendSucceeded = true;
+                            ClearRotationInProgressUnderLock(pd);
+                            ownsRotation = false;
                         }
-                        else
-                        {
-                            batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
-                            ownsRotation = true;
-                            needBatch = true;
-                        }
+                        disposed = true;
                     }
-                    else if (rentedBatch is null)
+                    else if (pd.RotationInProgress && !ownsRotation)
                     {
-                        needBatch = true;
+                        waitForRotation = true;
                     }
                     else
                     {
-                        var newBatch = rentedBatch;
-                        rentedBatch = null;
-                        pd.CurrentBatch = newBatch;
-                        Interlocked.Increment(ref _unsealedBatchCount);
-                        TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
-
-                        if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                            headers, headerCount, completionSource, callback, recordSize, returnHeadersOnFailure))
+                        if (sealedBatchToEnqueue is not null)
                         {
-                            ClearRotationInProgressUnderLock(pd);
-                            ownsRotation = false;
-                            appendSucceeded = true;
+                            EnqueueCompletedBatchUnderLock(pd, sealedBatchToEnqueue);
+                            batchToPublish = sealedBatchToEnqueue;
+                            sealedBatchToEnqueue = null;
+                        }
+
+                        if (pd.CurrentBatch is { } currentBatch)
+                        {
+                            if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                                headers, headerCount, completionSource, callback, recordSize))
+                            {
+                                ownsReservation = false;
+                                ownsHeaderResources = false;
+                                ownsPendingCount = false;
+                                if (completionSource is not null)
+                                    QueueLingerPartition(pd, topicPartition);
+                                batchToReturn = rentedBatch;
+                                rentedBatch = null;
+                                appendSucceeded = true;
+                            }
+                            else
+                            {
+                                batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+                                ownsRotation = true;
+                                needBatch = true;
+                            }
+                        }
+                        else if (rentedBatch is null)
+                        {
+                            needBatch = true;
                         }
                         else
                         {
-                            pd.CurrentBatch = null;
-                            MarkLingerPartitionDequeued(pd);
-                            Interlocked.Decrement(ref _unsealedBatchCount);
-                            ClearRotationInProgressUnderLock(pd);
-                            ownsRotation = false;
-                            batchToReturn = newBatch;
-                            messageTooLarge = true;
+                            var newBatch = rentedBatch;
+                            rentedBatch = null;
+                            pd.CurrentBatch = newBatch;
+                            Interlocked.Increment(ref _unsealedBatchCount);
+                            TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
+
+                            if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                                headers, headerCount, completionSource, callback, recordSize))
+                            {
+                                ownsReservation = false;
+                                ownsHeaderResources = false;
+                                ownsPendingCount = false;
+                                ClearRotationInProgressUnderLock(pd);
+                                ownsRotation = false;
+                                appendSucceeded = true;
+                            }
+                            else
+                            {
+                                pd.CurrentBatch = null;
+                                MarkLingerPartitionDequeued(pd);
+                                Interlocked.Decrement(ref _unsealedBatchCount);
+                                ClearRotationInProgressUnderLock(pd);
+                                ownsRotation = false;
+                                batchToReturn = newBatch;
+                                messageTooLarge = true;
+                            }
                         }
                     }
                 }
-            }
 
-            if (batchToPublish is not null)
-                PublishSealedBatch(batchToPublish);
+                if (batchToPublish is not null)
+                    PublishSealedBatch(batchToPublish);
 
-            if (batchToReturn is not null)
-                _batchPool.Return(batchToReturn);
+                if (batchToReturn is not null)
+                    _batchPool.Return(batchToReturn);
 
-            if (batchToFail is not null)
-            {
-                var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-                batchToFail.Fail(disposedException);
-                if (batchToFail.TrySetMemoryReleased())
-                    ReleaseMemory(batchToFail.DataSize);
-            }
-
-            if (disposed)
-            {
-                if (completionSource is not null)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                if (returnHeadersOnFailure)
-                    ReturnPooledHeaders(headers);
-                return false;
-            }
-
-            if (messageTooLarge)
-            {
-                if (completionSource is not null)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-                ReleaseMemory(recordSize);
-                if (returnHeadersOnFailure)
-                    ReturnPooledHeaders(headers);
-                throw new KafkaException(ErrorCode.MessageTooLarge,
-                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
-            }
-
-            if (appendSucceeded)
-                return true;
-
-            if (waitForRotation)
-            {
-                spinner.SpinOnce();
-                continue;
-            }
-
-            if (batchToComplete is not null)
-            {
-                try
+                if (batchToFail is not null)
                 {
-                    sealedBatchToEnqueue = CompleteDetachedBatch(batchToComplete);
+                    var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+                    batchToFail.Fail(disposedException);
+                    if (batchToFail.TrySetMemoryReleased())
+                        ReleaseMemory(batchToFail.DataSize);
                 }
-                catch
-                {
-                    ClearRotationInProgress(pd);
-                    throw;
-                }
-            }
 
-            if (needBatch && rentedBatch is null)
-                rentedBatch = RentBatch(topicPartition, partitionCount);
+                if (disposed)
+                {
+                    ReleaseOwnedAppendState();
+                    return false;
+                }
+
+                if (messageTooLarge)
+                {
+                    ReleaseOwnedAppendState();
+                    throw new KafkaException(ErrorCode.MessageTooLarge,
+                        $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+                }
+
+                if (appendSucceeded)
+                    return true;
+
+                if (waitForRotation)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                if (batchToComplete is not null)
+                {
+                    try
+                    {
+                        sealedBatchToEnqueue = CompleteDetachedBatch(batchToComplete);
+                    }
+                    catch
+                    {
+                        ClearRotationInProgress(pd);
+                        throw;
+                    }
+                }
+
+                if (needBatch && rentedBatch is null)
+                    rentedBatch = RentBatch(topicPartition, partitionCount);
+            }
+        }
+        catch
+        {
+            ReleaseOwnedAppendState();
+            throw;
         }
     }
 
@@ -2549,21 +2610,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
-        RecordAppendResult result;
-        try
-        {
-            result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
-        }
-        catch
-        {
-            if (completionSource is not null)
-                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-            ReleaseMemory(estimatedSize);
-            key.Return();
-            value.Return();
-            ReturnPooledHeaders(headers);
-            throw;
-        }
+        var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {
@@ -2602,7 +2649,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
-        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
+        int recordSize;
+        try
+        {
+            recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
+        }
+        catch
+        {
+            ReturnPooledHeaders(headers);
+            throw;
+        }
 
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
@@ -2687,24 +2743,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedSize,
-        bool returnHeadersOnFailure)
+        int estimatedSize)
     {
-        RecordAppendResult result;
-        try
-        {
-            result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                headers, headerCount, completionSource, callback);
-        }
-        catch
-        {
-            if (completionSource is not null)
-                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-            ReleaseMemory(estimatedSize);
-            if (returnHeadersOnFailure)
-                ReturnPooledHeaders(headers);
-            throw;
-        }
+        var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
+            headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {

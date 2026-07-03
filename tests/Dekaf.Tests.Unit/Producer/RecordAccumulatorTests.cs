@@ -5,6 +5,7 @@ using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -234,6 +235,115 @@ public class RecordAccumulatorTests
         await Assert.That(Encoding.UTF8.GetString(parsed.Records[0].Value.Span)).IsEqualTo(valueText);
 
         readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.FromUnixTimeMilliseconds(timestamp));
+    }
+
+    [Test]
+    public async Task AppendFromSpansAsync_ArenaFullBeforeBatchSize_RotatesAndPreservesRecords()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1000,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var appended = await accumulator.AppendFromSpansAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            new byte[] { 1 },
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+
+        var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+        var arena = currentBatch.Arena!;
+        var remaining = arena.RemainingCapacity;
+        await Assert.That(remaining).IsGreaterThan(0);
+        await Assert.That(arena.TryAllocate(remaining, out _, out _)).IsTrue();
+        await Assert.That(currentBatch.EstimatedSize).IsLessThan(options.BatchSize);
+
+        appended = await accumulator.AppendFromSpansAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp + 1,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            new byte[] { 2 },
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+
+        await Assert.That(accumulator.TryDrainBatch(out var firstBatch)).IsTrue();
+        await Assert.That(firstBatch!.RecordBatch.Records[0].Value.Span[0]).IsEqualTo((byte)1);
+
+        var secondBatch = CompleteCurrentBatch(accumulator, topicPartition);
+        await Assert.That(secondBatch.RecordBatch.Records[0].Value.Span[0]).IsEqualTo((byte)2);
+
+        var now = DateTimeOffset.UtcNow;
+        firstBatch.CompleteSend(baseOffset: 0, now);
+        secondBatch.CompleteSend(baseOffset: 1, now);
+    }
+
+    [Test]
+    public async Task PartitionBatch_TryAppendFromSpans_WhenHeaderEncodingThrows_RewindsArenaAllocation()
+    {
+        var options = CreateTestOptions();
+        var batch = new PartitionBatch(new TopicPartition("test-topic", 0), options);
+        var headerValue = new ThrowingReadOnlyMemoryManager(length: 8);
+        var headers = new[] { new Header("bad-header", headerValue.ReadOnlyMemory, isNull: false) };
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        await Assert.That(() => batch.TryAppendFromSpans(
+                timestamp,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                new byte[] { 1 },
+                valueIsNull: false,
+                headers,
+                headerCount: 1,
+                completionSource: null,
+                callback: null))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(batch.Arena!.Position).IsEqualTo(0);
+        await Assert.That(batch.RecordCount).IsEqualTo(0);
+
+        var result = batch.TryAppendFromSpans(
+            timestamp + 1,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            new byte[] { 2 },
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null);
+
+        await Assert.That(result.Success).IsTrue();
+        await Assert.That(batch.RecordCount).IsEqualTo(1);
+        await Assert.That(batch.Arena!.Position).IsEqualTo(result.ActualSizeAdded);
+
+        var readyBatch = batch.Complete();
+        readyBatch!.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
     }
 
     [Test]
@@ -2163,11 +2273,16 @@ public class RecordAccumulatorTests
 
     private static ReadyBatch CompleteCurrentBatch(RecordAccumulator accumulator, TopicPartition topicPartition)
     {
-        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
-        var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
-        var partitionBatch = currentBatchField!.GetValue(partitionDeque);
-        var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
+        var partitionBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+        var completeMethod = partitionBatch.GetType().GetMethod("Complete");
         return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+    }
+
+    private static PartitionBatch GetCurrentPartitionBatch(RecordAccumulator accumulator, TopicPartition topicPartition)
+    {
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var currentBatchField = partitionDeque.GetType().GetField("CurrentBatch");
+        return (PartitionBatch)currentBatchField!.GetValue(partitionDeque)!;
     }
 
     private static object GetPartitionDeque(RecordAccumulator accumulator, TopicPartition topicPartition)
@@ -2189,5 +2304,24 @@ public class RecordAccumulatorTests
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
         return (T)field!.GetValue(instance)!;
+    }
+
+    private sealed class ThrowingReadOnlyMemoryManager(int length) : MemoryManager<byte>
+    {
+        public ReadOnlyMemory<byte> ReadOnlyMemory => CreateMemory(length);
+
+        public override Span<byte> GetSpan() =>
+            throw new InvalidOperationException("Header value span failed.");
+
+        public override MemoryHandle Pin(int elementIndex = 0) =>
+            throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 }
