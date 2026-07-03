@@ -1078,7 +1078,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 pooledHeaderArray,
                 headerCount,
                 completion,
-                batchCompletionPartitionCount))
+                partitionCount: batchCompletionPartitionCount,
+                cachePartitionCount: topicInfo.PartitionCount))
             {
                 // Clean up headers — the async slow path will re-serialize.
                 RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
@@ -1337,7 +1338,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             headerCount,
             completion,
             cancellationToken,
-            batchCompletionPartitionCount);
+            partitionCount: batchCompletionPartitionCount,
+            cachePartitionCount: topicInfo.PartitionCount);
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(
@@ -2729,7 +2731,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             keySpan, keyIsNull,
             valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
             valueIsNull,
-            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
+            pooledHeaderArray, headerCount, callback, CancellationToken.None,
+            partitionCount: batchCompletionPartitionCount,
+            cachePartitionCount: topicInfo.PartitionCount);
     }
 
     /// <summary>

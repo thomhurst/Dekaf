@@ -391,6 +391,7 @@ internal readonly struct AppendWorkItem
     public readonly string Topic;
     public readonly int Partition;
     public readonly int PartitionCount;
+    public readonly int CachePartitionCount;
     public readonly long Timestamp;
     public readonly PooledMemory Key;
     public readonly PooledMemory Value;
@@ -403,6 +404,7 @@ internal readonly struct AppendWorkItem
         string topic,
         int partition,
         int partitionCount,
+        int cachePartitionCount,
         long timestamp,
         PooledMemory key,
         PooledMemory value,
@@ -414,6 +416,7 @@ internal readonly struct AppendWorkItem
         Topic = topic;
         Partition = partition;
         PartitionCount = partitionCount;
+        CachePartitionCount = cachePartitionCount;
         Timestamp = timestamp;
         Key = key;
         Value = value;
@@ -1527,7 +1530,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         var result = AppendAfterReservation(
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
-                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount);
+                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount, op.CachePartitionCount);
 
                         op.CompleteResult(result);
                     }
@@ -1783,7 +1786,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Completion,
                     null,
                     workItem.CancellationToken,
-                    partitionCount: workItem.PartitionCount).ConfigureAwait(false))
+                    partitionCount: workItem.PartitionCount,
+                    cachePartitionCount: workItem.CachePartitionCount).ConfigureAwait(false))
                 {
                     CleanupWorkItemResources(in workItem);
                     workItem.Completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
@@ -1836,11 +1840,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int cachePartitionCount = 0)
     {
         EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
-        var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
+        var workItem = new AppendWorkItem(topic, partition, partitionCount, cachePartitionCount, timestamp, key, value,
             headers, headerCount, completion, cancellationToken);
 
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
@@ -1871,6 +1876,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // If partition eviction is ever added, the cache must be invalidated on removal.
     [ThreadStatic]
     private static AccumulatorThreadCache? t_cache;
+    private const int TopicDequeCacheSlots = 8;
+
+    private struct CachedTopicDequeArray
+    {
+        public string? Topic;
+        public PartitionDeque?[]? Deques;
+    }
 
     /// <summary>
     /// Holds per-thread cached state for partition deque lookups.
@@ -1881,6 +1893,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public RecordAccumulator? CachedAccumulator;
         public string? CachedTopic;
         public PartitionDeque?[]? CachedTopicDeques;
+        public CachedTopicDequeArray[]? CachedTopicEntries;
+        public int NextTopicSlot;
     }
 
     /// <summary>
@@ -1889,38 +1903,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// same thread rotates through partitions of one topic.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private PartitionDeque GetOrCreateDeque(string topic, int partition, int partitionCount)
+    private PartitionDeque GetOrCreateDeque(string topic, int partition, int cachePartitionCount)
     {
         var cache = t_cache ??= new AccumulatorThreadCache();
         var cachedTopic = cache.CachedTopic;
         var cachedDeques = cache.CachedTopicDeques;
 
-        if (cache.CachedAccumulator == this &&
-            Volatile.Read(ref _disposed) == 0 &&
-            TopicMatches(cachedTopic, topic) &&
-            cachedDeques is not null &&
-            (uint)partition < (uint)cachedDeques.Length &&
-            cachedDeques[partition] is { } cached)
+        if (cache.CachedAccumulator == this && Volatile.Read(ref _disposed) == 0)
         {
-            return cached;
+            if (TopicMatches(cachedTopic, topic) &&
+                TryGetCachedDeque(cachedDeques, partition, out var cached))
+            {
+                return cached!;
+            }
+
+            if (TryGetCachedTopicDeque(cache, topic, partition, out cached))
+                return cached!;
         }
 
-        return GetOrCreateDequeSlow(topic, partition, partitionCount, cache);
+        return GetOrCreateDequeSlow(topic, partition, cachePartitionCount, cache);
     }
-
-    private PartitionDeque GetOrCreateDeque(string topic, int partition) =>
-        GetOrCreateDeque(topic, partition, partition + 1);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private PartitionDeque GetOrCreateDequeSlow(
         string topic,
         int partition,
-        int partitionCount,
+        int cachePartitionCount,
         AccumulatorThreadCache cache)
     {
         var tp = new TopicPartition(topic, partition);
         var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
-        var deques = GetOrCreateCachedDequeArray(topic, partition, partitionCount, cache);
+        var deques = GetOrCreateCachedDequeArray(topic, partition, cachePartitionCount, cache);
         deques[partition] = deque;
         return deque;
     }
@@ -1929,29 +1942,133 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private PartitionDeque?[] GetOrCreateCachedDequeArray(
         string topic,
         int partition,
-        int partitionCount,
+        int cachePartitionCount,
         AccumulatorThreadCache cache)
     {
-        var cachedTopic = cache.CachedTopic;
-        var capacity = Math.Max(partition + 1, partitionCount);
+        var requiredCapacity = GetDequeCacheCapacity(partition, cachePartitionCount);
+
+        if (cache.CachedAccumulator != this)
+            ResetCacheForAccumulator(cache, this);
 
         if (cache.CachedAccumulator == this &&
-            TopicMatches(cachedTopic, topic) &&
+            TopicMatches(cache.CachedTopic, topic) &&
             cache.CachedTopicDeques is { } existing)
         {
-            if (existing.Length >= capacity)
-                return existing;
-
-            Array.Resize(ref existing, capacity);
-            cache.CachedTopicDeques = existing;
-            return existing;
+            var resizedDeques = EnsureDequeCacheCapacity(existing, requiredCapacity);
+            cache.CachedTopicDeques = resizedDeques;
+            UpdateCachedTopicEntry(cache, topic, resizedDeques);
+            return resizedDeques;
         }
 
-        var deques = new PartitionDeque?[capacity];
+        var entries = cache.CachedTopicEntries ??= new CachedTopicDequeArray[TopicDequeCacheSlots];
+        for (var i = 0; i < entries.Length; i++)
+        {
+            ref var entry = ref entries[i];
+            if (!TopicMatches(entry.Topic, topic) || entry.Deques is not { } entryDeques)
+                continue;
+
+            entryDeques = EnsureDequeCacheCapacity(entryDeques, requiredCapacity);
+            entry.Deques = entryDeques;
+            cache.CachedTopic = entry.Topic;
+            cache.CachedTopicDeques = entryDeques;
+            return entryDeques;
+        }
+
+        var newDeques = new PartitionDeque?[requiredCapacity];
+        var slot = (int)((uint)cache.NextTopicSlot++ % (uint)entries.Length);
+        entries[slot] = new CachedTopicDequeArray { Topic = topic, Deques = newDeques };
         cache.CachedAccumulator = this;
         cache.CachedTopic = topic;
-        cache.CachedTopicDeques = deques;
-        return deques;
+        cache.CachedTopicDeques = newDeques;
+        return newDeques;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryGetCachedDeque(PartitionDeque?[]? deques, int partition, out PartitionDeque? cached)
+    {
+        if (deques is not null &&
+            (uint)partition < (uint)deques.Length &&
+            deques[partition] is { } deque)
+        {
+            cached = deque;
+            return true;
+        }
+
+        cached = null;
+        return false;
+    }
+
+    private static bool TryGetCachedTopicDeque(
+        AccumulatorThreadCache cache,
+        string topic,
+        int partition,
+        out PartitionDeque? cached)
+    {
+        var entries = cache.CachedTopicEntries;
+        if (entries is not null)
+        {
+            for (var i = 0; i < entries.Length; i++)
+            {
+                var entry = entries[i];
+                if (TopicMatches(entry.Topic, topic) &&
+                    TryGetCachedDeque(entry.Deques, partition, out cached))
+                {
+                    cache.CachedTopic = entry.Topic;
+                    cache.CachedTopicDeques = entry.Deques;
+                    return true;
+                }
+            }
+        }
+
+        cached = null;
+        return false;
+    }
+
+    private static void ResetCacheForAccumulator(AccumulatorThreadCache cache, RecordAccumulator accumulator)
+    {
+        cache.CachedAccumulator = accumulator;
+        cache.CachedTopic = null;
+        cache.CachedTopicDeques = null;
+        cache.NextTopicSlot = 0;
+
+        if (cache.CachedTopicEntries is not null)
+            Array.Clear(cache.CachedTopicEntries);
+    }
+
+    private static void UpdateCachedTopicEntry(
+        AccumulatorThreadCache cache,
+        string topic,
+        PartitionDeque?[] deques)
+    {
+        var entries = cache.CachedTopicEntries;
+        if (entries is null)
+            return;
+
+        for (var i = 0; i < entries.Length; i++)
+        {
+            if (TopicMatches(entries[i].Topic, topic))
+            {
+                entries[i].Deques = deques;
+                return;
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetDequeCacheCapacity(int partition, int cachePartitionCount) =>
+        Math.Max(1, Math.Max(partition + 1, cachePartitionCount));
+
+    private static PartitionDeque?[] EnsureDequeCacheCapacity(
+        PartitionDeque?[] existing,
+        int requiredCapacity)
+    {
+        if (existing.Length >= requiredCapacity)
+            return existing;
+
+        var doubled = existing.Length <= int.MaxValue / 2 ? existing.Length * 2 : int.MaxValue;
+        var newCapacity = Math.Max(requiredCapacity, doubled);
+        Array.Resize(ref existing, newCapacity);
+        return existing;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2008,7 +2125,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int cachePartitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -2018,11 +2136,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
-                headers, headerCount, completionSource, callback, recordSize, partitionCount));
+                headers, headerCount, completionSource, callback, recordSize, partitionCount, cachePartitionCount));
 
         // Cold path: buffer full — enqueue pooled PendingAppend (zero async state machine allocation)
         return AppendSlowPathPooled(topic, partition, timestamp, key, value,
-            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount);
+            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount, cachePartitionCount);
     }
 
     private bool AppendAfterReservation(
@@ -2036,13 +2154,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        int cachePartitionCount)
     {
         if (completionSource is not null)
             Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
         return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback, recordSize, partitionCount);
+            completionSource, callback, recordSize, partitionCount, cachePartitionCount);
     }
 
     private bool AppendPooledAfterReservationCore(
@@ -2056,10 +2175,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        int cachePartitionCount)
     {
         var topicPartition = new TopicPartition(topic, partition);
-        var pd = GetOrCreateDeque(topic, partition, partitionCount);
+        var pd = GetOrCreateDeque(topic, partition, cachePartitionCount);
         ReadyBatch? sealedBatchToEnqueue = null;
         PartitionBatch? rentedBatch = null;
         var ownsRotation = false;
@@ -2238,7 +2358,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int cachePartitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -2259,7 +2380,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var (startTicks, deadline) = BeginReservationWait(recordSize);
 
         var op = _pendingAppendPool.Rent();
-        op.Initialize(topic, partition, partitionCount, timestamp, key, value, headers, headerCount,
+        op.Initialize(topic, partition, partitionCount, cachePartitionCount, timestamp, key, value, headers, headerCount,
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
@@ -2301,7 +2422,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completionSource,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int cachePartitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return false;
@@ -2317,7 +2439,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
         return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback: null, recordSize, partitionCount);
+            completionSource, callback: null, recordSize, partitionCount, cachePartitionCount);
     }
 
     /// <summary>
@@ -2336,7 +2458,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completionSource,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int cachePartitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return false;
@@ -2352,7 +2475,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource, callback: null,
-            recordSize, partitionCount, returnHeadersOnFailure: false);
+            recordSize, partitionCount, cachePartitionCount, returnHeadersOnFailure: false);
     }
 
     private bool AppendFromSpansAfterReservationCore(
@@ -2369,10 +2492,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
+        int cachePartitionCount,
         bool returnHeadersOnFailure)
     {
         var topicPartition = new TopicPartition(topic, partition);
-        var pd = GetOrCreateDeque(topic, partition, partitionCount);
+        var pd = GetOrCreateDeque(topic, partition, cachePartitionCount);
         ReadyBatch? sealedBatchToEnqueue = null;
         PartitionBatch? rentedBatch = null;
         var ownsRotation = false;
@@ -2579,7 +2703,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int cachePartitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -2591,7 +2716,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking CAS reservation — no async state machine allocated
         if (TryReserveMemory(recordSize))
             return new ValueTask<bool>(AppendFromSpansAfterReservation(topic, partition, timestamp,
-                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize, partitionCount));
+                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize, partitionCount, cachePartitionCount));
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -2599,7 +2724,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
         return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, callback, recordSize, partitionCount, cancellationToken);
+            headers, headerCount, callback, recordSize, partitionCount, cachePartitionCount, cancellationToken);
     }
 
     /// <summary>
@@ -2617,11 +2742,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        int cachePartitionCount)
     {
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource: null, callback,
-            recordSize, partitionCount, returnHeadersOnFailure: true);
+            recordSize, partitionCount, cachePartitionCount, returnHeadersOnFailure: true);
     }
 
     /// <summary>
@@ -2639,10 +2765,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
+        int cachePartitionCount,
         CancellationToken cancellationToken)
     {
         return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount);
+            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount, cachePartitionCount);
     }
 
     /// <summary>

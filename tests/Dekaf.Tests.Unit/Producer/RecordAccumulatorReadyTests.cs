@@ -1091,8 +1091,8 @@ public class RecordAccumulatorReadyTests
         var method = typeof(RecordAccumulator).GetMethod(
             "GetOrCreateDeque",
             BindingFlags.NonPublic | BindingFlags.Instance,
-            [typeof(string), typeof(int)]);
-        return method!.Invoke(accumulator, [topic, partition])!;
+            [typeof(string), typeof(int), typeof(int)]);
+        return method!.Invoke(accumulator, [topic, partition, 0])!;
     }
 
     private static void SetInstanceField<T>(object instance, string fieldName, T value)

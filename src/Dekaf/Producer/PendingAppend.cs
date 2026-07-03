@@ -40,6 +40,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private string _topic = null!;
     private int _partition;
     private int _partitionCount;
+    private int _cachePartitionCount;
     private long _timestamp;
     private PooledMemory _key;
     private PooledMemory _value;
@@ -73,6 +74,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal string Topic => _topic;
     internal int Partition => _partition;
     internal int PartitionCount => _partitionCount;
+    internal int CachePartitionCount => _cachePartitionCount;
     internal long Timestamp => _timestamp;
     internal PooledMemory Key => _key;
     internal PooledMemory Value => _value;
@@ -101,6 +103,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         string topic,
         int partition,
         int partitionCount,
+        int cachePartitionCount,
         long timestamp,
         PooledMemory key,
         PooledMemory value,
@@ -118,6 +121,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _topic = topic;
         _partition = partition;
         _partitionCount = partitionCount;
+        _cachePartitionCount = cachePartitionCount;
         _timestamp = timestamp;
         _key = key;
         _value = value;
@@ -248,6 +252,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         // Clear references to avoid rooting objects across pool rentals
         _topic = null!;
         _partitionCount = 0;
+        _cachePartitionCount = 0;
         _key = default;
         _value = default;
         _headers = null;

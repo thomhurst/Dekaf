@@ -19,6 +19,7 @@ public class AccumulatorAppendBenchmarks
     private RecordAccumulator _accumulator = null!;
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
+    private string[] _topics = null!;
     private CancellationTokenSource _drainerCts = null!;
     private Task _drainerTask = null!;
 
@@ -39,6 +40,13 @@ public class AccumulatorAppendBenchmarks
         _accumulator = new RecordAccumulator(options);
         _keyBytes = Encoding.UTF8.GetBytes("benchmark-key-0");
         _valueBytes = new byte[MessageSize];
+        _topics =
+        [
+            "bench-topic-0",
+            "bench-topic-1",
+            "bench-topic-2",
+            "bench-topic-3"
+        ];
 
         // Warmup: fill and drain multiple complete batches to warm all pools:
         // BatchArena static pool, PartitionBatchPool, ReadyBatchPool, and BatchArrayReuseQueue.
@@ -53,6 +61,12 @@ public class AccumulatorAppendBenchmarks
         // Warm multi-partition deques used by AppendMultiPartition
         for (var p = 0; p < 10; p++)
             FillAndDrain(partition: p, batchCount: 1, msgsPerBatch, ts);
+
+        for (var t = 0; t < _topics.Length; t++)
+        {
+            for (var p = 0; p < 10; p++)
+                FillAndDrain(_topics[t], partition: p, batchCount: 1, msgsPerBatch, ts, cachePartitionCount: 10);
+        }
 
         // Start background drainer to prevent buffer from filling
         _drainerCts = new CancellationTokenSource();
@@ -101,15 +115,46 @@ public class AccumulatorAppendBenchmarks
         }
     }
 
-    private void FillAndDrain(int partition, int batchCount, int msgsPerBatch, long ts)
+    /// <summary>
+    /// Keyed traffic uses partitionCount: 0 for batch rotation, but still has the topic
+    /// partition count as the cache sizing hint. Rotates topics on one thread to catch
+    /// per-switch allocations in the thread-local deque cache.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = 100)]
+    public void AppendKeyedMultiTopic()
+    {
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < 100; i++)
+        {
+            _accumulator.AppendFromSpansAsync(
+                _topics[i % _topics.Length], i % 10, ts,
+                _keyBytes, false, _valueBytes, false,
+                null, 0, null, CancellationToken.None,
+                partitionCount: 0,
+                cachePartitionCount: 10).GetAwaiter().GetResult();
+        }
+    }
+
+    private void FillAndDrain(int partition, int batchCount, int msgsPerBatch, long ts) =>
+        FillAndDrain("bench-topic", partition, batchCount, msgsPerBatch, ts, cachePartitionCount: 0);
+
+    private void FillAndDrain(
+        string topic,
+        int partition,
+        int batchCount,
+        int msgsPerBatch,
+        long ts,
+        int cachePartitionCount)
     {
         var totalMessages = msgsPerBatch * batchCount;
         for (var i = 0; i < totalMessages; i++)
         {
             _accumulator.AppendFromSpansAsync(
-                "bench-topic", partition, ts,
+                topic, partition, ts,
                 _keyBytes, false, _valueBytes, false,
-                null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
+                null, 0, null, CancellationToken.None,
+                partitionCount: 0,
+                cachePartitionCount: cachePartitionCount).GetAwaiter().GetResult();
 
             // Drain periodically to release memory and return arenas/arrays to pools
             if (i % msgsPerBatch == msgsPerBatch - 1)

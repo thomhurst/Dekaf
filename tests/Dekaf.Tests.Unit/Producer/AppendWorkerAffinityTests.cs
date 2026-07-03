@@ -119,16 +119,40 @@ public class AppendWorkerAffinityTests
         GetThreadCacheField().SetValue(null, null);
         var getOrCreateDeque = GetOrCreateDequeMethod();
 
-        var first = getOrCreateDeque.Invoke(accumulator, ["test-topic", 0, 1]);
+        var first = getOrCreateDeque.Invoke(accumulator, ["test-topic", 0, 0]);
         var firstArray = GetCachedTopicDeques();
 
-        var fourth = getOrCreateDeque.Invoke(accumulator, ["test-topic", 3, 1]);
+        var second = getOrCreateDeque.Invoke(accumulator, ["test-topic", 1, 0]);
+        var secondArray = GetCachedTopicDeques();
+
+        var third = getOrCreateDeque.Invoke(accumulator, ["test-topic", 2, 0]);
         var grownArray = GetCachedTopicDeques();
 
-        await Assert.That(grownArray.Length).IsGreaterThanOrEqualTo(4);
+        await Assert.That(firstArray.Length).IsEqualTo(1);
+        await Assert.That(secondArray.Length).IsEqualTo(2);
+        await Assert.That(grownArray.Length).IsEqualTo(4);
+        await Assert.That(secondArray).IsNotSameReferenceAs(firstArray);
+        await Assert.That(grownArray).IsNotSameReferenceAs(secondArray);
         await Assert.That(grownArray).IsNotSameReferenceAs(firstArray);
         await Assert.That(grownArray.GetValue(0)).IsSameReferenceAs(first);
-        await Assert.That(grownArray.GetValue(3)).IsSameReferenceAs(fourth);
+        await Assert.That(grownArray.GetValue(1)).IsSameReferenceAs(second);
+        await Assert.That(grownArray.GetValue(2)).IsSameReferenceAs(third);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task GetOrCreateDeque_KeyedCacheHint_SizesArrayWithTopicPartitionCount()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        GetThreadCacheField().SetValue(null, null);
+        var getOrCreateDeque = GetOrCreateDequeMethod();
+
+        var deque = getOrCreateDeque.Invoke(accumulator, ["test-topic", 2, 6]);
+        var cachedDeques = GetCachedTopicDeques();
+
+        await Assert.That(cachedDeques.Length).IsEqualTo(6);
+        await Assert.That(cachedDeques.GetValue(2)).IsSameReferenceAs(deque);
 
         await accumulator.DisposeAsync();
     }
@@ -150,6 +174,28 @@ public class AppendWorkerAffinityTests
         await Assert.That(secondArray).IsNotSameReferenceAs(firstArray);
         await Assert.That(secondArray.GetValue(0)).IsSameReferenceAs(secondTopicDeque);
         await Assert.That(secondTopicDeque).IsNotSameReferenceAs(firstTopicDeque);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task GetOrCreateDeque_WhenTopicReturns_ReusesCachedTopicArray()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        GetThreadCacheField().SetValue(null, null);
+        var getOrCreateDeque = GetOrCreateDequeMethod();
+
+        var firstTopicDeque = getOrCreateDeque.Invoke(accumulator, ["topic-a", 0, 4]);
+        var firstArray = GetCachedTopicDeques();
+
+        _ = getOrCreateDeque.Invoke(accumulator, ["topic-b", 0, 4]);
+
+        var firstTopicAgain = getOrCreateDeque.Invoke(accumulator, ["topic-a", 0, 4]);
+        var firstArrayAgain = GetCachedTopicDeques();
+
+        await Assert.That(GetCachedTopic()).IsEqualTo("topic-a");
+        await Assert.That(firstTopicAgain).IsSameReferenceAs(firstTopicDeque);
+        await Assert.That(firstArrayAgain).IsSameReferenceAs(firstArray);
 
         await accumulator.DisposeAsync();
     }
