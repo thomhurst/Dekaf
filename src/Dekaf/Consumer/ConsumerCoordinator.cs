@@ -154,6 +154,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private static bool SetEquals(IReadOnlySet<string>? current, IReadOnlySet<string> next)
     {
+        if (ReferenceEquals(current, next))
+            return true;
+
         if (current is null || current.Count != next.Count)
             return false;
 
@@ -684,9 +687,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
         // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
         var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
-        var subscribedTopicRegex = (isInitial || subscriptionChanged) ? _subscribedTopicRegex : null;
-        var subscribedTopics = (isInitial || subscriptionChanged) && subscribedTopicRegex is null
-            ? _subscribedTopics?.ToList()
+        var subscriptionShouldBeSent = isInitial || subscriptionChanged;
+        var currentSubscribedTopicRegex = _subscribedTopicRegex;
+        var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
+        var subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
+            ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
             : null;
 
         var request = new ConsumerGroupHeartbeatRequest
@@ -708,7 +713,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (response.ErrorCode != ErrorCode.None)
         {
-            HandleConsumerGroupHeartbeatError(response);
+            HandleConsumerGroupHeartbeatError(response, subscribedTopicRegex);
         }
 
         if (response.MemberId is not null)
@@ -735,7 +740,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Throws an appropriate exception for ConsumerGroupHeartbeat error codes.
     /// Does NOT mutate coordinator state — callers own state transitions.
     /// </summary>
-    private void HandleConsumerGroupHeartbeatError(ConsumerGroupHeartbeatResponse response)
+    private void HandleConsumerGroupHeartbeatError(
+        ConsumerGroupHeartbeatResponse response,
+        string? subscribedTopicRegex)
     {
         throw response.ErrorCode switch
         {
@@ -756,7 +763,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             { GroupId = _options.GroupId },
 
             ErrorCode.InvalidRegularExpression => new GroupException(response.ErrorCode,
-                $"ConsumerGroupHeartbeat: invalid subscription regex '{_subscribedTopicRegex}': {response.ErrorMessage}")
+                $"ConsumerGroupHeartbeat: invalid subscription regex '{subscribedTopicRegex}': {response.ErrorMessage}")
             { GroupId = _options.GroupId },
 
             _ => new GroupException(response.ErrorCode,

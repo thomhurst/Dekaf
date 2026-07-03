@@ -1035,8 +1035,93 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await Assert.That(capturedVersion).IsEqualTo((short)1);
         await Assert.That(capturedRequest).IsNotNull();
-        await Assert.That(capturedRequest!.SubscribedTopicNames).IsNull();
+        await Assert.That(capturedRequest!.SubscribedTopicNames).IsNotNull();
+        await Assert.That(capturedRequest.SubscribedTopicNames!).IsEmpty();
         await Assert.That(capturedRequest.SubscribedTopicRegex).IsEqualTo("orders-.*");
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_SwitchFromRegexToTopics_ClearsRegex()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                requests.Add(request);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = request.MemberId,
+                    MemberEpoch = request.MemberEpoch == 0 ? 1 : request.MemberEpoch,
+                    HeartbeatIntervalMs = 60000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string>(), "orders-.*", CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        requests.Clear();
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, null, CancellationToken.None);
+        await Assert.That(requests).IsEmpty();
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(requests).Count().IsEqualTo(1);
+        await Assert.That(requests[0].SubscribedTopicNames).IsNotNull();
+        await Assert.That(requests[0].SubscribedTopicNames!).Contains("test-topic");
+        await Assert.That(requests[0].SubscribedTopicRegex).IsEqualTo(string.Empty);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_SwitchFromTopicsToRegex_ClearsTopics()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                requests.Add(request);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = request.MemberId,
+                    MemberEpoch = request.MemberEpoch == 0 ? 1 : request.MemberEpoch,
+                    HeartbeatIntervalMs = 60000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        requests.Clear();
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string>(), "orders-.*", CancellationToken.None);
+        await Assert.That(requests).IsEmpty();
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(requests).Count().IsEqualTo(1);
+        await Assert.That(requests[0].SubscribedTopicNames).IsNotNull();
+        await Assert.That(requests[0].SubscribedTopicNames!).IsEmpty();
+        await Assert.That(requests[0].SubscribedTopicRegex).IsEqualTo("orders-.*");
     }
 
     [Test]
@@ -1073,6 +1158,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await Assert.That(caught).IsNotNull();
         await Assert.That(caught!.ErrorCode).IsEqualTo(ErrorCode.InvalidRegularExpression);
+        await Assert.That(caught.Message).Contains("orders-(");
     }
 
     #endregion

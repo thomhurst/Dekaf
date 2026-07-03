@@ -1000,6 +1000,51 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             _subscription.TryAdd(topic, 0);
         }
+
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: false);
+    }
+
+    public void Subscribe(Func<string, bool> topicFilter)
+    {
+        ArgumentNullException.ThrowIfNull(topicFilter);
+
+        _topicFilter = topicFilter;
+        _topicPattern = null;
+        _subscription.Clear();
+        _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    public void SubscribePattern(string pattern)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
+        }
+
+        if (string.IsNullOrWhiteSpace(_options.GroupId))
+        {
+            throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
+        }
+
+        _topicFilter = null;
+        _topicPattern = pattern;
+        _subscription.Clear();
+
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    public void Unsubscribe()
+    {
+        _topicFilter = null;
+        _topicPattern = null;
+        _subscription.Clear();
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
+    {
         PublishSubscriptionSnapshot();
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
@@ -1020,91 +1065,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // one-time latency cost for the discarded prefetch.
         ClearFetchBuffer();
 
-        InvalidateFetchRequestCache();
-    }
+        if (invalidatePartitionCache)
+            InvalidatePartitionCache();
 
-    public void Subscribe(Func<string, bool> topicFilter)
-    {
-        ArgumentNullException.ThrowIfNull(topicFilter);
-
-        _topicFilter = topicFilter;
-        _topicPattern = null;
-        _subscription.Clear();
-        PublishSubscriptionSnapshot();
-        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
-        try
-        {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
-        }
-        finally
-        {
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
-        }
-
-        // Clear stale fetched data (same rationale as Assign).
-        ClearFetchBuffer();
-
-        _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
-        InvalidatePartitionCache();
-        InvalidateFetchRequestCache();
-    }
-
-    public void SubscribePattern(string pattern)
-    {
-        ArgumentNullException.ThrowIfNull(pattern);
-        if (string.IsNullOrWhiteSpace(pattern))
-        {
-            throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
-        }
-
-        if (string.IsNullOrWhiteSpace(_options.GroupId))
-        {
-            throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
-        }
-
-        _topicFilter = null;
-        _topicPattern = pattern;
-        _subscription.Clear();
-        PublishSubscriptionSnapshot();
-        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
-        try
-        {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
-        }
-        finally
-        {
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
-        }
-
-        ClearFetchBuffer();
-
-        InvalidatePartitionCache();
-        InvalidateFetchRequestCache();
-    }
-
-    public void Unsubscribe()
-    {
-        _topicFilter = null;
-        _topicPattern = null;
-        _subscription.Clear();
-        PublishSubscriptionSnapshot();
-        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
-        try
-        {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
-        }
-        finally
-        {
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
-        }
-
-        // Clear stale fetched data (same rationale as Assign).
-        ClearFetchBuffer();
-
-        InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
 
