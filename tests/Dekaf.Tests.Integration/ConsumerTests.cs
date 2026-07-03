@@ -703,6 +703,73 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Consumer_SeekToBeginningInsideConsumeLoop_ReplaysWithoutError()
+    {
+        // Seeking from user code at the yield point of an active ConsumeAsync loop
+        // clears the fetch buffer while the iterator is reading from it. This must
+        // invalidate the in-flight fetch cleanly and resume from the seeked position,
+        // not crash on disposed pooled buffers.
+
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        const int messageCount = 10;
+        for (var i = 0; i < messageCount; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        // ForHighThroughput enables prefetching, which exercises the same
+        // fetch-buffer path the stress tests hit.
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .ForHighThroughput()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+
+        // Act - consume one full pass, seek without leaving the loop, consume a second pass
+        var offsets = new List<long>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await foreach (var record in consumer.ConsumeAsync(cts.Token))
+        {
+            offsets.Add(record.Offset);
+
+            if (offsets.Count == messageCount)
+            {
+                consumer.SeekToBeginning(tp);
+            }
+            else if (offsets.Count == messageCount * 2)
+            {
+                break;
+            }
+        }
+
+        // Assert - both passes read offsets 0..9 in order
+        await Assert.That(offsets.Count).IsEqualTo(messageCount * 2);
+        for (var i = 0; i < messageCount; i++)
+        {
+            await Assert.That(offsets[i]).IsEqualTo(i);
+            await Assert.That(offsets[messageCount + i]).IsEqualTo(i);
+        }
+    }
+
+    [Test]
     public async Task Consumer_SeekToSpecificOffset_ReplaysFromThatPoint()
     {
         // Arrange

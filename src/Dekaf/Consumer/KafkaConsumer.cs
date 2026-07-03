@@ -624,6 +624,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
 
+    // Incremented whenever queued fetch data is disposed (Seek/Assign clear the buffer).
+    // ConsumeAsync iterates the front of _pendingFetches while it is still queued, and
+    // user code at the yield point can trigger such a clear; the version check lets the
+    // iterator detect that its current fetch was disposed underneath it.
+    private int _pendingFetchesVersion;
+
     // Background prefetch support
     private readonly MpscFetchBuffer _prefetchBuffer;
     private CancellationTokenSource? _prefetchCts;
@@ -1261,6 +1267,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
+                    var pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                     long? batchProcessingStarted = _adaptiveFetchSizer is not null
                         ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
 
@@ -1368,11 +1375,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
 
                         yield return nextResult;
+
+                        // User code at the yield point may have called Seek/Assign, which
+                        // clears _pendingFetches and disposes `pending` while it is still
+                        // being iterated here; touching it again would read disposed
+                        // pooled buffers.
+                        if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+                            break;
                     }
 
                     // Dispose last activity from this pending fetch
                     previousActivity?.Dispose();
                     previousActivity = null;
+
+                    // `pending` was disposed by a buffer clear (Seek/Assign at a yield
+                    // point); skip position/metric flushes that would read it and
+                    // re-evaluate the (rebuilt) queue.
+                    if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+                        break;
 
                     // Batch-level position flush. _positions and _fetchPositions are updated
                     // once per partition-fetch (in prefetch mode it is managed by UpdateFetchPositionsFromPrefetch).
@@ -2799,12 +2819,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return hadPaused;
     }
 
+    /// <summary>
+    /// Disposes a fetch that was (or may still be) queued in _pendingFetches. Any queued
+    /// fetch can be the one an in-flight ConsumeAsync iteration holds (the iterator Peeks
+    /// and leaves it queued), so the version bump is what lets the iterator detect the
+    /// disposal instead of reading disposed pooled buffers. All disposal of queued fetches
+    /// must go through this method.
+    /// </summary>
+    private void DisposeQueuedFetch(PendingFetchData pending)
+    {
+        Interlocked.Increment(ref _pendingFetchesVersion);
+        pending.Dispose();
+    }
+
     private void ClearFetchBuffer()
     {
         // Dispose and clear pending fetches to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
-            pending.Dispose();
+            DisposeQueuedFetch(pending);
         }
         // Also drain prefetched items that haven't been moved to _pendingFetches yet.
         // Without this, stale data from old partitions would surface after reassignment.
@@ -2845,7 +2878,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 // Dispose removed items to release pooled memory
-                pending.Dispose();
+                DisposeQueuedFetch(pending);
             }
         }
 
