@@ -1,3 +1,5 @@
+using Dekaf.Errors;
+
 namespace Dekaf.Admin;
 
 /// <summary>
@@ -105,6 +107,32 @@ public sealed class ClientQuotaFilterComponent
     /// </summary>
     public static ClientQuotaFilterComponent AnySpecified(ClientQuotaEntityType entityType) =>
         new() { EntityType = entityType, MatchType = ClientQuotaMatchType.AnySpecified };
+
+    /// <summary>
+    /// Validates this filter component before sending it to Kafka.
+    /// </summary>
+    public void Validate()
+    {
+        _ = ClientQuotaEntityTypeNames.ToProtocolName(EntityType);
+
+        switch (MatchType)
+        {
+            case ClientQuotaMatchType.Exact when Match is null:
+                throw new ArgumentException("Exact client quota filter components must specify a match.");
+
+            case ClientQuotaMatchType.Exact:
+                return;
+
+            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified when Match is not null:
+                throw new ArgumentException("Only exact client quota filter components can specify a match.");
+
+            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified:
+                return;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(MatchType), MatchType, "Unsupported client quota match type.");
+        }
+    }
 }
 
 /// <summary>
@@ -299,6 +327,36 @@ public sealed class ClientQuotaAlteration
     /// </summary>
     public static ClientQuotaAlteration Remove(ClientQuotaEntity entity, string key) =>
         new() { Entity = entity, Operations = [ClientQuotaOperation.RemoveValue(key)] };
+
+    /// <summary>
+    /// Validates this alteration before sending it to Kafka.
+    /// </summary>
+    public void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(Entity);
+
+        if (Entity.Components is null || Entity.Components.Count == 0)
+        {
+            throw new ArgumentException("Client quota alteration entity must contain at least one component.");
+        }
+
+        foreach (var component in Entity.Components)
+        {
+            ArgumentNullException.ThrowIfNull(component);
+            _ = ClientQuotaEntityTypeNames.ToProtocolName(component.EntityType);
+        }
+
+        if (Operations is null || Operations.Count == 0)
+        {
+            throw new ArgumentException("Client quota alteration must contain at least one operation.");
+        }
+
+        foreach (var operation in Operations)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ArgumentException.ThrowIfNullOrEmpty(operation.Key);
+        }
+    }
 }
 
 /// <summary>
@@ -335,6 +393,8 @@ internal static class ClientQuotaEntityTypeNames
         ClientQuotaEntityType.User => "user",
         ClientQuotaEntityType.ClientId => "client-id",
         ClientQuotaEntityType.Ip => "ip",
+        ClientQuotaEntityType.Unknown => throw new KafkaException(
+            "Unknown client quota entity types cannot be sent to Kafka because the original protocol name is not available."),
         _ => throw new ArgumentOutOfRangeException(nameof(entityType), entityType, "Unsupported client quota entity type.")
     };
 

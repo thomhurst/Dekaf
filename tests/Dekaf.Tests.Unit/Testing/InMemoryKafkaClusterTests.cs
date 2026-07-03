@@ -99,21 +99,51 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task Admin_ClientQuotas_AcceptsAlterAndDescribeReturnsEmptyState()
+    public async Task Admin_ClientQuotas_AlterDescribeAndRemoveRoundTrips()
     {
         var cluster = new InMemoryKafkaCluster();
         var admin = new InMemoryAdminClient(cluster);
+        var entity = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.User("alice"),
+            ClientQuotaEntityComponent.ClientId("orders"));
 
         await admin.AlterClientQuotasAsync(
         [
-            ClientQuotaAlteration.Set(
-                ClientQuotaEntity.ForUser("alice"),
-                "consumer_byte_rate",
-                1024)
+            new ClientQuotaAlteration
+            {
+                Entity = entity,
+                Operations =
+                [
+                    ClientQuotaOperation.Set("consumer_byte_rate", 1024),
+                    ClientQuotaOperation.Set("producer_byte_rate", 2048)
+                ]
+            }
         ]);
-        var quotas = await admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
+        var all = await admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
+        var filtered = await admin.DescribeClientQuotasAsync(new ClientQuotaFilter
+        {
+            Components = [ClientQuotaFilterComponent.Exact(ClientQuotaEntityType.User, "alice")]
+        });
+        var strictFiltered = await admin.DescribeClientQuotasAsync(new ClientQuotaFilter
+        {
+            Components = [ClientQuotaFilterComponent.Exact(ClientQuotaEntityType.User, "alice")],
+            Strict = true
+        });
 
-        await Assert.That(quotas).IsEmpty();
+        await Assert.That(all.TryGetValue(entity, out var quotas)).IsTrue();
+        await Assert.That(quotas!["consumer_byte_rate"]).IsEqualTo(1024);
+        await Assert.That(quotas["producer_byte_rate"]).IsEqualTo(2048);
+        await Assert.That(filtered).ContainsKey(entity);
+        await Assert.That(strictFiltered).IsEmpty();
+
+        await admin.AlterClientQuotasAsync([ClientQuotaAlteration.Remove(entity, "consumer_byte_rate")]);
+        var afterRemove = await admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
+        await Assert.That(afterRemove[entity]).DoesNotContainKey("consumer_byte_rate");
+        await Assert.That(afterRemove[entity]).ContainsKey("producer_byte_rate");
+
+        await admin.AlterClientQuotasAsync([ClientQuotaAlteration.Remove(entity, "producer_byte_rate")]);
+        var afterRemovingAll = await admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
+        await Assert.That(afterRemovingAll).IsEmpty();
     }
 
     [Test]

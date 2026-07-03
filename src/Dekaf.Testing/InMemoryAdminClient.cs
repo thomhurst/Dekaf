@@ -11,6 +11,7 @@ namespace Dekaf.Testing;
 public sealed class InMemoryAdminClient : IAdminClient
 {
     private readonly InMemoryKafkaCluster _cluster;
+    private readonly Dictionary<ClientQuotaEntity, Dictionary<string, double>> _clientQuotas = new();
     private bool _disposed;
 
     public InMemoryAdminClient(InMemoryKafkaCluster cluster)
@@ -451,10 +452,22 @@ public sealed class InMemoryAdminClient : IAdminClient
             throw new ArgumentException("Client quota filter components must not be null.", nameof(filter));
 
         foreach (var component in filter.Components)
-            ValidateClientQuotaFilterComponent(component);
+        {
+            ArgumentNullException.ThrowIfNull(component);
+            component.Validate();
+        }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(
-            new Dictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>());
+        Dictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>> result;
+        lock (_clientQuotas)
+        {
+            result = _clientQuotas
+                .Where(quota => MatchesClientQuotaFilter(quota.Key, filter))
+                .ToDictionary(
+                    quota => CloneClientQuotaEntity(quota.Key),
+                    quota => (IReadOnlyDictionary<string, double>)new Dictionary<string, double>(quota.Value, StringComparer.Ordinal));
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(result);
     }
 
     public ValueTask AlterClientQuotasAsync(
@@ -466,21 +479,20 @@ public sealed class InMemoryAdminClient : IAdminClient
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        foreach (var alteration in alterations)
+        var materialized = alterations.Select(alteration =>
         {
             ArgumentNullException.ThrowIfNull(alteration);
-            ArgumentNullException.ThrowIfNull(alteration.Entity);
-            if (alteration.Entity.Components is null || alteration.Entity.Components.Count == 0)
-                throw new ArgumentException("Client quota alteration entity must contain at least one component.", nameof(alterations));
+            alteration.Validate();
+            return alteration;
+        }).ToArray();
 
-            if (alteration.Operations is null || alteration.Operations.Count == 0)
-                throw new ArgumentException("Client quota alteration must contain at least one operation.", nameof(alterations));
+        if (options?.ValidateOnly == true)
+            return ValueTask.CompletedTask;
 
-            foreach (var operation in alteration.Operations)
-            {
-                ArgumentNullException.ThrowIfNull(operation);
-                ArgumentException.ThrowIfNullOrEmpty(operation.Key);
-            }
+        lock (_clientQuotas)
+        {
+            foreach (var alteration in materialized)
+                ApplyClientQuotaAlteration(alteration);
         }
 
         return ValueTask.CompletedTask;
@@ -738,24 +750,62 @@ public sealed class InMemoryAdminClient : IAdminClient
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
-    private static void ValidateClientQuotaFilterComponent(ClientQuotaFilterComponent component)
+    private void ApplyClientQuotaAlteration(ClientQuotaAlteration alteration)
     {
-        ArgumentNullException.ThrowIfNull(component);
-
-        switch (component.MatchType)
+        if (!_clientQuotas.TryGetValue(alteration.Entity, out var quotas))
         {
-            case ClientQuotaMatchType.Exact when component.Match is null:
-                throw new ArgumentException("Exact client quota filter components must specify a match.");
-            case ClientQuotaMatchType.Exact:
+            if (alteration.Operations.All(operation => operation.Remove))
                 return;
-            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified when component.Match is not null:
-                throw new ArgumentException("Only exact client quota filter components can specify a match.");
-            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified:
-                return;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(component), component.MatchType, "Unsupported client quota match type.");
+
+            quotas = new Dictionary<string, double>(StringComparer.Ordinal);
+            _clientQuotas[CloneClientQuotaEntity(alteration.Entity)] = quotas;
         }
+
+        foreach (var operation in alteration.Operations)
+        {
+            if (operation.Remove)
+            {
+                quotas.Remove(operation.Key);
+            }
+            else
+            {
+                quotas[operation.Key] = operation.Value;
+            }
+        }
+
+        if (quotas.Count == 0)
+            _clientQuotas.Remove(alteration.Entity);
     }
+
+    private static bool MatchesClientQuotaFilter(ClientQuotaEntity entity, ClientQuotaFilter filter)
+    {
+        if (filter.Strict && entity.Components.Count != filter.Components.Count)
+            return false;
+
+        return filter.Components.All(component => MatchesClientQuotaFilterComponent(entity, component));
+    }
+
+    private static bool MatchesClientQuotaFilterComponent(ClientQuotaEntity entity, ClientQuotaFilterComponent filterComponent) =>
+        entity.Components.Any(component =>
+            component.EntityType == filterComponent.EntityType &&
+            filterComponent.MatchType switch
+            {
+                ClientQuotaMatchType.Exact => component.Name == filterComponent.Match,
+                ClientQuotaMatchType.Default => component.Name is null,
+                ClientQuotaMatchType.AnySpecified => component.Name is not null,
+                _ => false
+            });
+
+    private static ClientQuotaEntity CloneClientQuotaEntity(ClientQuotaEntity entity) => new()
+    {
+        Components = entity.Components
+            .Select(component => new ClientQuotaEntityComponent
+            {
+                EntityType = component.EntityType,
+                Name = component.Name
+            })
+            .ToArray()
+    };
 
     private static void ValidateTopicPartition(TopicPartition topicPartition)
     {

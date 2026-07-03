@@ -1762,8 +1762,7 @@ public sealed class AdminClient : IAdminClient
             foreach (var entry in response.Entries ?? [])
             {
                 var entity = MapClientQuotaEntity(entry.Entity);
-                var values = entry.Values.ToDictionary(v => v.Key, v => v.Value);
-                result[entity] = values;
+                result[entity] = MapClientQuotaValues(entry.Values);
             }
 
             return result;
@@ -1829,7 +1828,8 @@ public sealed class AdminClient : IAdminClient
 
         return filter.Components.Select(component =>
         {
-            ValidateClientQuotaFilterComponent(component);
+            ArgumentNullException.ThrowIfNull(component);
+            component.Validate();
             return new DescribeClientQuotasRequestComponent
             {
                 EntityType = ClientQuotaEntityTypeNames.ToProtocolName(component.EntityType),
@@ -1842,17 +1842,7 @@ public sealed class AdminClient : IAdminClient
     private static AlterClientQuotasRequestEntry BuildAlterClientQuotaEntry(ClientQuotaAlteration alteration)
     {
         ArgumentNullException.ThrowIfNull(alteration);
-        ArgumentNullException.ThrowIfNull(alteration.Entity);
-
-        if (alteration.Entity.Components is null || alteration.Entity.Components.Count == 0)
-        {
-            throw new ArgumentException("Client quota alteration entity must contain at least one component.", nameof(alteration));
-        }
-
-        if (alteration.Operations is null || alteration.Operations.Count == 0)
-        {
-            throw new ArgumentException("Client quota alteration must contain at least one operation.", nameof(alteration));
-        }
+        alteration.Validate();
 
         return new AlterClientQuotasRequestEntry
         {
@@ -1880,27 +1870,15 @@ public sealed class AdminClient : IAdminClient
         };
     }
 
-    private static void ValidateClientQuotaFilterComponent(ClientQuotaFilterComponent component)
+    private static IReadOnlyDictionary<string, double> MapClientQuotaValues(IReadOnlyList<DescribeClientQuotasValueData> values)
     {
-        ArgumentNullException.ThrowIfNull(component);
-
-        switch (component.MatchType)
+        var result = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var value in values)
         {
-            case ClientQuotaMatchType.Exact when component.Match is null:
-                throw new ArgumentException("Exact client quota filter components must specify a match.");
-
-            case ClientQuotaMatchType.Exact:
-                return;
-
-            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified when component.Match is not null:
-                throw new ArgumentException("Only exact client quota filter components can specify a match.");
-
-            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified:
-                return;
-
-            default:
-                throw new ArgumentOutOfRangeException(nameof(component), component.MatchType, "Unsupported client quota match type.");
+            result[value.Key] = value.Value;
         }
+
+        return result;
     }
 
     private static ClientQuotaEntity MapClientQuotaEntity(IReadOnlyList<DescribeClientQuotasEntityData> entity) =>

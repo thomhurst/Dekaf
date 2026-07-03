@@ -63,6 +63,37 @@ public sealed class AdminClientClientQuotaTests
     }
 
     [Test]
+    public async Task DescribeClientQuotasAsync_DuplicateValueKeys_LastValueWins()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection();
+
+        connection.SendAsync<DescribeClientQuotasRequest, DescribeClientQuotasResponse>(
+                Arg.Any<DescribeClientQuotasRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DescribeClientQuotasResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Entries =
+                [
+                    new DescribeClientQuotasResponseEntry
+                    {
+                        Entity = [new DescribeClientQuotasEntityData { EntityType = "user", EntityName = "alice" }],
+                        Values =
+                        [
+                            new DescribeClientQuotasValueData { Key = "consumer_byte_rate", Value = 1024 },
+                            new DescribeClientQuotasValueData { Key = "consumer_byte_rate", Value = 2048 }
+                        ]
+                    }
+                ]
+            }));
+
+        var result = await admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
+
+        await Assert.That(result[ClientQuotaEntity.ForUser("alice")]["consumer_byte_rate"]).IsEqualTo(2048);
+    }
+
+    [Test]
     public async Task DescribeClientQuotasAsync_TopLevelError_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection();
@@ -233,6 +264,33 @@ public sealed class AdminClientClientQuotaTests
                     }
                 ]);
         }).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task AlterClientQuotasAsync_UnknownEntityType_ThrowsKafkaException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.AlterClientQuotasAsync(
+                [
+                    ClientQuotaAlteration.Set(
+                        new ClientQuotaEntity
+                        {
+                            Components =
+                            [
+                                new ClientQuotaEntityComponent
+                                {
+                                    EntityType = ClientQuotaEntityType.Unknown,
+                                    Name = "raw-future-entity"
+                                }
+                            ]
+                        },
+                        "consumer_byte_rate",
+                        1024)
+                ]);
+        }).Throws<KafkaException>();
     }
 
     [Test]
