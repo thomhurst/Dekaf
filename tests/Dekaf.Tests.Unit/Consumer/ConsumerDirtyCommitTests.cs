@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -77,6 +78,23 @@ public sealed class ConsumerDirtyCommitTests
         ]);
     }
 
+    [Test]
+    public async Task CommitAsync_AfterNonDirtyPositionReset_DoesNotCommitStaleDirtyOffset()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        var partition = new TopicPartition("topic-a", 0);
+
+        consumer.Seek(new TopicPartitionOffset("topic-a", 0, 10));
+        SetPosition(consumer, partition, 2, dirty: false);
+
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(2);
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         ErrorCode responseError)
@@ -122,6 +140,19 @@ public sealed class ConsumerDirtyCommitTests
             Serializers.String,
             connectionPool,
             metadataManager);
+    }
+
+    private static void SetPosition(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long position,
+        bool dirty)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "SetPosition",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        method.Invoke(consumer, [partition, position, dirty]);
     }
 
     private static OffsetCommitRequest CloneRequest(OffsetCommitRequest request)

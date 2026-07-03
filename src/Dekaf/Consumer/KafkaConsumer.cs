@@ -2180,12 +2180,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _positions[partition] = position;
         if (dirty)
             _dirtyPositions[partition] = position;
+        else
+            _dirtyPositions.TryRemove(partition, out _);
     }
 
     private void ClearDirtyPositionIfCommitted(TopicPartition partition, long committedOffset)
     {
-        ((ICollection<KeyValuePair<TopicPartition, long>>)_dirtyPositions)
-            .Remove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
+        _dirtyPositions.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
     }
 
     private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
