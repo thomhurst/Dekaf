@@ -2532,6 +2532,9 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScramSha256DelegationToken(string tokenId, string tokenHmac)
+        => WithSaslScram256DelegationToken(tokenId, tokenHmac);
+
     public ShareConsumerBuilder<TKey, TValue> WithSaslScram256DelegationToken(string tokenId, string tokenHmac)
     {
         ThrowIfClientOwnedConnectionSettings();
@@ -2541,6 +2544,9 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslScramTokenAuth = true;
         return this;
     }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScramSha512DelegationToken(string tokenId, string tokenHmac)
+        => WithSaslScram512DelegationToken(tokenId, tokenHmac);
 
     public ShareConsumerBuilder<TKey, TValue> WithSaslScram512DelegationToken(string tokenId, string tokenHmac)
     {

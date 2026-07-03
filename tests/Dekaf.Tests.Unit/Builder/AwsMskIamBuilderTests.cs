@@ -48,6 +48,34 @@ public sealed class AwsMskIamBuilderTests
     }
 
     [Test]
+    public async Task ShareConsumer_WithSaslScramSha256DelegationToken_SetsTokenAuth()
+    {
+        var builder = Kafka.CreateShareConsumer<string, string>();
+
+        var result = builder.WithSaslScramSha256DelegationToken("token-id", "token-hmac");
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+        await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.ScramSha256);
+        await Assert.That(GetSaslUsername(builder)).IsEqualTo("token-id");
+        await Assert.That(GetSaslPassword(builder)).IsEqualTo("token-hmac");
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsTrue();
+    }
+
+    [Test]
+    public async Task ShareConsumer_WithSaslScramSha512DelegationToken_SetsTokenAuth()
+    {
+        var builder = Kafka.CreateShareConsumer<string, string>();
+
+        var result = builder.WithSaslScramSha512DelegationToken("token-id", "token-hmac");
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+        await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.ScramSha512);
+        await Assert.That(GetSaslUsername(builder)).IsEqualTo("token-id");
+        await Assert.That(GetSaslPassword(builder)).IsEqualTo("token-hmac");
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsTrue();
+    }
+
+    [Test]
     public async Task AdminClient_WithAwsMskIam_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateAdminClient()
@@ -115,6 +143,12 @@ public sealed class AwsMskIamBuilderTests
 
     private static AwsMskIamConfig? GetAwsMskIamConfig(object builder)
         => GetField<AwsMskIamConfig?>(builder, "_awsMskIamConfig");
+
+    private static string? GetSaslUsername(object builder)
+        => GetField<string?>(builder, "_saslUsername");
+
+    private static string? GetSaslPassword(object builder)
+        => GetField<string?>(builder, "_saslPassword");
 
     private static bool GetSaslScramTokenAuth(object builder)
         => GetField<bool>(builder, "_saslScramTokenAuth");

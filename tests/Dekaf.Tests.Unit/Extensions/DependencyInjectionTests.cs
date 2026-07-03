@@ -444,6 +444,28 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddProducer_WithSaslScramTokenAuthAndNonScramMechanism_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:BootstrapServers"] = "broker1:9092",
+            ["Kafka:SaslMechanism"] = "Plain",
+            ["Kafka:SaslUsername"] = "user",
+            ["Kafka:SaslPassword"] = "password",
+            ["Kafka:SaslScramTokenAuth"] = "true"
+        });
+
+        void Act() => services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(configuration.GetSection("Kafka"));
+        });
+
+        await Assert.That(Act).Throws<InvalidOperationException>()
+            .WithMessageContaining("SaslScramTokenAuth requires SaslMechanism ScramSha256 or ScramSha512");
+    }
+
+    [Test]
     public async Task AddProducer_WithConfigurationSection_FluentConfigurationOverridesBoundValues()
     {
         var services = new ServiceCollection();
@@ -503,7 +525,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:ReconnectBackoffMaxMs"] = "800",
             ["Kafka:Consumers:Orders:CheckCrcs"] = "true",
             ["Kafka:Consumers:Orders:UseTls"] = "true",
-            ["Kafka:Consumers:Orders:SaslMechanism"] = "Plain",
+            ["Kafka:Consumers:Orders:SaslMechanism"] = "ScramSha256",
             ["Kafka:Consumers:Orders:SaslUsername"] = "user",
             ["Kafka:Consumers:Orders:SaslPassword"] = "password",
             ["Kafka:Consumers:Orders:SaslScramTokenAuth"] = "true",
@@ -560,7 +582,7 @@ public class DependencyInjectionTests
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(800);
         await Assert.That(options.CheckCrcs).IsTrue();
         await Assert.That(options.UseTls).IsTrue();
-        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha256);
         await Assert.That(options.SaslUsername).IsEqualTo("user");
         await Assert.That(options.SaslPassword).IsEqualTo("password");
         await Assert.That(options.SaslScramTokenAuth).IsTrue();
@@ -661,7 +683,7 @@ public class DependencyInjectionTests
             ["Kafka:Admin:ReconnectBackoffMs"] = "90",
             ["Kafka:Admin:ReconnectBackoffMaxMs"] = "900",
             ["Kafka:Admin:UseTls"] = "true",
-            ["Kafka:Admin:SaslMechanism"] = "Plain",
+            ["Kafka:Admin:SaslMechanism"] = "ScramSha512",
             ["Kafka:Admin:SaslUsername"] = "admin",
             ["Kafka:Admin:SaslPassword"] = "secret",
             ["Kafka:Admin:SaslScramTokenAuth"] = "true",
@@ -686,7 +708,7 @@ public class DependencyInjectionTests
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(90);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(900);
         await Assert.That(options.UseTls).IsTrue();
-        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(options.SaslUsername).IsEqualTo("admin");
         await Assert.That(options.SaslPassword).IsEqualTo("secret");
         await Assert.That(options.SaslScramTokenAuth).IsTrue();

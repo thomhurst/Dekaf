@@ -65,6 +65,29 @@ public sealed class AdminClientDelegationTokenTests
     }
 
     [Test]
+    public async Task CreateDelegationTokenAsync_RetriableResponseError_DoesNotRetryNonIdempotentCreate()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueCreate(new CreateDelegationTokenResponse
+        {
+            ErrorCode = ErrorCode.RequestTimedOut,
+            PrincipalType = "User",
+            PrincipalName = "owner",
+            TokenId = "token-id",
+            Hmac = []
+        });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.CreateDelegationTokenAsync());
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await context.Connection.Received(1).SendAsync<CreateDelegationTokenRequest, CreateDelegationTokenResponse>(
+            Arg.Any<CreateDelegationTokenRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task CreateDelegationTokenAsync_WithOwnerAndV2_ThrowsNotSupported()
     {
         await using var context = new AdminTestContext(createDelegationTokenMaxVersion: 2);

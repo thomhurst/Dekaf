@@ -776,6 +776,11 @@ internal static class DekafConfigurationBinding
                 mechanism = SaslMechanism.None;
         }
 
+        if (saslScramTokenAuth && mechanism is not (SaslMechanism.ScramSha256 or SaslMechanism.ScramSha512))
+        {
+            throw new InvalidOperationException("SaslScramTokenAuth requires SaslMechanism ScramSha256 or ScramSha512.");
+        }
+
         return hasMechanism || hasUsername || hasPassword || hasSaslScramTokenAuth || hasGssapi || hasOAuth || hasAwsMskIam;
     }
 
