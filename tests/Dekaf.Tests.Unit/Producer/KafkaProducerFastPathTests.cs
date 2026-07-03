@@ -188,6 +188,42 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task TryProduceSyncForAsync_ExplicitPartitionAboveCachedMetadata_FallsBackForRefresh()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var result = InvokeTryProduceSyncForAsync(
+            producer,
+            Topic,
+            "key",
+            "value",
+            partition: 1,
+            out var completion);
+
+        await Assert.That(result).IsFalse();
+        await Assert.That(completion).IsNull();
+        await Assert.That(GetPartitionDequeCount(producer.RecordAccumulator)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ProduceInternalAsync_InvalidExplicitPartition_FaultsBeforeAccumulatorAppend()
     {
         var options = new ProducerOptions
@@ -344,6 +380,35 @@ public class KafkaProducerFastPathTests
             ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
             throw;
         }
+    }
+
+    private static bool InvokeTryProduceSyncForAsync(
+        KafkaProducer<string, string> producer,
+        string topic,
+        string? key,
+        string value,
+        int? partition,
+        out PooledValueTaskSource<RecordMetadata>? completion)
+    {
+        var method = typeof(KafkaProducer<string, string>).GetMethod(
+            "TryProduceSyncForAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            binder: null,
+            [
+                typeof(string),
+                typeof(string),
+                typeof(string),
+                typeof(Headers),
+                typeof(int?),
+                typeof(DateTimeOffset?),
+                typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
+            ],
+            modifiers: null);
+
+        var args = new object?[] { topic, key, value, null, partition, null, null };
+        var result = (bool)method!.Invoke(producer, args)!;
+        completion = (PooledValueTaskSource<RecordMetadata>?)args[6];
+        return result;
     }
 
     private static ValueTask InvokeProduceInternalAsync(

@@ -725,6 +725,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return false; // Invalid topic state, let async path handle error
         }
 
+        if (ExplicitPartitionExceedsMetadata(partition, topicInfo))
+        {
+            return false; // Cached metadata may predate a partition expansion.
+        }
+
         // All checks passed - we can proceed synchronously
         completion = _valueTaskSourcePool.Rent();
         var result = SyncProduceResult.Success;
@@ -829,6 +834,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             if (!inThreadLocalCache)
                 UpdateCachedTopicInfo(message.Topic, topicInfo!);
+
+            if (ExplicitPartitionExceedsMetadata(message.Partition, topicInfo!))
+                return FireAsyncSlow(message, activity);
 
             try
             {
@@ -1227,6 +1235,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (!inThreadLocalCache)
                 UpdateCachedTopicInfo(message.Topic, topicInfo!);
 
+            if (ExplicitPartitionExceedsMetadata(message.Partition, topicInfo!))
+                return ProduceAsyncWithCallbackSlow(message, deliveryHandler);
+
             try
             {
                 var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, deliveryHandler);
@@ -1291,6 +1302,36 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (topicInfo.PartitionCount == 0)
         {
             throw NoUsablePartitionsException(message.Topic, topicInfo);
+        }
+
+        if (ExplicitPartitionExceedsMetadata(message.Partition, topicInfo))
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.MaxBlockMs);
+
+            try
+            {
+                topicInfo = await RefreshTopicMetadataAsync(message.Topic, timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new ProduceException(
+                    $"Failed to refresh metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
+                    $"Ensure the topic exists and the Kafka cluster is reachable.")
+                { Topic = message.Topic };
+            }
+
+            if (topicInfo is null)
+            {
+                throw new ProduceException($"Topic '{message.Topic}' not found") { Topic = message.Topic };
+            }
+
+            if (topicInfo.PartitionCount == 0)
+            {
+                throw NoUsablePartitionsException(message.Topic, topicInfo);
+            }
+
+            UpdateCachedTopicInfo(message.Topic, topicInfo);
         }
 
         var key = PooledMemory.Null;
@@ -2599,6 +2640,26 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
 
+            if (ExplicitPartitionExceedsMetadata(message.Partition, topicInfo))
+            {
+                try
+                {
+                    topicInfo = await RefreshTopicMetadataAsync(message.Topic, timeoutCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new KafkaTimeoutException(
+                        $"Failed to refresh metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+                }
+
+                if (topicInfo is null || topicInfo.PartitionCount == 0)
+                {
+                    var ex = NoUsablePartitionsException(message.Topic, topicInfo);
+                    LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
+                    return;
+                }
+            }
+
             UpdateCachedTopicInfo(message.Topic, topicInfo);
 
             var appendResult = await SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo, null).ConfigureAwait(false);
@@ -2658,6 +2719,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return resolvedPartition;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool ExplicitPartitionExceedsMetadata(int? partition, TopicInfo topicInfo)
+        => partition is { } explicitPartition && explicitPartition >= topicInfo.PartitionCount;
+
+    private async ValueTask<TopicInfo?> RefreshTopicMetadataAsync(string topic, CancellationToken cancellationToken)
+    {
+        await _metadataManager.RefreshMetadataAsync([topic], forceRefresh: true, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return _metadataManager.Metadata.GetTopic(topic);
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInvalidPartition(string topic, int partition, int partitionCount)
         => throw new ProduceException(
@@ -2694,6 +2766,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (topicInfo is null || topicInfo.PartitionCount == 0)
             {
                 throw NoUsablePartitionsException(message.Topic, topicInfo);
+            }
+
+            if (ExplicitPartitionExceedsMetadata(message.Partition, topicInfo))
+            {
+                try
+                {
+                    topicInfo = await RefreshTopicMetadataAsync(message.Topic, timeoutCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new KafkaTimeoutException(
+                        $"Failed to refresh metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+                }
+
+                if (topicInfo is null || topicInfo.PartitionCount == 0)
+                {
+                    throw NoUsablePartitionsException(message.Topic, topicInfo);
+                }
             }
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
