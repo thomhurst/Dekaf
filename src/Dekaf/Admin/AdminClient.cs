@@ -55,7 +55,8 @@ public sealed class AdminClient : IAdminClient
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 OAuthBearerToken = options.OAuthBearerToken,
-                ClientDnsLookup = options.ClientDnsLookup
+                ClientDnsLookup = options.ClientDnsLookup,
+                AwsMskIamConfig = options.AwsMskIamConfig
             },
             loggerFactory);
 
@@ -2777,6 +2778,11 @@ public sealed class AdminClientOptions
     public OAuthBearerToken? OAuthBearerToken { get; init; }
 
     /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+
+    /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
@@ -2821,6 +2827,7 @@ public sealed class AdminClientBuilder
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -3004,6 +3011,18 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public AdminClientBuilder WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        return this;
+    }
+
     public AdminClientBuilder WithLoggerFactory(ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -3142,7 +3161,8 @@ public sealed class AdminClientBuilder
         string? username,
         string? password,
         GssapiConfig? gssapiConfig,
-        OAuthBearerConfig? oauthConfig)
+        OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
@@ -3150,6 +3170,7 @@ public sealed class AdminClientBuilder
         _saslPassword = password;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
+        _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
     }
@@ -3178,6 +3199,7 @@ public sealed class AdminClientBuilder
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,

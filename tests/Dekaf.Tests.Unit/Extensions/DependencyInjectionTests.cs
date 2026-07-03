@@ -415,6 +415,33 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddProducer_WithAwsMskIamConfig_InferSaslMechanism()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:BootstrapServers"] = "broker1:9098",
+            ["Kafka:UseTls"] = "true",
+            ["Kafka:AwsMskIamConfig:Region"] = "us-east-1",
+            ["Kafka:AwsMskIamConfig:ProfileName"] = "msk-prod"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(configuration.GetSection("Kafka"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var options = GetProducerOptions(producer);
+
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.AwsMskIam);
+        await Assert.That(options.AwsMskIamConfig).IsNotNull();
+        await Assert.That(options.AwsMskIamConfig!.Region).IsEqualTo("us-east-1");
+        await Assert.That(options.AwsMskIamConfig.ProfileName).IsEqualTo("msk-prod");
+    }
+
+    [Test]
     public async Task AddProducer_WithConfigurationSection_FluentConfigurationOverridesBoundValues()
     {
         var services = new ServiceCollection();

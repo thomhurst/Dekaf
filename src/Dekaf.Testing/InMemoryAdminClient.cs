@@ -398,6 +398,83 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(result);
     }
 
+    public ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
+        IEnumerable<int> brokerIds,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(brokerIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var targetPartitions = partitions?.Distinct().ToArray() ??
+            _cluster.ListTopics().SelectMany(_cluster.GetTopicPartitions).ToArray();
+        foreach (var partition in targetPartitions)
+            ValidateTopicPartition(partition);
+
+        var result = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+        foreach (var brokerId in brokerIds.Distinct().Order())
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
+
+            if (brokerId != 0)
+            {
+                result[brokerId] = new Dictionary<string, LogDirDescription>();
+                continue;
+            }
+
+            var replicas = targetPartitions.ToDictionary(
+                partition => partition,
+                partition =>
+                {
+                    var watermarks = _cluster.GetWatermarks(partition);
+                    return new ReplicaLogDirInfo
+                    {
+                        Size = Math.Max(0, watermarks.High - watermarks.Low),
+                        OffsetLag = 0,
+                        IsFuture = false
+                    };
+                });
+
+            result[brokerId] = new Dictionary<string, LogDirDescription>(StringComparer.Ordinal)
+            {
+                ["in-memory"] = new()
+                {
+                    ErrorCode = ErrorCode.None,
+                    ReplicaInfos = replicas
+                }
+            };
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>>(result);
+    }
+
+    public ValueTask<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>> AlterReplicaLogDirsAsync(
+        IReadOnlyDictionary<TopicPartitionReplica, string> replicaAssignments,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicaAssignments);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(replicaAssignments.Count);
+        foreach (var (replica, logDir) in replicaAssignments)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(replica.Topic);
+            ArgumentOutOfRangeException.ThrowIfNegative(replica.Partition);
+            ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
+            ArgumentException.ThrowIfNullOrWhiteSpace(logDir);
+
+            result[replica] = new AlterReplicaLogDirResultInfo
+            {
+                TopicPartitionReplica = replica,
+                ErrorCode = ErrorCode.None
+            };
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(result);
+    }
+
     public ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
@@ -505,5 +582,11 @@ public sealed class InMemoryAdminClient : IAdminClient
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private static void ValidateTopicPartition(TopicPartition topicPartition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topicPartition.Topic);
+        ArgumentOutOfRangeException.ThrowIfNegative(topicPartition.Partition);
     }
 }

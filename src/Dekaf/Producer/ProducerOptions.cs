@@ -317,6 +317,11 @@ public sealed class ProducerOptions
     public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
 
     /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+
+    /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// Larger buffers can improve throughput for high-volume producers.
     /// </summary>
