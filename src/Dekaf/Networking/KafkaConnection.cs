@@ -159,8 +159,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     // correlation ID, it could be incorrectly matched to the wrong pending request.
     // Using globally unique correlation IDs prevents this issue.
 
-    // Cap on _cancelledCorrelationIds to prevent unbounded growth when brokers
-    // silently drop responses for timed-out requests.
+    // Cap on cancelled correlation IDs to prevent unbounded growth when brokers
+    // silently drop responses for timed-out requests. The tracker evicts oldest IDs
+    // so recent cancellations continue suppressing late responses after the cap is hit.
     private const int MaxCancelledCorrelationIds = 10_000;
     private const int PendingRequestShardCount = 16;
     private const int MinimumResponseFrameSize = 4; // Correlation ID is always first in the response header.
@@ -172,7 +173,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _pendingRequestSlotOperationCount;
     private int _pendingRequestSlotsClosed;
-    private readonly ConcurrentDictionary<int, byte> _cancelledCorrelationIds = new();
+    private readonly CancelledCorrelationIdTracker _cancelledCorrelationIds = new(MaxCancelledCorrelationIds);
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
@@ -796,11 +797,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 // Record it so the receive loop discards silently instead of warning.
                 // If the receive loop already called TryComplete (and lost the CAS),
                 // this entry becomes a harmless no-op cleaned up by DisposeAsync.
-                // Count check + TryAdd is not atomic, so the cap is approximate (soft cap).
-                // This is fine — the goal is preventing unbounded growth, not enforcing an exact limit.
-                if (!responseReceived && _cancelledCorrelationIds.Count < MaxCancelledCorrelationIds)
+                if (!responseReceived)
                 {
-                    _cancelledCorrelationIds.TryAdd(correlationId, 0);
+                    _cancelledCorrelationIds.TryAdd(correlationId);
                 }
             }
         }
@@ -1149,7 +1148,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 responseData.Dispose();
             }
         }
-        else if (_cancelledCorrelationIds.TryRemove(correlationId, out _))
+        else if (_cancelledCorrelationIds.TryRemove(correlationId))
         {
             LogLateResponseForCancelledRequest(correlationId);
             responseData.Dispose();
