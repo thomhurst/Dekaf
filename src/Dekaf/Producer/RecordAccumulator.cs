@@ -3679,6 +3679,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Purges queued and/or in-flight batches with a caller-provided exception.
     /// </summary>
+    /// <returns>
+    /// Diagnostic count of purged work. Queued purge counts pending append operations plus
+    /// current/ready batches; in-flight purge counts batches.
+    /// </returns>
     internal int Purge(PurgeOptions options, Exception exception, Action<ReadyBatch>? onPurgingBatch = null)
     {
         ArgumentNullException.ThrowIfNull(exception);

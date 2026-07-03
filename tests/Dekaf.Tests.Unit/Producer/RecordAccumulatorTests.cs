@@ -273,6 +273,86 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task Purge_InFlight_IdempotentNextQueuedBatchKeepsContiguousSequence()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1000,
+            LingerMs = 0,
+            EnableIdempotence = true
+        };
+        var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        ReadyBatch? inFlightBatch = null;
+        ReadyBatch? nextBatch = null;
+
+        try
+        {
+            accumulator.ProducerId = 123;
+            accumulator.ProducerEpoch = 0;
+
+            await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                null,
+                0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None);
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
+            await Assert.That(accumulator.TryDrainBatch(out inFlightBatch)).IsTrue();
+
+            var inFlightRecordCount = inFlightBatch!.RecordBatch.Records.Count;
+            var inFlightSequence = accumulator.GetAndIncrementSequence(topicPartition, inFlightRecordCount);
+            inFlightBatch.RecordBatch.BaseSequence = inFlightSequence;
+
+            await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                null,
+                0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None);
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+            var purged = accumulator.Purge(PurgeOptions.InFlight, CreatePurgedException());
+            await Assert.That(purged).IsEqualTo(1);
+            await Assert.That(accumulator.TryDrainBatch(out nextBatch)).IsTrue();
+
+            var nextSequence = accumulator.GetAndIncrementSequence(
+                topicPartition,
+                nextBatch!.RecordBatch.Records.Count);
+
+            await Assert.That(inFlightSequence).IsEqualTo(0);
+            await Assert.That(nextSequence).IsEqualTo(inFlightRecordCount);
+        }
+        finally
+        {
+            if (inFlightBatch is not null)
+                accumulator.ReturnReadyBatch(inFlightBatch);
+
+            if (nextBatch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(nextBatch);
+                nextBatch.CompleteSend(baseOffset: 1, timestamp: DateTimeOffset.UtcNow);
+                accumulator.ReturnReadyBatch(nextBatch);
+            }
+
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Purge_Queue_FailsPendingAppendBlockedOnBufferMemory()
     {
         var options = new ProducerOptions

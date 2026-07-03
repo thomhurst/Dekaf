@@ -167,6 +167,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// Queued messages are dropped before they are sent. In-flight messages may already have
     /// reached the broker; purging them only fails local delivery tasks and callbacks.
+    /// Transactional producers cannot purge while a transaction is active; commit or abort first.
     /// </remarks>
     /// <param name="options">The messages to purge.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -230,11 +231,6 @@ public enum PurgeOptions
     /// Purge messages that were sent and are awaiting acknowledgement.
     /// </summary>
     InFlight = 2,
-
-    /// <summary>
-    /// Return after local purge state is updated.
-    /// </summary>
-    NonBlocking = 4,
 
     /// <summary>
     /// Purge queued and in-flight messages.
