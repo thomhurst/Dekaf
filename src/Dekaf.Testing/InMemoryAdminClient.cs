@@ -232,6 +232,46 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask AlterPartitionReassignmentsAsync(
+        IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments,
+        AlterPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reassignments);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        foreach (var (topicPartition, reassignment) in reassignments)
+        {
+            ValidateTopicPartition(topicPartition);
+            if (reassignment.HasValue)
+            {
+                foreach (var replica in reassignment.Value.TargetReplicas)
+                    ArgumentOutOfRangeException.ThrowIfNegative(replica);
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
+        IEnumerable<TopicPartition>? partitions = null,
+        ListPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        if (partitions is not null)
+        {
+            foreach (var partition in partitions)
+                ValidateTopicPartition(partition);
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(
+            new Dictionary<TopicPartition, PartitionReassignment>());
+    }
+
     public ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
         IEnumerable<string>? users = null,
         DescribeUserScramCredentialsOptions? options = null,
