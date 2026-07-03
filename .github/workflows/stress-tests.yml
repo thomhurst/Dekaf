@@ -298,7 +298,12 @@ jobs:
         with:
           pattern: results-*
           path: ./all-results
-          merge-multiple: true
+          # NOT merge-multiple: matrix jobs for the same client+scenario can emit
+          # identically named result files (runs starting in the same second), and
+          # merging would silently overwrite one — dropping rows from the published
+          # tables. Per-artifact subdirectories keep every result; the recursive
+          # glob below finds them all.
+          merge-multiple: false
 
       - name: List Downloaded Results
         run: |
