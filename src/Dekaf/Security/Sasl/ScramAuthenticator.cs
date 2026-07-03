@@ -224,10 +224,9 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
 
     private byte[] Hmac(byte[] key, byte[] message)
     {
-        using var hmac = _hashAlgorithm == HashAlgorithmName.SHA256
-            ? (HMAC)new HMACSHA256(key)
-            : new HMACSHA512(key);
-        return hmac.ComputeHash(message);
+        return _hashAlgorithm == HashAlgorithmName.SHA256
+            ? HMACSHA256.HashData(key, message)
+            : HMACSHA512.HashData(key, message);
     }
 
     private byte[] Hash(byte[] data)
