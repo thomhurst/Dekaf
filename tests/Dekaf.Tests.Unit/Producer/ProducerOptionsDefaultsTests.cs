@@ -33,6 +33,20 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task ReconnectBackoffMs_DefaultsTo_50()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ReconnectBackoffMs).IsEqualTo(50);
+    }
+
+    [Test]
+    public async Task ReconnectBackoffMaxMs_DefaultsTo_1000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
     public async Task LingerMs_DefaultsTo_0()
     {
         var options = CreateOptions();

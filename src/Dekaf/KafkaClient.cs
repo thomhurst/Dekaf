@@ -80,6 +80,8 @@ public sealed class KafkaClientBuilder
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private int _requestTimeoutMs = 30000;
+    private int _reconnectBackoffMs = 50;
+    private int _reconnectBackoffMaxMs = 1000;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -124,6 +126,34 @@ public sealed class KafkaClientBuilder
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the initial delay before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// </summary>
+    /// <param name="backoff">The reconnect backoff. Cannot be negative.</param>
+    public KafkaClientBuilder WithReconnectBackoff(TimeSpan backoff)
+    {
+        _reconnectBackoffMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay before reconnecting to a broker after repeated connection failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    /// <param name="backoff">The maximum reconnect backoff. Cannot be negative.</param>
+    public KafkaClientBuilder WithReconnectBackoffMax(TimeSpan backoff)
+    {
+        _reconnectBackoffMaxMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Maximum reconnect backoff cannot be negative");
         return this;
     }
 
@@ -284,12 +314,15 @@ public sealed class KafkaClientBuilder
         if (_maxConnectionsPerBroker < _connectionsPerBroker)
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}).");
+        ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
         var options = new KafkaClientOptions
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             RequestTimeoutMs = _requestTimeoutMs,
+            ReconnectBackoffMs = _reconnectBackoffMs,
+            ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
@@ -318,6 +351,8 @@ internal sealed class KafkaClientOptions
     public required IReadOnlyList<string> BootstrapServers { get; init; }
     public string? ClientId { get; init; }
     public int RequestTimeoutMs { get; init; }
+    public int ReconnectBackoffMs { get; init; }
+    public int ReconnectBackoffMaxMs { get; init; }
     public bool UseTls { get; init; }
     public TlsConfig? TlsConfig { get; init; }
     public SaslMechanism SaslMechanism { get; init; }
@@ -386,6 +421,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
                 UseTls = options.UseTls,
                 TlsConfig = options.TlsConfig,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,

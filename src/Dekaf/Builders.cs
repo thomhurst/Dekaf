@@ -65,6 +65,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private TimeSpan? _metadataMaxAge;
     private int? _deliveryTimeoutMs;
     private int? _requestTimeoutMs;
+    private int _reconnectBackoffMs = 50;
+    private int _reconnectBackoffMaxMs = 1000;
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
@@ -669,6 +671,36 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the initial delay before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// </summary>
+    /// <param name="backoff">The reconnect backoff. Cannot be negative.</param>
+    public ProducerBuilder<TKey, TValue> WithReconnectBackoff(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _reconnectBackoffMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay before reconnecting to a broker after repeated connection failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    /// <param name="backoff">The maximum reconnect backoff. Cannot be negative.</param>
+    public ProducerBuilder<TKey, TValue> WithReconnectBackoffMax(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _reconnectBackoffMaxMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Maximum reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
     /// Sets the application-level retry policy for produce operations.
     /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync"/>
     /// will be retried according to this policy.
@@ -860,6 +892,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
+        ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
         // Java Kafka client enforces acks=all when enable.idempotence=true.
         // With acks=leader, the leader acknowledges before ISR replication completes,
@@ -895,6 +928,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
+            ReconnectBackoffMs = _reconnectBackoffMs,
+            ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             EnableIdempotence = _enableIdempotence,
             ConnectionsPerBroker = _connectionsPerBroker,
             TransactionalId = _transactionalId,
@@ -1070,6 +1105,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _connectionsPerBroker = 2;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 4;
+    private int _reconnectBackoffMs = 50;
+    private int _reconnectBackoffMaxMs = 1000;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
     private bool _enableFetchSessions = true;
@@ -1677,6 +1714,36 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the initial delay before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// </summary>
+    /// <param name="backoff">The reconnect backoff. Cannot be negative.</param>
+    public ConsumerBuilder<TKey, TValue> WithReconnectBackoff(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _reconnectBackoffMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay before reconnecting to a broker after repeated connection failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    /// <param name="backoff">The maximum reconnect backoff. Cannot be negative.</param>
+    public ConsumerBuilder<TKey, TValue> WithReconnectBackoffMax(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _reconnectBackoffMaxMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Maximum reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
     /// Configures the consumer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -1913,6 +1980,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
+        ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
         var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
 
@@ -1938,6 +2006,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,
             RebalanceTimeoutMs = _rebalanceTimeoutMs,
             RequestTimeoutMs = _requestTimeoutMs,
+            ReconnectBackoffMs = _reconnectBackoffMs,
+            ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             CheckCrcs = _checkCrcs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
@@ -2074,6 +2144,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _socketSendBufferBytes;
     private int _socketReceiveBufferBytes;
     private int _connectionsPerBroker = 2;
+    private int _reconnectBackoffMs = 50;
+    private int _reconnectBackoffMaxMs = 1000;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
 
@@ -2166,6 +2238,36 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithRequestTimeoutMs(int requestTimeoutMs)
     {
         _requestTimeoutMs = requestTimeoutMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the initial delay before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// </summary>
+    /// <param name="backoff">The reconnect backoff. Cannot be negative.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithReconnectBackoff(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _reconnectBackoffMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay before reconnecting to a broker after repeated connection failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    /// <param name="backoff">The maximum reconnect backoff. Cannot be negative.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithReconnectBackoffMax(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _reconnectBackoffMaxMs = ReconnectBackoffValidation.ToMilliseconds(
+            backoff,
+            nameof(backoff),
+            "Maximum reconnect backoff cannot be negative");
         return this;
     }
 
@@ -2337,6 +2439,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
         ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
+        ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
@@ -2355,6 +2458,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs,
             RequestTimeoutMs = _requestTimeoutMs,
+            ReconnectBackoffMs = _reconnectBackoffMs,
+            ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,

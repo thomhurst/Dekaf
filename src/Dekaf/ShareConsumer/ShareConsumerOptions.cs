@@ -72,6 +72,18 @@ public sealed class ShareConsumerOptions
     public int RequestTimeoutMs { get; init; } = 30000;
 
     /// <summary>
+    /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to 0 to disable the delay.
+    /// </summary>
+    public int ReconnectBackoffMs { get; init; } = 50;
+
+    /// <summary>
+    /// Maximum delay in milliseconds before reconnecting to a broker after repeated failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    public int ReconnectBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
     /// Whether to use TLS for broker connections.
     /// </summary>
     public bool UseTls { get; init; }

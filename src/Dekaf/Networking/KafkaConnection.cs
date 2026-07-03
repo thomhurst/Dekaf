@@ -2678,6 +2678,18 @@ public sealed class ConnectionOptions
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Initial delay before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// </summary>
+    public TimeSpan ReconnectBackoff { get; init; } = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Maximum delay before reconnecting to a broker after repeated connection failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    public TimeSpan ReconnectBackoffMax { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Maximum in-flight requests per connection. Used internally to derive pool sizes.
     /// </summary>
     internal int MaxInFlightRequestsPerConnection { get; init; } = 5;

@@ -161,6 +161,28 @@ public sealed class MetadataRecoveryStrategyTests
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(300000);
     }
 
+    [Test]
+    public async Task AdminClientOptions_ReconnectBackoffMs_DefaultsTo50()
+    {
+        var options = new Dekaf.Admin.AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.ReconnectBackoffMs).IsEqualTo(50);
+    }
+
+    [Test]
+    public async Task AdminClientOptions_ReconnectBackoffMaxMs_DefaultsTo1000()
+    {
+        var options = new Dekaf.Admin.AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(1000);
+    }
+
     #endregion
 
     #region MetadataOptions Defaults

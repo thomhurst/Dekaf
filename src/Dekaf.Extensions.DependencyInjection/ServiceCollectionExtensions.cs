@@ -519,6 +519,10 @@ internal static class DekafConfigurationBinding
             builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(deliveryTimeoutMs));
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.EnableIdempotence), out var enableIdempotence))
             builder.WithIdempotence(enableIdempotence);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
@@ -615,6 +619,10 @@ internal static class DekafConfigurationBinding
             builder.WithIsolationLevel(isolationLevel);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.CheckCrcs), out var checkCrcs))
             builder.WithCheckCrcs(checkCrcs);
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
@@ -655,6 +663,10 @@ internal static class DekafConfigurationBinding
             builder.WithClientId(clientId);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);

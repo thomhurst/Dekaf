@@ -1,7 +1,10 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Reflection;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Security.Sasl;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -356,6 +359,98 @@ public sealed class ConnectionPoolTests
         await Assert.That(result).IsNull();
     }
 
+    [Test]
+    [NotInParallel]
+    public async Task CreateConnectionGroup_AfterConnectionFailure_WaitsForReconnectBackoff()
+    {
+        const int connectionsPerBroker = 2;
+        var attempts = 0;
+        var options = new ConnectionOptions
+        {
+            ConnectionTimeout = TimeSpan.FromSeconds(30),
+            ReconnectBackoff = TimeSpan.FromMilliseconds(40),
+            ReconnectBackoffMax = TimeSpan.FromMilliseconds(40)
+        };
+
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) <= connectionsPerBroker)
+                    return new ValueTask<IKafkaConnection>(Task.FromException<IKafkaConnection>(
+                        new InvalidOperationException("broker down")));
+
+                return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            Func<Task> firstAttempt = () => pool.GetConnectionAsync(1).AsTask();
+            await Assert.That(firstAttempt).Throws<InvalidOperationException>();
+
+            var stopwatch = Stopwatch.StartNew();
+            var connection = await pool.GetConnectionAsync(1);
+            stopwatch.Stop();
+
+            await Assert.That(connection.IsConnected).IsTrue();
+            await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(25));
+            await Assert.That(attempts).IsEqualTo(4);
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task ReplaceConnectionInGroup_DuringReconnectBackoff_RespectsConnectionTimeout()
+    {
+        const int connectionsPerBroker = 2;
+        var initialCreationDone = 0;
+        var replacementAttempts = 0;
+        var options = new ConnectionOptions
+        {
+            ConnectionTimeout = TimeSpan.FromMilliseconds(100),
+            ReconnectBackoff = TimeSpan.FromSeconds(1),
+            ReconnectBackoffMax = TimeSpan.FromSeconds(1)
+        };
+
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                if (Volatile.Read(ref initialCreationDone) != 0
+                    && Interlocked.Increment(ref replacementAttempts) == 1)
+                {
+                    return new ValueTask<IKafkaConnection>(Task.FromException<IKafkaConnection>(
+                        new InvalidOperationException("broker down")));
+                }
+
+                return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            await pool.GetConnectionAsync(1);
+            Volatile.Write(ref initialCreationDone, 1);
+
+            var oldConnection = await pool.GetConnectionByIndexAsync(1, 0);
+            oldConnection.IsConnected.Returns(false);
+
+            Func<Task> failedReplacement = () => pool.GetConnectionByIndexAsync(1, 0).AsTask();
+            await Assert.That(failedReplacement).Throws<InvalidOperationException>();
+
+            Func<Task> timedOutReplacement = () => pool.GetConnectionByIndexAsync(1, 0).AsTask();
+            await Assert.That(timedOutReplacement).Throws<KafkaException>()
+                .WithMessageContaining("Connection replacement timeout");
+        }
+    }
+
     private static OAuthBearerConfig CreateOAuthBearerConfig() => new()
     {
         TokenEndpointUrl = "https://auth.example.invalid/token",
@@ -377,5 +472,15 @@ public sealed class ConnectionPoolTests
             BindingFlags.NonPublic | BindingFlags.Instance);
 
         return (MemoryPool<byte>)field!.GetValue(pool)!;
+    }
+
+    private static IKafkaConnection CreateConnectedConnection(int brokerId, string host, int port)
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(brokerId);
+        connection.Host.Returns(host);
+        connection.Port.Returns(port);
+        return connection;
     }
 }

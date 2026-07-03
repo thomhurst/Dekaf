@@ -34,6 +34,18 @@ public sealed class ProducerOptions
     public int RequestTimeoutMs { get; init; } = 30000;
 
     /// <summary>
+    /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
+    /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to 0 to disable the delay.
+    /// </summary>
+    public int ReconnectBackoffMs { get; init; } = 50;
+
+    /// <summary>
+    /// Maximum delay in milliseconds before reconnecting to a broker after repeated failures.
+    /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
+    /// </summary>
+    public int ReconnectBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
     /// Linger time in milliseconds before sending a batch.
     /// Default is 0 (immediate send), matching the Java Kafka producer default.
     /// Use <see cref="ProducerBuilder{TKey,TValue}.ForHighThroughput"/> to set 100ms

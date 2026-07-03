@@ -68,6 +68,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 UseTls = options.UseTls,
                 TlsConfig = options.TlsConfig,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,

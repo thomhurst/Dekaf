@@ -786,6 +786,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 UseTls = options.UseTls,
                 TlsConfig = options.TlsConfig,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,

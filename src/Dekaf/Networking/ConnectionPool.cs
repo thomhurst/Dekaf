@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -59,6 +60,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     // Per-endpoint semaphores to deduplicate concurrent single-connection creation
     private readonly ConcurrentDictionary<EndpointKey, SemaphoreSlim> _connectionCreationLocks = new();
+    private readonly ConcurrentDictionary<EndpointKey, ReconnectBackoffState> _reconnectBackoffs = new();
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
@@ -99,6 +101,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
             connectionOptions ?? new ConnectionOptions(),
             out _sharedOAuthBearerTokenProvider);
+        ValidateReconnectBackoff(_connectionOptions);
         _loggerFactory = loggerFactory;
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
@@ -123,6 +126,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
             connectionOptions ?? new ConnectionOptions(),
             out _sharedOAuthBearerTokenProvider);
+        ValidateReconnectBackoff(_connectionOptions);
         _loggerFactory = null;
         _logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
@@ -180,8 +184,30 @@ public sealed partial class ConnectionPool : IConnectionPool
             MinimumReadSize = options.MinimumReadSize,
             ConnectionTimeout = options.ConnectionTimeout,
             RequestTimeout = options.RequestTimeout,
+            ReconnectBackoff = options.ReconnectBackoff,
+            ReconnectBackoffMax = options.ReconnectBackoffMax,
             MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
         };
+    }
+
+    private static void ValidateReconnectBackoff(ConnectionOptions options)
+    {
+        if (options.ReconnectBackoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options), "Reconnect backoff cannot be negative");
+        if (options.ReconnectBackoffMax < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options), "Maximum reconnect backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            options.ReconnectBackoff.TotalMilliseconds,
+            int.MaxValue,
+            nameof(options));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            options.ReconnectBackoffMax.TotalMilliseconds,
+            int.MaxValue,
+            nameof(options));
+        if (options.ReconnectBackoffMax < options.ReconnectBackoff)
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "Maximum reconnect backoff must be greater than or equal to reconnect backoff");
     }
 
     /// <summary>
@@ -355,7 +381,13 @@ public sealed partial class ConnectionPool : IConnectionPool
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
                 var index = i;
-                tasks[i] = CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token).AsTask();
+                tasks[i] = CreateConnectionForGroupAsync(
+                    brokerId,
+                    brokerInfo.Host,
+                    brokerInfo.Port,
+                    index,
+                    token,
+                    cancellationToken).AsTask();
             }
 
             // Add timeout to prevent indefinite hang if connection creation stalls
@@ -369,6 +401,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             // Atomically set the connection group
             _connectionGroupsById[brokerId] = connections;
+            ResetReconnectBackoff(new EndpointKey(brokerInfo.Host, brokerInfo.Port), brokerId, brokerInfo.Host, brokerInfo.Port);
 
             LogCreatedConnectionGroup(_connectionsPerBroker, brokerId);
 
@@ -441,7 +474,13 @@ public sealed partial class ConnectionPool : IConnectionPool
             for (var i = 0; i < additionalCount; i++)
             {
                 var index = existingCount + i;
-                tasks[i] = CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token).AsTask();
+                tasks[i] = CreateConnectionForGroupAsync(
+                    brokerId,
+                    brokerInfo.Host,
+                    brokerInfo.Port,
+                    index,
+                    linkedCts.Token,
+                    cancellationToken).AsTask();
             }
 
             try
@@ -464,6 +503,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             // Atomically swap the connection group
             _connectionGroupsById[brokerId] = newGroup;
+            ResetReconnectBackoff(new EndpointKey(brokerInfo.Host, brokerInfo.Port), brokerId, brokerInfo.Host, brokerInfo.Port);
 
             LogScaledConnectionGroup(existingCount, newCount, brokerId);
             return newCount;
@@ -547,7 +587,13 @@ public sealed partial class ConnectionPool : IConnectionPool
                 return currentConnections[index];
             }
 
-            var connection = await CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token).ConfigureAwait(false);
+            var connection = await CreateConnectionForGroupAsync(
+                brokerId,
+                brokerInfo.Host,
+                brokerInfo.Port,
+                index,
+                token,
+                cancellationToken).ConfigureAwait(false);
 
             // Acquire _scaleLock to protect the array write against concurrent
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.
@@ -595,6 +641,8 @@ public sealed partial class ConnectionPool : IConnectionPool
                     $"Connection slot {index} for broker {brokerId} was removed by a concurrent shrink");
             }
 
+            ResetReconnectBackoff(new EndpointKey(brokerInfo.Host, brokerInfo.Port), brokerId, brokerInfo.Host, brokerInfo.Port);
+
             return connection;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -608,30 +656,70 @@ public sealed partial class ConnectionPool : IConnectionPool
         }
     }
 
-    private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
+    private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(
+        int brokerId,
+        string host,
+        int port,
+        int index,
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
     {
-        if (_connectionFactory is not null)
+        var endpoint = new EndpointKey(host, port);
+        return await RunWithReconnectBackoffAsync(
+            endpoint,
+            brokerId,
+            host,
+            port,
+            () => CreateConnectionForGroupCoreAsync(
+                brokerId,
+                host,
+                port,
+                index,
+                cancellationToken,
+                callerCancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IKafkaConnection> CreateConnectionForGroupCoreAsync(
+        int brokerId,
+        string host,
+        int port,
+        int index,
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
+    {
+        var endpoint = new EndpointKey(host, port);
+
+        try
         {
-            var factoryConnection = await _connectionFactory(brokerId, host, port, index, cancellationToken).ConfigureAwait(false);
+            if (_connectionFactory is not null)
+            {
+                var factoryConnection = await _connectionFactory(brokerId, host, port, index, cancellationToken).ConfigureAwait(false);
+                LogCreatedConnectionForGroup(index, brokerId, host, port);
+                return factoryConnection;
+            }
+
+            var connection = new KafkaConnection(
+                brokerId, host, port,
+                _clientId, _connectionOptions,
+                _loggerFactory?.CreateLogger<KafkaConnection>(),
+                DefaultBufferMemory, _connectionsPerBroker,
+                BrokerCount,
+                _responseBufferPool,
+                _sharedPipeMemoryPool,
+                _telemetryMetricCollector);
+
+            await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
             LogCreatedConnectionForGroup(index, brokerId, host, port);
-            return factoryConnection;
+
+            return connection;
         }
-
-        var connection = new KafkaConnection(
-            brokerId, host, port,
-            _clientId, _connectionOptions,
-            _loggerFactory?.CreateLogger<KafkaConnection>(),
-            DefaultBufferMemory, _connectionsPerBroker,
-            BrokerCount,
-            _responseBufferPool,
-            _sharedPipeMemoryPool,
-            _telemetryMetricCollector);
-
-        await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
-
-        LogCreatedConnectionForGroup(index, brokerId, host, port);
-
-        return connection;
+        catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
+        {
+            RecordReconnectFailure(endpoint, brokerId, host, port);
+            throw;
+        }
     }
 
     public async ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken cancellationToken = default)
@@ -695,11 +783,12 @@ public sealed partial class ConnectionPool : IConnectionPool
                     catch { /* best-effort cleanup */ }
                 }
 
-                var connection = await CreateConnectionAsync(brokerId, host, port, token).ConfigureAwait(false);
+                var connection = await CreateConnectionAsync(brokerId, host, port, token, cancellationToken).ConfigureAwait(false);
 
                 // Verify connection is still valid
                 if (connection.IsConnected)
                 {
+                    ResetReconnectBackoff(endpoint, brokerId, host, port);
                     return connection;
                 }
 
@@ -710,6 +799,8 @@ public sealed partial class ConnectionPool : IConnectionPool
 
                 try { await connection.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup */ }
+
+                RecordReconnectFailure(endpoint, brokerId, host, port);
             }
 
             throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
@@ -729,34 +820,175 @@ public sealed partial class ConnectionPool : IConnectionPool
         int brokerId,
         string host,
         int port,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
+    {
+        var endpoint = new EndpointKey(host, port);
+        return await RunWithReconnectBackoffAsync(
+            endpoint,
+            brokerId,
+            host,
+            port,
+            () => CreateConnectionCoreAsync(
+                brokerId,
+                host,
+                port,
+                cancellationToken,
+                callerCancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IKafkaConnection> CreateConnectionCoreAsync(
+        int brokerId,
+        string host,
+        int port,
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
     {
         var endpoint = new EndpointKey(host, port);
 
         // Note: Stale connection cleanup is handled by the caller (GetOrCreateConnectionAsync)
         // within the creation semaphore, so no duplicate cleanup is needed here.
 
-        var connection = new KafkaConnection(
-            brokerId, host, port,
-            _clientId, _connectionOptions,
-            _loggerFactory?.CreateLogger<KafkaConnection>(),
-            DefaultBufferMemory, _connectionsPerBroker,
-            BrokerCount,
-            _responseBufferPool,
-            _sharedPipeMemoryPool,
-            _telemetryMetricCollector);
-
-        await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
-
-        _connectionsByEndpoint[endpoint] = connection;
-        if (brokerId >= 0)
+        try
         {
-            _connectionsById[brokerId] = connection;
+            var connection = new KafkaConnection(
+                brokerId, host, port,
+                _clientId, _connectionOptions,
+                _loggerFactory?.CreateLogger<KafkaConnection>(),
+                DefaultBufferMemory, _connectionsPerBroker,
+                BrokerCount,
+                _responseBufferPool,
+                _sharedPipeMemoryPool,
+                _telemetryMetricCollector);
+
+            await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+            _connectionsByEndpoint[endpoint] = connection;
+            if (brokerId >= 0)
+            {
+                _connectionsById[brokerId] = connection;
+            }
+
+            LogCreatedConnection(brokerId, host, port);
+
+            return connection;
+        }
+        catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
+        {
+            RecordReconnectFailure(endpoint, brokerId, host, port);
+            throw;
+        }
+    }
+
+    private async ValueTask<IKafkaConnection> RunWithReconnectBackoffAsync(
+        EndpointKey endpoint,
+        int brokerId,
+        string host,
+        int port,
+        Func<ValueTask<IKafkaConnection>> createConnection,
+        CancellationToken cancellationToken)
+    {
+        if (_reconnectBackoffs.TryGetValue(endpoint, out var state))
+        {
+            await state.AttemptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WaitForReconnectBackoffAsync(endpoint, state, brokerId, host, port, cancellationToken).ConfigureAwait(false);
+                return await createConnection().ConfigureAwait(false);
+            }
+            finally
+            {
+                state.AttemptGate.Release();
+            }
         }
 
-        LogCreatedConnection(brokerId, host, port);
+        return await createConnection().ConfigureAwait(false);
+    }
 
-        return connection;
+    private async ValueTask WaitForReconnectBackoffAsync(
+        EndpointKey endpoint,
+        ReconnectBackoffState state,
+        int brokerId,
+        string host,
+        int port,
+        CancellationToken cancellationToken)
+    {
+        while (_reconnectBackoffs.TryGetValue(endpoint, out var currentState)
+               && ReferenceEquals(currentState, state))
+        {
+            TimeSpan delay;
+            int failureCount;
+            lock (state.Sync)
+            {
+                var retryAfterTicks = state.NextAttemptTimestamp - Stopwatch.GetTimestamp();
+                if (state.FailureCount == 0 || retryAfterTicks <= 0)
+                    return;
+
+                delay = TimeSpan.FromSeconds((double)retryAfterTicks / Stopwatch.Frequency);
+                failureCount = state.FailureCount;
+            }
+
+            LogReconnectBackoffDelay(delay.TotalMilliseconds, brokerId, host, port, failureCount);
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void RecordReconnectFailure(EndpointKey endpoint, int brokerId, string host, int port)
+    {
+        var state = _reconnectBackoffs.GetOrAdd(endpoint, static _ => new ReconnectBackoffState());
+
+        TimeSpan delay;
+        int failureCount;
+        lock (state.Sync)
+        {
+            state.FailureCount = Math.Min(state.FailureCount + 1, 30);
+            failureCount = state.FailureCount;
+            delay = CalculateReconnectBackoffDelay(failureCount);
+            state.NextAttemptTimestamp = Stopwatch.GetTimestamp() + ToStopwatchTicks(delay);
+        }
+
+        LogReconnectBackoffScheduled(delay.TotalMilliseconds, brokerId, host, port, failureCount);
+    }
+
+    private void ResetReconnectBackoff(EndpointKey endpoint, int brokerId, string host, int port)
+    {
+        if (!_reconnectBackoffs.TryRemove(endpoint, out var state))
+            return;
+
+        lock (state.Sync)
+        {
+            state.FailureCount = 0;
+            state.NextAttemptTimestamp = 0;
+        }
+
+        LogReconnectBackoffReset(brokerId, host, port);
+    }
+
+    private TimeSpan CalculateReconnectBackoffDelay(int failureCount)
+    {
+        var minMs = _connectionOptions.ReconnectBackoff.TotalMilliseconds;
+        var maxMs = _connectionOptions.ReconnectBackoffMax.TotalMilliseconds;
+        if (minMs <= 0 || maxMs <= 0)
+            return TimeSpan.Zero;
+
+        var exponent = Math.Min(failureCount - 1, 30);
+        var baseMs = Math.Min(maxMs, minMs * Math.Pow(2, exponent));
+        if (baseMs < maxMs)
+        {
+            var jitterMaxMs = Math.Max(1, (int)Math.Ceiling(baseMs * 0.2));
+            baseMs = Math.Min(maxMs, baseMs + Random.Shared.Next(jitterMaxMs + 1));
+        }
+
+        return TimeSpan.FromMilliseconds(baseMs);
+    }
+
+    private static long ToStopwatchTicks(TimeSpan delay)
+    {
+        if (delay <= TimeSpan.Zero)
+            return 0;
+
+        return (long)(delay.TotalSeconds * Stopwatch.Frequency);
     }
 
     public async ValueTask RemoveConnectionAsync(int brokerId)
@@ -855,6 +1087,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionsByEndpoint.Clear();
             _connectionsById.Clear();
             _connectionGroupsById.Clear();
+            _reconnectBackoffs.Clear();
 
             if (Volatile.Read(ref _disposed) != 0)
             {
@@ -942,7 +1175,24 @@ public sealed partial class ConnectionPool : IConnectionPool
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose replaced connection for broker {BrokerId} index {Index}")]
     private static partial void LogOldConnectionDisposalFailed(ILogger logger, int brokerId, int index, Exception ex);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Waiting {DelayMs}ms before reconnecting to broker {BrokerId} at {Host}:{Port} after {FailureCount} failed attempt(s)")]
+    private partial void LogReconnectBackoffDelay(double delayMs, int brokerId, string host, int port, int failureCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Scheduled reconnect backoff of {DelayMs}ms for broker {BrokerId} at {Host}:{Port} after {FailureCount} failed attempt(s)")]
+    private partial void LogReconnectBackoffScheduled(double delayMs, int brokerId, string host, int port, int failureCount);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Reset reconnect backoff for broker {BrokerId} at {Host}:{Port}")]
+    private partial void LogReconnectBackoffReset(int brokerId, string host, int port);
+
     #endregion
+
+    private sealed class ReconnectBackoffState
+    {
+        public readonly object Sync = new();
+        public readonly SemaphoreSlim AttemptGate = new(1, 1);
+        public int FailureCount;
+        public long NextAttemptTimestamp;
+    }
 
     private readonly record struct EndpointKey(string Host, int Port);
     private readonly record struct BrokerInfo(int BrokerId, string Host, int Port);
