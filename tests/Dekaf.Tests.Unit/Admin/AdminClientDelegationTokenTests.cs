@@ -41,6 +41,7 @@ public sealed class AdminClientDelegationTokenTests
         await Assert.That(token.TokenRequester!.Value.PrincipalName).IsEqualTo("requester");
         await Assert.That(token.TokenId).IsEqualTo("token-id");
         await Assert.That(token.Hmac).IsEquivalentTo(new byte[] { 1, 2, 3 });
+        await Assert.That(token.Renewers.Single().PrincipalName).IsEqualTo("renewer");
     }
 
     [Test]

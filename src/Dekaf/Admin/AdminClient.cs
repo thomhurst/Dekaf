@@ -1260,7 +1260,8 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var renewerList = renewers?.Select(ToProtocolPrincipal).ToList();
+        var renewerList = renewers?.ToList();
+        var protocolRenewers = renewerList?.Select(ToProtocolPrincipal).ToList();
         var ownerPrincipal = owner is { } value ? ToProtocolPrincipal(value) : null;
         var maxLifetimeMs = ToKafkaMilliseconds(maxLifetime, nameof(maxLifetime));
 
@@ -1270,7 +1271,7 @@ public sealed class AdminClient : IAdminClient
             var request = new CreateDelegationTokenRequest
             {
                 Owner = ownerPrincipal,
-                Renewers = renewerList,
+                Renewers = protocolRenewers,
                 MaxLifetimeMs = maxLifetimeMs
             };
 
@@ -1294,7 +1295,7 @@ public sealed class AdminClient : IAdminClient
                 throw KafkaException.FromErrorCode(response.ErrorCode, $"CreateDelegationToken failed: {response.ErrorCode}");
             }
 
-            return MapDelegationToken(response);
+            return MapDelegationToken(response, renewerList);
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1430,7 +1431,9 @@ public sealed class AdminClient : IAdminClient
         PrincipalName = principal.PrincipalName
     };
 
-    private static DelegationToken MapDelegationToken(CreateDelegationTokenResponse response)
+    private static DelegationToken MapDelegationToken(
+        CreateDelegationTokenResponse response,
+        IReadOnlyList<DelegationTokenPrincipal>? renewers)
     {
         var requester = response.TokenRequesterPrincipalType is not null && response.TokenRequesterPrincipalName is not null
             ? new DelegationTokenPrincipal(response.TokenRequesterPrincipalType, response.TokenRequesterPrincipalName)
@@ -1445,7 +1448,7 @@ public sealed class AdminClient : IAdminClient
             MaxTimestamp = FromUnixTimeMilliseconds(response.MaxTimestampMs),
             TokenId = response.TokenId,
             Hmac = response.Hmac,
-            Renewers = []
+            Renewers = renewers?.ToList() ?? []
         };
     }
 

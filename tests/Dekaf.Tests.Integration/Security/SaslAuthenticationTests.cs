@@ -1,6 +1,7 @@
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Integration.Security;
 
@@ -381,6 +382,53 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         await saslKafka.WaitForTopicReadyAsync(topicName);
     }
 
+    [Test]
+    public async Task AdminClient_WithSaslPlain_ManagesDelegationTokens()
+    {
+        var renewer = new Admin.DelegationTokenPrincipal("User", SaslKafkaContainer.SaslUsername);
+
+        await using var adminClient = Kafka.CreateAdminClient()
+            .WithBootstrapServers(saslKafka.BootstrapServers)
+            .WithClientId("sasl-admin-delegation-token")
+            .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+
+        var token = await adminClient.CreateDelegationTokenAsync(
+            renewers: [renewer],
+            maxLifetime: TimeSpan.FromMinutes(30));
+
+        try
+        {
+            await Assert.That(token.TokenId).IsNotEmpty();
+            await Assert.That(token.Hmac).IsNotEmpty();
+            await Assert.That(token.Renewers.Single()).IsEqualTo(renewer);
+
+            var describedToken = await WaitForDescribedDelegationTokenAsync(adminClient, token.TokenId);
+            await Assert.That(describedToken.Renewers.Select(r => r.PrincipalName))
+                .Contains(SaslKafkaContainer.SaslUsername);
+
+            var expiry = await adminClient.RenewDelegationTokenAsync(token.Hmac, TimeSpan.FromMinutes(10));
+            await Assert.That(expiry).IsGreaterThan(DateTimeOffset.UtcNow);
+        }
+        finally
+        {
+            await ExpireTokenIgnoringNotFoundAsync(adminClient, token.Hmac);
+        }
+    }
+
+    [Test]
+    public async Task Producer_WithSaslScramSha256DelegationToken_SuccessfullyProduces()
+    {
+        await ProduceWithDelegationTokenAsync(useSha512: false);
+    }
+
+    [Test]
+    public async Task Producer_WithSaslScramSha512DelegationToken_SuccessfullyProduces()
+    {
+        await ProduceWithDelegationTokenAsync(useSha512: true);
+    }
+
     // ==========================================
     // Cross-Mechanism Round-Trip Tests
     // ==========================================
@@ -427,5 +475,103 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         var r = result!.Value;
         await Assert.That(r.Key).IsEqualTo("cross-key");
         await Assert.That(r.Value).IsEqualTo("cross-value");
+    }
+
+    private async Task ProduceWithDelegationTokenAsync(bool useSha512)
+    {
+        var topic = await saslKafka.CreateTestTopicAsync();
+        var mechanismName = useSha512 ? "sha512" : "sha256";
+
+        await using var adminClient = Kafka.CreateAdminClient()
+            .WithBootstrapServers(saslKafka.BootstrapServers)
+            .WithClientId($"sasl-token-admin-{mechanismName}")
+            .WithSaslPlain(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+
+        var token = await adminClient.CreateDelegationTokenAsync(maxLifetime: TimeSpan.FromMinutes(30));
+
+        try
+        {
+            await using var producer = await BuildDelegationTokenProducerAsync(useSha512, mechanismName, token);
+
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"token-{mechanismName}-key",
+                Value = $"token-{mechanismName}-value"
+            }, CancellationToken.None);
+
+            await Assert.That(metadata.Topic).IsEqualTo(topic);
+            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        }
+        finally
+        {
+            await ExpireTokenIgnoringNotFoundAsync(adminClient, token.Hmac);
+        }
+    }
+
+    private async Task<IKafkaProducer<string, string>> BuildDelegationTokenProducerAsync(
+        bool useSha512,
+        string mechanismName,
+        Admin.DelegationToken token)
+    {
+        var tokenHmac = Convert.ToBase64String(token.Hmac);
+        AuthenticationException? lastError = null;
+
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var producerBuilder = Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(saslKafka.BootstrapServers)
+                .WithClientId($"sasl-token-producer-{mechanismName}-{attempt}")
+                .WithAcks(Acks.All)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+
+            producerBuilder = useSha512
+                ? producerBuilder.WithSaslScramSha512DelegationToken(token.TokenId, tokenHmac)
+                : producerBuilder.WithSaslScramSha256DelegationToken(token.TokenId, tokenHmac);
+
+            try
+            {
+                return await producerBuilder.BuildAsync();
+            }
+            catch (AuthenticationException ex)
+            {
+                lastError = ex;
+                await Task.Delay(TimeSpan.FromSeconds(1));
+            }
+        }
+
+        throw new InvalidOperationException("Delegation token authentication did not become ready.", lastError);
+    }
+
+    private static async Task<Admin.DelegationToken> WaitForDescribedDelegationTokenAsync(
+        Admin.IAdminClient adminClient,
+        string tokenId)
+    {
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var described = await adminClient.DescribeDelegationTokensAsync();
+            var token = described.SingleOrDefault(t => t.TokenId == tokenId);
+            if (token is not null)
+            {
+                return token;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+        }
+
+        throw new InvalidOperationException($"Delegation token '{tokenId}' did not appear in describe results.");
+    }
+
+    private static async Task ExpireTokenIgnoringNotFoundAsync(Admin.IAdminClient adminClient, byte[] hmac)
+    {
+        try
+        {
+            await adminClient.ExpireDelegationTokenAsync(hmac, TimeSpan.Zero);
+        }
+        catch (KafkaException ex) when (ex.ErrorCode == ErrorCode.DelegationTokenNotFound)
+        {
+        }
     }
 }
