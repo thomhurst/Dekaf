@@ -169,6 +169,65 @@ public class AdminTypesTests
 
     #endregion
 
+    #region LogDir Admin Types Tests
+
+    [Test]
+    public async Task TopicPartitionReplica_ExposesTopicPartition()
+    {
+        var replica = new TopicPartitionReplica("test-topic", 2, 3);
+
+        await Assert.That(replica.Topic).IsEqualTo("test-topic");
+        await Assert.That(replica.Partition).IsEqualTo(2);
+        await Assert.That(replica.BrokerId).IsEqualTo(3);
+        await Assert.That(replica.TopicPartition).IsEqualTo(new TopicPartition("test-topic", 2));
+    }
+
+    [Test]
+    public async Task LogDirDescription_CanBeCreated()
+    {
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var description = new LogDirDescription
+        {
+            ErrorCode = ErrorCode.None,
+            TotalBytes = 10000,
+            UsableBytes = 7500,
+            IsCordoned = true,
+            ReplicaInfos = new Dictionary<TopicPartition, ReplicaLogDirInfo>
+            {
+                [topicPartition] = new()
+                {
+                    Size = 1234,
+                    OffsetLag = 5,
+                    IsFuture = false
+                }
+            }
+        };
+
+        await Assert.That(description.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(description.TotalBytes).IsEqualTo(10000);
+        await Assert.That(description.UsableBytes).IsEqualTo(7500);
+        await Assert.That(description.IsCordoned).IsTrue();
+        await Assert.That(description.ReplicaInfos[topicPartition].Size).IsEqualTo(1234);
+        await Assert.That(description.ReplicaInfos[topicPartition].OffsetLag).IsEqualTo(5);
+        await Assert.That(description.ReplicaInfos[topicPartition].IsFuture).IsFalse();
+    }
+
+    [Test]
+    public async Task AlterReplicaLogDirResultInfo_CanBeCreated()
+    {
+        var replica = new TopicPartitionReplica("test-topic", 0, 1);
+        var result = new AlterReplicaLogDirResultInfo
+        {
+            TopicPartitionReplica = replica,
+            ErrorCode = ErrorCode.KafkaStorageError
+        };
+
+        await Assert.That(result.TopicPartitionReplica).IsEqualTo(replica);
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.KafkaStorageError);
+    }
+
+    #endregion
+
     #region ElectionType Tests
 
     [Test]

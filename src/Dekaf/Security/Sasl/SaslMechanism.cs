@@ -38,7 +38,12 @@ public enum SaslMechanism
     /// SASL OAUTHBEARER mechanism. OAuth 2.0 / OpenID Connect authentication
     /// using bearer tokens. Supports both static tokens and dynamic token providers.
     /// </summary>
-    OAuthBearer
+    OAuthBearer,
+
+    /// <summary>
+    /// Amazon MSK IAM mechanism. Sends a SigV4-signed AWS_MSK_IAM payload.
+    /// </summary>
+    AwsMskIam
 }
 
 /// <summary>
@@ -56,6 +61,7 @@ public static class SaslMechanismExtensions
         SaslMechanism.ScramSha512 => "SCRAM-SHA-512",
         SaslMechanism.Gssapi => "GSSAPI",
         SaslMechanism.OAuthBearer => "OAUTHBEARER",
+        SaslMechanism.AwsMskIam => "AWS_MSK_IAM",
         _ => throw new ArgumentOutOfRangeException(nameof(mechanism), mechanism, "Unsupported SASL mechanism")
     };
 }

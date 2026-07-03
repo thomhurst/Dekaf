@@ -99,6 +99,19 @@ public sealed class ProducerInitializationTests
     }
 
     [Test]
+    public async Task PurgeAsync_WithoutInitialize_ThrowsInvalidOperationException()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        await Assert.That(async () =>
+        {
+            await producer.PurgeAsync(PurgeOptions.All);
+        }).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task InitializeAsync_AfterDispose_ThrowsObjectDisposedException()
     {
         var producer = Kafka.CreateProducer<string, string>()
@@ -110,6 +123,21 @@ public sealed class ProducerInitializationTests
         await Assert.That(async () =>
         {
             await producer.InitializeAsync();
+        }).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task PurgeAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        await producer.DisposeAsync();
+
+        await Assert.That(async () =>
+        {
+            await producer.PurgeAsync(PurgeOptions.All);
         }).Throws<ObjectDisposedException>();
     }
 }

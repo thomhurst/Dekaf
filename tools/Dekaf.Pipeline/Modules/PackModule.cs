@@ -27,7 +27,8 @@ public class PackModule : Module<List<PackedProject>>
         "Dekaf.SchemaRegistry",
         "Dekaf.SchemaRegistry.Avro",
         "Dekaf.SchemaRegistry.Protobuf",
-        "Dekaf.Serialization.Json"
+        "Dekaf.Serialization.Json",
+        "Dekaf.Testing"
     ];
 
     protected override async Task<List<PackedProject>?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)

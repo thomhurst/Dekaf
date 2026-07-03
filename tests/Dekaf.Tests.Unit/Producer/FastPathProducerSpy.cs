@@ -91,6 +91,8 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
+    public ValueTask PurgeAsync(PurgeOptions options, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
     }

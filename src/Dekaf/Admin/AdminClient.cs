@@ -55,7 +55,8 @@ public sealed class AdminClient : IAdminClient
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 OAuthBearerToken = options.OAuthBearerToken,
-                ClientDnsLookup = options.ClientDnsLookup
+                ClientDnsLookup = options.ClientDnsLookup,
+                AwsMskIamConfig = options.AwsMskIamConfig
             },
             loggerFactory);
 
@@ -2118,6 +2119,264 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
+        IEnumerable<int> brokerIds,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(brokerIds);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var brokerIdList = brokerIds.Distinct().ToArray();
+        foreach (var brokerId in brokerIdList)
+        {
+            if (brokerId < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(brokerIds), brokerId, "Broker ID must be non-negative.");
+            }
+        }
+
+        var topicFilters = BuildDescribeLogDirsTopics(partitions);
+        if (brokerIdList.Length == 0)
+        {
+            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+        }
+
+        return await WithRetryAsync<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>>(async () =>
+        {
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeLogDirs,
+                DescribeLogDirsRequest.LowestSupportedVersion,
+                DescribeLogDirsRequest.HighestSupportedVersion);
+
+            // Fan out to all requested brokers in parallel.
+            var brokerResults = await Task.WhenAll(brokerIdList.Select(async brokerId =>
+            {
+                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
+                    new DescribeLogDirsRequest { Topics = topicFilters },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"DescribeLogDirs failed for broker {brokerId}: {response.ErrorCode}");
+                }
+
+                var brokerResult = new Dictionary<string, LogDirDescription>();
+                foreach (var dir in response.Results)
+                {
+                    var replicas = new Dictionary<TopicPartition, ReplicaLogDirInfo>();
+                    foreach (var topic in dir.Topics)
+                    {
+                        foreach (var partition in topic.Partitions)
+                        {
+                            var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                            replicas[topicPartition] = new ReplicaLogDirInfo
+                            {
+                                Size = partition.PartitionSize,
+                                OffsetLag = partition.OffsetLag,
+                                IsFuture = partition.IsFutureKey
+                            };
+                        }
+                    }
+
+                    brokerResult[dir.LogDir] = new LogDirDescription
+                    {
+                        ErrorCode = dir.ErrorCode,
+                        ReplicaInfos = replicas,
+                        TotalBytes = dir.TotalBytes,
+                        UsableBytes = dir.UsableBytes,
+                        IsCordoned = dir.IsCordoned
+                    };
+                }
+
+                return (BrokerId: brokerId, Result: brokerResult);
+            })).ConfigureAwait(false);
+
+            var results = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>(brokerResults.Length);
+            foreach (var brokerResult in brokerResults)
+            {
+                results[brokerResult.BrokerId] = brokerResult.Result;
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>> AlterReplicaLogDirsAsync(
+        IReadOnlyDictionary<TopicPartitionReplica, string> replicaAssignments,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicaAssignments);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var assignments = new List<ReplicaLogDirAssignment>(replicaAssignments.Count);
+        foreach (var (replica, logDir) in replicaAssignments)
+        {
+            ValidateTopicPartitionReplica(replica, nameof(replicaAssignments));
+            if (string.IsNullOrWhiteSpace(logDir))
+            {
+                throw new ArgumentException("Log directory path must be specified.", nameof(replicaAssignments));
+            }
+
+            assignments.Add(new ReplicaLogDirAssignment(replica, logDir));
+        }
+
+        if (assignments.Count == 0)
+        {
+            return new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>();
+        }
+
+        var assignmentsByBroker = assignments.GroupBy(static a => a.Replica.BrokerId).ToArray();
+
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(async () =>
+        {
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterReplicaLogDirs,
+                AlterReplicaLogDirsRequest.LowestSupportedVersion,
+                AlterReplicaLogDirsRequest.HighestSupportedVersion);
+
+            // Fan out to all target brokers in parallel.
+            var brokerResults = await Task.WhenAll(assignmentsByBroker.Select(async brokerAssignments =>
+            {
+                var brokerId = brokerAssignments.Key;
+                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var request = new AlterReplicaLogDirsRequest
+                {
+                    Dirs = BuildAlterReplicaLogDirsRequestDirs(brokerAssignments)
+                };
+
+                var response = await connection.SendAsync<AlterReplicaLogDirsRequest, AlterReplicaLogDirsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                var brokerResult = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>();
+                foreach (var topic in response.Results)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        var replica = new TopicPartitionReplica(topic.TopicName, partition.PartitionIndex, brokerId);
+                        brokerResult[replica] = new AlterReplicaLogDirResultInfo
+                        {
+                            TopicPartitionReplica = replica,
+                            ErrorCode = partition.ErrorCode
+                        };
+                    }
+                }
+
+                return brokerResult;
+            })).ConfigureAwait(false);
+
+            var results = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(replicaAssignments.Count);
+            foreach (var brokerResult in brokerResults)
+            {
+                foreach (var (replica, result) in brokerResult)
+                {
+                    results[replica] = result;
+                }
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<DescribeLogDirsRequestTopic>? BuildDescribeLogDirsTopics(IEnumerable<TopicPartition>? partitions)
+    {
+        if (partitions is null)
+        {
+            return null;
+        }
+
+        var topics = new Dictionary<string, List<int>>();
+        foreach (var topicPartition in partitions)
+        {
+            ValidateTopicPartition(topicPartition, nameof(partitions));
+            if (!topics.TryGetValue(topicPartition.Topic, out var topicPartitions))
+            {
+                topicPartitions = [];
+                topics[topicPartition.Topic] = topicPartitions;
+            }
+
+            if (!topicPartitions.Contains(topicPartition.Partition))
+            {
+                topicPartitions.Add(topicPartition.Partition);
+            }
+        }
+
+        return topics
+            .Select(static kvp => new DescribeLogDirsRequestTopic
+            {
+                Topic = kvp.Key,
+                Partitions = kvp.Value
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<AlterReplicaLogDirsRequestDir> BuildAlterReplicaLogDirsRequestDirs(
+        IEnumerable<ReplicaLogDirAssignment> assignments)
+    {
+        var dirs = new Dictionary<string, Dictionary<string, List<int>>>();
+        foreach (var assignment in assignments)
+        {
+            if (!dirs.TryGetValue(assignment.LogDir, out var topics))
+            {
+                topics = [];
+                dirs[assignment.LogDir] = topics;
+            }
+
+            if (!topics.TryGetValue(assignment.Replica.Topic, out var partitions))
+            {
+                partitions = [];
+                topics[assignment.Replica.Topic] = partitions;
+            }
+
+            partitions.Add(assignment.Replica.Partition);
+        }
+
+        return dirs
+            .Select(static dir => new AlterReplicaLogDirsRequestDir
+            {
+                Path = dir.Key,
+                Topics = dir.Value
+                    .Select(static topic => new AlterReplicaLogDirsRequestTopic
+                    {
+                        Name = topic.Key,
+                        Partitions = topic.Value
+                    })
+                    .ToList()
+            })
+            .ToList();
+    }
+
+    private static void ValidateTopicPartition(TopicPartition topicPartition, string paramName)
+    {
+        if (string.IsNullOrWhiteSpace(topicPartition.Topic))
+        {
+            throw new ArgumentException("Topic name must be specified.", paramName);
+        }
+
+        if (topicPartition.Partition < 0)
+        {
+            throw new ArgumentOutOfRangeException(paramName, topicPartition.Partition, "Partition must be non-negative.");
+        }
+    }
+
+    private static void ValidateTopicPartitionReplica(TopicPartitionReplica replica, string paramName)
+    {
+        ValidateTopicPartition(replica.TopicPartition, paramName);
+        if (replica.BrokerId < 0)
+        {
+            throw new ArgumentOutOfRangeException(paramName, replica.BrokerId, "Broker ID must be non-negative.");
+        }
+    }
+
+    private readonly record struct ReplicaLogDirAssignment(TopicPartitionReplica Replica, string LogDir);
+
     public async ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
@@ -2704,6 +2963,11 @@ public sealed class AdminClientOptions
     public OAuthBearerToken? OAuthBearerToken { get; init; }
 
     /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+
+    /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
@@ -2748,6 +3012,7 @@ public sealed class AdminClientBuilder
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -2931,6 +3196,18 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public AdminClientBuilder WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        return this;
+    }
+
     public AdminClientBuilder WithLoggerFactory(ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -3069,7 +3346,8 @@ public sealed class AdminClientBuilder
         string? username,
         string? password,
         GssapiConfig? gssapiConfig,
-        OAuthBearerConfig? oauthConfig)
+        OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
@@ -3077,6 +3355,7 @@ public sealed class AdminClientBuilder
         _saslPassword = password;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
+        _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
     }
@@ -3105,6 +3384,7 @@ public sealed class AdminClientBuilder
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,

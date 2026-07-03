@@ -178,6 +178,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             GssapiConfig = options.GssapiConfig,
             OAuthBearerTokenProvider = sharedProvider.GetTokenAsync,
             OAuthBearerToken = options.OAuthBearerToken,
+            AwsMskIamConfig = options.AwsMskIamConfig,
             SaslReauthenticationConfig = options.SaslReauthenticationConfig,
             SendBufferSize = options.SendBufferSize,
             ReceiveBufferSize = options.ReceiveBufferSize,

@@ -18,11 +18,11 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     // 1. Original 5s retention was too aggressive — caused constant "offset out of range" resets
     // 2. Long time-based retention (e.g. 30 min) would retain ~360 GB at high throughput,
     //    exhausting disk/memory on CI runners
-    // Solution: byte-based retention (128 MB/partition × 6 partitions ≈ 768 MB max disk) is
+    // Solution: byte-based retention (64 MB/partition × 6 partitions ≈ 384 MB max disk) is
     // the primary bound. Time-based retention (5 min) is a secondary backstop. Small 16 MB
     // segments let Kafka reclaim space incrementally as the consumer keeps up.
     //
-    // The 1s check interval is load-bearing: producers push ~1 GB/s, so disk usage can
+    // The 500ms check interval is load-bearing: producers push ~1 GB/s, so disk usage can
     // overshoot the retention caps by roughly (produce rate × check interval) between
     // sweeps. A 10s interval meant ~10 GB overshoot windows — more than the broker tmpfs —
     // which filled the log dir and halted ingestion seconds into producer runs.
@@ -32,13 +32,21 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     // 30s; Kafka 3.8+). At ~1 GB/s a 6 GB tmpfs fills in ~5s, so with the default
     // delay the broker died of "No space left on device" before retention ever ran —
     // none of the settings above mattered.
+    //
+    // The 0ms segment delete delay matters at replication factor 3: every broker ingests
+    // the full client byte rate (leader writes + replica fetches), and a nonzero delay
+    // leaves already-deleted segments on disk for (produce rate × delay) — ~1.2 GB of
+    // dead data per broker at 1s. Retention must win the NET fill race (ingest minus
+    // reclaim); a client-side throughput gain of ~15% was enough to fill two of three
+    // 6 GB tmpfs mounts in ~40s under the previous 128 MB / 1s / 1s settings, so the
+    // margins here are deliberately generous.
     private static readonly Dictionary<string, string> RetentionConfig = new()
     {
         ["KAFKA_LOG_RETENTION_MS"] = "300000",
-        ["KAFKA_LOG_RETENTION_BYTES"] = "134217728",
+        ["KAFKA_LOG_RETENTION_BYTES"] = "67108864",
         ["KAFKA_LOG_SEGMENT_BYTES"] = "16777216",
-        ["KAFKA_LOG_SEGMENT_DELETE_DELAY_MS"] = "1000",
-        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "1000",
+        ["KAFKA_LOG_SEGMENT_DELETE_DELAY_MS"] = "0",
+        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "500",
         ["KAFKA_LOG_INITIAL_TASK_DELAY_MS"] = "1000",
         ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
     };
