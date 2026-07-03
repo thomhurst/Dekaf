@@ -343,6 +343,7 @@ public class MetadataManagerTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task DisposeAsync_CancelsBackgroundRefreshCtsCreatedWhileInitializationDrains()
     {
         var timeout = TimeSpan.FromSeconds(15);

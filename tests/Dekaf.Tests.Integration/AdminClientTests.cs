@@ -707,6 +707,32 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
     #endregion
 
+    #region Partition Reassignment Tests
+
+    [Test]
+    public async Task PartitionReassignmentApis_RoundTripAgainstBroker()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        await using var admin = CreateAdminClient();
+
+        var reassignments = await admin.ListPartitionReassignmentsAsync([partition])
+            .ConfigureAwait(false);
+
+        await Assert.That(reassignments).DoesNotContainKey(partition);
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.AlterPartitionReassignmentsAsync(
+                new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
+                {
+                    [partition] = Optional.None<NewPartitionReassignment>()
+                }).ConfigureAwait(false));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NoReassignmentInProgress);
+    }
+
+    #endregion
+
     #region SCRAM Credential Tests
 
     [Test]
