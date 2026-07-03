@@ -90,6 +90,52 @@ public sealed class AwsMskIamDefaultCredentialsProviderTests
         }
     }
 
+    [Test]
+    public async Task IsTrustedContainerCredentialsFullUri_RejectsHttpNonMetadataHost()
+    {
+        var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(
+            new Uri("http://example.com/credentials"));
+
+        await Assert.That(trusted).IsFalse();
+    }
+
+    [Test]
+    public async Task IsTrustedContainerCredentialsFullUri_AllowsHttpsNonMetadataHost()
+    {
+        var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(
+            new Uri("https://example.com/credentials"));
+
+        await Assert.That(trusted).IsTrue();
+    }
+
+    [Arguments("http://169.254.170.2/credentials")]
+    [Arguments("http://169.254.170.23/credentials")]
+    [Arguments("http://[fd00:ec2::23]/credentials")]
+    [Test]
+    public async Task IsTrustedContainerCredentialsFullUri_AllowsTrustedMetadataHosts(string uri)
+    {
+        var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(new Uri(uri));
+
+        await Assert.That(trusted).IsTrue();
+    }
+
+    [Test]
+    public async Task BuildStsEndpoint_InvalidRegion_Throws()
+    {
+        var exception = await Assert.That(() => AwsMskIamDefaultCredentialsProvider.BuildStsEndpoint("evil.com/"))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(exception!.Message).Contains("region");
+    }
+
+    [Test]
+    public async Task BuildStsEndpoint_ChinaRegion_UsesChinaSuffix()
+    {
+        var endpoint = AwsMskIamDefaultCredentialsProvider.BuildStsEndpoint("cn-north-1");
+
+        await Assert.That(endpoint).IsEqualTo(new Uri("https://sts.cn-north-1.amazonaws.com.cn/"));
+    }
+
     private sealed class EnvironmentSnapshot
     {
         private readonly Dictionary<string, string?> _values;

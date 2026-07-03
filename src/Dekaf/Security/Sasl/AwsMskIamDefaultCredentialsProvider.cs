@@ -160,7 +160,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         Uri? endpoint = null;
         if (!string.IsNullOrWhiteSpace(fullUri) && Uri.TryCreate(fullUri, UriKind.Absolute, out var parsedFullUri))
         {
-            endpoint = parsedFullUri;
+            endpoint = IsTrustedContainerCredentialsFullUri(parsedFullUri) ? parsedFullUri : null;
         }
         else if (!string.IsNullOrWhiteSpace(relativeUri))
         {
@@ -190,6 +190,19 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         {
             return null;
         }
+    }
+
+    internal static bool IsTrustedContainerCredentialsFullUri(Uri uri)
+    {
+        if (uri.Scheme == Uri.UriSchemeHttps)
+            return true;
+
+        if (uri.Scheme != Uri.UriSchemeHttp)
+            return false;
+
+        return string.Equals(uri.DnsSafeHost, "169.254.170.2", StringComparison.Ordinal) ||
+               string.Equals(uri.DnsSafeHost, "169.254.170.23", StringComparison.Ordinal) ||
+               string.Equals(uri.DnsSafeHost, "fd00:ec2::23", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<AwsCredentials?> TryGetInstanceMetadataCredentialsAsync(CancellationToken cancellationToken)
@@ -275,15 +288,19 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     }
 
     private string ResolveStsRegion()
-        => _region ??
-           Environment.GetEnvironmentVariable("AWS_REGION") ??
-           Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ??
-           "us-east-1";
+        => AwsMskIamRegionResolver.ValidateRegion(
+            _region ??
+            Environment.GetEnvironmentVariable("AWS_REGION") ??
+            Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ??
+            "us-east-1");
 
-    private static Uri BuildStsEndpoint(string region)
-        => region.StartsWith("cn-", StringComparison.Ordinal)
+    internal static Uri BuildStsEndpoint(string region)
+    {
+        region = AwsMskIamRegionResolver.ValidateRegion(region);
+        return region.StartsWith("cn-", StringComparison.Ordinal)
             ? new Uri($"https://sts.{region}.amazonaws.com.cn/")
             : new Uri($"https://sts.{region}.amazonaws.com/");
+    }
 
     private static string RequiredElement(XElement parent, string localName)
         => parent.Elements().First(element => element.Name.LocalName == localName).Value;

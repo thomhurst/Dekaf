@@ -86,6 +86,58 @@ public sealed class AwsMskIamAuthenticatorTests
     }
 
     [Test]
+    public async Task GetInitialResponse_InvalidConfiguredRegion_Throws()
+    {
+        var authenticator = new AwsMskIamAuthenticator(
+            new AwsMskIamConfig
+            {
+                Region = "evil.com/",
+                CredentialsProvider = new StaticAwsCredentialsProvider(new AwsCredentials("access", "secret"))
+            },
+            Host);
+
+        await authenticator.GetCredentialsAsync();
+
+        var exception = await Assert.That(() => authenticator.GetInitialResponse())
+            .Throws<InvalidOperationException>();
+        await Assert.That(exception!.Message).Contains("region");
+    }
+
+    [Test]
+    public async Task TryResolveFromHost_ReturnsMskRegion()
+    {
+        var region = AwsMskIamRegionResolver.TryResolveFromHost(Host);
+
+        await Assert.That(region).IsEqualTo("us-east-1");
+    }
+
+    [Test]
+    public async Task TryResolveFromHost_IgnoresClusterNameThatLooksLikeRegion()
+    {
+        var region = AwsMskIamRegionResolver.TryResolveFromHost(
+            "b-1.my-cluster-2.abcdef.c2.kafka.us-east-1.amazonaws.com");
+
+        await Assert.That(region).IsEqualTo("us-east-1");
+    }
+
+    [Test]
+    public async Task TryResolveFromHost_ReturnsNullWhenHostIsNotMskShape()
+    {
+        var region = AwsMskIamRegionResolver.TryResolveFromHost("b-1.test.c2.us-east-1.amazonaws.com");
+
+        await Assert.That(region).IsNull();
+    }
+
+    [Test]
+    public async Task TryResolveFromHost_ReturnsNullWhenAmazonAwsIsNotSuffix()
+    {
+        var region = AwsMskIamRegionResolver.TryResolveFromHost(
+            "b-1.test.c2.kafka.us-east-1.amazonaws.com.example.com");
+
+        await Assert.That(region).IsNull();
+    }
+
+    [Test]
     public async Task EvaluateChallenge_EmptyResponse_ThrowsAuthenticationException()
     {
         var authenticator = new AwsMskIamAuthenticator(

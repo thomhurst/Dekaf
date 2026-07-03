@@ -100,7 +100,7 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
             throw new InvalidOperationException(
                 "AWS_MSK_IAM authentication requires an AWS region. Set AwsMskIamConfig.Region or use an MSK broker hostname containing the region.");
 
-        return region;
+        return AwsMskIamRegionResolver.ValidateRegion(region);
     }
 }
 
@@ -108,13 +108,44 @@ internal static class AwsMskIamRegionResolver
 {
     public static string? TryResolveFromHost(string host)
     {
-        foreach (var label in host.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < labels.Length; i++)
         {
-            if (LooksLikeRegion(label))
-                return label;
+            if (!IsAmazonAwsSuffix(labels, i) || i < 2)
+                continue;
+
+            var serviceLabel = labels[i - 2];
+            var region = labels[i - 1];
+            if (string.Equals(serviceLabel, "kafka", StringComparison.OrdinalIgnoreCase) && LooksLikeRegion(region))
+                return region;
         }
 
         return null;
+    }
+
+    private static bool IsAmazonAwsSuffix(string[] labels, int index)
+    {
+        if (!string.Equals(labels[index], "amazonaws", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return (index == labels.Length - 2 &&
+                string.Equals(labels[index + 1], "com", StringComparison.OrdinalIgnoreCase)) ||
+               (index == labels.Length - 3 &&
+                string.Equals(labels[index + 1], "com", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(labels[index + 2], "cn", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static string ValidateRegion(string region)
+    {
+        if (string.IsNullOrWhiteSpace(region))
+            throw new InvalidOperationException("AWS_MSK_IAM region cannot be empty.");
+
+        var value = region.Trim();
+        if (value.Any(static c => !IsRegionCharacter(c)))
+            throw new InvalidOperationException(
+                $"AWS_MSK_IAM region '{region}' is invalid. Region names may only contain lowercase letters, digits, and hyphens.");
+
+        return value;
     }
 
     private static bool LooksLikeRegion(string value)
@@ -128,4 +159,7 @@ internal static class AwsMskIamRegionResolver
                char.IsDigit(parts[^1][0]) &&
                parts.All(part => part.All(char.IsLetterOrDigit));
     }
+
+    private static bool IsRegionCharacter(char value)
+        => value is >= 'a' and <= 'z' or >= '0' and <= '9' or '-';
 }
