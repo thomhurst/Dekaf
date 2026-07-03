@@ -454,8 +454,13 @@ jobs:
           delete-branch: true
 
       - name: Auto-merge Pull Request
+        # NOTE: GITHUB_TOKEN / github-actions[bot] cannot merge here. The default-branch
+        # ruleset requires 19 status checks, and on a user-owned repo the bot cannot be a
+        # bypass actor. Only Admin/Maintain users can bypass, so --admin must run as a token
+        # that represents such a user. BENCHMARK_MERGE_TOKEN is a fine-grained PAT (owner)
+        # with Contents: write + Pull requests: write.
         if: steps.cpr.outputs.pull-request-number && steps.cpr.outputs.pull-request-operation != 'closed'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.BENCHMARK_MERGE_TOKEN }}
           PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
         run: gh pr merge "$PR_NUMBER" --squash --delete-branch --admin
