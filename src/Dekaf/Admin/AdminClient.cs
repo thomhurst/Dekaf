@@ -2863,6 +2863,8 @@ public sealed class AdminClientBuilder
             throw new InvalidOperationException("Bootstrap servers must be specified");
         ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+
         var options = new AdminClientOptions
         {
             BootstrapServers = _bootstrapServers,

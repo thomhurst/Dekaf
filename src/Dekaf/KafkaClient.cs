@@ -316,6 +316,8 @@ public sealed class KafkaClientBuilder
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}).");
         ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
+        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+
         var options = new KafkaClientOptions
         {
             BootstrapServers = _bootstrapServers,
