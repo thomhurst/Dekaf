@@ -2536,6 +2536,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder UseTls()
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
@@ -2546,6 +2547,7 @@ public sealed class AdminClientBuilder
     /// <param name="config">The TLS configuration.</param>
     public AdminClientBuilder UseTls(TlsConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
@@ -2564,6 +2566,7 @@ public sealed class AdminClientBuilder
         string clientKeyPath,
         string? keyPassword = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
         return this;
@@ -2578,6 +2581,7 @@ public sealed class AdminClientBuilder
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
@@ -2585,6 +2589,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithSaslPlain(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
@@ -2593,6 +2598,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithSaslScramSha256(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
@@ -2601,6 +2607,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithSaslScramSha512(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
@@ -2613,6 +2620,7 @@ public sealed class AdminClientBuilder
     /// <param name="config">The GSSAPI configuration.</param>
     public AdminClientBuilder WithGssapi(GssapiConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
         return this;
@@ -2624,6 +2632,7 @@ public sealed class AdminClientBuilder
     /// <param name="config">The OAuth configuration describing the token endpoint and client.</param>
     public AdminClientBuilder WithOAuthBearer(OAuthBearerConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
@@ -2636,6 +2645,7 @@ public sealed class AdminClientBuilder
     /// <param name="tokenProvider">A callback that returns an OAuth bearer token on demand.</param>
     public AdminClientBuilder WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
@@ -2703,6 +2713,7 @@ public sealed class AdminClientBuilder
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
@@ -2751,5 +2762,11 @@ public sealed class AdminClientBuilder
     {
         if (_clientInfrastructure is not null)
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
+
+    private void ThrowIfClientOwnedConnectionSettings()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
 }

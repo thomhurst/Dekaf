@@ -64,6 +64,72 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_CreatedBuilders_RejectConnectionOverrides()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+
+        await Assert.That(() => client.CreateProducer<string, string>().UseTls())
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithSaslPlain("user", "pass"))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithSocketSendBufferBytes(4096))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsPerBroker(2))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(() => client.CreateConsumer<string, string>().UseTls())
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithSaslPlain("user", "pass"))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionsPerBroker(2))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithTls())
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithSaslPlain("user", "pass"))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithSocketReceiveBufferBytes(4096))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsPerBroker(2))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(() => client.CreateAdminClient().UseTls())
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithSaslPlain("user", "pass"))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task RootClient_SharedConnectionPool_UsesAdaptiveFetchResponseBufferCeiling()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+        var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
+
+        await Assert.That(responseBufferPool.MaxArrayLength)
+            .IsEqualTo(200 * 1024 * 1024 + ResponseBufferPool.ProtocolOverheadBytes);
+    }
+
+    [Test]
+    public async Task MetadataManager_BrokerCountCallbacks_AreMulticast()
+    {
+        await using var metadataManager = new MetadataManager(
+            connectionPool: null!,
+            bootstrapServers: ["localhost:9092"]);
+        var first = 0;
+        var second = 0;
+
+        metadataManager.AddBrokerCountDiscoveredCallback(count => first = count);
+        metadataManager.AddBrokerCountDiscoveredCallback(count => second = count);
+        metadataManager.NotifyBrokerCountDiscovered(3);
+
+        await Assert.That(first).IsEqualTo(3);
+        await Assert.That(second).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task RootClient_WithMemoryBudget_UsesIndependentProducerBudget()
     {
         await using var client = Kafka.Connect("localhost:9092", builder =>

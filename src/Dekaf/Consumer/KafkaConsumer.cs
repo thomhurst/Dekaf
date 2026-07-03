@@ -636,7 +636,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         : this(options, keyDeserializer, valueDeserializer,
             (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
             loggerFactory,
-            ownsInfrastructure: false,
+            ownsInfrastructure: true,
             DekafMemoryBudget.Global)
     {
     }

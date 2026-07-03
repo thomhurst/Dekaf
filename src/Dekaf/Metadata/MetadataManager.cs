@@ -45,10 +45,32 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private long _allBrokersUnavailableSince;
 
     /// <summary>
-    /// Optional callback invoked after each successful metadata refresh with the discovered broker count.
-    /// Used by the producer to re-ratchet shared pool sizes once the real cluster size is known.
+    /// Optional callbacks invoked after each successful metadata refresh with the discovered broker count.
+    /// Used by producers to re-ratchet shared pool sizes once the real cluster size is known.
     /// </summary>
-    internal Action<int>? OnBrokerCountDiscovered { get; set; }
+    private readonly object _brokerCountDiscoveredLock = new();
+    private Action<int>? _brokerCountDiscoveredCallbacks;
+
+    internal void AddBrokerCountDiscoveredCallback(Action<int> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+
+        lock (_brokerCountDiscoveredLock)
+        {
+            _brokerCountDiscoveredCallbacks += callback;
+        }
+    }
+
+    internal void NotifyBrokerCountDiscovered(int brokerCount)
+    {
+        Action<int>? callbacks;
+        lock (_brokerCountDiscoveredLock)
+        {
+            callbacks = _brokerCountDiscoveredCallbacks;
+        }
+
+        callbacks?.Invoke(brokerCount);
+    }
 
     public MetadataManager(
         IConnectionPool connectionPool,
@@ -525,7 +547,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
-                OnBrokerCountDiscovered?.Invoke(response.Brokers.Count);
+                NotifyBrokerCountDiscovered(response.Brokers.Count);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
@@ -646,7 +668,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 LogRebootstrapSuccessful(response.Brokers.Count, host, port);
 
-                OnBrokerCountDiscovered?.Invoke(response.Brokers.Count);
+                NotifyBrokerCountDiscovered(response.Brokers.Count);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();

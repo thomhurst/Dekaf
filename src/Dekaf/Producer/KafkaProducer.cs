@@ -326,7 +326,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var batchSize = options.BatchSize;
         var maxConns = options.MaxConnectionsPerBroker;
         var connectionPool = _connectionPool;
-        _metadataManager.OnBrokerCountDiscovered = brokerCount =>
+        _metadataManager.AddBrokerCountDiscoveredCallback(brokerCount =>
         {
             var sizes = PoolSizing.ForSharedPools(brokerCount, connectionsPerBroker, maxInFlight, batchSize, maxConns);
             ProducerDataPool.RatchetBucketCapacity(sizes.ProducerDataArraysPerBucket);
@@ -334,7 +334,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             DekafPools.RatchetSerializationBucketCapacity(sizes.SerializationArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
             connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
-        };
+        });
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);
         Action<string, int>? batchCompletionCallback = _partitioner is IBatchCompletionAwarePartitioner batchCompletionAware

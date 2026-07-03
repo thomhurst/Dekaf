@@ -204,6 +204,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// </exception>
     public ProducerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
@@ -228,6 +229,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="maxConnections">Maximum connections per broker. Default: 10.</param>
     public ProducerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 10)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
@@ -240,6 +242,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// </summary>
     public ProducerBuilder<TKey, TValue> WithoutAdaptiveConnections()
     {
+        ThrowIfClientOwnedConnectionSettings();
         _enableAdaptiveConnections = false;
         return this;
     }
@@ -251,6 +254,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="bytes">The send buffer size in bytes. Set to 0 to use system default.</param>
     public ProducerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
         _socketSendBufferBytes = bytes;
         return this;
@@ -263,6 +267,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="bytes">The receive buffer size in bytes. Set to 0 to use system default.</param>
     public ProducerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
         _socketReceiveBufferBytes = bytes;
         return this;
@@ -338,6 +343,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// </summary>
     public ProducerBuilder<TKey, TValue> UseTls()
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
@@ -348,6 +354,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="config">The TLS configuration.</param>
     public ProducerBuilder<TKey, TValue> UseTls(TlsConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
@@ -366,6 +373,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         string clientKeyPath,
         string? keyPassword = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
         return this;
@@ -380,6 +388,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
@@ -387,6 +396,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     public ProducerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
@@ -395,6 +405,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     public ProducerBuilder<TKey, TValue> WithSaslScramSha256(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
@@ -403,6 +414,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     public ProducerBuilder<TKey, TValue> WithSaslScramSha512(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
@@ -416,6 +428,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>This builder for chaining.</returns>
     public ProducerBuilder<TKey, TValue> WithGssapi(GssapiConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
         return this;
@@ -427,6 +440,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="config">The OAuth bearer configuration.</param>
     public ProducerBuilder<TKey, TValue> WithOAuthBearer(OAuthBearerConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
@@ -439,6 +453,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
     public ProducerBuilder<TKey, TValue> WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
@@ -635,6 +650,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     internal ProducerBuilder<TKey, TValue> WithMaxInFlightRequestsPerConnection(int maxInFlightRequestsPerConnection)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
         _maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
         return this;
@@ -712,6 +728,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
@@ -925,6 +942,12 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (_clientInfrastructure is not null)
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
+
+    private void ThrowIfClientOwnedConnectionSettings()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
 }
 
@@ -1265,6 +1288,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// </summary>
     public ConsumerBuilder<TKey, TValue> UseTls()
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
@@ -1275,6 +1299,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="config">The TLS configuration.</param>
     public ConsumerBuilder<TKey, TValue> UseTls(TlsConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
@@ -1293,6 +1318,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         string clientKeyPath,
         string? keyPassword = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
         return this;
@@ -1307,6 +1333,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
@@ -1314,6 +1341,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     public ConsumerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
@@ -1322,6 +1350,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     public ConsumerBuilder<TKey, TValue> WithSaslScramSha256(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
@@ -1330,6 +1359,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     public ConsumerBuilder<TKey, TValue> WithSaslScramSha512(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
@@ -1343,6 +1373,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <returns>This builder for chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithGssapi(GssapiConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
         return this;
@@ -1354,6 +1385,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="config">The OAuth bearer configuration.</param>
     public ConsumerBuilder<TKey, TValue> WithOAuthBearer(OAuthBearerConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
@@ -1366,6 +1398,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
     public ConsumerBuilder<TKey, TValue> WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
@@ -1477,6 +1510,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// </exception>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
@@ -1491,6 +1525,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="maxConnections">Maximum connections per broker. Default: 4.</param>
     public ConsumerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 4)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
@@ -1503,6 +1538,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// </summary>
     public ConsumerBuilder<TKey, TValue> WithoutAdaptiveConnections()
     {
+        ThrowIfClientOwnedConnectionSettings();
         _enableAdaptiveConnections = false;
         return this;
     }
@@ -1684,6 +1720,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     internal ConsumerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
         _socketSendBufferBytes = bytes;
         return this;
@@ -1691,6 +1728,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     internal ConsumerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
         _socketReceiveBufferBytes = bytes;
         return this;
@@ -1703,6 +1741,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
@@ -1869,6 +1908,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (_clientInfrastructure is not null)
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
+
+    private void ThrowIfClientOwnedConnectionSettings()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
 }
 
 /// <summary>
@@ -2001,12 +2046,14 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithTls(bool useTls = true)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = useTls;
         return this;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithTlsConfig(TlsConfig tlsConfig)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _tlsConfig = tlsConfig;
         _useTls = true;
         return this;
@@ -2014,6 +2061,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
@@ -2022,6 +2070,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithSaslScram256(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
@@ -2030,6 +2079,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithSaslScram512(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
@@ -2038,6 +2088,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithGssapiConfig(GssapiConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config;
         return this;
@@ -2045,6 +2096,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearer(OAuthBearerConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config;
         return this;
@@ -2052,18 +2104,21 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerTokenProvider(Func<CancellationToken, ValueTask<OAuthBearerToken>> provider)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _oauthTokenProvider = provider;
         return this;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _socketSendBufferBytes = bytes;
         return this;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _socketReceiveBufferBytes = bytes;
         return this;
     }
@@ -2088,6 +2143,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
@@ -2211,5 +2267,11 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         if (_clientInfrastructure is not null)
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
+
+    private void ThrowIfClientOwnedConnectionSettings()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
 }
