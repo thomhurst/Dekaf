@@ -13,6 +13,7 @@ public sealed class InMemoryAdminClient : IAdminClient
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
     private readonly InMemoryKafkaCluster _cluster;
+    private readonly Dictionary<ClientQuotaEntity, Dictionary<string, double>> _clientQuotas = new();
     private readonly object _delegationTokenGate = new();
     private readonly Dictionary<string, DelegationToken> _delegationTokens = new(StringComparer.Ordinal);
     private bool _disposed;
@@ -531,6 +532,65 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(result);
     }
 
+    public ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
+        ClientQuotaFilter filter,
+        DescribeClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        if (filter.Components is null)
+            throw new ArgumentException("Client quota filter components must not be null.", nameof(filter));
+
+        foreach (var component in filter.Components)
+        {
+            ArgumentNullException.ThrowIfNull(component);
+            component.Validate();
+        }
+
+        Dictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>> result;
+        lock (_clientQuotas)
+        {
+            result = _clientQuotas
+                .Where(quota => MatchesClientQuotaFilter(quota.Key, filter))
+                .ToDictionary(
+                    quota => CloneClientQuotaEntity(quota.Key),
+                    quota => (IReadOnlyDictionary<string, double>)new Dictionary<string, double>(quota.Value, StringComparer.Ordinal));
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(result);
+    }
+
+    public ValueTask AlterClientQuotasAsync(
+        IEnumerable<ClientQuotaAlteration> alterations,
+        AlterClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(alterations);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var materialized = alterations.Select(alteration =>
+        {
+            ArgumentNullException.ThrowIfNull(alteration);
+            alteration.Validate();
+            return alteration;
+        }).ToArray();
+
+        if (options?.ValidateOnly == true)
+            return ValueTask.CompletedTask;
+
+        lock (_clientQuotas)
+        {
+            foreach (var alteration in materialized)
+                ApplyClientQuotaAlteration(alteration);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask<ListTransactionsResult> ListTransactionsAsync(
         ListTransactionsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -782,6 +842,63 @@ public sealed class InMemoryAdminClient : IAdminClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+
+    private void ApplyClientQuotaAlteration(ClientQuotaAlteration alteration)
+    {
+        if (!_clientQuotas.TryGetValue(alteration.Entity, out var quotas))
+        {
+            if (alteration.Operations.All(operation => operation.Remove))
+                return;
+
+            quotas = new Dictionary<string, double>(StringComparer.Ordinal);
+            _clientQuotas[CloneClientQuotaEntity(alteration.Entity)] = quotas;
+        }
+
+        foreach (var operation in alteration.Operations)
+        {
+            if (operation.Remove)
+            {
+                quotas.Remove(operation.Key);
+            }
+            else
+            {
+                quotas[operation.Key] = operation.Value;
+            }
+        }
+
+        if (quotas.Count == 0)
+            _clientQuotas.Remove(alteration.Entity);
+    }
+
+    private static bool MatchesClientQuotaFilter(ClientQuotaEntity entity, ClientQuotaFilter filter)
+    {
+        if (filter.Strict && entity.Components.Count != filter.Components.Count)
+            return false;
+
+        return filter.Components.All(component => MatchesClientQuotaFilterComponent(entity, component));
+    }
+
+    private static bool MatchesClientQuotaFilterComponent(ClientQuotaEntity entity, ClientQuotaFilterComponent filterComponent) =>
+        entity.Components.Any(component =>
+            component.EntityType == filterComponent.EntityType &&
+            filterComponent.MatchType switch
+            {
+                ClientQuotaMatchType.Exact => component.Name == filterComponent.Match,
+                ClientQuotaMatchType.Default => component.Name is null,
+                ClientQuotaMatchType.AnySpecified => component.Name is not null,
+                _ => false
+            });
+
+    private static ClientQuotaEntity CloneClientQuotaEntity(ClientQuotaEntity entity) => new()
+    {
+        Components = entity.Components
+            .Select(component => new ClientQuotaEntityComponent
+            {
+                EntityType = component.EntityType,
+                Name = component.Name
+            })
+            .ToArray()
+    };
 
     private static void ValidateTopicPartition(TopicPartition topicPartition)
     {

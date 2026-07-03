@@ -733,6 +733,61 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
     #endregion
 
+    #region Client Quota Tests
+
+    [Test]
+    public async Task ClientQuotasAsync_AlterDescribeAndRemove_WorksTogether()
+    {
+        await using var admin = CreateAdminClient();
+        var user = $"quota-user-{Guid.NewGuid():N}";
+        var clientId = $"quota-client-{Guid.NewGuid():N}";
+        var entity = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.User(user),
+            ClientQuotaEntityComponent.ClientId(clientId));
+        const string quotaKey = "producer_byte_rate";
+
+        try
+        {
+            await admin.AlterClientQuotasAsync(
+            [
+                ClientQuotaAlteration.Set(entity, quotaKey, 4096)
+            ]).ConfigureAwait(false);
+
+            var described = await WaitForConditionAsync(
+                () => admin.DescribeClientQuotasAsync(new ClientQuotaFilter
+                {
+                    Components =
+                    [
+                        ClientQuotaFilterComponent.Exact(ClientQuotaEntityType.User, user),
+                        ClientQuotaFilterComponent.Exact(ClientQuotaEntityType.ClientId, clientId)
+                    ],
+                    Strict = true
+                }).AsTask(),
+                result => result.TryGetValue(entity, out var values) &&
+                    values.TryGetValue(quotaKey, out var value) &&
+                    value == 4096,
+                maxRetries: 8).ConfigureAwait(false);
+
+            await Assert.That(described).ContainsKey(entity);
+            await Assert.That(described[entity][quotaKey]).IsEqualTo(4096);
+        }
+        finally
+        {
+            try
+            {
+                await admin.AlterClientQuotasAsync(
+                [
+                    ClientQuotaAlteration.Remove(entity, quotaKey)
+                ]).ConfigureAwait(false);
+            }
+            catch (KafkaException)
+            {
+            }
+        }
+    }
+
+    #endregion
+
     #region SCRAM Credential Tests
 
     [Test]

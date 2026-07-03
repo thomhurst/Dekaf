@@ -1723,6 +1723,198 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
+        ClientQuotaFilter filter,
+        DescribeClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var components = BuildDescribeClientQuotaComponents(filter);
+
+        return await WithRetryAsync<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(async () =>
+        {
+            var connection = await GetAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            var request = new DescribeClientQuotasRequest
+            {
+                Components = components,
+                Strict = filter.Strict
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeClientQuotas,
+                DescribeClientQuotasRequest.LowestSupportedVersion,
+                DescribeClientQuotasRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<DescribeClientQuotasRequest, DescribeClientQuotasResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode,
+                    $"DescribeClientQuotas failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+            }
+
+            var result = new Dictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>();
+            foreach (var entry in response.Entries ?? [])
+            {
+                var entity = MapClientQuotaEntity(entry.Entity);
+                result[entity] = MapClientQuotaValues(entry.Values);
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask AlterClientQuotasAsync(
+        IEnumerable<ClientQuotaAlteration> alterations,
+        AlterClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(alterations);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new AlterClientQuotasOptions();
+
+        // Materialize before retry so an ambiguous retriable failure resends the exact
+        // same final-value set/remove operations.
+        var entries = alterations.Select(BuildAlterClientQuotaEntry).ToList();
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        await WithRetryAsync(async () =>
+        {
+            var connection = await GetAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            var request = new AlterClientQuotasRequest
+            {
+                Entries = entries,
+                ValidateOnly = opts.ValidateOnly
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterClientQuotas,
+                AlterClientQuotasRequest.LowestSupportedVersion,
+                AlterClientQuotasRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<AlterClientQuotasRequest, AlterClientQuotasResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var entry in response.Entries)
+            {
+                if (entry.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(entry.ErrorCode,
+                        $"AlterClientQuotas failed for entity '{MapClientQuotaEntity(entry.Entity)}': " +
+                        $"{entry.ErrorMessage ?? entry.ErrorCode.ToString()}");
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static List<DescribeClientQuotasRequestComponent> BuildDescribeClientQuotaComponents(ClientQuotaFilter filter)
+    {
+        if (filter.Components is null)
+        {
+            throw new ArgumentException("Client quota filter components must not be null.", nameof(filter));
+        }
+
+        return filter.Components.Select(component =>
+        {
+            ArgumentNullException.ThrowIfNull(component);
+            component.Validate();
+            return new DescribeClientQuotasRequestComponent
+            {
+                EntityType = ClientQuotaEntityTypeNames.ToProtocolName(component.EntityType),
+                MatchType = (sbyte)component.MatchType,
+                Match = component.Match
+            };
+        }).ToList();
+    }
+
+    private static AlterClientQuotasRequestEntry BuildAlterClientQuotaEntry(ClientQuotaAlteration alteration)
+    {
+        ArgumentNullException.ThrowIfNull(alteration);
+        alteration.Validate();
+
+        return new AlterClientQuotasRequestEntry
+        {
+            Entity = alteration.Entity.Components.Select(component =>
+            {
+                ArgumentNullException.ThrowIfNull(component);
+                return new AlterClientQuotasEntityData
+                {
+                    EntityType = ClientQuotaEntityTypeNames.ToProtocolName(component.EntityType),
+                    EntityName = component.Name
+                };
+            }).ToList(),
+            Ops = alteration.Operations.Select(operation =>
+            {
+                ArgumentNullException.ThrowIfNull(operation);
+                ArgumentException.ThrowIfNullOrEmpty(operation.Key);
+
+                return new AlterClientQuotasOpData
+                {
+                    Key = operation.Key,
+                    Value = operation.Value,
+                    Remove = operation.Remove
+                };
+            }).ToList()
+        };
+    }
+
+    private static IReadOnlyDictionary<string, double> MapClientQuotaValues(IReadOnlyList<DescribeClientQuotasValueData> values)
+    {
+        var result = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            result[value.Key] = value.Value;
+        }
+
+        return result;
+    }
+
+    private static ClientQuotaEntity MapClientQuotaEntity(IReadOnlyList<DescribeClientQuotasEntityData> entity) =>
+        MapClientQuotaEntity(entity, static e => (e.EntityType, e.EntityName));
+
+    private static ClientQuotaEntity MapClientQuotaEntity(IReadOnlyList<AlterClientQuotasEntityData> entity) =>
+        MapClientQuotaEntity(entity, static e => (e.EntityType, e.EntityName));
+
+    private static ClientQuotaEntity MapClientQuotaEntity<T>(
+        IEnumerable<T> entity,
+        Func<T, (string EntityType, string? EntityName)> selector) =>
+        new()
+        {
+            Components = entity.Select(component =>
+            {
+                var (entityType, entityName) = selector(component);
+                return new ClientQuotaEntityComponent
+                {
+                    EntityType = ClientQuotaEntityTypeNames.FromProtocolName(entityType),
+                    Name = entityName
+                };
+            }).ToList()
+        };
+
+    private async ValueTask<IKafkaConnection> GetAnyBrokerConnectionAsync(CancellationToken cancellationToken)
+    {
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        return await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<DelegationToken> CreateDelegationTokenAsync(
         DelegationTokenPrincipal? owner = null,
         IEnumerable<DelegationTokenPrincipal>? renewers = null,
