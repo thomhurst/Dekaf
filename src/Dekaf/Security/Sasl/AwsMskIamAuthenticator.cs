@@ -116,12 +116,16 @@ internal static class AwsMskIamRegionResolver
 
             var serviceLabel = labels[i - 2];
             var region = labels[i - 1];
-            if (string.Equals(serviceLabel, "kafka", StringComparison.OrdinalIgnoreCase) && LooksLikeRegion(region))
+            if (IsKafkaServiceLabel(serviceLabel) && LooksLikeRegion(region))
                 return region;
         }
 
         return null;
     }
+
+    private static bool IsKafkaServiceLabel(string label)
+        => string.Equals(label, "kafka", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(label, "kafka-serverless", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAmazonAwsSuffix(string[] labels, int index)
     {

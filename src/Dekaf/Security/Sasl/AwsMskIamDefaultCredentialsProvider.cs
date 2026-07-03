@@ -8,11 +8,12 @@ namespace Dekaf.Security.Sasl;
 /// </summary>
 public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvider
 {
-    private static readonly HttpClient HttpClient = new()
+    private static readonly HttpClient SharedHttpClient = new()
     {
         Timeout = TimeSpan.FromSeconds(2)
     };
 
+    private readonly HttpClient _httpClient;
     private readonly string? _profileName;
     private readonly string? _region;
     private readonly string _webIdentitySessionName = "dekaf-" + Guid.NewGuid().ToString("N");
@@ -23,7 +24,15 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     /// Creates the default AWS credentials provider.
     /// </summary>
     public AwsMskIamDefaultCredentialsProvider(string? profileName = null, string? region = null)
+        : this(SharedHttpClient, profileName, region)
     {
+    }
+
+    internal AwsMskIamDefaultCredentialsProvider(HttpClient httpClient, string? profileName = null, string? region = null)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+
+        _httpClient = httpClient;
         _profileName = profileName;
         _region = region;
     }
@@ -103,20 +112,31 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             })
         };
 
-        using var response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        try
+        {
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
 
-        var xml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var document = XDocument.Parse(xml);
-        var credentials = document.Descendants().FirstOrDefault(element => element.Name.LocalName == "Credentials");
-        if (credentials is null)
-            throw new InvalidOperationException("STS AssumeRoleWithWebIdentity response did not contain credentials");
+            var xml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var document = XDocument.Parse(xml);
+            var credentials = document.Descendants().FirstOrDefault(element => element.Name.LocalName == "Credentials");
+            if (credentials is null)
+                throw new InvalidOperationException("STS AssumeRoleWithWebIdentity response did not contain credentials");
 
-        return new AwsCredentials(
-            RequiredElement(credentials, "AccessKeyId"),
-            RequiredElement(credentials, "SecretAccessKey"),
-            RequiredElement(credentials, "SessionToken"),
-            DateTimeOffset.Parse(RequiredElement(credentials, "Expiration"), null, System.Globalization.DateTimeStyles.AssumeUniversal));
+            return new AwsCredentials(
+                RequiredElement(credentials, "AccessKeyId"),
+                RequiredElement(credentials, "SecretAccessKey"),
+                RequiredElement(credentials, "SessionToken"),
+                DateTimeOffset.Parse(RequiredElement(credentials, "Expiration"), null, System.Globalization.DateTimeStyles.AssumeUniversal));
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     private AwsCredentials? TryGetProfileCredentials()
@@ -152,7 +172,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         return profiles.TryGetValue("profile " + profileName, out profile!);
     }
 
-    private static async Task<AwsCredentials?> TryGetContainerCredentialsAsync(CancellationToken cancellationToken)
+    private async Task<AwsCredentials?> TryGetContainerCredentialsAsync(CancellationToken cancellationToken)
     {
         var fullUri = Environment.GetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_FULL_URI");
         var relativeUri = Environment.GetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI");
@@ -175,7 +195,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
             ApplyContainerAuthorization(request);
 
-            using var response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 return null;
 
@@ -205,7 +225,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
                string.Equals(uri.DnsSafeHost, "fd00:ec2::23", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<AwsCredentials?> TryGetInstanceMetadataCredentialsAsync(CancellationToken cancellationToken)
+    private async Task<AwsCredentials?> TryGetInstanceMetadataCredentialsAsync(CancellationToken cancellationToken)
     {
         if (string.Equals(
             Environment.GetEnvironmentVariable("AWS_EC2_METADATA_DISABLED"),
@@ -218,6 +238,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         try
         {
             var token = await TryGetImdsTokenAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+
             var roleName = await GetImdsStringAsync("http://169.254.169.254/latest/meta-data/iam/security-credentials/", token, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -242,14 +265,14 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         }
     }
 
-    private static async Task<string?> TryGetImdsTokenAsync(CancellationToken cancellationToken)
+    private async Task<string?> TryGetImdsTokenAsync(CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Put, "http://169.254.169.254/latest/api/token");
         request.Headers.Add("X-aws-ec2-metadata-token-ttl-seconds", "21600");
 
         try
         {
-            using var response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
             return response.IsSuccessStatusCode
                 ? await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)
                 : null;
@@ -260,7 +283,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         }
     }
 
-    private static async Task<string?> GetImdsStringAsync(
+    private async Task<string?> GetImdsStringAsync(
         string endpoint,
         string? token,
         CancellationToken cancellationToken)
@@ -269,7 +292,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         if (!string.IsNullOrWhiteSpace(token))
             request.Headers.Add("X-aws-ec2-metadata-token", token);
 
-        using var response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         return response.IsSuccessStatusCode
             ? await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)
             : null;

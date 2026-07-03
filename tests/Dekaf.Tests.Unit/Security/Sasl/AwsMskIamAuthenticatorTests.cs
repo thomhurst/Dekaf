@@ -112,6 +112,15 @@ public sealed class AwsMskIamAuthenticatorTests
     }
 
     [Test]
+    public async Task TryResolveFromHost_ReturnsMskServerlessRegion()
+    {
+        var region = AwsMskIamRegionResolver.TryResolveFromHost(
+            "boot-abcdefghij.c1.kafka-serverless.us-west-2.amazonaws.com");
+
+        await Assert.That(region).IsEqualTo("us-west-2");
+    }
+
+    [Test]
     public async Task TryResolveFromHost_IgnoresClusterNameThatLooksLikeRegion()
     {
         var region = AwsMskIamRegionResolver.TryResolveFromHost(
