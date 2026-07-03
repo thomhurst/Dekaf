@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -211,6 +212,33 @@ public sealed class ClientTelemetryManagerTests
     }
 
     [Test]
+    [MethodDataSource(nameof(FatalPushErrors))]
+    public async Task PushTelemetry_DisablesBrokerPushTelemetryOnFatalPushError(ErrorCode errorCode)
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+        collector.RecordConnectionCreated();
+        await using var context = new TelemetryTestContext(metricCollector: collector);
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            subscriptionId: 15,
+            pushIntervalMs: 10,
+            requestedMetrics: [string.Empty]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = errorCode });
+
+        await context.Manager.StartAsync();
+
+        _ = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 1,
+            timeout: TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(
+            () => context.Manager.IsDisabled,
+            TimeSpan.FromSeconds(2));
+
+        await Assert.That(context.Manager.IsDisabled).IsTrue();
+        await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task UnsupportedVersion_DisablesBrokerPushTelemetry()
     {
         await using var context = new TelemetryTestContext();
@@ -226,6 +254,26 @@ public sealed class ClientTelemetryManagerTests
         await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(0);
     }
 
+    public static IEnumerable<ErrorCode> FatalPushErrors()
+    {
+        yield return ErrorCode.InvalidRequest;
+        yield return ErrorCode.InvalidRecord;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var started = Stopwatch.GetTimestamp();
+        while (!condition())
+        {
+            if (Stopwatch.GetElapsedTime(started) >= timeout)
+            {
+                throw new TimeoutException("Timed out waiting for condition.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10));
+        }
+    }
+
     private static GetTelemetrySubscriptionsResponse Subscription(
         Guid clientInstanceId,
         int subscriptionId,
@@ -234,16 +282,16 @@ public sealed class ClientTelemetryManagerTests
         int telemetryMaxBytes = 1024,
         bool deltaTemporality = true,
         IReadOnlyList<string>? requestedMetrics = null) => new()
-    {
-        ErrorCode = ErrorCode.None,
-        ClientInstanceId = clientInstanceId,
-        SubscriptionId = subscriptionId,
-        AcceptedCompressionTypes = acceptedCompressionTypes ?? [0],
-        PushIntervalMs = pushIntervalMs,
-        TelemetryMaxBytes = telemetryMaxBytes,
-        DeltaTemporality = deltaTemporality,
-        RequestedMetrics = requestedMetrics ?? ["kafka."]
-    };
+        {
+            ErrorCode = ErrorCode.None,
+            ClientInstanceId = clientInstanceId,
+            SubscriptionId = subscriptionId,
+            AcceptedCompressionTypes = acceptedCompressionTypes ?? [0],
+            PushIntervalMs = pushIntervalMs,
+            TelemetryMaxBytes = telemetryMaxBytes,
+            DeltaTemporality = deltaTemporality,
+            RequestedMetrics = requestedMetrics ?? ["kafka."]
+        };
 
     private sealed class TelemetryTestContext : IAsyncDisposable
     {

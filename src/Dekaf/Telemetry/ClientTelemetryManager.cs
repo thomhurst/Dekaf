@@ -367,6 +367,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             {
                 Disable();
             }
+            else if (IsFatalPushError(response.ErrorCode))
+            {
+                LogPushRejected(response.ErrorCode);
+                Disable();
+            }
             else if (response.ErrorCode != ErrorCode.None &&
                      response.ErrorCode != ErrorCode.UnknownSubscriptionId)
             {
@@ -404,6 +409,10 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             },
             apiVersion,
             cancellationToken);
+
+    private static bool IsFatalPushError(ErrorCode errorCode) =>
+        errorCode == ErrorCode.InvalidRequest ||
+        errorCode == ErrorCode.InvalidRecord;
 
     private async ValueTask<IKafkaConnection?> GetTelemetryConnectionAsync(CancellationToken cancellationToken)
     {
