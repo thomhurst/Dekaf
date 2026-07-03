@@ -3677,6 +3677,184 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Purges queued and/or in-flight batches with a caller-provided exception.
+    /// </summary>
+    /// <returns>
+    /// Diagnostic count of purged work. Queued purge counts pending append operations plus
+    /// current/ready batches; in-flight purge counts batches.
+    /// </returns>
+    internal int Purge(PurgeOptions options, Exception exception, Action<ReadyBatch>? onPurgingBatch = null)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var purgedCount = 0;
+
+        if ((options & PurgeOptions.Queue) != 0)
+            purgedCount += PurgeQueuedBatches(exception, onPurgingBatch);
+
+        if ((options & PurgeOptions.InFlight) != 0)
+            purgedCount += PurgeInFlightBatches(exception, onPurgingBatch);
+
+        if (purgedCount > 0)
+            SignalWakeup();
+
+        return purgedCount;
+    }
+
+    private int PurgeQueuedBatches(Exception exception, Action<ReadyBatch>? onPurgingBatch)
+    {
+        var purgedCount = FailPendingAppendsForPurge(exception);
+        List<PartitionBatch>? currentBatches = null;
+        List<ReadyBatch>? readyBatches = null;
+
+        foreach (var kvp in _partitionDeques)
+        {
+            var pd = kvp.Value;
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                pd.CurrentBatch = null;
+                MarkLingerPartitionDequeued(pd);
+                Interlocked.Decrement(ref _unsealedBatchCount);
+
+                currentBatches ??= new List<PartitionBatch>();
+                currentBatches.Add(currentBatch);
+            }
+
+            while (pd.Count > 0)
+            {
+                readyBatches ??= new List<ReadyBatch>();
+                readyBatches.Add(pd.PollFirst()!);
+            }
+        }
+
+        if (currentBatches is not null)
+        {
+            foreach (var currentBatch in currentBatches)
+            {
+                var readyBatch = CompleteDetachedBatch(currentBatch);
+                if (readyBatch is not null)
+                {
+                    readyBatches ??= new List<ReadyBatch>();
+                    readyBatches.Add(readyBatch);
+                }
+            }
+        }
+
+        if (readyBatches is null)
+            return purgedCount;
+
+        foreach (var batch in readyBatches)
+        {
+            FailPurgedBatch(
+                batch,
+                exception,
+                onPurgingBatch,
+                removeFromPipeline: true,
+                returnToPool: true);
+            purgedCount++;
+        }
+
+        return purgedCount;
+    }
+
+    private int FailPendingAppendsForPurge(Exception exception)
+    {
+        if (_pendingAppends.IsEmpty)
+            return 0;
+
+        var spinWait = new SpinWait();
+        while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+            spinWait.SpinOnce();
+
+        var failedCount = 0;
+        try
+        {
+            while (_pendingAppends.TryDequeue(out var op))
+            {
+                if (op.TryFail(exception))
+                    failedCount++;
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _draining, 0);
+        }
+
+        return failedCount;
+    }
+
+    private int PurgeInFlightBatches(Exception exception, Action<ReadyBatch>? onPurgingBatch)
+    {
+        if (Volatile.Read(ref _inFlightBatchCount) <= 0)
+            return 0;
+
+        var snapshot = new List<ReadyBatch>();
+        InFlightBatchListSnapshot(snapshot);
+
+        var purgedCount = 0;
+        foreach (var batch in snapshot)
+        {
+            if (IsBatchStillQueued(batch))
+                continue;
+
+            if (!OnBatchExitsPipeline(batch))
+                continue;
+
+            FailPurgedBatch(
+                batch,
+                exception,
+                onPurgingBatch,
+                removeFromPipeline: false,
+                returnToPool: false);
+            purgedCount++;
+        }
+
+        return purgedCount;
+    }
+
+    private bool IsBatchStillQueued(ReadyBatch batch)
+    {
+        if (!_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
+            return false;
+
+        using var guard = new SpinLockGuard(ref pd.Lock);
+        return pd.Contains(batch);
+    }
+
+    private void FailPurgedBatch(
+        ReadyBatch batch,
+        Exception exception,
+        Action<ReadyBatch>? onPurgingBatch,
+        bool removeFromPipeline,
+        bool returnToPool)
+    {
+        try { onPurgingBatch?.Invoke(batch); }
+        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
+        try { batch.Fail(exception); }
+        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
+        try
+        {
+            if (batch.TrySetMemoryReleased())
+            {
+                ReleaseMemory(batch.DataSize);
+            }
+        }
+        catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
+        if (removeFromPipeline)
+        {
+            try { OnBatchExitsPipeline(batch); }
+            catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
+        }
+        if (returnToPool)
+        {
+            try { ReturnReadyBatch(batch); }
+            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+        }
+    }
+
+    /// <summary>
     /// Fails a batch and releases its memory. Does NOT return the batch to the pool.
     /// For sweep: BrokerSender still holds a reference in _pendingResponses — returning
     /// to pool would cause use-after-free when the response arrives and BrokerSender

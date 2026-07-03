@@ -162,6 +162,18 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask FlushAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Purges queued and/or in-flight messages from the producer.
+    /// </summary>
+    /// <remarks>
+    /// Queued messages are dropped before they are sent. In-flight messages may already have
+    /// reached the broker; purging them only fails local delivery tasks and callbacks.
+    /// Transactional producers cannot purge while a transaction is active; commit or abort first.
+    /// </remarks>
+    /// <param name="options">The messages to purge.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask PurgeAsync(PurgeOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Registers or replaces an application metric for broker telemetry subscriptions.
     /// </summary>
     /// <param name="metric">The application metric to register.</param>
@@ -197,6 +209,33 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <param name="topic">The topic to bind the producer to.</param>
     /// <returns>A producer bound to the specified topic.</returns>
     ITopicProducer<TKey, TValue> ForTopic(string topic);
+}
+
+/// <summary>
+/// Flags controlling which producer messages are purged.
+/// </summary>
+[Flags]
+public enum PurgeOptions
+{
+    /// <summary>
+    /// Do not purge any messages.
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// Purge messages buffered locally that have not been sent.
+    /// </summary>
+    Queue = 1,
+
+    /// <summary>
+    /// Purge messages that were sent and are awaiting acknowledgement.
+    /// </summary>
+    InFlight = 2,
+
+    /// <summary>
+    /// Purge queued and in-flight messages.
+    /// </summary>
+    All = Queue | InFlight
 }
 
 /// <summary>

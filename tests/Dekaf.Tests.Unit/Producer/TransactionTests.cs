@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -72,6 +73,24 @@ public sealed class TransactionTests
 
         var act = () => producer.InitTransactionsAsync().AsTask();
         await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task PurgeAsync_InTransaction_ThrowsInvalidOperationException()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        SetInstanceField(kafkaProducer, "_initialized", true);
+        kafkaProducer._transactionState = TransactionState.InTransaction;
+
+        await Assert.That(async () =>
+        {
+            await producer.PurgeAsync(PurgeOptions.All);
+        }).Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -199,5 +218,13 @@ public sealed class TransactionTests
 
         await Assert.That(tpo1).IsEqualTo(tpo2);
         await Assert.That(tpo1).IsNotEqualTo(tpo3);
+    }
+
+    private static void SetInstanceField<T>(object target, string name, T value)
+    {
+        const BindingFlags instanceFieldFlags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var field = target.GetType().GetField(name, instanceFieldFlags);
+        field!.SetValue(target, value);
     }
 }

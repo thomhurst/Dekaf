@@ -1428,6 +1428,44 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return _accumulator.FlushAsync(cancellationToken);
     }
 
+    public ValueTask PurgeAsync(PurgeOptions options, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        ThrowIfNotInitialized();
+
+        if ((options & PurgeOptions.All) == PurgeOptions.None)
+            return ValueTask.CompletedTask;
+
+        ThrowIfPurgeCannotRun();
+
+        var exception = new ProduceException(
+            ProduceErrorKind.Purged,
+            "Produce operation was purged before delivery completed.");
+
+        _accumulator.Purge(options, exception, CompleteInflightEntry);
+        return ValueTask.CompletedTask;
+    }
+
+    private void ThrowIfPurgeCannotRun()
+    {
+        if (_options.TransactionalId is null)
+            return;
+
+        var transactionState = _transactionState;
+        if (transactionState is TransactionState.InTransaction
+            or TransactionState.CommittingTransaction
+            or TransactionState.AbortingTransaction
+            or TransactionState.AbortableError)
+        {
+            throw new InvalidOperationException(
+                "PurgeAsync cannot be called while a transaction is active. Commit or abort the transaction before purging buffered records.");
+        }
+    }
+
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
