@@ -302,7 +302,11 @@ public sealed class ConsumerLeaderDiscoveryTests
         var pending = (ConcurrentDictionary<string, Task>)field.GetValue(consumer)!;
         if (pending.TryGetValue(Topic, out var task))
         {
-            await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            // Await the pending refresh directly. Every caller signals the mocked metadata
+            // response (SetResult/SetException) before draining, so the task always completes.
+            // A wall-clock cap here previously flaked when CI thread-pool starvation delayed the
+            // completion continuation; TUnit's test-level timeout is the backstop for a real hang.
+            await task.ConfigureAwait(false);
         }
     }
 

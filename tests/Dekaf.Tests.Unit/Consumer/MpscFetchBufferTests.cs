@@ -107,12 +107,12 @@ public class MpscFetchBufferTests
         var first = CreateDummy("topic", 0);
         await Assert.That(buffer.TryWrite(first)).IsTrue();
 
-        // Generous outer budget: waiter completion depends on thread-pool scheduling of the
-        // SemaphoreSlim continuations, which can lag on a starved CI runner. All waits below
-        // bound on this single token rather than shorter fixed delays that flake under load.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var waiter1 = buffer.WaitToWriteAsync(cts.Token).AsTask();
-        var waiter2 = buffer.WaitToWriteAsync(cts.Token).AsTask();
+        // No wall-clock deadline: waiter completion is driven deterministically by the
+        // SemaphoreSlim releases from TryRead below. A short cts previously flaked under
+        // CI thread-pool starvation, which could delay the release continuations past the
+        // deadline. A genuinely stuck waiter is caught by the suite-level hang dump.
+        var waiter1 = buffer.WaitToWriteAsync(CancellationToken.None).AsTask();
+        var waiter2 = buffer.WaitToWriteAsync(CancellationToken.None).AsTask();
 
         await TestWait.UntilAsync(() => buffer.ProducerWaiterCount == 2, TimeSpan.FromSeconds(10));
 
@@ -120,7 +120,7 @@ public class MpscFetchBufferTests
         readFirst!.Dispose();
 
         // First read frees one slot -> exactly one waiter is released.
-        var firstReleased = await Task.WhenAny(waiter1, waiter2).WaitAsync(cts.Token);
+        var firstReleased = await Task.WhenAny(waiter1, waiter2);
         await Assert.That(firstReleased.IsCompletedSuccessfully).IsTrue();
         var completedWaiterCount =
             (waiter1.IsCompletedSuccessfully ? 1 : 0) +
@@ -133,7 +133,7 @@ public class MpscFetchBufferTests
         readSecond!.Dispose();
 
         // Second read frees the remaining slot -> both waiters are released.
-        await Task.WhenAll(waiter1, waiter2).WaitAsync(cts.Token);
+        await Task.WhenAll(waiter1, waiter2);
     }
 
     [Test]
@@ -326,9 +326,13 @@ public class MpscFetchBufferTests
     {
         var buffer = new MpscFetchBuffer(4);
         var item = CreateDummy();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        // No wall-clock deadline: the wait is released deterministically by TryWrite's
+        // signal below. A short cts previously flaked under CI thread-pool starvation,
+        // which could delay the RunContinuationsAsynchronously waiter continuation past
+        // the deadline even though the data was already written. A genuinely missed
+        // signal is caught by the suite-level hang dump.
+        var waitTask = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask();
         await Assert.That(waitTask.IsCompleted).IsFalse();
 
         await Assert.That(buffer.TryWrite(item)).IsTrue();

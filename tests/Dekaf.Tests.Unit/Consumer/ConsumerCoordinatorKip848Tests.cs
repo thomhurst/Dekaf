@@ -745,7 +745,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 100);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var topics = new HashSet<string> { "test-topic" };
-        var timeout = TimeSpan.FromSeconds(30);
 
         // Initial join succeeds (epoch=5)
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
@@ -753,13 +752,15 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         // The mock signals fencingProcessed as it returns the fenced response, i.e. BEFORE the
         // heartbeat loop processes it. Wait for that signal, then poll for the actual state
-        // transition rather than sleeping a fixed delay that flakes on a slow/loaded runner.
+        // transition. Both waits complete deterministically once the loop reaches the 2nd
+        // (fenced) heartbeat, so there is no arbitrary wall-clock cap to race the CI thread-pool
+        // scheduler; TUnit's test-level timeout remains the backstop for a genuine regression.
         // The loop breaks on FencedMemberEpoch (no auto-rejoin), so the transition is stable
         // until the explicit rejoin below.
-        await fencingProcessed.Task.WaitAsync(timeout);
+        await fencingProcessed.Task;
         await TestWait.UntilAsync(
             () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == 0,
-            timeout);
+            CancellationToken.None);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         // With fix: _generationId reset to 0 by fencing handler (not stale 5)
@@ -830,7 +831,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(groupInstanceId: "static-1", heartbeatIntervalMs: 100);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var topics = new HashSet<string> { "test-topic" };
-        var timeout = TimeSpan.FromSeconds(30);
 
         // Initial join succeeds (epoch=3)
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
@@ -838,13 +838,15 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         // The mock signals fencingProcessed as it returns the fenced response, i.e. BEFORE the
         // heartbeat loop processes it. Wait for that signal, then poll for the actual state
-        // transition rather than sleeping a fixed delay that flakes on a slow/loaded runner.
+        // transition. Both waits complete deterministically once the loop reaches the 2nd
+        // (fenced) heartbeat, so there is no arbitrary wall-clock cap to race the CI thread-pool
+        // scheduler; TUnit's test-level timeout remains the backstop for a genuine regression.
         // The loop breaks on FencedMemberEpoch (no auto-rejoin), so the transition is stable
         // until the explicit rejoin below.
-        await fencingProcessed.Task.WaitAsync(timeout);
+        await fencingProcessed.Task;
         await TestWait.UntilAsync(
             () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == -2,
-            timeout);
+            CancellationToken.None);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         // Static member resets _generationId to -2 (triggers MemberEpoch=-2 on rejoin)

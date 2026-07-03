@@ -492,7 +492,14 @@ public sealed class BrokerSenderSendLoopTests
             // Complete responses. Batches may coalesce into fewer requests, so each
             // response must include ALL partition data. Complete in reverse order to
             // verify order-independent processing.
-            var combinedResponse = new ProduceResponse
+            //
+            // Each TCS gets its OWN ProduceResponse instance. The send loop returns every
+            // processed response to a shared pool (ProduceResponse.Return resets TopicCount
+            // to 0). When the batches are sent as more than one request — a legal, timing-
+            // dependent coalescing outcome — sharing a single instance across the TCSs would
+            // let the first processed request blank the data before later requests read it,
+            // leaving their batches unacknowledged and hanging the test.
+            static ProduceResponse CreateCombinedResponse(int batchCount) => new()
             {
                 TopicCount = 1,
                 Responses =
@@ -512,7 +519,7 @@ public sealed class BrokerSenderSendLoopTests
                 ]
             };
             for (var i = batchCount - 1; i >= 0; i--)
-                tcsList[i].TrySetResult(combinedResponse);
+                tcsList[i].TrySetResult(CreateCombinedResponse(batchCount));
 
             await allAcknowledged.Task.WaitAsync(cancellationToken);
 

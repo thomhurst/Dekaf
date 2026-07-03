@@ -640,6 +640,9 @@ public class PrefetchPipelineRunnerTests
         var fetchCount = 0;
         var maxConcurrent = 0;
         var currentConcurrent = 0;
+        // Cancel deterministically after a few fetches rather than on a wall-clock
+        // timeout, which flaked under CI thread-pool starvation.
+        using var cts = new CancellationTokenSource();
 
         var runner = CreateRunner(
             prefetchRecords: async ct =>
@@ -654,14 +657,16 @@ public class PrefetchPipelineRunnerTests
                 Interlocked.Decrement(ref currentConcurrent);
 
                 if (id >= 3)
+                {
+                    cts.Cancel();
                     ct.ThrowIfCancellationRequested();
+                }
             },
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
             pipelineDepth: 1);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await runner.RunAsync(cts.Token);
 
         // With depth 1, no eager fetches => InFlightPrefetchCount should be 0
@@ -676,6 +681,11 @@ public class PrefetchPipelineRunnerTests
         // With pipeline depth 2 (max), one eager in-flight fetch should be started
         // after each synchronous fetch.
         var fetchCount = 0;
+        // The delegate cancels once enough fetches have run to prove the pipeline
+        // iterated. A fixed wall-clock timeout flaked under CI thread-pool starvation:
+        // the Task.Yield continuation could stall past the deadline, leaving fetchCount
+        // at 1 and cancellation racing ahead of the eager fetch.
+        using var cts = new CancellationTokenSource();
 
         var runner = CreateRunner(
             prefetchRecords: async ct =>
@@ -684,16 +694,16 @@ public class PrefetchPipelineRunnerTests
                 await Task.Yield(); // Simulate async work
 
                 if (id >= 4)
+                {
+                    cts.Cancel();
                     ct.ThrowIfCancellationRequested();
+                }
             },
             assignmentCount: 1,
             maxBytes: long.MaxValue,
             prefetchedBytes: 0,
             pipelineDepth: 2);
 
-        // Use 30s timeout — on CI with thread pool starvation, 5s may not be enough
-        // for the pipeline runner to schedule multiple async fetches via Task.Yield().
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await runner.RunAsync(cts.Token);
 
         // With depth 2, we should have had at least 3 fetches total

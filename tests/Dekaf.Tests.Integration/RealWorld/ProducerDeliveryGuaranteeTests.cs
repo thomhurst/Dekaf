@@ -51,6 +51,25 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
+        // Acks.None is fire-and-forget: the broker sends no ack and the producer cannot
+        // retry, so a message sent before the partition leader is fully ready is silently
+        // lost — the root cause of this test's intermittent "message not delivered" flake.
+        // Durably warm up the partition first (a separate Acks.All producer retries until
+        // the leader accepts) so the fire-and-forget send below reliably lands.
+        await using (var warmupProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            await warmupProducer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "warmup",
+                Value = "warmup"
+            }, CancellationToken.None);
+        }
+
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.None)
@@ -76,7 +95,13 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         consumer.Assign(new TopicPartition(topic, 0));
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+        // Skip the durable warmup message and assert the fire-and-forget message arrived.
+        ConsumeResult<string, string>? result;
+        do
+        {
+            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+        }
+        while (result is not null && result.Value.Value == "warmup");
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("fast-value");
