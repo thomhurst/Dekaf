@@ -191,8 +191,15 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     {
         if (Interlocked.Exchange(ref _disposeStarted, 1) == 0)
         {
-            base.Dispose();
-            GC.SuppressFinalize(this);
+            try
+            {
+                DisposeAsyncCore().AsTask().GetAwaiter().GetResult();
+            }
+            finally
+            {
+                base.Dispose();
+                GC.SuppressFinalize(this);
+            }
         }
     }
 

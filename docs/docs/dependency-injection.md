@@ -337,7 +337,7 @@ Hosted consumer services should use the async disposal path provided by the gene
 Before:
 
 ```csharp
-service.Dispose(); // synchronous fallback; cancels the BackgroundService only
+service.Dispose(); // synchronous fallback; blocks while cleanup completes
 ```
 
 After:

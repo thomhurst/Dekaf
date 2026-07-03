@@ -331,6 +331,17 @@ public sealed class KafkaConsumerServiceTests
         await consumer.Received(1).DisposeAsync();
     }
 
+    [Test]
+    public async Task Dispose_InvokesConsumerDisposal()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var service = new TestConsumerService(consumer, ["topic-a"]);
+
+        service.Dispose();
+
+        await consumer.Received(1).DisposeAsync();
+    }
+
     #endregion
 
     #region Helpers
