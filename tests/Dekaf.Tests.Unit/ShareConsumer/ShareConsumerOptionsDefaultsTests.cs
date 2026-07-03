@@ -1,3 +1,4 @@
+using Dekaf.Networking;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -22,5 +23,12 @@ public sealed class ShareConsumerOptionsDefaultsTests
     {
         var options = CreateOptions();
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
+    public async Task ConnectionsMaxIdleMs_DefaultsTo_540000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
     }
 }

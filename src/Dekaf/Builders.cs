@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
 using Dekaf.Internal;
 using Dekaf.Metadata;
+using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Retry;
 using Dekaf.Security;
@@ -67,6 +68,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _requestTimeoutMs;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
@@ -701,6 +703,18 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum idle time before unused broker connections are closed.
+    /// Equivalent to Kafka's <c>connections.max.idle.ms</c>. Use <see cref="Timeout.InfiniteTimeSpan"/> to disable.
+    /// </summary>
+    /// <param name="idle">The maximum idle time. Must be non-negative, or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
+    public ProducerBuilder<TKey, TValue> WithConnectionsMaxIdle(TimeSpan idle)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionsMaxIdleMs = ConnectionOptions.ToConnectionsMaxIdleMs(idle, nameof(idle));
+        return this;
+    }
+
+    /// <summary>
     /// Sets the application-level retry policy for produce operations.
     /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync"/>
     /// will be retried according to this policy.
@@ -934,6 +948,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
+            ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             EnableIdempotence = _enableIdempotence,
             ConnectionsPerBroker = _connectionsPerBroker,
             TransactionalId = _transactionalId,
@@ -1112,6 +1127,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxConnectionsPerBroker = 4;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
     private bool _enableFetchSessions = true;
@@ -1759,6 +1775,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum idle time before unused broker connections are closed.
+    /// Equivalent to Kafka's <c>connections.max.idle.ms</c>. Use <see cref="Timeout.InfiniteTimeSpan"/> to disable.
+    /// </summary>
+    /// <param name="idle">The maximum idle time. Must be non-negative, or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
+    public ConsumerBuilder<TKey, TValue> WithConnectionsMaxIdle(TimeSpan idle)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionsMaxIdleMs = ConnectionOptions.ToConnectionsMaxIdleMs(idle, nameof(idle));
+        return this;
+    }
+
+    /// <summary>
     /// Configures the consumer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -2026,6 +2054,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             RequestTimeoutMs = _requestTimeoutMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
+            ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             CheckCrcs = _checkCrcs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
@@ -2164,6 +2193,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _connectionsPerBroker = 2;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
 
@@ -2286,6 +2316,18 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             backoff,
             nameof(backoff),
             "Maximum reconnect backoff cannot be negative");
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum idle time before unused broker connections are closed.
+    /// Equivalent to Kafka's <c>connections.max.idle.ms</c>. Use <see cref="Timeout.InfiniteTimeSpan"/> to disable.
+    /// </summary>
+    /// <param name="idle">The maximum idle time. Must be non-negative, or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithConnectionsMaxIdle(TimeSpan idle)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionsMaxIdleMs = ConnectionOptions.ToConnectionsMaxIdleMs(idle, nameof(idle));
         return this;
     }
 
@@ -2480,6 +2522,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             RequestTimeoutMs = _requestTimeoutMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
+            ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,

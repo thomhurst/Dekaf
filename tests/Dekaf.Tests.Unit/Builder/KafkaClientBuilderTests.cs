@@ -84,6 +84,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateConsumer<string, string>().UseTls())
             .Throws<InvalidOperationException>();
@@ -99,6 +101,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithTls())
             .Throws<InvalidOperationException>();
@@ -109,6 +113,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsPerBroker(2))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateAdminClient().UseTls())
@@ -122,6 +128,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateAdminClient().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
     }
 
@@ -137,6 +145,18 @@ public sealed class KafkaClientBuilderTests
 
         await Assert.That(pool.EffectiveConnectionOptions.ReconnectBackoff).IsEqualTo(TimeSpan.FromMilliseconds(123));
         await Assert.That(pool.EffectiveConnectionOptions.ReconnectBackoffMax).IsEqualTo(TimeSpan.FromMilliseconds(456));
+    }
+
+    [Test]
+    public async Task RootClient_WithConnectionsMaxIdle_ConfiguresSharedConnectionPool()
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithConnectionsMaxIdle(TimeSpan.FromMilliseconds(1234)));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+
+        await Assert.That(pool.EffectiveConnectionOptions.ConnectionsMaxIdleMs).IsEqualTo(1234);
     }
 
     [Test]

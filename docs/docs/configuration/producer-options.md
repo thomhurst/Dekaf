@@ -78,6 +78,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithDeliveryTimeout(...)` | `DeliveryTimeoutMs` | Milliseconds |
 | `WithRequestTimeout(...)` | `RequestTimeoutMs` | Milliseconds |
 | `WithIdempotence(...)` | `EnableIdempotence` | Boolean |
+| `WithConnectionsMaxIdle(...)` | `ConnectionsMaxIdleMs` | Milliseconds; `-1` disables |
 | `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
 | `WithTransactionalId(...)` | `TransactionalId` | String |
@@ -257,6 +258,17 @@ Number of TCP connections to each broker:
 
 Default: 1. Must be 1 for idempotent producers (partition affinity requires a fixed connection).
 
+### WithConnectionsMaxIdle
+
+Maximum time an unused broker connection stays open before the client closes it:
+
+```csharp
+.WithConnectionsMaxIdle(TimeSpan.FromMinutes(9)) // Default: 540000ms
+.WithConnectionsMaxIdle(Timeout.InfiniteTimeSpan) // Disable idle reaping
+```
+
+The default is 9 minutes, slightly below Kafka's broker-side `connections.max.idle.ms` default of 10 minutes. This lets Dekaf close unused connections first and avoid a request racing a broker idle close.
+
 ### WithAdaptiveConnections
 
 Configure adaptive connection scaling. When sustained buffer backpressure is detected, the producer automatically adds connections per broker to increase drain throughput:
@@ -329,6 +341,7 @@ Enable logging:
 | `WithCompressionLevel` | null | Codec-specific compression level |
 | `WithPartitioner` | Default | Partition strategy |
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
+| `WithConnectionsMaxIdle` | 540000ms | Close unused broker connections; `Timeout.InfiniteTimeSpan` disables |
 | `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |

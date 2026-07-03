@@ -1,5 +1,6 @@
 using System.Reflection;
 using Dekaf.Metadata;
+using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 
@@ -181,6 +182,17 @@ public sealed class MetadataRecoveryStrategyTests
         };
 
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
+    public async Task AdminClientOptions_ConnectionsMaxIdleMs_DefaultsTo540000()
+    {
+        var options = new Dekaf.Admin.AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
     }
 
     #endregion

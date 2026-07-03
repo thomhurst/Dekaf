@@ -130,7 +130,7 @@ internal static class ConnectionHelper
 /// <summary>
 /// A multiplexed connection to a Kafka broker using System.IO.Pipelines.
 /// </summary>
-public sealed partial class KafkaConnection : IKafkaConnection
+public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafkaConnection
 {
     private readonly string _host;
     private readonly int _port;
@@ -189,6 +189,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
     private int _connected;
+    private long _lastUsedTimestampMs = Environment.TickCount64;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
@@ -205,6 +206,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
     public string Host => _host;
     public int Port => _port;
     public bool IsConnected => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _connected) != 0 && (_socket?.Connected ?? false);
+
+    long IIdleTrackedKafkaConnection.LastUsedTimestampMs => Volatile.Read(ref _lastUsedTimestampMs);
+
+    int IIdleTrackedKafkaConnection.PendingRequestCount => GetPendingRequestCount();
+
+    void IIdleTrackedKafkaConnection.Touch() => Touch();
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -468,6 +475,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
+        Touch();
         Volatile.Write(ref _connected, 1);
         _telemetryMetricCollector?.RecordConnectionCreated();
 
@@ -487,6 +495,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
+        Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
         var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
@@ -522,6 +531,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Response phase: await response with timeout and parse
             var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
                 pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
+            Touch();
             _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
             return response;
         }
@@ -580,6 +590,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
+        Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
 
@@ -590,6 +601,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
             .ConfigureAwait(false);
 
+        Touch();
         LogFireAndForgetRequestSent(correlationId);
     }
 
@@ -634,6 +646,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
+        Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
         var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
@@ -664,6 +677,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Response phase: await response with timeout, then parse
             var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
                 pending, correlationId, apiVersion, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
+            Touch();
             _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
             return response;
         }
@@ -1349,6 +1363,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         return count;
     }
+
+    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Environment.TickCount64);
 
     private bool TryReadResponse(
         ref ReadOnlySequence<byte> buffer,
@@ -2690,9 +2706,44 @@ public sealed class ConnectionOptions
     public TimeSpan ReconnectBackoffMax { get; init; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
+    /// Maximum idle time before an unused connection is closed. Set to -1 to disable.
+    /// </summary>
+    public int ConnectionsMaxIdleMs
+    {
+        get => _connectionsMaxIdleMs;
+        init => _connectionsMaxIdleMs = ValidateConnectionsMaxIdleMs(value, nameof(ConnectionsMaxIdleMs));
+    }
+
+    /// <summary>
     /// Maximum in-flight requests per connection. Used internally to derive pool sizes.
     /// </summary>
     internal int MaxInFlightRequestsPerConnection { get; init; } = 5;
+
+    internal const int DefaultConnectionsMaxIdleMs = 540000;
+
+    internal static int ValidateConnectionsMaxIdleMs(int value, string paramName)
+    {
+        if (value < -1)
+            throw new ArgumentOutOfRangeException(paramName, "ConnectionsMaxIdleMs must be -1 or greater.");
+
+        return value;
+    }
+
+    internal static int ToConnectionsMaxIdleMs(TimeSpan value, string paramName)
+    {
+        if (value == Timeout.InfiniteTimeSpan)
+            return -1;
+
+        if (value < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                paramName,
+                "Connections max idle must be non-negative, or Timeout.InfiniteTimeSpan to disable.");
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, paramName);
+        return (int)value.TotalMilliseconds;
+    }
+
+    private readonly int _connectionsMaxIdleMs = DefaultConnectionsMaxIdleMs;
 }
 
 /// <summary>

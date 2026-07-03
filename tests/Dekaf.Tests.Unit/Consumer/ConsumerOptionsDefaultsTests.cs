@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security.Sasl;
 
@@ -156,6 +157,13 @@ public class ConsumerOptionsDefaultsTests
     {
         var options = CreateOptions();
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
+    public async Task ConnectionsMaxIdleMs_DefaultsTo_540000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
     }
 
     [Test]

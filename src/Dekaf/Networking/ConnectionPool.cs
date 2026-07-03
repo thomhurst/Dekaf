@@ -21,6 +21,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ResponseBufferPool _responseBufferPool;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly OAuthBearerTokenProvider? _sharedOAuthBearerTokenProvider;
+    private CancellationTokenSource? _idleReaperCts;
+    private Task? _idleReaperTask;
 
     /// <summary>
     /// Shared memory pool for all connections. Bounds total retained memory to one set of
@@ -111,6 +113,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
+        StartIdleConnectionReaper();
     }
 
     /// <summary>
@@ -134,6 +137,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _responseBufferPool = ResponseBufferPool.Default;
         _connectionFactory = connectionFactory;
         // No shared pool needed: factory-created connections manage their own pools.
+        StartIdleConnectionReaper();
     }
 
     /// <summary>
@@ -187,6 +191,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             RequestTimeout = options.RequestTimeout,
             ReconnectBackoff = options.ReconnectBackoff,
             ReconnectBackoffMax = options.ReconnectBackoffMax,
+            ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
             MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
         };
     }
@@ -251,7 +256,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         if (_connectionsById.TryGetValue(brokerId, out var existing) && existing.IsConnected)
         {
             LogConnectionAcquired(brokerId);
-            return existing;
+            return MarkConnectionAcquired(existing);
         }
 
         // Get broker info
@@ -260,8 +265,9 @@ public sealed partial class ConnectionPool : IConnectionPool
             throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
         }
 
-        return await GetOrCreateConnectionAsync(brokerId, brokerInfo.Host, brokerInfo.Port, cancellationToken)
+        var connection = await GetOrCreateConnectionAsync(brokerId, brokerInfo.Host, brokerInfo.Port, cancellationToken)
             .ConfigureAwait(false);
+        return MarkConnectionAcquired(connection);
     }
 
     private async ValueTask<IKafkaConnection> GetConnectionFromGroupAsync(int brokerId, CancellationToken cancellationToken)
@@ -281,16 +287,18 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             if (connection is not null && connection.IsConnected)
             {
-                return connection;
+                return MarkConnectionAcquired(connection);
             }
 
             // Connection at this index is invalid, try to replace it
             LogConnectionReplacement(brokerId, (int)index);
-            return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, (int)index, cancellationToken).ConfigureAwait(false);
+            var replacement = await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, (int)index, cancellationToken).ConfigureAwait(false);
+            return MarkConnectionAcquired(replacement);
         }
 
         // Need to create new connection group
-        return await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
+        var created = await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
+        return MarkConnectionAcquired(created);
     }
 
     public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
@@ -326,10 +334,11 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         if (connection is not null && connection.IsConnected)
         {
-            return connection;
+            return MarkConnectionAcquired(connection);
         }
 
-        return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, effectiveIndex, cancellationToken).ConfigureAwait(false);
+        var replacement = await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, effectiveIndex, cancellationToken).ConfigureAwait(false);
+        return MarkConnectionAcquired(replacement);
     }
 
     private async ValueTask<IKafkaConnection> CreateConnectionGroupAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
@@ -727,10 +736,11 @@ public sealed partial class ConnectionPool : IConnectionPool
         // Try to get existing connection
         if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
         {
-            return existing;
+            return MarkConnectionAcquired(existing);
         }
 
-        return await GetOrCreateConnectionAsync(-1, host, port, cancellationToken).ConfigureAwait(false);
+        var connection = await GetOrCreateConnectionAsync(-1, host, port, cancellationToken).ConfigureAwait(false);
+        return MarkConnectionAcquired(connection);
     }
 
     private async ValueTask<IKafkaConnection> GetOrCreateConnectionAsync(
@@ -847,6 +857,19 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         try
         {
+            if (_connectionFactory is not null)
+            {
+                var factoryConnection = await _connectionFactory(brokerId, host, port, 0, cancellationToken).ConfigureAwait(false);
+                _connectionsByEndpoint[endpoint] = factoryConnection;
+                if (brokerId >= 0)
+                {
+                    _connectionsById[brokerId] = factoryConnection;
+                }
+
+                LogCreatedConnection(brokerId, host, port);
+                return factoryConnection;
+            }
+
             var connection = new KafkaConnection(
                 brokerId, host, port,
                 _clientId, _connectionOptions,
@@ -992,6 +1015,206 @@ public sealed partial class ConnectionPool : IConnectionPool
         return (long)(delay.TotalSeconds * Stopwatch.Frequency);
     }
 
+    internal async ValueTask<int> ReapIdleConnectionsAsync()
+    {
+        if (_connectionOptions.ConnectionsMaxIdleMs < 0 || Volatile.Read(ref _disposed) != 0)
+            return 0;
+
+        await _disposeLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return 0;
+
+            var now = Environment.TickCount64;
+            var reaped = 0;
+
+            foreach (var (endpoint, connection) in _connectionsByEndpoint.ToArray())
+            {
+                if (await TryReapEndpointConnectionAsync(endpoint, connection, now).ConfigureAwait(false))
+                    reaped++;
+            }
+
+            foreach (var (_, group) in _connectionGroupsById.ToArray())
+            {
+                var connectedCount = CountConnected(group);
+                for (var i = 0; i < group.Length; i++)
+                {
+                    var connection = group[i];
+                    if (connection is not null
+                        && await TryReapGroupConnectionAsync(group, i, connection, connectedCount, now).ConfigureAwait(false))
+                    {
+                        connectedCount--;
+                        reaped++;
+                    }
+                }
+            }
+
+            return reaped;
+        }
+        finally
+        {
+            _disposeLock.Release();
+        }
+    }
+
+    private async ValueTask<bool> TryReapEndpointConnectionAsync(EndpointKey endpoint, IKafkaConnection connection, long now)
+    {
+        if (!IsIdleReapable(connection, now))
+            return false;
+
+        if (!TryRemoveExact(_connectionsByEndpoint, endpoint, connection))
+            return false;
+
+        var removedByBrokerId = connection.BrokerId >= 0
+            && TryRemoveExact(_connectionsById, connection.BrokerId, connection);
+
+        var disposed = await DisposeIdleConnectionAsync(connection, now).ConfigureAwait(false);
+        if (!disposed)
+        {
+            if (connection.IsConnected)
+            {
+                _connectionsByEndpoint.TryAdd(endpoint, connection);
+                if (removedByBrokerId)
+                {
+                    _connectionsById.TryAdd(connection.BrokerId, connection);
+                }
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private async ValueTask<bool> TryReapGroupConnectionAsync(
+        IKafkaConnection[] group,
+        int index,
+        IKafkaConnection connection,
+        int connectedCount,
+        long now)
+    {
+        if (!IsIdleReapable(connection, now))
+            return false;
+
+        if (connectedCount <= 1 && HasPendingRequests(group))
+            return false;
+
+        if (Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
+            return false;
+
+        var disposed = await DisposeIdleConnectionAsync(connection, now).ConfigureAwait(false);
+        if (!disposed && connection.IsConnected)
+            Interlocked.CompareExchange(ref group[index], connection, null!);
+
+        return disposed;
+    }
+
+    private bool IsIdleReapable(IKafkaConnection connection, long now)
+    {
+        if (!connection.IsConnected || connection is not IIdleTrackedKafkaConnection idleState)
+            return false;
+
+        if (idleState.PendingRequestCount != 0)
+            return false;
+
+        return now - idleState.LastUsedTimestampMs >= _connectionOptions.ConnectionsMaxIdleMs;
+    }
+
+    private async ValueTask<bool> DisposeIdleConnectionAsync(IKafkaConnection connection, long now)
+    {
+        if (!IsIdleReapable(connection, now))
+            return false;
+
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            if (connection is IIdleTrackedKafkaConnection idleState)
+            {
+                LogReapedIdleConnection(
+                    connection.BrokerId,
+                    connection.Host,
+                    connection.Port,
+                    now - idleState.LastUsedTimestampMs);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogIdleConnectionDisposalFailed(ex, connection.BrokerId, connection.Host, connection.Port);
+            return false;
+        }
+    }
+
+    private static int CountConnected(IKafkaConnection[] group)
+    {
+        var count = 0;
+        foreach (var connection in group)
+        {
+            if (connection is not null && connection.IsConnected)
+                count++;
+        }
+
+        return count;
+    }
+
+    private static bool HasPendingRequests(IKafkaConnection[] group)
+    {
+        foreach (var connection in group)
+        {
+            if (connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 })
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryRemoveExact<TKey, TValue>(
+        ConcurrentDictionary<TKey, TValue> dictionary,
+        TKey key,
+        TValue value)
+        where TKey : notnull
+        => ((ICollection<KeyValuePair<TKey, TValue>>)dictionary).Remove(new KeyValuePair<TKey, TValue>(key, value));
+
+    private static IKafkaConnection MarkConnectionAcquired(IKafkaConnection connection)
+    {
+        if (connection is IIdleTrackedKafkaConnection idleState)
+            idleState.Touch();
+
+        return connection;
+    }
+
+    private void StartIdleConnectionReaper()
+    {
+        if (_connectionOptions.ConnectionsMaxIdleMs < 0)
+            return;
+
+        _idleReaperCts = new CancellationTokenSource();
+        _idleReaperTask = RunIdleConnectionReaperAsync(_idleReaperCts.Token);
+    }
+
+    private async Task RunIdleConnectionReaperAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(GetIdleReaperInterval(_connectionOptions.ConnectionsMaxIdleMs));
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await ReapIdleConnectionsAsync().ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            LogIdleConnectionReaperFailed(ex);
+        }
+    }
+
+    private static TimeSpan GetIdleReaperInterval(int connectionsMaxIdleMs)
+        => TimeSpan.FromMilliseconds(Math.Clamp(connectionsMaxIdleMs / 2, 1000, 60000));
+
     public async ValueTask RemoveConnectionAsync(int brokerId)
     {
         if (_connectionsById.TryRemove(brokerId, out var connection))
@@ -1115,6 +1338,11 @@ public sealed partial class ConnectionPool : IConnectionPool
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        _idleReaperCts?.Cancel();
+        if (_idleReaperTask is not null)
+            await _idleReaperTask.ConfigureAwait(false);
+        _idleReaperCts?.Dispose();
+
         await CloseAllAsync().ConfigureAwait(false);
 
         // Dispose the shared memory pool only when the pool itself is disposed.
@@ -1185,6 +1413,15 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "Reset reconnect backoff for broker {BrokerId} at {Host}:{Port}")]
     private partial void LogReconnectBackoffReset(int brokerId, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Reaped idle connection to broker {BrokerId} at {Host}:{Port} after {IdleMs}ms")]
+    private partial void LogReapedIdleConnection(int brokerId, string host, int port, long idleMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Idle connection reaper failed")]
+    private partial void LogIdleConnectionReaperFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose idle connection to broker {BrokerId} at {Host}:{Port}")]
+    private partial void LogIdleConnectionDisposalFailed(Exception ex, int brokerId, string host, int port);
 
     #endregion
 

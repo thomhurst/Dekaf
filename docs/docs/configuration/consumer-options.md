@@ -96,6 +96,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithQueuedMinMessages(...)` | `QueuedMinMessages` | Integer |
 | `WithQueuedMaxMessagesKbytes(...)` | `QueuedMaxMessagesKbytes` | KiB; omit to keep auto-tuning |
 | `WithPrefetchPipelineDepth(...)` | `PrefetchPipelineDepth` | Integer |
+| `WithConnectionsMaxIdle(...)` | `ConnectionsMaxIdleMs` | Milliseconds; `-1` disables |
 | `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
 | `WithAdaptiveFetchSizing(...)` | `EnableAdaptiveFetchSizing`, `AdaptiveFetchSizingOptions` | Bind nested adaptive sizing fields |
@@ -248,6 +249,19 @@ Get notified of partition changes:
 .WithRebalanceListener(new MyRebalanceListener())
 ```
 
+## Networking
+
+### WithConnectionsMaxIdle
+
+Maximum time an unused broker connection stays open before the client closes it:
+
+```csharp
+.WithConnectionsMaxIdle(TimeSpan.FromMinutes(9)) // Default: 540000ms
+.WithConnectionsMaxIdle(Timeout.InfiniteTimeSpan) // Disable idle reaping
+```
+
+The default is 9 minutes, slightly below Kafka's broker-side `connections.max.idle.ms` default of 10 minutes. Connections with in-flight requests are not reaped.
+
 ## Security
 
 ### UseTls
@@ -339,6 +353,7 @@ For transactional reads:
 | `WithQueuedMinMessages` | 100000 | Prefetch target count |
 | `WithQueuedMaxMessagesKbytes` | auto-tuned | Prefetch memory limit |
 | `WithPrefetchPipelineDepth` | 3 | Overlapping prefetch operations |
+| `WithConnectionsMaxIdle` | 540000ms | Close unused broker connections; `Timeout.InfiniteTimeSpan` disables |
 | `WithConnectionsPerBroker` | 2 | TCP connections per broker |
 | `WithAdaptiveConnections` | enabled (max 4) | Auto-scale connections under load |
 | `UseTls` | false | Enable TLS |
