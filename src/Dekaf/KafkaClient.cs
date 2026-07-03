@@ -179,6 +179,22 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    public KafkaClientBuilder WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    public KafkaClientBuilder WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerJwtBearerOptions();
+        configure(options);
+        return WithOAuthBearerJwtBearer(options);
+    }
+
     public KafkaClientBuilder WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
     {
         _saslMechanism = SaslMechanism.OAuthBearer;

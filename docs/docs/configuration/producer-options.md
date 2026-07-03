@@ -89,6 +89,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
 | `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
 | `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
+| `WithOAuthBearerJwtBearer(...)` | Runtime callback | Signs JWT assertions with RSA/ECDSA keys |
 | `WithSocketSendBufferBytes(...)` | `SocketSendBufferBytes` | Bytes |
 | `WithSocketReceiveBufferBytes(...)` | `SocketReceiveBufferBytes` | Bytes |
 | `WithMetadataRecoveryStrategy(...)` | `MetadataRecoveryStrategy` | `None` or `Rebootstrap` |
@@ -223,6 +224,14 @@ Enable TLS encryption:
 .WithSaslScramSha512("username", "password")
 .WithGssapi(gssapiConfig)
 .WithOAuthBearer(oauthConfig)
+.WithOAuthBearerJwtBearer(options =>
+{
+    options.TokenEndpoint = "https://auth.example.com/oauth2/token";
+    options.ClientId = "my-kafka-client";
+    options.PrivateKey = rsaOrEcdsaPrivateKey;
+    options.Audience = "kafka";
+    options.Scopes = ["kafka:produce"];
+})
 ```
 
 ## Serialization

@@ -2640,6 +2640,31 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Configures SASL/OAUTHBEARER authentication using OAuth 2.0 JWT-bearer assertion flow.
+    /// </summary>
+    /// <param name="options">The JWT-bearer OAuth options.</param>
+    public AdminClientBuilder WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures SASL/OAUTHBEARER authentication using OAuth 2.0 JWT-bearer assertion flow.
+    /// </summary>
+    /// <param name="configure">Callback that configures the JWT-bearer OAuth options.</param>
+    public AdminClientBuilder WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerJwtBearerOptions();
+        configure(options);
+        return WithOAuthBearerJwtBearer(options);
+    }
+
+    /// <summary>
     /// Configures SASL/OAUTHBEARER authentication using a custom token provider.
     /// </summary>
     /// <param name="tokenProvider">A callback that returns an OAuth bearer token on demand.</param>

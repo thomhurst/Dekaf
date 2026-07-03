@@ -448,6 +448,31 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures OAUTHBEARER authentication using OAuth 2.0 JWT-bearer assertion flow.
+    /// </summary>
+    /// <param name="options">The JWT-bearer OAuth options.</param>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using OAuth 2.0 JWT-bearer assertion flow.
+    /// </summary>
+    /// <param name="configure">Callback that configures the JWT-bearer OAuth options.</param>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerJwtBearerOptions();
+        configure(options);
+        return WithOAuthBearerJwtBearer(options);
+    }
+
+    /// <summary>
     /// Configures OAUTHBEARER authentication using a custom token provider.
     /// </summary>
     /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
@@ -1393,6 +1418,31 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures OAUTHBEARER authentication using OAuth 2.0 JWT-bearer assertion flow.
+    /// </summary>
+    /// <param name="options">The JWT-bearer OAuth options.</param>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using OAuth 2.0 JWT-bearer assertion flow.
+    /// </summary>
+    /// <param name="configure">Callback that configures the JWT-bearer OAuth options.</param>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerJwtBearerOptions();
+        configure(options);
+        return WithOAuthBearerJwtBearer(options);
+    }
+
+    /// <summary>
     /// Configures OAUTHBEARER authentication using a custom token provider.
     /// </summary>
     /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
@@ -2100,6 +2150,23 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config;
         return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = (options ?? throw new ArgumentNullException(nameof(options))).ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerJwtBearerOptions();
+        configure(options);
+        return WithOAuthBearerJwtBearer(options);
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerTokenProvider(Func<CancellationToken, ValueTask<OAuthBearerToken>> provider)

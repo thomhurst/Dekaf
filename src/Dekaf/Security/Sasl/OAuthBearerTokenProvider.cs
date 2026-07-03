@@ -6,7 +6,7 @@ using Dekaf.Errors;
 namespace Dekaf.Security.Sasl;
 
 /// <summary>
-/// OAuth 2.0 token provider that fetches tokens from a token endpoint using client credentials grant.
+/// OAuth 2.0 token provider that fetches tokens from a token endpoint.
 /// </summary>
 public sealed class OAuthBearerTokenProvider : IDisposable
 {
@@ -106,10 +106,11 @@ public sealed class OAuthBearerTokenProvider : IDisposable
 
     private Dictionary<string, string> BuildTokenRequestBody()
     {
-        var body = new Dictionary<string, string>
+        var body = _config.GrantType switch
         {
-            ["grant_type"] = "client_credentials",
-            ["client_id"] = _config.ClientId
+            OAuthBearerGrantType.ClientCredentials => BuildClientCredentialsTokenRequestBody(),
+            OAuthBearerGrantType.JwtBearer => BuildJwtBearerTokenRequestBody(),
+            _ => throw new InvalidOperationException($"Unsupported OAuth bearer grant type: {_config.GrantType}")
         };
 
         if (!string.IsNullOrEmpty(_config.Scope))
@@ -126,6 +127,30 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         }
 
         return body;
+    }
+
+    private Dictionary<string, string> BuildClientCredentialsTokenRequestBody()
+    {
+        return new Dictionary<string, string>
+        {
+            ["grant_type"] = "client_credentials",
+            ["client_id"] = _config.ClientId
+        };
+    }
+
+    private Dictionary<string, string> BuildJwtBearerTokenRequestBody()
+    {
+        if (_config.JwtBearer is null)
+        {
+            throw new InvalidOperationException("JWT-bearer OAuth grant requires JwtBearer options");
+        }
+
+        return new Dictionary<string, string>
+        {
+            ["grant_type"] = "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            ["client_id"] = _config.ClientId,
+            ["assertion"] = OAuthBearerJwtAssertion.Create(_config, DateTimeOffset.UtcNow)
+        };
     }
 
     private static OAuthBearerToken ParseTokenResponse(string responseContent)

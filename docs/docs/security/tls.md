@@ -105,7 +105,7 @@ using Dekaf;
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker1.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
-    .WithSaslOAuthBearer(new AwsMskTokenProvider())
+    .WithOAuthBearer(GetAwsMskTokenAsync)
     .BuildAsync();
 ```
 
