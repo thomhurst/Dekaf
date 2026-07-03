@@ -9,6 +9,7 @@ using Dekaf.Security.Sasl;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf;
@@ -67,6 +68,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
+    private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
     public ProducerBuilder()
     {
@@ -648,6 +650,30 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Registers an application metric for broker telemetry subscriptions on built producers.
+    /// Duplicate names replace the previous metric.
+    /// </summary>
+    /// <param name="metric">The application metric to register.</param>
+    public ProducerBuilder<TKey, TValue> RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        _applicationMetrics[metric.Name] = metric;
+        return this;
+    }
+
+    /// <summary>
+    /// Removes an application metric registration from this builder.
+    /// Missing names are ignored.
+    /// </summary>
+    /// <param name="name">The application metric name.</param>
+    public ProducerBuilder<TKey, TValue> UnregisterMetricFromSubscription(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        _applicationMetrics.Remove(name);
+        return this;
+    }
+
     internal ProducerBuilder<TKey, TValue> WithMaxInFlightRequestsPerConnection(int maxInFlightRequestsPerConnection)
     {
         ThrowIfClientOwnedConnectionSettings();
@@ -867,7 +893,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
             EnableAdaptiveConnections = _enableAdaptiveConnections,
-            MaxConnectionsPerBroker = _maxConnectionsPerBroker
+            MaxConnectionsPerBroker = _maxConnectionsPerBroker,
+            ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
@@ -1010,6 +1037,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
     private bool _enableFetchSessions = true;
+    private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
     public ConsumerBuilder()
     {
@@ -1682,6 +1710,30 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Registers an application metric for broker telemetry subscriptions on built consumers.
+    /// Duplicate names replace the previous metric.
+    /// </summary>
+    /// <param name="metric">The application metric to register.</param>
+    public ConsumerBuilder<TKey, TValue> RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        _applicationMetrics[metric.Name] = metric;
+        return this;
+    }
+
+    /// <summary>
+    /// Removes an application metric registration from this builder.
+    /// Missing names are ignored.
+    /// </summary>
+    /// <param name="name">The application metric name.</param>
+    public ConsumerBuilder<TKey, TValue> UnregisterMetricFromSubscription(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        _applicationMetrics.Remove(name);
+        return this;
+    }
+
     internal ConsumerBuilder<TKey, TValue> WithMaxPollInterval(TimeSpan interval)
     {
         if (interval <= TimeSpan.Zero)
@@ -1847,7 +1899,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             EnableAdaptiveConnections = _enableAdaptiveConnections,
             MaxConnectionsPerBroker = _maxConnectionsPerBroker,
             EnableAdaptiveFetchSizing = _enableAdaptiveFetchSizing,
-            AdaptiveFetchSizingOptions = _adaptiveFetchSizingOptions
+            AdaptiveFetchSizingOptions = _adaptiveFetchSizingOptions,
+            ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

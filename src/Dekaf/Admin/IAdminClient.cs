@@ -1,5 +1,6 @@
 using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Admin;
 
@@ -8,6 +9,19 @@ namespace Dekaf.Admin;
 /// </summary>
 public interface IAdminClient : IAsyncDisposable
 {
+    /// <summary>
+    /// Registers or replaces an application metric for broker telemetry subscriptions.
+    /// </summary>
+    /// <param name="metric">The application metric to register.</param>
+    void RegisterMetricForSubscription(ApplicationTelemetryMetric metric);
+
+    /// <summary>
+    /// Unregisters an application metric from broker telemetry subscriptions.
+    /// Missing names are ignored.
+    /// </summary>
+    /// <param name="name">The application metric name.</param>
+    void UnregisterMetricFromSubscription(string name);
+
     /// <summary>
     /// Creates topics.
     /// </summary>

@@ -1,4 +1,5 @@
 using Dekaf.Serialization;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Producer;
 
@@ -159,6 +160,19 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Flushes any pending messages.
     /// </summary>
     ValueTask FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Registers or replaces an application metric for broker telemetry subscriptions.
+    /// </summary>
+    /// <param name="metric">The application metric to register.</param>
+    void RegisterMetricForSubscription(ApplicationTelemetryMetric metric);
+
+    /// <summary>
+    /// Unregisters an application metric from broker telemetry subscriptions.
+    /// Missing names are ignored.
+    /// </summary>
+    /// <param name="name">The application metric name.</param>
+    void UnregisterMetricFromSubscription(string name);
 
     /// <summary>
     /// Begins a transaction (if transactional).

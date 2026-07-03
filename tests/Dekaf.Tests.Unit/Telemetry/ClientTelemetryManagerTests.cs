@@ -89,6 +89,36 @@ public sealed class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task StopAsync_TerminatingPushIncludesApplicationMetrics()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.shutdown.depth",
+            ApplicationTelemetryMetricKind.Gauge,
+            () => 9));
+        var payloadProvider = new CapturingPayloadProvider();
+        await using var context = new TelemetryTestContext(
+            metricCollector: collector,
+            payloadProvider: payloadProvider);
+        var clientInstanceId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        context.Connection.Enqueue(Subscription(
+            clientInstanceId,
+            subscriptionId: 100,
+            pushIntervalMs: 60000,
+            requestedMetrics: ["com.example."]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+
+        await context.Manager.StartAsync();
+        await context.Manager.StopAsync(TimeSpan.FromSeconds(2));
+
+        var call = payloadProvider.Calls.Single();
+        await Assert.That(call.Terminating).IsTrue();
+        await Assert.That(call.Metrics.Metrics.Count).IsEqualTo(1);
+        await Assert.That(call.Metrics.Metrics[0].Name).IsEqualTo("com.example.shutdown.depth");
+        await Assert.That(call.Metrics.Metrics[0].Value).IsEqualTo(9.0);
+    }
+
+    [Test]
     public async Task StartAsync_SelectsFirstAcceptedSupportedCompression()
     {
         var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
@@ -263,6 +293,26 @@ public sealed class ClientTelemetryManagerTests
             await _pool.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    private sealed class CapturingPayloadProvider : IClientTelemetryPayloadProvider
+    {
+        private readonly ConcurrentQueue<PayloadCall> _calls = new();
+
+        public IReadOnlyList<PayloadCall> Calls => _calls.ToArray();
+
+        public ReadOnlyMemory<byte> Collect(
+            ClientTelemetrySubscription subscription,
+            ClientTelemetryMetricSnapshot metrics,
+            bool terminating)
+        {
+            _calls.Enqueue(new PayloadCall(terminating, metrics));
+            return new byte[] { 1 };
+        }
+    }
+
+    private sealed record PayloadCall(
+        bool Terminating,
+        ClientTelemetryMetricSnapshot Metrics);
 
     private sealed class TestConnectionPool : IConnectionPool
     {

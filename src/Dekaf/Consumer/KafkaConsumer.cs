@@ -556,6 +556,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly IDekafMemoryBudget _memoryBudget;
     private readonly bool _ownsInfrastructure;
@@ -802,11 +803,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _metadataManager = infrastructure.Metadata;
         _ownsInfrastructure = ownsInfrastructure;
         _memoryBudget = memoryBudget;
+        _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>(),
-            infrastructure.TelemetryMetricCollector);
+            _telemetryMetricCollector);
 
         _compressionCodecs = CompressionCodecRegistry.Default;
 
@@ -868,6 +871,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
     public IConsumerOffsets Offsets => this;
+
+    /// <inheritdoc />
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric) =>
+        _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+
+    /// <inheritdoc />
+    public void UnregisterMetricFromSubscription(string name) =>
+        _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.

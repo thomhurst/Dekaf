@@ -3,6 +3,7 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Consumer;
 
@@ -285,6 +286,11 @@ public sealed class ConsumerOptions
     /// When <c>null</c>, existing retry behavior is unchanged.
     /// </summary>
     public IRetryPolicy? RetryPolicy { get; init; }
+
+    /// <summary>
+    /// Application metrics registered for broker telemetry subscriptions.
+    /// </summary>
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
 
     /// <summary>
     /// Maximum number of overlapping prefetch operations.
