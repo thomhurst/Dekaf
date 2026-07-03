@@ -25,6 +25,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile int _coordinatorId = -1;
     private volatile string? _memberId;
     private volatile int _generationId = -1;
+    private int _assignmentVersion;
     // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
     // all writes replacing the reference entirely (never in-place mutation) — verified at
     // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
@@ -74,6 +75,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public int GenerationId => _generationId;
     public CoordinatorState State => _state;
     public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
+    internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
 
     private static void RemoveEmptyTopicGroups<TItem>(Dictionary<string, List<TItem>> topicGroups)
     {
@@ -560,10 +562,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
+        var hadAssignment = _assignedPartitions.Count != 0;
         _memberId = null;
         _generationId = -1;
         _assignedPartitions = [];
         _state = CoordinatorState.Unjoined;
+        if (hadAssignment)
+            Interlocked.Increment(ref _assignmentVersion);
     }
 
     /// <summary>
@@ -791,11 +796,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        _assignedPartitions = newAssignment;
-
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
+            _assignedPartitions = newAssignment;
+            Interlocked.Increment(ref _assignmentVersion);
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }
 

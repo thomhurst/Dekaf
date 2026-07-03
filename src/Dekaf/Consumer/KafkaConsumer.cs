@@ -678,6 +678,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private List<TopicPartition>? _cachedPartitionsList;
     private readonly object _leaderRefreshTasksLock = new();
     private readonly ConcurrentDictionary<string, Task> _pendingLeaderRefreshTasks = new();
+    private int _assignmentEnsureVersion;
+    private int _lastManualAssignmentEnsureVersion = -1;
+    private int _lastCoordinatorAssignmentVersion = -1;
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -2863,6 +2866,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await RefreshFilteredTopicsAsync(topicFilter, cancellationToken).ConfigureAwait(false);
         }
 
+        var subscriptionSnapshot = _subscriptionSnapshot;
+        var coordinator = _coordinator;
+        if (subscriptionSnapshot.Count != 0 && coordinator is not null)
+        {
+            await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
+
+            var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
+            if (Volatile.Read(ref _lastCoordinatorAssignmentVersion) == coordinatorAssignmentVersion)
+                return;
+        }
+        else if (IsManualAssignmentEnsureCurrent())
+        {
+            return;
+        }
+
         // Serialize the write path: both ConsumeAsync and PrefetchLoopAsync call this method
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
@@ -2870,17 +2888,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_subscription.IsEmpty && _coordinator is not null)
+            coordinator = _coordinator;
+            if (!_subscription.IsEmpty && coordinator is not null)
             {
-                await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
+                var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
+                var coordinatorAssignment = coordinator.Assignment;
 
                 // Fast path: skip all work if assignment hasn't changed (common case after stable join)
-                if (_assignment.SetEquals(_coordinator.Assignment))
+                if (_assignment.SetEquals(coordinatorAssignment))
+                {
+                    Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                     return;
+                }
 
                 // Check for new partitions that need initialization
                 List<TopicPartition>? newPartitions = null;
-                foreach (var partition in _coordinator.Assignment)
+                foreach (var partition in coordinatorAssignment)
                 {
                     if (!_assignment.Contains(partition))
                     {
@@ -2893,7 +2916,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 List<TopicPartition>? removedPartitions = null;
                 foreach (var partition in _assignment)
                 {
-                    if (!_coordinator.Assignment.Contains(partition))
+                    if (!coordinatorAssignment.Contains(partition))
                     {
                         removedPartitions ??= new List<TopicPartition>();
                         removedPartitions.Add(partition);
@@ -2907,7 +2930,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Update assignment from coordinator
                 _assignment.Clear();
-                foreach (var partition in _coordinator.Assignment)
+                foreach (var partition in coordinatorAssignment)
                 {
                     _assignment.Add(partition);
                 }
@@ -2930,27 +2953,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
                 }
-            }
-            else if (_assignment.Count > 0)
-            {
-                // Ratchet pool sizes based on actual partition count (manual assignment)
-                RatchetConsumerPoolSizes(_assignment.Count);
 
-                // Manual assignment - initialize positions for partitions that don't have positions yet
-                List<TopicPartition>? uninitializedPartitions = null;
-                foreach (var p in _assignment)
+                Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+            }
+            else
+            {
+                if (_assignment.Count > 0)
                 {
-                    if (!_fetchPositions.ContainsKey(p))
+                    // Ratchet pool sizes based on actual partition count (manual assignment)
+                    RatchetConsumerPoolSizes(_assignment.Count);
+
+                    // Manual assignment - initialize positions for partitions that don't have positions yet
+                    List<TopicPartition>? uninitializedPartitions = null;
+                    foreach (var p in _assignment)
                     {
-                        uninitializedPartitions ??= new List<TopicPartition>();
-                        uninitializedPartitions.Add(p);
+                        if (!_fetchPositions.ContainsKey(p))
+                        {
+                            uninitializedPartitions ??= new List<TopicPartition>();
+                            uninitializedPartitions.Add(p);
+                        }
+                    }
+
+                    if (uninitializedPartitions is not null)
+                    {
+                        await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
                     }
                 }
 
-                if (uninitializedPartitions is not null)
-                {
-                    await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
-                }
+                Volatile.Write(ref _lastManualAssignmentEnsureVersion, Volatile.Read(ref _assignmentEnsureVersion));
             }
         }
         finally
@@ -2959,6 +2989,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    private bool IsManualAssignmentEnsureCurrent()
+    {
+        if (_topicFilter is not null || !_subscription.IsEmpty)
+            return false;
+
+        var assignmentEnsureVersion = Volatile.Read(ref _assignmentEnsureVersion);
+        return Volatile.Read(ref _lastManualAssignmentEnsureVersion) == assignmentEnsureVersion;
+    }
 
     private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
@@ -3264,6 +3302,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void PublishAssignmentSnapshot()
     {
         _assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+        Interlocked.Increment(ref _assignmentEnsureVersion);
+        Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
     }
 
     /// <summary>
