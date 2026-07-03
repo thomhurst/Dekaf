@@ -171,14 +171,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             if (_pending.Count == 0)
                 return ValueTask.CompletedTask;
 
-            var offsets = _pending.Values
-                .Where(record => record.AcknowledgeType is AcknowledgeType.Accept or AcknowledgeType.Reject)
-                .GroupBy(record => record.TopicPartition)
-                .Select(group => new TopicPartitionOffset(
-                    group.Key.Topic,
-                    group.Key.Partition,
-                    group.Max(record => record.NextOffset)))
-                .ToArray();
+            var offsets = BuildCommitOffsets(_pending.Values);
 
             if (offsets.Length > 0)
                 _cluster.CommitOffsets(_options.GroupId, offsets);
@@ -282,6 +275,41 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             TimestampMs = record.TimestampMs,
             DeliveryCount = 1
         };
+    }
+
+    private static TopicPartitionOffset[] BuildCommitOffsets(IEnumerable<PendingShareRecord> records)
+    {
+        var offsets = new List<TopicPartitionOffset>();
+
+        foreach (var group in records.GroupBy(record => record.TopicPartition))
+        {
+            var ordered = group.OrderBy(record => record.NextOffset).ToArray();
+            if (ordered.Length == 0)
+                continue;
+
+            var commitOffset = ordered[0].NextOffset - 1;
+            foreach (var record in ordered)
+            {
+                var recordOffset = record.NextOffset - 1;
+                if (recordOffset != commitOffset)
+                    break;
+
+                if (record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+                    break;
+
+                commitOffset = record.NextOffset;
+            }
+
+            if (commitOffset > ordered[0].NextOffset - 1)
+            {
+                offsets.Add(new TopicPartitionOffset(
+                    group.Key.Topic,
+                    group.Key.Partition,
+                    commitOffset));
+            }
+        }
+
+        return offsets.ToArray();
     }
 
     private static SerializationContext Context(

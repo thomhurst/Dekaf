@@ -173,7 +173,6 @@ public sealed class InMemoryKafkaCluster
             };
 
             signal = _recordsChanged;
-            _recordsChanged = NewRecordsChangedSource();
         }
 
         signal.TrySetResult();
@@ -210,7 +209,11 @@ public sealed class InMemoryKafkaCluster
     {
         Task task;
         lock (_gate)
+        {
             task = _recordsChanged.Task;
+            if (task.IsCompleted)
+                _recordsChanged = NewRecordsChangedSource();
+        }
 
         if (timeout == Timeout.InfiniteTimeSpan)
         {

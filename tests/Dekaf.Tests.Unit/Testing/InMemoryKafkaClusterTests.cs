@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -123,6 +124,88 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task ShareConsumer_ReleaseGapStopsContiguousCommit()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var shareConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-gap" });
+
+        for (var i = 0; i < 3; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "shared",
+                Partition = 0,
+                Key = $"k-{i}",
+                Value = $"v-{i}"
+            });
+        }
+
+        shareConsumer.Subscribe("shared");
+        var records = new List<ShareConsumeResult<string, string>>();
+        await foreach (var record in shareConsumer.PollAsync())
+            records.Add(record);
+
+        shareConsumer.Acknowledge(records[0], AcknowledgeType.Accept);
+        shareConsumer.Acknowledge(records[1], AcknowledgeType.Release);
+        shareConsumer.Acknowledge(records[2], AcknowledgeType.Accept);
+        await shareConsumer.CommitAsync();
+
+        var redelivered = await shareConsumer.PollAsync().FirstAsync();
+        var admin = new InMemoryAdminClient(cluster);
+        var offsets = await admin.ListConsumerGroupOffsetsAsync("share-gap");
+
+        await Assert.That(records.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L, 2L]);
+        await Assert.That(offsets[new TopicPartition("shared", 0)]).IsEqualTo(1);
+        await Assert.That(redelivered.Offset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task WaitForRecordsAsync_ReturnsWhenRecordWasAppendedBeforeWait()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await producer.ProduceAsync("wakeups", "k", "v");
+
+        await InvokeWaitForRecordsAsync(cluster, TimeSpan.FromMilliseconds(50), CancellationToken.None);
+    }
+
+    [Test]
+    public async Task ProduceLatency_ObservesCancellation()
+    {
+        var cluster = new InMemoryKafkaCluster
+        {
+            ProduceLatency = TimeSpan.FromSeconds(10)
+        };
+        var producer = new InMemoryProducer<string, string>(cluster);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
+
+        await Assert.That(async () => await producer.ProduceAsync("slow", "k", "v", cts.Token))
+            .Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task ProduceFailure_CanBeConfiguredAndCleared()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        cluster.FailProduces("failures", new InvalidOperationException("produce failed"));
+
+        await Assert.That(async () => await producer.ProduceAsync("failures", "k", "v"))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(cluster.ClearProduceFailure("failures")).IsTrue();
+        var metadata = await producer.ProduceAsync("failures", "k", "v");
+
+        await Assert.That(metadata.Topic).IsEqualTo("failures");
+        await Assert.That(cluster.ClearProduceFailure("failures")).IsFalse();
+    }
+
+    [Test]
     public async Task AddDekafInMemory_RegistersClientDoubles()
     {
         var services = new ServiceCollection();
@@ -143,5 +226,17 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(consumer).IsTypeOf<InMemoryConsumer<string, string>>();
         await Assert.That(admin).IsTypeOf<InMemoryAdminClient>();
         await Assert.That(shareConsumer).IsTypeOf<InMemoryShareConsumer<string, string>>();
+    }
+
+    private static Task InvokeWaitForRecordsAsync(
+        InMemoryKafkaCluster cluster,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(InMemoryKafkaCluster).GetMethod(
+            "WaitForRecordsAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        return (Task)method.Invoke(cluster, [timeout, cancellationToken])!;
     }
 }
