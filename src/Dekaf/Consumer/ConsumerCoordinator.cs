@@ -75,6 +75,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
 
+    private static void RemoveEmptyTopicGroups<TItem>(Dictionary<string, List<TItem>> topicGroups)
+    {
+        string[]? emptyTopics = null;
+        var emptyTopicCount = 0;
+
+        foreach (var kvp in topicGroups)
+        {
+            if (kvp.Value.Count != 0)
+                continue;
+
+            emptyTopics ??= new string[topicGroups.Count];
+            emptyTopics[emptyTopicCount++] = kvp.Key;
+        }
+
+        if (emptyTopics is null)
+            return;
+
+        for (var i = 0; i < emptyTopicCount; i++)
+        {
+            topicGroups.Remove(emptyTopics[i]);
+        }
+    }
+
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next
     /// <see cref="EnsureActiveGroupAsync"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
@@ -307,6 +330,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     });
                 }
 
+                RemoveEmptyTopicGroups(_commitTopicGroups);
+
                 var topicOffsets = new List<OffsetCommitRequestTopic>(_commitTopicGroups.Count);
                 foreach (var kvp in _commitTopicGroups)
                 {
@@ -401,6 +426,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     }
                     indexes.Add(partition.Partition);
                 }
+
+                RemoveEmptyTopicGroups(_fetchTopicGroups);
 
                 var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
                 foreach (var kvp in _fetchTopicGroups)
