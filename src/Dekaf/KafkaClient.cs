@@ -272,6 +272,7 @@ public sealed class KafkaClientBuilder
     {
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 

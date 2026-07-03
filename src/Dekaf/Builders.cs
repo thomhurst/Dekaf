@@ -532,6 +532,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1687,6 +1688,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2606,6 +2608,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 

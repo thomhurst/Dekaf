@@ -231,8 +231,8 @@ public sealed class InMemoryKafkaClusterTests
         await producer.PurgeAsync(PurgeOptions.All);
 
         await Assert.That(cluster.ReadRecords("purge").Count).IsEqualTo(1);
-        await Assert.That(async () => await producer.PurgeAsync((PurgeOptions)8))
-            .Throws<ArgumentOutOfRangeException>();
+        await producer.PurgeAsync((PurgeOptions)8);
+        await Assert.That(cluster.ReadRecords("purge").Count).IsEqualTo(1);
     }
 
     [Test]
