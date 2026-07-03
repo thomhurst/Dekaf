@@ -28,6 +28,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private volatile IReadOnlyList<FinalizedFeature>? _finalizedFeatures;
+    private readonly SemaphoreSlim _initializeLock = new(1, 1);
+    private bool _initialized;
     private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
     private CancellationTokenSource? _backgroundRefreshCts;
@@ -220,26 +222,42 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        var backoffMs = _options.RetryBackoffMs;
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(MetadataManager));
 
-        for (var attempt = 0; ; attempt++)
+        await _initializeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            try
+            if (_initialized)
+                return;
+
+            var backoffMs = _options.RetryBackoffMs;
+
+            for (var attempt = 0; ; attempt++)
             {
-                await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-                break;
+                try
+                {
+                    await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception ex) when (!IsFatalMetadataError(ex) && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+                {
+                    LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
+                    await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
+                    backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
+                }
             }
-            catch (Exception ex) when (!IsFatalMetadataError(ex) && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+
+            if (_options.EnableBackgroundRefresh)
             {
-                LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
-                await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
-                backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
+                StartBackgroundRefresh();
             }
+
+            _initialized = true;
         }
-
-        if (_options.EnableBackgroundRefresh)
+        finally
         {
-            StartBackgroundRefresh();
+            _initializeLock.Release();
         }
     }
 
@@ -906,6 +924,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private void StartBackgroundRefresh()
     {
+        if (_backgroundRefreshTask is not null)
+            return;
+
         _backgroundRefreshCts = new CancellationTokenSource();
         _backgroundRefreshTask = BackgroundRefreshLoopAsync(_backgroundRefreshCts.Token);
     }
@@ -977,6 +998,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         _backgroundRefreshCts?.Dispose();
         _disposalCts.Dispose();
+        _initializeLock.Dispose();
         _refreshLock.Dispose();
     }
 

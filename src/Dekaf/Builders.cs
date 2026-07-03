@@ -484,6 +484,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="strategy">The recovery strategy to use.</param>
     public ProducerBuilder<TKey, TValue> WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _metadataRecoveryStrategy = strategy;
         return this;
     }
@@ -495,6 +496,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
@@ -510,6 +512,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan interval)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
 
@@ -1549,6 +1552,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="strategy">The recovery strategy to use.</param>
     public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _metadataRecoveryStrategy = strategy;
         return this;
     }
@@ -1560,6 +1564,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
@@ -1575,6 +1580,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan interval)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
 

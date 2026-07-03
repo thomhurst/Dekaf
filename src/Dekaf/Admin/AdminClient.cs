@@ -2664,6 +2664,7 @@ public sealed class AdminClientBuilder
     /// <param name="strategy">The recovery strategy to use.</param>
     public AdminClientBuilder WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _metadataRecoveryStrategy = strategy;
         return this;
     }
@@ -2675,6 +2676,7 @@ public sealed class AdminClientBuilder
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public AdminClientBuilder WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
@@ -2689,6 +2691,7 @@ public sealed class AdminClientBuilder
     /// <returns>The builder instance for method chaining.</returns>
     public AdminClientBuilder WithMetadataMaxAge(TimeSpan interval)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
 

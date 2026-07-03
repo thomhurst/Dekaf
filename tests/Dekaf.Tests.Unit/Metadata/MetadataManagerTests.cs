@@ -248,4 +248,52 @@ public class MetadataManagerTests
         // No assertion needed - successful completion proves thread-safety
     }
 
+    [Test]
+    public async Task InitializeAsync_ConcurrentCalls_StartsOnce()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var metadataRequests = 0;
+
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref metadataRequests);
+                return new ValueTask<MetadataResponse>(CreateMetadataResponse((1, "localhost", 9092)));
+            });
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { MetadataRefreshInterval = TimeSpan.FromHours(1) });
+
+        await Task.WhenAll(
+            manager.InitializeAsync().AsTask(),
+            manager.InitializeAsync().AsTask());
+
+        await Assert.That(metadataRequests).IsEqualTo(1);
+    }
+
 }
