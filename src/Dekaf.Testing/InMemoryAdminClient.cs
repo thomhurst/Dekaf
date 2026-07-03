@@ -486,6 +486,73 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<ListTransactionsResult> ListTransactionsAsync(
+        ListTransactionsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.FromResult(new ListTransactionsResult
+        {
+            UnknownStateFilters = [],
+            Transactions = []
+        });
+    }
+
+    public ValueTask<IReadOnlyDictionary<string, TransactionDescription>> DescribeTransactionsAsync(
+        IEnumerable<string> transactionalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionalIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = transactionalIds.ToDictionary(
+            transactionalId => transactionalId,
+            transactionalId => new TransactionDescription
+            {
+                TransactionalId = transactionalId,
+                ErrorCode = ErrorCode.TransactionalIdNotFound,
+                TransactionState = "Unknown",
+                TransactionTimeoutMs = 0,
+                TransactionStartTimeMs = -1,
+                ProducerId = -1,
+                ProducerEpoch = -1,
+                CoordinatorId = 0,
+                TopicPartitions = []
+            },
+            StringComparer.Ordinal);
+
+        return ValueTask.FromResult<IReadOnlyDictionary<string, TransactionDescription>>(result);
+    }
+
+    public ValueTask<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>> DescribeProducersAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = partitions
+            .Select(partition =>
+            {
+                ValidateTopicPartition(partition);
+                return partition;
+            })
+            .ToDictionary(
+                partition => partition,
+                partition => new DescribeProducersResultInfo
+                {
+                    TopicPartition = partition,
+                    ErrorCode = ErrorCode.None,
+                    ActiveProducers = []
+                });
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>>(result);
+    }
+
     public ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
         IEnumerable<int> brokerIds,
         IEnumerable<TopicPartition>? partitions = null,

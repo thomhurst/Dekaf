@@ -6,6 +6,7 @@ using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Retry;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
@@ -806,6 +807,290 @@ public sealed class AdminClient : IAdminClient
                         ProtocolType = group.ProtocolType,
                         State = group.GroupState
                     });
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<ListTransactionsResult> ListTransactionsAsync(
+        ListTransactionsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ListTransactions))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support ListTransactions (API key 66).");
+        }
+
+        var opts = options ?? new ListTransactionsOptions();
+
+        return await WithRetryAsync(async () =>
+        {
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new InvalidOperationException("No brokers available");
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListTransactions,
+                ListTransactionsRequest.LowestSupportedVersion,
+                ListTransactionsRequest.HighestSupportedVersion);
+
+            if (opts.DurationFilterMs >= 0 && apiVersion < 1)
+            {
+                throw new Errors.BrokerVersionException("Broker does not support ListTransactions duration filters (API key 66 v1).");
+            }
+
+            if (!string.IsNullOrEmpty(opts.TransactionalIdPattern) && apiVersion < 2)
+            {
+                throw new Errors.BrokerVersionException("Broker does not support ListTransactions transactional ID pattern filters (API key 66 v2).");
+            }
+
+            var request = new ListTransactionsRequest
+            {
+                StateFilters = opts.StateFilters,
+                ProducerIdFilters = opts.ProducerIdFilters,
+                DurationFilterMs = opts.DurationFilterMs,
+                TransactionalIdPattern = opts.TransactionalIdPattern
+            };
+
+            var responses = await Task.WhenAll(brokers.Select(async broker =>
+            {
+                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                var response = await connection.SendAsync<ListTransactionsRequest, ListTransactionsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"ListTransactions failed on broker {broker.NodeId}: {response.ErrorCode}");
+                }
+
+                return (CoordinatorId: broker.NodeId, Response: response);
+            })).ConfigureAwait(false);
+
+            var unknownStateFilters = new HashSet<string>(StringComparer.Ordinal);
+            var seenTransactionalIds = new HashSet<string>(StringComparer.Ordinal);
+            var transactions = new List<TransactionListing>();
+
+            foreach (var (coordinatorId, response) in responses)
+            {
+                foreach (var unknownStateFilter in response.UnknownStateFilters)
+                {
+                    unknownStateFilters.Add(unknownStateFilter);
+                }
+
+                foreach (var state in response.TransactionStates)
+                {
+                    if (!seenTransactionalIds.Add(state.TransactionalId))
+                        continue;
+
+                    transactions.Add(new TransactionListing
+                    {
+                        TransactionalId = state.TransactionalId,
+                        ProducerId = state.ProducerId,
+                        TransactionState = state.TransactionState,
+                        CoordinatorId = coordinatorId
+                    });
+                }
+            }
+
+            return new ListTransactionsResult
+            {
+                UnknownStateFilters = unknownStateFilters.ToList(),
+                Transactions = transactions
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<string, TransactionDescription>> DescribeTransactionsAsync(
+        IEnumerable<string> transactionalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionalIds);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeTransactions))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support DescribeTransactions (API key 65).");
+        }
+
+        var transactionalIdList = transactionalIds.ToList();
+        if (transactionalIdList.Count == 0)
+        {
+            return new Dictionary<string, TransactionDescription>();
+        }
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, TransactionDescription>>(async () =>
+        {
+            var idsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var transactionalId in transactionalIdList)
+            {
+                var coordinatorId = await FindTransactionCoordinatorAsync(transactionalId, cancellationToken).ConfigureAwait(false);
+                if (!idsByCoordinator.TryGetValue(coordinatorId, out var ids))
+                {
+                    ids = [];
+                    idsByCoordinator[coordinatorId] = ids;
+                }
+
+                ids.Add(transactionalId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeTransactions,
+                DescribeTransactionsRequest.LowestSupportedVersion,
+                DescribeTransactionsRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<string, TransactionDescription>(StringComparer.Ordinal);
+
+            foreach (var (coordinatorId, ids) in idsByCoordinator)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var request = new DescribeTransactionsRequest
+                {
+                    TransactionalIds = ids
+                };
+
+                var response = await connection.SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var state in response.TransactionStates)
+                {
+                    if (state.ErrorCode.IsRetriable() || state.ErrorCode.RequiresMetadataRefresh())
+                    {
+                        throw new KafkaException(state.ErrorCode,
+                            $"DescribeTransactions failed for transactional ID '{state.TransactionalId}': {state.ErrorCode}");
+                    }
+
+                    result[state.TransactionalId] = new TransactionDescription
+                    {
+                        TransactionalId = state.TransactionalId,
+                        ErrorCode = state.ErrorCode,
+                        TransactionState = state.TransactionState,
+                        TransactionTimeoutMs = state.TransactionTimeoutMs,
+                        TransactionStartTimeMs = state.TransactionStartTimeMs,
+                        ProducerId = state.ProducerId,
+                        ProducerEpoch = state.ProducerEpoch,
+                        CoordinatorId = coordinatorId,
+                        TopicPartitions = state.Topics
+                            .SelectMany(static topic => topic.Partitions.Select(partition => new TopicPartition(topic.Topic, partition)))
+                            .ToList()
+                    };
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>> DescribeProducersAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeProducers))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support DescribeProducers (API key 61).");
+        }
+
+        var partitionList = partitions.ToList();
+        if (partitionList.Count == 0)
+        {
+            return new Dictionary<TopicPartition, DescribeProducersResultInfo>();
+        }
+
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>>(async () =>
+        {
+            var partitionsByLeader = new Dictionary<int, List<DescribeProducersRequestTopic>>();
+
+            foreach (var topicPartition in partitionList)
+            {
+                var leaderNode = _metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition);
+                if (leaderNode is null)
+                {
+                    throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
+                        $"No leader available for {topicPartition.Topic}-{topicPartition.Partition}");
+                }
+
+                if (!partitionsByLeader.TryGetValue(leaderNode.NodeId, out var leaderTopics))
+                {
+                    leaderTopics = [];
+                    partitionsByLeader[leaderNode.NodeId] = leaderTopics;
+                }
+
+                var topicEntry = leaderTopics.FirstOrDefault(t => t.Name == topicPartition.Topic);
+                if (topicEntry is null)
+                {
+                    topicEntry = new DescribeProducersRequestTopic
+                    {
+                        Name = topicPartition.Topic,
+                        PartitionIndexes = new List<int>()
+                    };
+                    leaderTopics.Add(topicEntry);
+                }
+
+                ((List<int>)topicEntry.PartitionIndexes).Add(topicPartition.Partition);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeProducers,
+                DescribeProducersRequest.LowestSupportedVersion,
+                DescribeProducersRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<TopicPartition, DescribeProducersResultInfo>();
+
+            foreach (var (leaderId, topics) in partitionsByLeader)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                var request = new DescribeProducersRequest
+                {
+                    Topics = topics
+                };
+
+                var response = await connection.SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var topic in response.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
+                        {
+                            throw new KafkaException(partition.ErrorCode,
+                                $"DescribeProducers failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}");
+                        }
+
+                        var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                        result[topicPartition] = new DescribeProducersResultInfo
+                        {
+                            TopicPartition = topicPartition,
+                            ErrorCode = partition.ErrorCode,
+                            ErrorMessage = partition.ErrorMessage,
+                            ActiveProducers = partition.ActiveProducers.Select(static producer => new ActiveProducerDescription
+                            {
+                                ProducerId = producer.ProducerId,
+                                ProducerEpoch = producer.ProducerEpoch,
+                                LastSequence = producer.LastSequence,
+                                LastTimestamp = producer.LastTimestamp,
+                                CoordinatorEpoch = producer.CoordinatorEpoch,
+                                CurrentTransactionStartOffset = producer.CurrentTxnStartOffset
+                            }).ToList()
+                        };
+                    }
                 }
             }
 
@@ -3057,6 +3342,49 @@ public sealed class AdminClient : IAdminClient
         if (coordinator.ErrorCode != Protocol.ErrorCode.None)
         {
             throw new Errors.GroupException(coordinator.ErrorCode, $"FindCoordinator failed: {coordinator.ErrorCode}");
+        }
+
+        _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
+        return coordinator.NodeId;
+    }
+
+    private async ValueTask<int> FindTransactionCoordinatorAsync(string transactionalId, CancellationToken cancellationToken)
+    {
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var request = new FindCoordinatorRequest
+        {
+            Key = transactionalId,
+            KeyType = CoordinatorType.Transaction
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion,
+            FindCoordinatorRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        if (response.Coordinators.Count == 0)
+        {
+            throw new KafkaException(Protocol.ErrorCode.CoordinatorNotAvailable,
+                "FindCoordinator returned an empty Coordinators array");
+        }
+
+        var coordinator = response.Coordinators[0];
+        if (coordinator.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw new KafkaException(coordinator.ErrorCode,
+                $"FindCoordinator failed for transactional ID '{transactionalId}': {coordinator.ErrorCode}");
         }
 
         _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
