@@ -495,6 +495,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryManager _telemetryManager;
+    private readonly IDekafMemoryBudget _memoryBudget;
+    private readonly bool _ownsInfrastructure;
     private readonly ConsumerCoordinator? _coordinator;
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
@@ -620,7 +622,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         MetadataOptions? metadataOptions = null)
         : this(options, keyDeserializer, valueDeserializer,
             CreateInfrastructure(options, loggerFactory, metadataOptions),
-            loggerFactory)
+            loggerFactory,
+            ownsInfrastructure: true,
+            DekafMemoryBudget.Global)
     {
     }
 
@@ -637,7 +641,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ILoggerFactory? loggerFactory = null)
         : this(options, keyDeserializer, valueDeserializer,
             (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
-            loggerFactory)
+            loggerFactory,
+            ownsInfrastructure: true,
+            DekafMemoryBudget.Global)
+    {
+    }
+
+    internal KafkaConsumer(
+        ConsumerOptions options,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        IDekafMemoryBudget memoryBudget,
+        ILoggerFactory? loggerFactory = null)
+        : this(options, keyDeserializer, valueDeserializer,
+            (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
+            loggerFactory,
+            ownsInfrastructure: false,
+            memoryBudget)
     {
     }
 
@@ -680,7 +702,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
         (IConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
-        ILoggerFactory? loggerFactory)
+        ILoggerFactory? loggerFactory,
+        bool ownsInfrastructure,
+        IDekafMemoryBudget memoryBudget)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
@@ -714,6 +738,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         _connectionPool = infrastructure.Pool;
         _metadataManager = infrastructure.Metadata;
+        _ownsInfrastructure = ownsInfrastructure;
+        _memoryBudget = memoryBudget;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
@@ -4271,9 +4297,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return;
 
         if (_options.IsAutoTuned)
-            DekafMemoryBudget.UnregisterConsumer(this);
+            _memoryBudget.UnregisterConsumer(this);
         else
-            DekafMemoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
+            _memoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
 
         var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
@@ -4361,8 +4387,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await _coordinator.DisposeAsync().ConfigureAwait(false);
 
         await _telemetryManager.DisposeAsync().ConfigureAwait(false);
-        await _metadataManager.DisposeAsync().ConfigureAwait(false);
-        await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        if (_ownsInfrastructure)
+        {
+            await _metadataManager.DisposeAsync().ConfigureAwait(false);
+            await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        }
 
         var disposeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogConsumerDisposed(disposeElapsedMs);

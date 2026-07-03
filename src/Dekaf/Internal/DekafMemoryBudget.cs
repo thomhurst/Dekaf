@@ -62,6 +62,8 @@ public static class DekafMemoryBudget
     private static readonly List<IBudgetedInstance> _producers = new();
     private static readonly List<IBudgetedInstance> _consumers = new();
 
+    internal static IDekafMemoryBudget Global { get; } = new GlobalDekafMemoryBudget();
+
     /// <summary>
     /// The total memory budget in bytes available to all Dekaf instances in the process.
     /// <para>
@@ -352,5 +354,24 @@ public static class DekafMemoryBudget
             ProducerLimit = ComputePerProducerLimitUnlocked(),
             ConsumerLimit = ComputePerConsumerLimitUnlocked(),
         };
+    }
+
+    private sealed class GlobalDekafMemoryBudget : IDekafMemoryBudget
+    {
+        public ulong PreviewProducerLimit() => DekafMemoryBudget.PreviewProducerLimit();
+
+        public ulong PreviewConsumerLimit() => DekafMemoryBudget.PreviewConsumerLimit();
+
+        public void RegisterProducer(IBudgetedInstance instance) => DekafMemoryBudget.RegisterProducer(instance);
+
+        public void UnregisterProducer(IBudgetedInstance instance) => DekafMemoryBudget.UnregisterProducer(instance);
+
+        public void RegisterConsumer(IBudgetedInstance instance) => DekafMemoryBudget.RegisterConsumer(instance);
+
+        public void UnregisterConsumer(IBudgetedInstance instance) => DekafMemoryBudget.UnregisterConsumer(instance);
+
+        public void ReserveExplicit(ulong bytes) => DekafMemoryBudget.ReserveExplicit(bytes);
+
+        public void ReleaseExplicit(ulong bytes) => DekafMemoryBudget.ReleaseExplicit(bytes);
     }
 }

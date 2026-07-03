@@ -20,6 +20,15 @@ await using var producer = await Kafka.CreateProducer<string, string>()
 
 The type parameters `<TKey, TValue>` define the types for message keys and values. Dekaf includes built-in serializers for common types.
 
+If the producer is part of an app that also creates consumers or admin clients for the same cluster, use a root client so those clients share one connection pool and memory budget:
+
+```csharp
+await using var kafka = Kafka.Connect("localhost:9092");
+
+await using var producer = await kafka.CreateProducer<string, string>()
+    .BuildAsync();
+```
+
 ## Sending Messages
 
 ### With Acknowledgment (Recommended)
