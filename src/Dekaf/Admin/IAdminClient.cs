@@ -192,6 +192,54 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates a delegation token.
+    /// </summary>
+    /// <param name="owner">The token owner, or null to use the authenticated principal.</param>
+    /// <param name="renewers">Principals allowed to renew the token before it expires.</param>
+    /// <param name="maxLifetime">The maximum token lifetime, or null to use the broker default.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The created delegation token.</returns>
+    ValueTask<DelegationToken> CreateDelegationTokenAsync(
+        DelegationTokenPrincipal? owner = null,
+        IEnumerable<DelegationTokenPrincipal>? renewers = null,
+        TimeSpan? maxLifetime = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renews a delegation token.
+    /// </summary>
+    /// <param name="hmac">The token HMAC returned by CreateDelegationToken or DescribeDelegationTokens.</param>
+    /// <param name="renewPeriod">The renewal period, or null to use the broker default.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The new token expiry timestamp.</returns>
+    ValueTask<DateTimeOffset> RenewDelegationTokenAsync(
+        byte[] hmac,
+        TimeSpan? renewPeriod = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Expires a delegation token.
+    /// </summary>
+    /// <param name="hmac">The token HMAC returned by CreateDelegationToken or DescribeDelegationTokens.</param>
+    /// <param name="expiryTimePeriod">The expiry time period, or null to use the broker default.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The token expiry timestamp.</returns>
+    ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
+        byte[] hmac,
+        TimeSpan? expiryTimePeriod = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes delegation tokens.
+    /// </summary>
+    /// <param name="owners">Owner filters, or null to describe all tokens visible to this principal.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The matching delegation tokens.</returns>
+    ValueTask<IReadOnlyList<DelegationToken>> DescribeDelegationTokensAsync(
+        IEnumerable<DelegationTokenPrincipal>? owners = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes configurations for the specified resources.
     /// </summary>
     /// <param name="resources">The resources to describe configurations for.</param>

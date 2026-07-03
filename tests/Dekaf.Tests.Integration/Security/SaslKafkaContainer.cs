@@ -58,7 +58,10 @@ public class SaslKafkaContainer : KafkaTestContainer
         .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SCRAM___SHA___256_SASL_JAAS_CONFIG",
             "org.apache.kafka.common.security.scram.ScramLoginModule required;")
         .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SCRAM___SHA___512_SASL_JAAS_CONFIG",
-            "org.apache.kafka.common.security.scram.ScramLoginModule required;");
+            "org.apache.kafka.common.security.scram.ScramLoginModule required;")
+        .WithEnvironment("KAFKA_DELEGATION_TOKEN_SECRET_KEY", "dekaf-integration-delegation-token-secret")
+        .WithEnvironment("KAFKA_DELEGATION_TOKEN_EXPIRY_TIME_MS", "3600000")
+        .WithEnvironment("KAFKA_DELEGATION_TOKEN_MAX_LIFETIME_MS", "7200000");
 
     /// <summary>
     /// Creates an admin client with SASL/PLAIN authentication.

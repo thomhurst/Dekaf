@@ -117,6 +117,11 @@ public sealed class ShareConsumerOptions
     public string? SaslPassword { get; init; }
 
     /// <summary>
+    /// Whether SCRAM authentication uses Kafka delegation token credentials.
+    /// </summary>
+    public bool SaslScramTokenAuth { get; init; }
+
+    /// <summary>
     /// GSSAPI (Kerberos) configuration.
     /// </summary>
     public GssapiConfig? GssapiConfig { get; init; }

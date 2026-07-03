@@ -10,57 +10,67 @@ public sealed class AwsMskIamBuilderTests
     public async Task Producer_WithAwsMskIam_SetsMechanismAndConfig()
     {
         var config = CreateConfig();
-        var builder = Kafka.CreateProducer<string, string>();
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithSaslScramSha256DelegationToken("token-id", "token-hmac");
 
         var result = builder.WithAwsMskIam(config);
 
         await Assert.That(result).IsSameReferenceAs(builder);
         await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.AwsMskIam);
         await Assert.That(GetAwsMskIamConfig(builder)).IsSameReferenceAs(config);
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsFalse();
     }
 
     [Test]
     public async Task Consumer_WithAwsMskIam_ReturnsSameBuilder()
     {
-        var builder = Kafka.CreateConsumer<string, string>();
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithSaslScramSha256DelegationToken("token-id", "token-hmac");
 
         var result = builder.WithAwsMskIam(CreateConfig());
 
         await Assert.That(result).IsSameReferenceAs(builder);
         await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.AwsMskIam);
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsFalse();
     }
 
     [Test]
     public async Task ShareConsumer_WithAwsMskIam_ReturnsSameBuilder()
     {
-        var builder = Kafka.CreateShareConsumer<string, string>();
+        var builder = Kafka.CreateShareConsumer<string, string>()
+            .WithSaslScram256DelegationToken("token-id", "token-hmac");
 
         var result = builder.WithAwsMskIam(CreateConfig());
 
         await Assert.That(result).IsSameReferenceAs(builder);
         await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.AwsMskIam);
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsFalse();
     }
 
     [Test]
     public async Task AdminClient_WithAwsMskIam_ReturnsSameBuilder()
     {
-        var builder = Kafka.CreateAdminClient();
+        var builder = Kafka.CreateAdminClient()
+            .WithSaslScramSha256DelegationToken("token-id", "token-hmac");
 
         var result = builder.WithAwsMskIam(CreateConfig());
 
         await Assert.That(result).IsSameReferenceAs(builder);
         await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.AwsMskIam);
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsFalse();
     }
 
     [Test]
     public async Task KafkaClient_WithAwsMskIam_ReturnsSameBuilder()
     {
-        var builder = Kafka.Connect();
+        var builder = Kafka.Connect()
+            .WithSaslScramSha256DelegationToken("token-id", "token-hmac");
 
         var result = builder.WithAwsMskIam(CreateConfig());
 
         await Assert.That(result).IsSameReferenceAs(builder);
         await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.AwsMskIam);
+        await Assert.That(GetSaslScramTokenAuth(builder)).IsFalse();
     }
 
     [Test]
@@ -105,6 +115,9 @@ public sealed class AwsMskIamBuilderTests
 
     private static AwsMskIamConfig? GetAwsMskIamConfig(object builder)
         => GetField<AwsMskIamConfig?>(builder, "_awsMskIamConfig");
+
+    private static bool GetSaslScramTokenAuth(object builder)
+        => GetField<bool>(builder, "_saslScramTokenAuth");
 
     private static T GetField<T>(object instance, string name)
     {

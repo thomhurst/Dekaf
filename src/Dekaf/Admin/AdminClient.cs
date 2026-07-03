@@ -52,6 +52,7 @@ public sealed class AdminClient : IAdminClient
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                SaslScramTokenAuth = options.SaslScramTokenAuth,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
@@ -1914,6 +1915,230 @@ public sealed class AdminClient : IAdminClient
         return await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<DelegationToken> CreateDelegationTokenAsync(
+        DelegationTokenPrincipal? owner = null,
+        IEnumerable<DelegationTokenPrincipal>? renewers = null,
+        TimeSpan? maxLifetime = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var renewerList = renewers?.ToList();
+        var protocolRenewers = renewerList?.Select(ToProtocolPrincipal).ToList();
+        var ownerPrincipal = owner is { } value ? ToProtocolPrincipal(value) : null;
+        var maxLifetimeMs = ToKafkaMilliseconds(maxLifetime, nameof(maxLifetime));
+
+        return await WithRetryAsync<DelegationToken>(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var request = new CreateDelegationTokenRequest
+            {
+                Owner = ownerPrincipal,
+                Renewers = protocolRenewers,
+                MaxLifetimeMs = maxLifetimeMs
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.CreateDelegationToken,
+                CreateDelegationTokenRequest.LowestSupportedVersion,
+                CreateDelegationTokenRequest.HighestSupportedVersion);
+
+            if (ownerPrincipal is not null && apiVersion < 3)
+            {
+                throw new NotSupportedException("CreateDelegationToken owner override requires CreateDelegationToken API v3 or later.");
+            }
+
+            var response = await controller.SendAsync<CreateDelegationTokenRequest, CreateDelegationTokenResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(response.ErrorCode, $"CreateDelegationToken failed: {response.ErrorCode}");
+            }
+
+            return MapDelegationToken(response, renewerList);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<DateTimeOffset> RenewDelegationTokenAsync(
+        byte[] hmac,
+        TimeSpan? renewPeriod = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hmac);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var renewPeriodMs = ToKafkaMilliseconds(renewPeriod, nameof(renewPeriod));
+
+        return await WithRetryAsync<DateTimeOffset>(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var request = new RenewDelegationTokenRequest
+            {
+                Hmac = hmac,
+                RenewPeriodMs = renewPeriodMs
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.RenewDelegationToken,
+                RenewDelegationTokenRequest.LowestSupportedVersion,
+                RenewDelegationTokenRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<RenewDelegationTokenRequest, RenewDelegationTokenResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(response.ErrorCode, $"RenewDelegationToken failed: {response.ErrorCode}");
+            }
+
+            return FromUnixTimeMilliseconds(response.ExpiryTimestampMs);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
+        byte[] hmac,
+        TimeSpan? expiryTimePeriod = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hmac);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var expiryTimePeriodMs = ToKafkaMilliseconds(expiryTimePeriod, nameof(expiryTimePeriod));
+
+        return await WithRetryAsync<DateTimeOffset>(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var request = new ExpireDelegationTokenRequest
+            {
+                Hmac = hmac,
+                ExpiryTimePeriodMs = expiryTimePeriodMs
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ExpireDelegationToken,
+                ExpireDelegationTokenRequest.LowestSupportedVersion,
+                ExpireDelegationTokenRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<ExpireDelegationTokenRequest, ExpireDelegationTokenResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(response.ErrorCode, $"ExpireDelegationToken failed: {response.ErrorCode}");
+            }
+
+            return FromUnixTimeMilliseconds(response.ExpiryTimestampMs);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<DelegationToken>> DescribeDelegationTokensAsync(
+        IEnumerable<DelegationTokenPrincipal>? owners = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var ownerList = owners?.Select(ToProtocolPrincipal).ToList();
+
+        return await WithRetryAsync<IReadOnlyList<DelegationToken>>(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var request = new DescribeDelegationTokenRequest
+            {
+                Owners = ownerList
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeDelegationToken,
+                DescribeDelegationTokenRequest.LowestSupportedVersion,
+                DescribeDelegationTokenRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<DescribeDelegationTokenRequest, DescribeDelegationTokenResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(response.ErrorCode, $"DescribeDelegationTokens failed: {response.ErrorCode}");
+            }
+
+            return response.Tokens.Select(MapDelegationToken).ToList();
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static long ToKafkaMilliseconds(TimeSpan? value, string parameterName)
+    {
+        if (value is null)
+        {
+            return -1;
+        }
+
+        if (value.Value < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "Duration cannot be negative.");
+        }
+
+        return checked((long)value.Value.TotalMilliseconds);
+    }
+
+    private static DelegationTokenPrincipalData ToProtocolPrincipal(DelegationTokenPrincipal principal) => new()
+    {
+        PrincipalType = principal.PrincipalType,
+        PrincipalName = principal.PrincipalName
+    };
+
+    private static DelegationToken MapDelegationToken(
+        CreateDelegationTokenResponse response,
+        IReadOnlyList<DelegationTokenPrincipal>? renewers)
+    {
+        var requester = response.TokenRequesterPrincipalType is not null && response.TokenRequesterPrincipalName is not null
+            ? new DelegationTokenPrincipal(response.TokenRequesterPrincipalType, response.TokenRequesterPrincipalName)
+            : (DelegationTokenPrincipal?)null;
+
+        return new DelegationToken
+        {
+            Owner = new DelegationTokenPrincipal(response.PrincipalType, response.PrincipalName),
+            TokenRequester = requester,
+            IssueTimestamp = FromUnixTimeMilliseconds(response.IssueTimestampMs),
+            ExpiryTimestamp = FromUnixTimeMilliseconds(response.ExpiryTimestampMs),
+            MaxTimestamp = FromUnixTimeMilliseconds(response.MaxTimestampMs),
+            TokenId = response.TokenId,
+            Hmac = response.Hmac,
+            Renewers = renewers ?? []
+        };
+    }
+
+    private static DelegationToken MapDelegationToken(DescribedDelegationTokenData token)
+    {
+        var requester = token.TokenRequesterPrincipalType is not null && token.TokenRequesterPrincipalName is not null
+            ? new DelegationTokenPrincipal(token.TokenRequesterPrincipalType, token.TokenRequesterPrincipalName)
+            : (DelegationTokenPrincipal?)null;
+
+        return new DelegationToken
+        {
+            Owner = new DelegationTokenPrincipal(token.PrincipalType, token.PrincipalName),
+            TokenRequester = requester,
+            IssueTimestamp = FromUnixTimeMilliseconds(token.IssueTimestampMs),
+            ExpiryTimestamp = FromUnixTimeMilliseconds(token.ExpiryTimestampMs),
+            MaxTimestamp = FromUnixTimeMilliseconds(token.MaxTimestampMs),
+            TokenId = token.TokenId,
+            Hmac = token.Hmac,
+            Renewers = token.Renewers
+                .Select(r => new DelegationTokenPrincipal(r.PrincipalType, r.PrincipalName))
+                .ToList()
+        };
+    }
+
+    private static DateTimeOffset FromUnixTimeMilliseconds(long milliseconds)
+        => DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
+
     private static byte[] ComputeSaltedPassword(string password, byte[] salt, int iterations, ScramMechanism mechanism)
     {
         var hashAlgorithm = mechanism == ScramMechanism.ScramSha256
@@ -3457,6 +3682,7 @@ public sealed class AdminClientOptions
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
+    public bool SaslScramTokenAuth { get; init; }
 
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when <see cref="SaslMechanism"/> is
@@ -3526,6 +3752,7 @@ public sealed class AdminClientBuilder
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -3630,6 +3857,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3639,6 +3867,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3648,6 +3877,27 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslScramSha256DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslScramSha512DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
         return this;
     }
 
@@ -3660,6 +3910,7 @@ public sealed class AdminClientBuilder
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3673,6 +3924,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3688,6 +3940,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3713,6 +3966,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3725,6 +3979,7 @@ public sealed class AdminClientBuilder
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -3867,7 +4122,8 @@ public sealed class AdminClientBuilder
         string? password,
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
-        AwsMskIamConfig? awsMskIamConfig = null)
+        AwsMskIamConfig? awsMskIamConfig = null,
+        bool saslScramTokenAuth = false)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
@@ -3875,6 +4131,7 @@ public sealed class AdminClientBuilder
         _saslPassword = password;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
+        _saslScramTokenAuth = saslScramTokenAuth;
         _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
@@ -3901,6 +4158,7 @@ public sealed class AdminClientBuilder
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,

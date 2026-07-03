@@ -48,6 +48,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -408,6 +409,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -417,6 +419,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -426,6 +429,27 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslScramSha256DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslScramSha512DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
         return this;
     }
 
@@ -439,6 +463,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -452,6 +477,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -467,6 +493,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -492,6 +519,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -504,6 +532,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -853,7 +882,8 @@ public sealed class ProducerBuilder<TKey, TValue>
         string? password,
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
-        AwsMskIamConfig? awsMskIamConfig = null)
+        AwsMskIamConfig? awsMskIamConfig = null,
+        bool saslScramTokenAuth = false)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
@@ -861,6 +891,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslPassword = password;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
+        _saslScramTokenAuth = saslScramTokenAuth;
         _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
@@ -990,6 +1021,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
@@ -1132,6 +1164,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -1532,6 +1565,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1541,6 +1575,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1550,6 +1585,27 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslScramSha256DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslScramSha512DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
         return this;
     }
 
@@ -1563,6 +1619,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1576,6 +1633,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1591,6 +1649,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1616,6 +1675,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -1628,6 +1688,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2045,7 +2106,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         string? password,
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
-        AwsMskIamConfig? awsMskIamConfig = null)
+        AwsMskIamConfig? awsMskIamConfig = null,
+        bool saslScramTokenAuth = false)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
@@ -2053,6 +2115,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslPassword = password;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
+        _saslScramTokenAuth = saslScramTokenAuth;
         _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
@@ -2143,6 +2206,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
@@ -2271,6 +2335,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -2443,6 +2508,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2452,6 +2518,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2461,6 +2528,27 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScram256DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScram512DelegationToken(string tokenId, string tokenHmac)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
         return this;
     }
 
@@ -2469,6 +2557,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2477,6 +2566,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2488,6 +2578,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2504,6 +2595,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = provider;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2516,6 +2608,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -2642,6 +2735,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,

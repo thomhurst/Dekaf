@@ -147,6 +147,32 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DelegationTokens_RoundTripAndFilterByOwner()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var owner = new DelegationTokenPrincipal("User", "owner");
+        var renewer = new DelegationTokenPrincipal("User", "renewer");
+
+        var token = await admin.CreateDelegationTokenAsync(
+            owner,
+            [renewer],
+            TimeSpan.FromMinutes(30));
+        var described = await admin.DescribeDelegationTokensAsync([owner]);
+        var filtered = await admin.DescribeDelegationTokensAsync([new DelegationTokenPrincipal("User", "other")]);
+        var renewed = await admin.RenewDelegationTokenAsync(token.Hmac, TimeSpan.FromMinutes(5));
+        var expired = await admin.ExpireDelegationTokenAsync(token.Hmac, TimeSpan.Zero);
+        var afterExpire = await admin.DescribeDelegationTokensAsync();
+
+        await Assert.That(described.Count).IsEqualTo(1);
+        await Assert.That(described[0].TokenId).IsEqualTo(token.TokenId);
+        await Assert.That(described[0].Renewers.Single()).IsEqualTo(renewer);
+        await Assert.That(filtered).IsEmpty();
+        await Assert.That(renewed <= token.MaxTimestamp).IsTrue();
+        await Assert.That(afterExpire.Single().ExpiryTimestamp).IsEqualTo(expired);
+    }
+
+    [Test]
     public async Task Consumer_SubscribePattern_AssignsMatchingInMemoryTopics()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -241,6 +267,20 @@ public sealed class InMemoryKafkaClusterTests
 
         await producer.PurgeAsync(PurgeOptions.None);
         await producer.PurgeAsync(PurgeOptions.All);
+    }
+
+    [Test]
+    public async Task Producer_PurgeAsync_IsNoOpForAlreadyAppendedRecords()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await producer.ProduceAsync("purge", "k", "v");
+        await producer.PurgeAsync(PurgeOptions.All);
+
+        await Assert.That(cluster.ReadRecords("purge").Count).IsEqualTo(1);
+        await producer.PurgeAsync((PurgeOptions)8);
+        await Assert.That(cluster.ReadRecords("purge").Count).IsEqualTo(1);
     }
 
     [Test]

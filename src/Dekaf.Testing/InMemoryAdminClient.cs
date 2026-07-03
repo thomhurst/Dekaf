@@ -10,8 +10,12 @@ namespace Dekaf.Testing;
 /// </summary>
 public sealed class InMemoryAdminClient : IAdminClient
 {
+    private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
+
     private readonly InMemoryKafkaCluster _cluster;
     private readonly Dictionary<ClientQuotaEntity, Dictionary<string, double>> _clientQuotas = new();
+    private readonly object _delegationTokenGate = new();
+    private readonly Dictionary<string, DelegationToken> _delegationTokens = new(StringComparer.Ordinal);
     private bool _disposed;
 
     public InMemoryAdminClient(InMemoryKafkaCluster cluster)
@@ -299,6 +303,95 @@ public sealed class InMemoryAdminClient : IAdminClient
         ThrowIfDisposed();
         _ = alterations.Count();
         return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<DelegationToken> CreateDelegationTokenAsync(
+        DelegationTokenPrincipal? owner = null,
+        IEnumerable<DelegationTokenPrincipal>? renewers = null,
+        TimeSpan? maxLifetime = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var lifetime = ValidateDelegationTokenDuration(
+            maxLifetime,
+            nameof(maxLifetime),
+            DefaultDelegationTokenLifetime);
+        var now = DateTimeOffset.UtcNow;
+        var maxTimestamp = now + lifetime;
+        var hmac = Guid.NewGuid().ToByteArray();
+        var token = new DelegationToken
+        {
+            Owner = owner ?? new DelegationTokenPrincipal("User", "in-memory"),
+            TokenRequester = new DelegationTokenPrincipal("User", "in-memory"),
+            IssueTimestamp = now,
+            ExpiryTimestamp = maxTimestamp,
+            MaxTimestamp = maxTimestamp,
+            TokenId = Guid.NewGuid().ToString("N"),
+            Hmac = hmac,
+            Renewers = renewers?.ToArray() ?? []
+        };
+
+        lock (_delegationTokenGate)
+            _delegationTokens[DelegationTokenKey(hmac)] = CloneDelegationToken(token);
+
+        return ValueTask.FromResult(token);
+    }
+
+    public ValueTask<DateTimeOffset> RenewDelegationTokenAsync(
+        byte[] hmac,
+        TimeSpan? renewPeriod = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hmac);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var period = ValidateDelegationTokenDuration(
+            renewPeriod,
+            nameof(renewPeriod),
+            DefaultDelegationTokenLifetime);
+        var key = DelegationTokenKey(hmac);
+
+        return ValueTask.FromResult(UpdateDelegationTokenExpiry(key, period));
+    }
+
+    public ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
+        byte[] hmac,
+        TimeSpan? expiryTimePeriod = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hmac);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var period = ValidateDelegationTokenDuration(
+            expiryTimePeriod,
+            nameof(expiryTimePeriod),
+            TimeSpan.Zero);
+        var key = DelegationTokenKey(hmac);
+
+        return ValueTask.FromResult(UpdateDelegationTokenExpiry(key, period));
+    }
+
+    public ValueTask<IReadOnlyList<DelegationToken>> DescribeDelegationTokensAsync(
+        IEnumerable<DelegationTokenPrincipal>? owners = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var ownerFilter = owners?.ToHashSet();
+        lock (_delegationTokenGate)
+        {
+            IReadOnlyList<DelegationToken> tokens = _delegationTokens.Values
+                .Where(token => ownerFilter is null || ownerFilter.Contains(token.Owner))
+                .Select(token => CloneDelegationToken(token))
+                .ToArray();
+
+            return ValueTask.FromResult(tokens);
+        }
     }
 
     public ValueTask<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>> DescribeConfigsAsync(
@@ -811,5 +904,54 @@ public sealed class InMemoryAdminClient : IAdminClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topicPartition.Topic);
         ArgumentOutOfRangeException.ThrowIfNegative(topicPartition.Partition);
+    }
+
+    private static TimeSpan ValidateDelegationTokenDuration(
+        TimeSpan? value,
+        string parameterName,
+        TimeSpan defaultValue)
+    {
+        if (value is null)
+            return defaultValue;
+
+        if (value.Value < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(parameterName, "Duration cannot be negative.");
+
+        return value.Value;
+    }
+
+    private DateTimeOffset UpdateDelegationTokenExpiry(string key, TimeSpan period)
+    {
+        lock (_delegationTokenGate)
+        {
+            if (!_delegationTokens.TryGetValue(key, out var token))
+                throw new InvalidOperationException("Delegation token was not found.");
+
+            var expiry = DateTimeOffset.UtcNow + period;
+            if (expiry > token.MaxTimestamp)
+                expiry = token.MaxTimestamp;
+
+            _delegationTokens[key] = CloneDelegationToken(token, expiry);
+            return expiry;
+        }
+    }
+
+    private static string DelegationTokenKey(byte[] hmac) => Convert.ToBase64String(hmac);
+
+    private static DelegationToken CloneDelegationToken(
+        DelegationToken token,
+        DateTimeOffset? expiryTimestamp = null)
+    {
+        return new DelegationToken
+        {
+            Owner = token.Owner,
+            TokenRequester = token.TokenRequester,
+            IssueTimestamp = token.IssueTimestamp,
+            ExpiryTimestamp = expiryTimestamp ?? token.ExpiryTimestamp,
+            MaxTimestamp = token.MaxTimestamp,
+            TokenId = token.TokenId,
+            Hmac = token.Hmac.ToArray(),
+            Renewers = token.Renewers.ToArray()
+        };
     }
 }

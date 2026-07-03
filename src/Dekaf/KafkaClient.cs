@@ -87,6 +87,7 @@ public sealed class KafkaClientBuilder
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -178,6 +179,7 @@ public sealed class KafkaClientBuilder
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -186,6 +188,7 @@ public sealed class KafkaClientBuilder
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -194,6 +197,25 @@ public sealed class KafkaClientBuilder
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public KafkaClientBuilder WithSaslScramSha256DelegationToken(string tokenId, string tokenHmac)
+    {
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
+        return this;
+    }
+
+    public KafkaClientBuilder WithSaslScramSha512DelegationToken(string tokenId, string tokenHmac)
+    {
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = tokenId;
+        _saslPassword = tokenHmac;
+        _saslScramTokenAuth = true;
         return this;
     }
 
@@ -201,6 +223,7 @@ public sealed class KafkaClientBuilder
     {
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -209,6 +232,7 @@ public sealed class KafkaClientBuilder
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -219,6 +243,7 @@ public sealed class KafkaClientBuilder
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
         _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -235,6 +260,7 @@ public sealed class KafkaClientBuilder
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -246,6 +272,7 @@ public sealed class KafkaClientBuilder
     {
         _saslMechanism = SaslMechanism.AwsMskIam;
         _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        _saslScramTokenAuth = false;
         return this;
     }
 
@@ -364,6 +391,7 @@ public sealed class KafkaClientBuilder
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
@@ -397,6 +425,7 @@ internal sealed class KafkaClientOptions
     public SaslMechanism SaslMechanism { get; init; }
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
+    public bool SaslScramTokenAuth { get; init; }
     public GssapiConfig? GssapiConfig { get; init; }
     public OAuthBearerConfig? OAuthBearerConfig { get; init; }
     public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
@@ -469,6 +498,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                SaslScramTokenAuth = options.SaslScramTokenAuth,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
