@@ -1427,6 +1427,26 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return _accumulator.FlushAsync(cancellationToken);
     }
 
+    public ValueTask PurgeAsync(PurgeOptions options, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        ThrowIfNotInitialized();
+
+        if ((options & PurgeOptions.All) == PurgeOptions.None)
+            return ValueTask.CompletedTask;
+
+        var exception = new ProduceException(
+            ProduceErrorKind.Purged,
+            "Produce operation was purged before delivery completed.");
+
+        _accumulator.Purge(options, exception, CompleteInflightEntry);
+        return ValueTask.CompletedTask;
+    }
+
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {

@@ -228,6 +228,22 @@ public sealed class ProduceException : KafkaException
     {
     }
 
+    public ProduceException(ProduceErrorKind kind, string message) : base(message)
+    {
+        Kind = kind;
+    }
+
+    public ProduceException(ProduceErrorKind kind, string message, Exception innerException)
+        : base(message, innerException)
+    {
+        Kind = kind;
+    }
+
+    /// <summary>
+    /// The local producer failure kind, when the failure was not represented by a Kafka protocol error code.
+    /// </summary>
+    public ProduceErrorKind Kind { get; init; }
+
     /// <summary>
     /// The topic the produce was for.
     /// </summary>
@@ -237,6 +253,22 @@ public sealed class ProduceException : KafkaException
     /// The partition the produce was for.
     /// </summary>
     public int? Partition { get; init; }
+}
+
+/// <summary>
+/// Identifies local producer failure kinds that do not have Kafka protocol error codes.
+/// </summary>
+public enum ProduceErrorKind
+{
+    /// <summary>
+    /// No local failure kind was specified.
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// The produce was failed because the application purged it.
+    /// </summary>
+    Purged
 }
 
 /// <summary>
