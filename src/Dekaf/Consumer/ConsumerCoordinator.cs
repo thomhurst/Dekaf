@@ -129,6 +129,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        if (_state == CoordinatorState.Stable && SubscriptionMatches(topics, subscribedTopicRegex))
+            return;
+
         await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken).ConfigureAwait(false);
     }
 
@@ -163,13 +166,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return true;
     }
 
+    private bool SubscriptionMatches(IReadOnlySet<string> topics, string? subscribedTopicRegex)
+        => string.Equals(_subscribedTopicRegex, subscribedTopicRegex, StringComparison.Ordinal) &&
+           SetEquals(_subscribedTopics, topics);
+
     private void UpdateSubscription(IReadOnlySet<string> topics, string? subscribedTopicRegex)
     {
-        if (string.Equals(_subscribedTopicRegex, subscribedTopicRegex, StringComparison.Ordinal) &&
-            SetEquals(_subscribedTopics, topics))
-        {
+        if (SubscriptionMatches(topics, subscribedTopicRegex))
             return;
-        }
 
         _subscribedTopics = topics;
         _subscribedTopicRegex = subscribedTopicRegex;

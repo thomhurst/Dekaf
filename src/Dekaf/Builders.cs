@@ -2085,6 +2085,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
 
+        if (_topicPatternToSubscribe is not null && string.IsNullOrWhiteSpace(_groupId))
+            throw new InvalidOperationException("SubscribeToPattern requires WithGroupId(...) to be called before Build().");
+
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
 

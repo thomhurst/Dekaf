@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -151,6 +152,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     {
         SetupFindCoordinator();
         SetupConsumerGroupHeartbeat(memberId, memberEpoch, assignment: assignment);
+    }
+
+    private static async ValueTask InvokeSteadyConsumerGroupHeartbeatAsync(ConsumerCoordinator coordinator)
+    {
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "SendConsumerGroupHeartbeatAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var result = method!.Invoke(coordinator, [false, CancellationToken.None])!;
+        var task = (Task)result.GetType().GetMethod("AsTask")!.Invoke(result, null)!;
+        await task;
     }
 
     private static ConsumerGroupHeartbeatAssignment CreateAssignment(
@@ -370,6 +382,51 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             Arg.Any<ConsumerGroupHeartbeatRequest>(),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_WhenStableAndTopicsChange_NextHeartbeatSendsUpdatedTopics()
+    {
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                requests.Add(request);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = request.MemberId.Length == 0 ? "member-1" : request.MemberId,
+                    MemberEpoch = request.MemberEpoch == 0 ? 1 : request.MemberEpoch,
+                    HeartbeatIntervalMs = 60000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        requests.Clear();
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "orders" },
+            CancellationToken.None);
+
+        await Assert.That(requests).IsEmpty();
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(requests).Count().IsEqualTo(1);
+        await Assert.That(requests[0].SubscribedTopicNames).IsNotNull();
+        await Assert.That(requests[0].SubscribedTopicNames!).Contains("test-topic");
+        await Assert.That(requests[0].SubscribedTopicNames!).Contains("orders");
+        await Assert.That(requests[0].SubscribedTopicRegex).IsNull();
     }
 
     [Test]
