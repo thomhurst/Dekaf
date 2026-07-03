@@ -269,6 +269,28 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_Timeout_ReturnsFalseAndClearsWaiterState()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var timedOut = await buffer.WaitToReadAsync(25, cts.Token).AsTask().WaitAsync(cts.Token);
+
+        await Assert.That(timedOut).IsFalse();
+        await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
+        await Assert.That(GetDataAvailableWaiter(buffer)).IsNull();
+
+        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        buffer.Complete();
+
+        await Assert.That(await waitTask.WaitAsync(cts.Token)).IsFalse();
+        await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
+        await Assert.That(GetDataAvailableWaiter(buffer)).IsNull();
+    }
+
+    [Test]
     public async Task WaitToReadAsync_DataArrivesAfterWait_ReturnsTrue()
     {
         var buffer = new MpscFetchBuffer(4);
@@ -510,5 +532,21 @@ public class MpscFetchBufferTests
             BindingFlags.NonPublic | BindingFlags.Instance)!;
         var semaphore = (SemaphoreSlim)field.GetValue(buffer)!;
         return semaphore.CurrentCount;
+    }
+
+    private static int GetConsumerWaiting(MpscFetchBuffer buffer)
+    {
+        var field = typeof(MpscFetchBuffer).GetField(
+            "_consumerWaiting",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        return (int)field.GetValue(buffer)!;
+    }
+
+    private static TaskCompletionSource<bool>? GetDataAvailableWaiter(MpscFetchBuffer buffer)
+    {
+        var field = typeof(MpscFetchBuffer).GetField(
+            "_dataAvailableWaiter",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        return (TaskCompletionSource<bool>?)field.GetValue(buffer);
     }
 }
