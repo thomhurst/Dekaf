@@ -6,7 +6,7 @@ sidebar_position: 14
 
 Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.
 
-**Last Updated:** 2026-07-03 20:28 UTC
+**Last Updated:** 2026-07-03 20:58 UTC
 
 :::info
 These tests run weekly (Sunday 2 AM UTC) and can be manually triggered. 
@@ -19,8 +19,13 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 |--------|--------------|--------|----------------|--------|------------|------------|
 | Dekaf (3conn) | 1,527,361 | 1456.60 | 1,527,361 | 0 | 0.92 | 1.40 |
 | Dekaf | 1,373,405 | 1309.78 | 1,373,405 | 0 | 0.91 | 1.25 |
+| Confluent | 1,148,284 | 1095.09 | 1,148,284 | 0 | 1.46 | 1.67 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
+
+:::tip
+**Dekaf is 1.20x faster** than Confluent.Kafka for producer (fire-and-forget) throughput!
+:::
 
 ## Producer (Fire-and-Forget), 3 Brokers Throughput (15 minutes, 1000B messages)
 
@@ -54,8 +59,13 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
 | Dekaf | 1,066,122 | 1016.73 | 1,066,122 | 0 | 1.05 | 1.12 |
+| Confluent | 758,594 | 723.45 | 758,594 | 0 | 2.05 | 1.55 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
+
+:::tip
+**Dekaf is 1.41x faster** than Confluent.Kafka for producer (producer-acks-all), 3 brokers throughput!
+:::
 
 ## Producer (Fire-and-Forget, Idempotent) Throughput (15 minutes, 1000B messages)
 
@@ -101,8 +111,10 @@ Dekaf and Confluent.Kafka have similar producer (fire-and-forget, idempotent) pe
 | Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |
 |--------|----------|------|------|------|-----------------|
 | Confluent | Consumer | 44589 | 0 | 0 | 213.85 GB |
+| Confluent | Producer (Fire-and-Forget) | 263590 | 1 | 1 | 1240.19 GB |
 | Confluent | Producer (Fire-and-Forget), 3 Brokers | 196618 | 0 | 0 | 920.65 GB |
 | Confluent | producer-acks-all | 208335 | 1 | 1 | 1003.56 GB |
+| Confluent | producer-acks-all, 3 Brokers | 172974 | 1 | 0 | 819.32 GB |
 | Confluent | Producer (Fire-and-Forget, Idempotent) | 319429 | 1 | 1 | 1511.49 GB |
 | Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 175970 | 2 | 2 | 822.91 GB |
 | Dekaf | Consumer | 81248 | 48075 | 2350 | 4026.25 GB |
