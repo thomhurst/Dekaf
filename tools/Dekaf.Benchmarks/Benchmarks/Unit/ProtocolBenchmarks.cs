@@ -1,5 +1,6 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
+using Dekaf.Compression;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 
@@ -142,23 +143,35 @@ public class ProtocolBenchmarks
     [Benchmark(Description = "Write RecordBatch (10 records)")]
     public void WriteRecordBatch()
     {
-        var batch = new RecordBatch
-        {
-            BaseOffset = 0,
-            BaseTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            MaxTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            LastOffsetDelta = 9,
-            Records = Enumerable.Range(0, 10).Select(i => new Record
-            {
-                TimestampDelta = i,
-                OffsetDelta = i,
-                Key = System.Text.Encoding.UTF8.GetBytes($"key-{i}"),
-                Value = System.Text.Encoding.UTF8.GetBytes($"value-{i}")
-            }).ToList()
-        };
+        var batch = CreateTenRecordBatch();
 
         batch.Write(_buffer);
     }
+
+    [Benchmark(Description = "Write RecordBatch pre-serialized (10 records)")]
+    public void WriteRecordBatchPreSerialized()
+    {
+        var batch = CreateTenRecordBatch();
+
+        batch.PreCompress(CompressionType.None, null);
+        batch.Write(_buffer);
+        batch.ReturnPreCompressedBuffer();
+    }
+
+    private static RecordBatch CreateTenRecordBatch() => new()
+    {
+        BaseOffset = 0,
+        BaseTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        MaxTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        LastOffsetDelta = 9,
+        Records = Enumerable.Range(0, 10).Select(i => new Record
+        {
+            TimestampDelta = i,
+            OffsetDelta = i,
+            Key = System.Text.Encoding.UTF8.GetBytes($"key-{i}"),
+            Value = System.Text.Encoding.UTF8.GetBytes($"value-{i}")
+        }).ToList()
+    };
 
     [Benchmark(Description = "Read RecordBatch (10 records)")]
     public RecordBatch ReadRecordBatch()

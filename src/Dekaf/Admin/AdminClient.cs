@@ -136,8 +136,18 @@ public sealed class AdminClient : IAdminClient
             }).ToList()
         }).ToList();
 
+        // Tracks whether a previous attempt may have applied the create on the broker.
+        // A retriable failure after the broker accepted the create (e.g. a response
+        // timeout, or waiting for leader election) makes the retry hit TopicAlreadyExists
+        // for a topic this call created — treat that as success instead of failing the
+        // whole operation. This is a heuristic: a topic created concurrently by another
+        // client between attempts is also reported as success. Validate-only requests
+        // never mutate cluster state, so they never arm the tolerance.
+        var createMayHaveApplied = false;
+
         await WithRetryAsync(async () =>
         {
+            var isRetryAttempt = createMayHaveApplied;
             var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
             var request = new CreateTopicsRequest
@@ -152,6 +162,7 @@ public sealed class AdminClient : IAdminClient
                 CreateTopicsRequest.LowestSupportedVersion,
                 CreateTopicsRequest.HighestSupportedVersion);
 
+            createMayHaveApplied = !opts.ValidateOnly;
             var response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
                 request,
                 apiVersion,
@@ -161,7 +172,8 @@ public sealed class AdminClient : IAdminClient
             var createdTopicNames = new List<string>(response.Topics.Count);
             foreach (var topic in response.Topics)
             {
-                if (topic.ErrorCode != Protocol.ErrorCode.None)
+                if (topic.ErrorCode != Protocol.ErrorCode.None &&
+                    !(isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.TopicAlreadyExists))
                 {
                     throw new KafkaException(topic.ErrorCode,
                         $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");

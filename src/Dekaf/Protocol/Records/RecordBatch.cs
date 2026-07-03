@@ -447,17 +447,30 @@ public sealed class RecordBatch : IDisposable
     internal bool HasPreCompressedRecords => PreCompressedRecords is not null;
 
     /// <summary>
-    /// Pre-compresses the records in this batch. Producer send paths call this before
-    /// request serialization so <see cref="Write"/> can skip re-compression.
-    /// The compressed data is stored in a pooled array and used by <see cref="Write"/>
-    /// to skip re-compression. This is a per-batch allocation (acceptable).
+    /// Pre-serializes the records in this batch, compressing when a codec is configured.
+    /// Producer send paths call this before request serialization so <see cref="Write"/>
+    /// can emit the records with a single copy + CRC instead of re-encoding every record
+    /// on the send-loop thread. The data is stored in a pooled array (a per-batch
+    /// allocation, acceptable).
     /// </summary>
-    /// <param name="compression">The compression type to apply.</param>
+    /// <param name="compression">The compression type to apply. <see cref="CompressionType.None"/>
+    /// stores the plain encoded records.</param>
     /// <param name="codecs">The codec registry to use.</param>
     internal void PreCompress(CompressionType compression, CompressionCodecRegistry? codecs)
     {
         if (compression == CompressionType.None)
+        {
+            var uncompressedRecords = Records;
+            using var encodedBuffer = new DetachableBufferWriter(
+                ProducerDataPool.BytePool, GetEncodedRecordsLength(uncompressedRecords));
+            var writer = new KafkaProtocolWriter(encodedBuffer);
+            WriteRecords(uncompressedRecords, ref writer);
+
+            PreCompressedRecords = encodedBuffer.DetachBuffer(out var encodedLength);
+            PreCompressedLength = encodedLength;
+            PreCompressedType = CompressionType.None;
             return;
+        }
 
         var cache = RentSerializationCache();
         try
