@@ -28,8 +28,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithBufferMemory(StressTestHelpers.ProducerBufferMemoryBytes)
-            .WithConnectionsPerBroker(options.ConnectionsPerBroker)
-            .WithSocketSendBufferBytes(options.BatchSize);
+            .WithConnectionsPerBroker(options.ConnectionsPerBroker);
 
         _ = options.Compression switch
         {

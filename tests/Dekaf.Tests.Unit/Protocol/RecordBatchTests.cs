@@ -534,6 +534,77 @@ public class RecordBatchTests
     }
 
     [Test]
+    public async Task PreCompress_None_PreSerializesRecords()
+    {
+        using var batch = CreateTwoRecordBatch();
+
+        batch.PreCompress(CompressionType.None, null);
+
+        await Assert.That(batch.PreCompressedRecords).IsNotNull();
+        await Assert.That(batch.PreCompressedLength).IsGreaterThan(0);
+        await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.None);
+    }
+
+    [Test]
+    public async Task PreCompress_None_WriteOutputMatchesInlineSerialization()
+    {
+        using var inlineBatch = CreateTwoRecordBatch();
+        var inlineBuffer = new ArrayBufferWriter<byte>();
+        inlineBatch.Write(inlineBuffer);
+
+        using var preSerializedBatch = CreateTwoRecordBatch();
+        preSerializedBatch.PreCompress(CompressionType.None, null);
+        var preSerializedBuffer = new ArrayBufferWriter<byte>();
+        preSerializedBatch.Write(preSerializedBuffer);
+
+        await Assert.That(preSerializedBuffer.WrittenSpan.SequenceEqual(inlineBuffer.WrittenSpan)).IsTrue();
+    }
+
+    [Test]
+    public async Task PreCompress_None_RoundTripsThroughRead()
+    {
+        using var batch = CreateTwoRecordBatch();
+        batch.PreCompress(CompressionType.None, null);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var readBatch = RecordBatch.Read(ref reader);
+
+        await Assert.That(readBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(readBatch.Records[0].Key.ToArray()).IsEquivalentTo("key-0"u8.ToArray());
+        await Assert.That(readBatch.Records[0].Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
+        await Assert.That(readBatch.Records[1].Key.ToArray()).IsEquivalentTo("key-1"u8.ToArray());
+        await Assert.That(readBatch.Records[1].Value.ToArray()).IsEquivalentTo("value-1"u8.ToArray());
+    }
+
+    private static RecordBatch CreateTwoRecordBatch() => new()
+    {
+        BaseOffset = 0,
+        BaseTimestamp = 1000,
+        MaxTimestamp = 1001,
+        LastOffsetDelta = 1,
+        Records =
+        [
+            new Record
+            {
+                OffsetDelta = 0,
+                TimestampDelta = 0,
+                Key = "key-0"u8.ToArray(),
+                Value = "value-0"u8.ToArray()
+            },
+            new Record
+            {
+                OffsetDelta = 1,
+                TimestampDelta = 1,
+                Key = "key-1"u8.ToArray(),
+                Value = "value-1"u8.ToArray()
+            }
+        ]
+    };
+
+    [Test]
     public async Task ReturnPreCompressedBuffer_CalledTwice_IsIdempotent()
     {
         var batch = new RecordBatch

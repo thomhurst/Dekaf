@@ -1167,9 +1167,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (head is null)
                 continue;
 
-            if (!head.IsCompressionReady)
-                CompressBatch(head);
-
             // Check retry backoff
             if (head.IsRetry && head.RetryNotBefore > 0)
             {
@@ -1199,6 +1196,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _readyPartitions.Enqueue(tp);
                 continue;
             }
+
+            // Pre-serialize only batches that will actually drain this cycle — batches
+            // deferred above (backoff, unknown leader) would waste the encode and hold
+            // the pooled buffer for the whole deferral window.
+            if (!head.IsPreSerialized)
+                PreSerializeBatch(head);
 
             // Sealed batches in the deque are always sendable. The linger/micro-linger
             // timer already determined readiness when it sealed the batch, so re-checking
@@ -1333,10 +1336,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (batch is null)
                     continue;
 
-                // Safety check: Ready() should have compressed the head batch before
+                // Safety check: Ready() should have pre-serialized the head batch before
                 // marking this node ready. If another path exposes an unready batch,
                 // leave it in the deque until the next notification.
-                if (!batch.IsCompressionReady)
+                if (!batch.IsPreSerialized)
                     continue;
 
                 if (batch.IsRetry && batch.RetryNotBefore > 0
@@ -2702,47 +2705,43 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Publishes a sealed batch to the sender loop. Compression, when enabled, is deferred
-    /// to <see cref="Ready"/> so the append caller only pays the queue notification cost.
+    /// Publishes a sealed batch to the sender loop. Record serialization (and compression,
+    /// when enabled) is deferred to <see cref="Ready"/> so the append caller only pays the
+    /// queue notification cost.
     /// </summary>
     private void PublishSealedBatch(ReadyBatch readyBatch, bool signalWakeup = true)
     {
-        if (_options.CompressionType == CompressionType.None)
-            readyBatch.MarkCompressionReady();
-
         _readyPartitions.Enqueue(readyBatch.TopicPartition);
         if (signalWakeup)
             SignalWakeup();
     }
 
     /// <summary>
-    /// Compresses a sealed batch (if compression is configured). Called by the sender thread
-    /// from <see cref="Ready"/>, outside the partition SpinLock, before the batch can drain.
+    /// Pre-serializes a sealed batch's records (compressing when configured). Called by the
+    /// sender thread from <see cref="Ready"/>, outside the partition SpinLock, before the
+    /// batch can drain. Doing this here keeps the per-record wire encoding off the per-broker
+    /// send-loop thread, which only has to copy + CRC the pre-serialized payload — the
+    /// coordinator encodes the next batch while the send loop writes the previous one.
     ///
     /// Thread safety: the batch is already sealed and in the deque; no other thread can
-    /// modify it. The drain loop skips batches where <see cref="ReadyBatch.IsCompressionReady"/>
+    /// modify it. The drain loop skips batches where <see cref="ReadyBatch.IsPreSerialized"/>
     /// is false, so the sender won't pick it up until we finish and set the flag.
     /// </summary>
-    private void CompressBatch(ReadyBatch readyBatch)
+    private void PreSerializeBatch(ReadyBatch readyBatch)
     {
-        if (_options.CompressionType != CompressionType.None)
+        try
         {
-            try
-            {
-                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
-            }
-            catch (Exception ex)
-            {
-                // Fail delivery tasks so callers aren't stuck waiting, then mark ready
-                // so subsequent batches in this partition aren't permanently blocked.
-                readyBatch.Fail(ex);
-                readyBatch.MarkCompressionReady();
-                return;
-            }
+            readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+        }
+        catch (Exception ex)
+        {
+            // Fail delivery tasks so callers aren't stuck waiting, then mark ready
+            // so subsequent batches in this partition aren't permanently blocked.
+            readyBatch.Fail(ex);
         }
 
-        // Mark compression complete so the drain loop can pick up this batch.
-        readyBatch.MarkCompressionReady();
+        // Mark pre-serialization complete so the drain loop can pick up this batch.
+        readyBatch.MarkPreSerialized();
     }
 
     /// <summary>
@@ -4873,24 +4872,26 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal void RewriteRecordBatch(RecordBatch newRecordBatch) => _recordBatch = newRecordBatch;
 
     /// <summary>
-    /// Whether compression has completed (or was not needed) for this batch.
-    /// Set after <see cref="RecordAccumulator.CompressBatch"/> finishes.
-    /// The drain loop skips batches where this is false to avoid sending uncompressed data.
+    /// Whether the batch's records have been pre-serialized (and compressed, when
+    /// configured). Set after <see cref="RecordAccumulator.PreSerializeBatch"/> finishes.
+    /// The drain loop skips batches where this is false so the per-broker send loop
+    /// only ever handles wire-ready payloads.
     /// Uses Volatile reads for lock-free checking from the sender thread.
     /// </summary>
-    internal bool IsCompressionReady
+    internal bool IsPreSerialized
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => Volatile.Read(ref _compressionReady) != 0;
+        get => Volatile.Read(ref _preSerialized) != 0;
     }
-    private int _compressionReady;
+    private int _preSerialized;
 
     /// <summary>
-    /// Marks compression as complete. Called by <see cref="RecordAccumulator.CompressBatch"/>
-    /// after compression finishes (or immediately if no compression is configured).
+    /// Marks pre-serialization as complete. Called by
+    /// <see cref="RecordAccumulator.PreSerializeBatch"/> after the records are encoded
+    /// (and compressed, when configured).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void MarkCompressionReady() => Volatile.Write(ref _compressionReady, 1);
+    internal void MarkPreSerialized() => Volatile.Write(ref _preSerialized, 1);
 
     /// <summary>
     /// Whether BufferMemory has already been released for this batch.
@@ -5013,7 +5014,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
         Interlocked.Exchange(ref _memoryReleased, 0);
-        Volatile.Write(ref _compressionReady, 0);
+        Volatile.Write(ref _preSerialized, 0);
         Interlocked.Increment(ref _generation);
 
         _topicPartition = topicPartition;
