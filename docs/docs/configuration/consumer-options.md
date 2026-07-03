@@ -99,7 +99,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
 | `WithAdaptiveFetchSizing(...)` | `EnableAdaptiveFetchSizing`, `AdaptiveFetchSizingOptions` | Bind nested adaptive sizing fields |
-| `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
+| `WithTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
 | `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
 | `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
@@ -248,14 +248,14 @@ Get notified of partition changes:
 
 ## Security
 
-### UseTls
+### WithTls
 
 Enable TLS:
 
 ```csharp
-.UseTls()
-.UseTls(tlsConfig)
-.UseMutualTls(caCert, clientCert, clientKey)
+.WithTls()
+.WithTls(tlsConfig)
+.WithMutualTls(caCert, clientCert, clientKey)
 ```
 
 ### SASL Authentication
@@ -331,4 +331,4 @@ For transactional reads:
 | `WithPrefetchPipelineDepth` | 3 | Overlapping prefetch operations |
 | `WithConnectionsPerBroker` | 2 | TCP connections per broker |
 | `WithAdaptiveConnections` | enabled (max 4) | Auto-scale connections under load |
-| `UseTls` | false | Enable TLS |
+| `WithTls` | false | Enable TLS |

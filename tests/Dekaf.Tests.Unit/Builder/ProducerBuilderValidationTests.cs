@@ -51,7 +51,7 @@ public class ProducerBuilderValidationTests
     {
         var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .UseCompression(Dekaf.Protocol.Records.CompressionType.Brotli);
+            .WithCompression(Dekaf.Protocol.Records.CompressionType.Brotli);
 
         var act = () => builder.Build();
 
@@ -139,18 +139,18 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task UseGzipCompression_ReturnsSameBuilder()
+    public async Task WithGzipCompression_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.UseGzipCompression();
+        var result = builder.WithGzipCompression();
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
     [Test]
-    public async Task UseCompression_ReturnsSameBuilder()
+    public async Task WithCompression_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.UseCompression(Dekaf.Protocol.Records.CompressionType.Zstd);
+        var result = builder.WithCompression(Dekaf.Protocol.Records.CompressionType.Zstd);
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -163,10 +163,10 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task UseTls_ReturnsSameBuilder()
+    public async Task WithTls_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.UseTls();
+        var result = builder.WithTls();
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 

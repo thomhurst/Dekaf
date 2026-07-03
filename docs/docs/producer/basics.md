@@ -120,7 +120,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .UseLz4Compression()  // Fast and good compression
+    .WithLz4Compression()  // Fast and good compression
     .BuildAsync();
 ```
 
@@ -128,10 +128,10 @@ Available compression methods:
 
 | Method | Package | Characteristics |
 |--------|---------|-----------------|
-| `UseLz4Compression()` | `Dekaf.Compression.Lz4` | Fast, good compression ratio |
-| `UseZstdCompression()` | `Dekaf.Compression.Zstd` | Best compression ratio |
-| `UseSnappyCompression()` | `Dekaf.Compression.Snappy` | Very fast, moderate compression |
-| `UseGzipCompression()` | Built-in | Widely compatible, slower |
+| `WithLz4Compression()` | `Dekaf.Compression.Lz4` | Fast, good compression ratio |
+| `WithZstdCompression()` | `Dekaf.Compression.Zstd` | Best compression ratio |
+| `WithSnappyCompression()` | `Dekaf.Compression.Snappy` | Very fast, moderate compression |
+| `WithGzipCompression()` | Built-in | Widely compatible, slower |
 
 :::tip
 LZ4 is recommended for most use cases - it provides a good balance of speed and compression ratio.

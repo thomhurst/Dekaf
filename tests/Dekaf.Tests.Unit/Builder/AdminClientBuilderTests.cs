@@ -91,10 +91,10 @@ public class AdminClientBuilderTests
     }
 
     [Test]
-    public async Task UseTls_ReturnsSameBuilder()
+    public async Task WithTls_ReturnsSameBuilder()
     {
         var builder = new AdminClientBuilder();
-        var result = builder.UseTls();
+        var result = builder.WithTls();
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -128,7 +128,7 @@ public class AdminClientBuilderTests
         await using var client = new AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithClientId("admin")
-            .UseTls()
+            .WithTls()
             .WithSaslPlain("user", "pass")
             .Build();
 

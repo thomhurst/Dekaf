@@ -74,9 +74,18 @@ public static class Lz4ProducerBuilderExtensions
     /// <summary>
     /// Configures the producer to use LZ4 compression.
     /// </summary>
+    public static ProducerBuilder<TKey, TValue> WithLz4Compression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.WithCompression(CompressionType.Lz4);
+    }
+
+    /// <summary>
+    /// Configures the producer to use LZ4 compression.
+    /// </summary>
+    [Obsolete("Use WithLz4Compression instead.")]
     public static ProducerBuilder<TKey, TValue> UseLz4Compression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
     {
-        return builder.UseCompression(CompressionType.Lz4);
+        return builder.WithLz4Compression();
     }
 }
 

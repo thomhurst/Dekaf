@@ -79,7 +79,7 @@ public static class JsonSerializerExtensions
     /// <summary>
     /// Configures the producer to use JSON serialization for values.
     /// </summary>
-    public static ProducerBuilder<TKey, TValue> UseJsonSerializer<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithJsonSerializer<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         JsonSerializerOptions? options = null)
     {
@@ -87,9 +87,20 @@ public static class JsonSerializerExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use JSON serialization for values.
+    /// </summary>
+    [Obsolete("Use WithJsonSerializer instead.")]
+    public static ProducerBuilder<TKey, TValue> UseJsonSerializer<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        JsonSerializerOptions? options = null)
+    {
+        return builder.WithJsonSerializer(options);
+    }
+
+    /// <summary>
     /// Configures the producer to use JSON serialization for keys.
     /// </summary>
-    public static ProducerBuilder<TKey, TValue> UseJsonKeySerializer<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithJsonKeySerializer<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         JsonSerializerOptions? options = null)
     {
@@ -97,9 +108,20 @@ public static class JsonSerializerExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use JSON serialization for keys.
+    /// </summary>
+    [Obsolete("Use WithJsonKeySerializer instead.")]
+    public static ProducerBuilder<TKey, TValue> UseJsonKeySerializer<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        JsonSerializerOptions? options = null)
+    {
+        return builder.WithJsonKeySerializer(options);
+    }
+
+    /// <summary>
     /// Configures the consumer to use JSON deserialization for values.
     /// </summary>
-    public static ConsumerBuilder<TKey, TValue> UseJsonDeserializer<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithJsonDeserializer<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         JsonSerializerOptions? options = null)
     {
@@ -107,12 +129,34 @@ public static class JsonSerializerExtensions
     }
 
     /// <summary>
+    /// Configures the consumer to use JSON deserialization for values.
+    /// </summary>
+    [Obsolete("Use WithJsonDeserializer instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseJsonDeserializer<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        JsonSerializerOptions? options = null)
+    {
+        return builder.WithJsonDeserializer(options);
+    }
+
+    /// <summary>
     /// Configures the consumer to use JSON deserialization for keys.
     /// </summary>
-    public static ConsumerBuilder<TKey, TValue> UseJsonKeyDeserializer<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithJsonKeyDeserializer<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         JsonSerializerOptions? options = null)
     {
         return builder.WithKeyDeserializer(new JsonSerializer<TKey>(options));
+    }
+
+    /// <summary>
+    /// Configures the consumer to use JSON deserialization for keys.
+    /// </summary>
+    [Obsolete("Use WithJsonKeyDeserializer instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseJsonKeyDeserializer<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        JsonSerializerOptions? options = null)
+    {
+        return builder.WithJsonKeyDeserializer(options);
     }
 }

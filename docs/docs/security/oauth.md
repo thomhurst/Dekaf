@@ -21,7 +21,7 @@ var oauthConfig = new OAuthBearerConfig
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
-    .UseTls()
+    .WithTls()
     .WithOAuthBearer(oauthConfig)
     .BuildAsync();
 ```
@@ -35,7 +35,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
-    .UseTls()
+    .WithTls()
     .WithOAuthBearer(async ct =>
     {
         var token = await GetTokenFromIdentityProviderAsync(ct);
@@ -58,7 +58,7 @@ var credential = new DefaultAzureCredential();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
-    .UseTls()
+    .WithTls()
     .WithOAuthBearer(async ct =>
     {
         var token = await credential.GetTokenAsync(
@@ -84,7 +84,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker.msk.us-east-1.amazonaws.com:9098")
-    .UseTls()
+    .WithTls()
     .WithOAuthBearer(async ct =>
     {
         // Use AWS SDK to generate IAM token
@@ -135,7 +135,7 @@ public class OAuthKafkaClientFactory
     {
         return await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
-            .UseTls()
+            .WithTls()
             .WithOAuthBearer(GetTokenAsync)
             .BuildAsync();
     }

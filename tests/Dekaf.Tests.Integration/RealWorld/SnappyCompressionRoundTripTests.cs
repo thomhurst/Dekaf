@@ -19,7 +19,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -54,7 +54,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -111,7 +111,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -145,7 +145,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -208,7 +208,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -242,7 +242,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -288,7 +288,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         // Producer explicitly uses Snappy compression
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseSnappyCompression()
+            .WithSnappyCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

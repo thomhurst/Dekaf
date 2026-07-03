@@ -229,10 +229,10 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
-    public async Task UseTls_ReturnsSameBuilder()
+    public async Task WithTls_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
-        var result = builder.UseTls();
+        var result = builder.WithTls();
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 

@@ -19,7 +19,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseZstdCompression()
+            .WithZstdCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -54,7 +54,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseZstdCompression()
+            .WithZstdCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -111,7 +111,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseZstdCompression()
+            .WithZstdCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -145,7 +145,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseZstdCompression()
+            .WithZstdCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -190,7 +190,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseZstdCompression()
+            .WithZstdCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -253,7 +253,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseZstdCompression()
+            .WithZstdCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

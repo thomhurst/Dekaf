@@ -20,7 +20,7 @@ public static class SchemaRegistryExtensions
     /// <param name="subjectNameStrategy">Subject name strategy.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -39,6 +39,26 @@ public static class SchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use JSON Schema Registry serialization for values.
+    /// </summary>
+    [Obsolete("Use WithJsonSchemaRegistry instead.")]
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSerializerOptions? jsonOptions = null,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+    {
+        return builder.WithJsonSchemaRegistry(
+            schemaRegistry,
+            jsonSchema,
+            jsonOptions,
+            subjectNameStrategy,
+            autoRegisterSchemas);
+    }
+
+    /// <summary>
     /// Configures the consumer to use JSON Schema Registry deserialization for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -47,7 +67,7 @@ public static class SchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="jsonOptions">Optional JSON serializer options.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithJsonSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions = null)
@@ -57,6 +77,18 @@ public static class SchemaRegistryExtensions
             jsonOptions);
 
         return builder.WithValueDeserializer(deserializer);
+    }
+
+    /// <summary>
+    /// Configures the consumer to use JSON Schema Registry deserialization for values.
+    /// </summary>
+    [Obsolete("Use WithJsonSchemaRegistry instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        JsonSerializerOptions? jsonOptions = null)
+    {
+        return builder.WithJsonSchemaRegistry(schemaRegistry, jsonOptions);
     }
 
     /// <summary>
@@ -71,7 +103,7 @@ public static class SchemaRegistryExtensions
     /// <param name="subjectNameStrategy">Subject name strategy.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         Action<TValue, IBufferWriter<byte>> serialize,
@@ -90,6 +122,26 @@ public static class SchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use a custom Schema Registry serializer for values.
+    /// </summary>
+    [Obsolete("Use WithSchemaRegistry instead.")]
+    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Action<TValue, IBufferWriter<byte>> serialize,
+        Func<string, Schema> getSchema,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+    {
+        return builder.WithSchemaRegistry(
+            schemaRegistry,
+            serialize,
+            getSchema,
+            subjectNameStrategy,
+            autoRegisterSchemas);
+    }
+
+    /// <summary>
     /// Configures the producer to use a custom Schema Registry serializer for values
     /// with a custom subject name strategy.
     /// </summary>
@@ -102,7 +154,7 @@ public static class SchemaRegistryExtensions
     /// <param name="customSubjectNameStrategy">Custom subject name strategy implementation.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         Action<TValue, IBufferWriter<byte>> serialize,
@@ -121,6 +173,27 @@ public static class SchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use a custom Schema Registry serializer for values
+    /// with a custom subject name strategy.
+    /// </summary>
+    [Obsolete("Use WithSchemaRegistry instead.")]
+    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Action<TValue, IBufferWriter<byte>> serialize,
+        Func<string, Schema> getSchema,
+        ISubjectNameStrategy customSubjectNameStrategy,
+        bool autoRegisterSchemas = true)
+    {
+        return builder.WithSchemaRegistry(
+            schemaRegistry,
+            serialize,
+            getSchema,
+            customSubjectNameStrategy,
+            autoRegisterSchemas);
+    }
+
+    /// <summary>
     /// Configures the consumer to use a custom Schema Registry deserializer for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -129,7 +202,7 @@ public static class SchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="deserialize">Function to deserialize bytes to value using the schema.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         Func<byte[], Schema, TValue> deserialize)
@@ -142,6 +215,18 @@ public static class SchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the consumer to use a custom Schema Registry deserializer for values.
+    /// </summary>
+    [Obsolete("Use WithSchemaRegistry instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Func<byte[], Schema, TValue> deserialize)
+    {
+        return builder.WithSchemaRegistry(schemaRegistry, deserialize);
+    }
+
+    /// <summary>
     /// Configures the consumer to use a custom Schema Registry deserializer for values
     /// using a ReadOnlyMemory payload.
     /// </summary>
@@ -151,7 +236,7 @@ public static class SchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="deserialize">Function to deserialize bytes to value using the schema without copying the payload.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseSchemaRegistryMemory<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithSchemaRegistryMemory<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         Func<ReadOnlyMemory<byte>, Schema, TValue> deserialize)
@@ -161,5 +246,18 @@ public static class SchemaRegistryExtensions
             deserialize);
 
         return builder.WithValueDeserializer(deserializer);
+    }
+
+    /// <summary>
+    /// Configures the consumer to use a custom Schema Registry deserializer for values
+    /// using a ReadOnlyMemory payload.
+    /// </summary>
+    [Obsolete("Use WithSchemaRegistryMemory instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseSchemaRegistryMemory<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Func<ReadOnlyMemory<byte>, Schema, TValue> deserialize)
+    {
+        return builder.WithSchemaRegistryMemory(schemaRegistry, deserialize);
     }
 }

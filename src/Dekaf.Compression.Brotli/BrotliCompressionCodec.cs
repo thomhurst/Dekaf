@@ -30,7 +30,7 @@ namespace Dekaf.Compression.Brotli;
 /// // Use with a producer builder
 /// var producer = Kafka.CreateProducer&lt;string, string&gt;()
 ///     .WithBootstrapServers("localhost:9092")
-///     .UseBrotliCompression()
+///     .WithBrotliCompression()
 ///     .Build();
 /// </code>
 /// </example>
@@ -96,9 +96,22 @@ public static class BrotliProducerBuilderExtensions
     /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
     /// </para>
     /// </summary>
+    public static ProducerBuilder<TKey, TValue> WithBrotliCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.WithCompression(CompressionType.Brotli);
+    }
+
+    /// <summary>
+    /// Configures the producer to use Brotli compression.
+    /// <para>
+    /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
+    /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
+    /// </para>
+    /// </summary>
+    [Obsolete("Use WithBrotliCompression instead.")]
     public static ProducerBuilder<TKey, TValue> UseBrotliCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
     {
-        return builder.UseCompression(CompressionType.Brotli);
+        return builder.WithBrotliCompression();
     }
 }
 

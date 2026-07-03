@@ -265,7 +265,7 @@ public class DependencyInjectionTests
                     .WithLinger(TimeSpan.FromMilliseconds(5))
                     .WithBatchSize(64 * 1024)
                     .WithSaslScramSha512("user", "password")
-                    .UseLz4Compression();
+                    .WithLz4Compression();
             });
         });
 
@@ -664,10 +664,10 @@ public class DependencyInjectionTests
     }
 
     [Test]
-    public async Task AdminClientServiceBuilder_UseTls_ReturnsSelf()
+    public async Task AdminClientServiceBuilder_WithTls_ReturnsSelf()
     {
         var builder = new AdminClientServiceBuilder();
-        var result = builder.UseTls();
+        var result = builder.WithTls();
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 

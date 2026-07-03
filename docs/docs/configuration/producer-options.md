@@ -82,10 +82,10 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
 | `WithTransactionalId(...)` | `TransactionalId` | String |
 | `WithTransactionTimeout(...)` | `TransactionTimeoutMs` | Milliseconds |
-| `UseCompression(...)` | `CompressionType` | `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd` |
+| `WithCompression(...)` | `CompressionType` | `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd` |
 | `WithCompressionLevel(...)` | `CompressionLevel` | Codec-specific integer |
 | `WithPartitioner(...)` | `Partitioner` | `Default`, `Sticky`, `RoundRobin` |
-| `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
+| `WithTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
 | `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
 | `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
@@ -165,18 +165,18 @@ Maximum batch size in bytes:
 
 ## Compression
 
-### UseCompression / Specific Methods
+### WithCompression / Specific Methods
 
 Enable message compression:
 
 ```csharp
-.UseLz4Compression()    // Fast, good ratio (recommended)
-.UseZstdCompression()   // Best ratio, more CPU
-.UseSnappyCompression() // Very fast, lower ratio
-.UseGzipCompression()   // Compatible, slower
+.WithLz4Compression()    // Fast, good ratio (recommended)
+.WithZstdCompression()   // Best ratio, more CPU
+.WithSnappyCompression() // Very fast, lower ratio
+.WithGzipCompression()   // Compatible, slower
 
 // Or specify directly
-.UseCompression(CompressionType.Lz4)
+.WithCompression(CompressionType.Lz4)
 ```
 
 ## Partitioning
@@ -205,14 +205,14 @@ Must be unique per producer instance.
 
 ## Security
 
-### UseTls
+### WithTls
 
 Enable TLS encryption:
 
 ```csharp
-.UseTls()                    // Basic TLS
-.UseTls(tlsConfig)           // Custom TLS config
-.UseMutualTls(caCert, clientCert, clientKey)  // mTLS
+.WithTls()                    // Basic TLS
+.WithTls(tlsConfig)           // Custom TLS config
+.WithMutualTls(caCert, clientCert, clientKey)  // mTLS
 ```
 
 ### SASL Authentication
@@ -316,7 +316,7 @@ Enable logging:
 | `WithIdempotence` | true | Prevent duplicates |
 | `WithTransactionalId` | null | Transaction ID |
 | `WithTransactionTimeout` | 60000ms | Transaction timeout |
-| `UseCompression` | None | Compression codec |
+| `WithCompression` | None | Compression codec |
 | `WithCompressionLevel` | null | Codec-specific compression level |
 | `WithPartitioner` | Default | Partition strategy |
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
@@ -328,6 +328,6 @@ Enable logging:
 | `WithRequestTimeout` | 30000ms | Per-request timeout |
 | `WithSocketSendBufferBytes` | OS default | TCP send buffer size |
 | `WithSocketReceiveBufferBytes` | OS default | TCP receive buffer size |
-| `UseTls` | false | Enable TLS |
+| `WithTls` | false | Enable TLS |
 | `WithKeySerializer` | inferred | Key serializer |
 | `WithValueSerializer` | inferred | Value serializer |

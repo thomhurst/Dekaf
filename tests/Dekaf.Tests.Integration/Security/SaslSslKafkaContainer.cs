@@ -97,7 +97,7 @@ public class SaslSslKafkaContainer : KafkaTestContainer
     {
         return Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
-            .UseTls(DefaultTlsConfig)
+            .WithTls(DefaultTlsConfig)
             .WithSaslPlain(SaslUsername, SaslPassword)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
@@ -113,7 +113,7 @@ public class SaslSslKafkaContainer : KafkaTestContainer
 
     /// <summary>Admin clients built by the base class connect over TLS.</summary>
     protected override AdminClientBuilder ApplyTransportSecurity(AdminClientBuilder builder) =>
-        builder.UseTls(DefaultTlsConfig);
+        builder.WithTls(DefaultTlsConfig);
 
     public override async ValueTask DisposeAsync()
     {

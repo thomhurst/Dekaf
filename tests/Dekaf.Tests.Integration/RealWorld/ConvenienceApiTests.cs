@@ -273,7 +273,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForHighThroughput()
-            .UseGzipCompression() // Override LZ4 (requires separate codec package) with built-in Gzip
+            .WithGzipCompression() // Override LZ4 (requires separate codec package) with built-in Gzip
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

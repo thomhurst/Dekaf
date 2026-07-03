@@ -41,18 +41,18 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .UseLz4Compression()    // or UseZstdCompression(), UseSnappyCompression(), UseGzipCompression()
+    .WithLz4Compression()    // or WithZstdCompression(), WithSnappyCompression(), WithGzipCompression()
     .BuildAsync();
 ```
 
 ### Using Enum
 
 ```csharp
-.UseCompression(CompressionType.Lz4)
-.UseCompression(CompressionType.Zstd)
-.UseCompression(CompressionType.Snappy)
-.UseCompression(CompressionType.Gzip)
-.UseCompression(CompressionType.None)  // Disable
+.WithCompression(CompressionType.Lz4)
+.WithCompression(CompressionType.Zstd)
+.WithCompression(CompressionType.Snappy)
+.WithCompression(CompressionType.Gzip)
+.WithCompression(CompressionType.None)  // Disable
 ```
 
 ## How It Works
@@ -71,7 +71,7 @@ What this means in practice:
 Best all-around choice for most applications:
 
 ```csharp
-.UseLz4Compression()
+.WithLz4Compression()
 ```
 
 - Very fast compression and decompression
@@ -84,7 +84,7 @@ Best all-around choice for most applications:
 Best compression ratio, good for storage-sensitive scenarios:
 
 ```csharp
-.UseZstdCompression()
+.WithZstdCompression()
 ```
 
 - Excellent compression ratio (typically 3-5x)
@@ -97,7 +97,7 @@ Best compression ratio, good for storage-sensitive scenarios:
 Alternative fast codec:
 
 ```csharp
-.UseSnappyCompression()
+.WithSnappyCompression()
 ```
 
 - Very fast
@@ -109,7 +109,7 @@ Alternative fast codec:
 Maximum compatibility:
 
 ```csharp
-.UseGzipCompression()
+.WithGzipCompression()
 ```
 
 - Universally supported
@@ -126,7 +126,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .UseLz4Compression()
+    .WithLz4Compression()
     .WithLingerMs(5)        // Wait up to 5ms to fill batches
     .WithBatchSize(65536)   // 64KB batches
     .BuildAsync();
@@ -191,7 +191,7 @@ using Dekaf;
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()     // Sets batching parameters
-    .UseLz4Compression()     // Add compression
+    .WithLz4Compression()     // Add compression
     .BuildAsync();
 
 // Send many messages

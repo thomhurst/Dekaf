@@ -19,7 +19,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -54,7 +54,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -111,7 +111,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -145,7 +145,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -208,7 +208,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -242,7 +242,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -290,7 +290,7 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("lz4-producer-client")
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

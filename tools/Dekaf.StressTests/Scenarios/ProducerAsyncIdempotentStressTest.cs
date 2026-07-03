@@ -35,9 +35,9 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
 
         _ = options.Compression switch
         {
-            "lz4" => builder.UseLz4Compression(),
-            "snappy" => builder.UseSnappyCompression(),
-            "zstd" => builder.UseZstdCompression(),
+            "lz4" => builder.WithLz4Compression(),
+            "snappy" => builder.WithSnappyCompression(),
+            "zstd" => builder.WithZstdCompression(),
             _ => builder
         };
 

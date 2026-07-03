@@ -68,7 +68,7 @@ public sealed class KafkaClientBuilderTests
     {
         await using var client = Kafka.Connect("localhost:9092");
 
-        await Assert.That(() => client.CreateProducer<string, string>().UseTls())
+        await Assert.That(() => client.CreateProducer<string, string>().WithTls())
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithSaslPlain("user", "pass"))
             .Throws<InvalidOperationException>();
@@ -77,7 +77,7 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsPerBroker(2))
             .Throws<InvalidOperationException>();
 
-        await Assert.That(() => client.CreateConsumer<string, string>().UseTls())
+        await Assert.That(() => client.CreateConsumer<string, string>().WithTls())
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithSaslPlain("user", "pass"))
             .Throws<InvalidOperationException>();
@@ -93,7 +93,7 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsPerBroker(2))
             .Throws<InvalidOperationException>();
 
-        await Assert.That(() => client.CreateAdminClient().UseTls())
+        await Assert.That(() => client.CreateAdminClient().WithTls())
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithSaslPlain("user", "pass"))
             .Throws<InvalidOperationException>();
