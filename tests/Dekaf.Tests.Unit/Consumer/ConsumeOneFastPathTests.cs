@@ -1,13 +1,17 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Diagnostics;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
+[NotInParallel]
 public sealed class ConsumeOneFastPathTests
 {
     private const string Topic = "test-topic";
@@ -68,6 +72,46 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_EmitsFetchMetricsAsDeltas()
+    {
+        var messagesReceived = new List<long>();
+        var bytesReceived = new List<long>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
+                (instrument.Name == "messaging.client.consumed.messages" ||
+                 instrument.Name == "messaging.client.consumed.bytes"))
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "messaging.client.consumed.messages")
+                messagesReceived.Add(measurement);
+            else if (instrument.Name == "messaging.client.consumed.bytes")
+                bytesReceived.Add(measurement);
+        });
+        listener.Start();
+
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(40,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(fetch);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+
+        await Assert.That(messagesReceived).IsEquivalentTo([1L, 1L]);
+        await Assert.That(bytesReceived.Sum()).IsEqualTo(8L);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_WhenTimeoutExpires_ReturnsNull()
     {
         await using var consumer = CreateInitializedConsumer();
@@ -77,13 +121,102 @@ public sealed class ConsumeOneFastPathTests
         await Assert.That(result).IsNull();
     }
 
+    [Test]
+    public async Task ConsumeOneAsync_TimeoutDoesNotCancelPrefetchLoop()
+    {
+        await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetchMaxWaitMs: 1);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(10), CancellationToken.None);
+
+        await Assert.That(result).IsNull();
+        var prefetchCts = GetPrefetchCts(consumer);
+        await Assert.That(prefetchCts).IsNotNull();
+        await Assert.That(prefetchCts!.IsCancellationRequested).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_WithPendingEof_ReturnsPartitionEof()
+    {
+        await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetchMaxWaitMs: 1);
+        AssignTestPartition(consumer);
+        SetPrefetchStarted(consumer);
+        GetPendingEofEvents(consumer).Enqueue((new TopicPartition(Topic, Partition), 55L));
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsPartitionEof).IsTrue();
+        await Assert.That(result.Value.Topic).IsEqualTo(Topic);
+        await Assert.That(result.Value.Partition).IsEqualTo(Partition);
+        await Assert.That(result.Value.Offset).IsEqualTo(55L);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_TruncatedFetch_LogsAndContinues()
+    {
+        var loggerFactory = new CapturingLoggerFactory();
+        var faultingFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            new RecordBatch
+            {
+                BaseOffset = 0,
+                BaseTimestamp = 1700000000000L,
+                Attributes = 0,
+                Records = new ThrowingRecordList([], faultAtIndex: 0)
+            }
+        ]);
+        var goodFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(100, CreateRecord(0, "k", "v"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(loggerFactory, faultingFetch, goodFetch);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(100L);
+        await Assert.That(result.Value.Value).IsEqualTo("v");
+
+        var parsingErrorLog = loggerFactory.GetLogger()
+            .Entries
+            .First(entry => entry.LogLevel == LogLevel.Error && entry.Message.Contains("Record parsing error"));
+        await Assert.That(parsingErrorLog.Message).Contains(Topic);
+        await Assert.That(parsingErrorLog.Message).Contains(Partition.ToString());
+        await Assert.That(parsingErrorLog.Exception).IsNotNull();
+    }
+
     private static KafkaConsumer<string, string> CreateInitializedConsumer(params PendingFetchData[] fetches)
     {
-        return CreateInitializedConsumer(queuedMinMessages: 1, fetches);
+        return CreateInitializedConsumer(queuedMinMessages: 1, fetchMaxWaitMs: 200, fetches);
     }
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
         int queuedMinMessages,
+        params PendingFetchData[] fetches)
+    {
+        return CreateInitializedConsumer(queuedMinMessages, fetchMaxWaitMs: 200, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        int queuedMinMessages,
+        int fetchMaxWaitMs,
+        params PendingFetchData[] fetches)
+    {
+        return CreateInitializedConsumer(null, queuedMinMessages, fetchMaxWaitMs, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        ILoggerFactory? loggerFactory,
+        params PendingFetchData[] fetches)
+    {
+        return CreateInitializedConsumer(loggerFactory, queuedMinMessages: 1, fetchMaxWaitMs: 200, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        ILoggerFactory? loggerFactory,
+        int queuedMinMessages,
+        int fetchMaxWaitMs,
         params PendingFetchData[] fetches)
     {
         var consumer = new KafkaConsumer<string, string>(
@@ -91,10 +224,12 @@ public sealed class ConsumeOneFastPathTests
             {
                 BootstrapServers = ["localhost:9092"],
                 OffsetCommitMode = OffsetCommitMode.Manual,
-                QueuedMinMessages = queuedMinMessages
+                QueuedMinMessages = queuedMinMessages,
+                FetchMaxWaitMs = fetchMaxWaitMs
             },
             Serializers.String,
-            Serializers.String);
+            Serializers.String,
+            loggerFactory);
 
         SetInitialized(consumer);
 
@@ -153,6 +288,25 @@ public sealed class ConsumeOneFastPathTests
         return (MpscFetchBuffer)field.GetValue(consumer)!;
     }
 
+    private static ConcurrentQueue<(TopicPartition Partition, long Offset)> GetPendingEofEvents(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_pendingEofEvents", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pendingEofEvents field not found.");
+
+        return (ConcurrentQueue<(TopicPartition Partition, long Offset)>)field.GetValue(consumer)!;
+    }
+
+    private static CancellationTokenSource? GetPrefetchCts(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_prefetchCts", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_prefetchCts field not found.");
+
+        return (CancellationTokenSource?)field.GetValue(consumer);
+    }
+
     private static void SetPrefetchStarted(KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>)
@@ -205,4 +359,75 @@ public sealed class ConsumeOneFastPathTests
             HeaderCount = 0
         };
     }
+
+    private sealed class ThrowingRecordList : IReadOnlyList<Record>
+    {
+        private readonly Record[] _goodRecords;
+        private readonly int _faultAtIndex;
+
+        public ThrowingRecordList(Record[] goodRecords, int faultAtIndex)
+        {
+            _goodRecords = goodRecords;
+            _faultAtIndex = faultAtIndex;
+        }
+
+        public int Count => _faultAtIndex + 1;
+
+        public Record this[int index]
+        {
+            get
+            {
+                if (index >= _faultAtIndex)
+                    throw new ArgumentOutOfRangeException(nameof(index), $"Simulated truncated record at index {index}");
+                return _goodRecords[index];
+            }
+        }
+
+        public IEnumerator<Record> GetEnumerator()
+        {
+            for (var i = 0; i < Count; i++)
+                yield return this[i];
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        private CapturingLogger? _logger;
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            _logger ??= new CapturingLogger();
+            return _logger;
+        }
+
+        public void AddProvider(ILoggerProvider provider) { }
+
+        public void Dispose() { }
+
+        public CapturingLogger GetLogger() =>
+            _logger ?? throw new InvalidOperationException("CreateLogger was never called.");
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+        }
+    }
+
+    private sealed record LogEntry(LogLevel LogLevel, string Message, Exception? Exception);
 }

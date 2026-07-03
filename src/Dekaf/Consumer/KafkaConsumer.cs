@@ -121,6 +121,9 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public long MessageCount { get; private set; }
 
+    private long _emittedMessageCount;
+    private long _emittedBytesConsumed;
+
     private PendingFetchData() { }
 
     /// <summary>
@@ -234,6 +237,21 @@ internal sealed class PendingFetchData : IDisposable
         LastYieldedOffset = offset;
         TotalBytesConsumed += messageBytes;
         MessageCount++;
+    }
+
+    public bool TryConsumeMetricDelta(out long messageCount, out long bytesConsumed)
+    {
+        messageCount = MessageCount - _emittedMessageCount;
+        if (messageCount <= 0)
+        {
+            bytesConsumed = 0;
+            return false;
+        }
+
+        bytesConsumed = TotalBytesConsumed - _emittedBytesConsumed;
+        _emittedMessageCount = MessageCount;
+        _emittedBytesConsumed = TotalBytesConsumed;
+        return true;
     }
 
     /// <summary>
@@ -431,6 +449,8 @@ internal sealed class PendingFetchData : IDisposable
         LastYieldedOffset = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
+        _emittedMessageCount = 0;
+        _emittedBytesConsumed = 0;
         PartitionIndex = 0;
         TopicPartition = default;
         Topic = null!;
@@ -1128,9 +1148,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         var prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
-        if (prefetchEnabled)
+        if (prefetchEnabled && !cancellationToken.IsCancellationRequested)
         {
-            StartPrefetch(cancellationToken);
+            StartPrefetch();
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -1399,9 +1419,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         bool prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
-        if (prefetchEnabled)
+        if (prefetchEnabled && !cancellationToken.IsCancellationRequested)
         {
-            StartPrefetch(cancellationToken);
+            StartPrefetch();
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -1533,9 +1553,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         bool prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
-        if (prefetchEnabled)
+        if (prefetchEnabled && !cancellationToken.IsCancellationRequested)
         {
-            StartPrefetch(cancellationToken);
+            StartPrefetch();
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -1648,12 +1668,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void StartPrefetch(CancellationToken cancellationToken)
+    private void StartPrefetch()
     {
         if (_prefetchTask is not null)
             return;
 
-        _prefetchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _prefetchCts = new CancellationTokenSource();
         _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
     }
 
@@ -2328,9 +2348,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
-        if (prefetchEnabled)
+        if (prefetchEnabled && !cancellationToken.IsCancellationRequested)
         {
-            StartPrefetch(cancellationToken);
+            StartPrefetch();
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -2623,14 +2643,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void EmitFetchMetrics(PendingFetchData fetch)
     {
+        if (!fetch.TryConsumeMetricDelta(out var messageCount, out var bytesConsumed))
+            return;
+
         if (!_metricTagsCache.TryGetValue(fetch.Topic, out var metricTags))
         {
             metricTags = new System.Diagnostics.TagList
                 { { Diagnostics.DekafDiagnostics.MessagingDestinationName, fetch.Topic } };
             _metricTagsCache[fetch.Topic] = metricTags;
         }
-        Diagnostics.DekafMetrics.MessagesReceived.Add(fetch.MessageCount, metricTags);
-        Diagnostics.DekafMetrics.BytesReceived.Add(fetch.TotalBytesConsumed, metricTags);
+        Diagnostics.DekafMetrics.MessagesReceived.Add(messageCount, metricTags);
+        Diagnostics.DekafMetrics.BytesReceived.Add(bytesConsumed, metricTags);
     }
 
     private void RecordFetchDuration(long fetchStarted, int brokerId)
