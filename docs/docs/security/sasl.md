@@ -15,7 +15,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
-    .UseTls()  // Always use TLS with PLAIN to encrypt credentials
+    .WithTls()  // Always use TLS with PLAIN to encrypt credentials
     .WithSaslPlain("username", "password")
     .BuildAsync();
 ```
@@ -35,7 +35,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
-    .UseTls()
+    .WithTls()
     .WithSaslScramSha256("username", "password")
     .BuildAsync();
 ```
@@ -47,7 +47,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
-    .UseTls()
+    .WithTls()
     .WithSaslScramSha512("username", "password")
     .BuildAsync();
 ```
@@ -82,7 +82,7 @@ using Dekaf;
 var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .WithGroupId("my-group")
-    .UseTls()
+    .WithTls()
     .WithSaslScramSha512("username", "password")
     .SubscribeTo("my-topic")
     .BuildAsync();
@@ -98,7 +98,7 @@ var apiSecret = Environment.GetEnvironmentVariable("CONFLUENT_API_SECRET");
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("pkc-xxxxx.us-east-1.aws.confluent.cloud:9092")
-    .UseTls()
+    .WithTls()
     .WithSaslPlain(apiKey, apiSecret)
     .BuildAsync();
 ```
@@ -134,7 +134,7 @@ public class SecureKafkaClient
     {
         return await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
-            .UseTls()
+            .WithTls()
             .WithSaslScramSha512(
                 _config["Kafka:Username"],
                 _config["Kafka:Password"]

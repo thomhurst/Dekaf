@@ -452,10 +452,16 @@ public sealed class AdminClientServiceBuilder
         return this;
     }
 
+    public AdminClientServiceBuilder WithTls()
+    {
+        _builder.WithTls();
+        return this;
+    }
+
+    [Obsolete("Use WithTls instead.")]
     public AdminClientServiceBuilder UseTls()
     {
-        _builder.UseTls();
-        return this;
+        return WithTls();
     }
 
     internal AdminClientServiceBuilder ApplyConfiguration(IConfiguration configuration)
@@ -519,12 +525,12 @@ internal static class DekafConfigurationBinding
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxRequestSize), out var maxRequestSize))
             builder.WithMaxRequestSize(maxRequestSize);
         if (TryGetValue<CompressionType>(configuration, nameof(ProducerOptions.CompressionType), out var compressionType))
-            builder.UseCompression(compressionType);
+            builder.WithCompression(compressionType);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.CompressionLevel), out var compressionLevel))
             builder.WithCompressionLevel(compressionLevel);
         if (TryGetValue<PartitionerType>(configuration, nameof(ProducerOptions.Partitioner), out var partitioner))
             builder.WithPartitioner(partitioner);
-        ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        ApplyTls(configuration, () => builder.WithTls(), tlsConfig => builder.WithTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketSendBufferBytes), out var sendBuffer))
@@ -604,7 +610,7 @@ internal static class DekafConfigurationBinding
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.CheckCrcs), out var checkCrcs))
             builder.WithCheckCrcs(checkCrcs);
-        ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        ApplyTls(configuration, () => builder.WithTls(), tlsConfig => builder.WithTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnablePartitionEof), out var enablePartitionEof))
@@ -642,7 +648,7 @@ internal static class DekafConfigurationBinding
             builder.WithClientId(clientId);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
-        ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        ApplyTls(configuration, () => builder.WithTls(), tlsConfig => builder.WithTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(AdminClientOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))

@@ -16,7 +16,7 @@ public static class ProtobufSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithProtobufSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufSerializerConfig? config = null)
@@ -30,6 +30,19 @@ public static class ProtobufSchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use Protobuf Schema Registry serialization for values.
+    /// </summary>
+    [Obsolete("Use WithProtobufSchemaRegistry instead.")]
+    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        ProtobufSerializerConfig? config = null)
+        where TValue : IMessage<TValue>
+    {
+        return builder.WithProtobufSchemaRegistry(schemaRegistry, config);
+    }
+
+    /// <summary>
     /// Configures the producer to use Protobuf Schema Registry serialization for both keys and values.
     /// </summary>
     /// <typeparam name="TKey">Key type (must implement IMessage).</typeparam>
@@ -39,7 +52,7 @@ public static class ProtobufSchemaRegistryExtensions
     /// <param name="keyConfig">Optional key serializer configuration.</param>
     /// <param name="valueConfig">Optional value serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufSerializerConfig? keyConfig = null,
@@ -56,6 +69,21 @@ public static class ProtobufSchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use Protobuf Schema Registry serialization for both keys and values.
+    /// </summary>
+    [Obsolete("Use WithProtobufSchemaRegistryForKeyAndValue instead.")]
+    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        ProtobufSerializerConfig? keyConfig = null,
+        ProtobufSerializerConfig? valueConfig = null)
+        where TKey : IMessage<TKey>
+        where TValue : IMessage<TValue>
+    {
+        return builder.WithProtobufSchemaRegistryForKeyAndValue(schemaRegistry, keyConfig, valueConfig);
+    }
+
+    /// <summary>
     /// Configures the consumer to use Protobuf Schema Registry deserialization for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -64,7 +92,7 @@ public static class ProtobufSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseProtobufSchemaRegistry<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithProtobufSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufDeserializerConfig? config = null)
@@ -78,6 +106,19 @@ public static class ProtobufSchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the consumer to use Protobuf Schema Registry deserialization for values.
+    /// </summary>
+    [Obsolete("Use WithProtobufSchemaRegistry instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseProtobufSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        ProtobufDeserializerConfig? config = null)
+        where TValue : IMessage<TValue>, IBufferMessage, new()
+    {
+        return builder.WithProtobufSchemaRegistry(schemaRegistry, config);
+    }
+
+    /// <summary>
     /// Configures the consumer to use Protobuf Schema Registry deserialization for both keys and values.
     /// </summary>
     /// <typeparam name="TKey">Key type (must implement IMessage and have a parameterless constructor).</typeparam>
@@ -87,7 +128,7 @@ public static class ProtobufSchemaRegistryExtensions
     /// <param name="keyConfig">Optional key deserializer configuration.</param>
     /// <param name="valueConfig">Optional value deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufDeserializerConfig? keyConfig = null,
@@ -101,5 +142,20 @@ public static class ProtobufSchemaRegistryExtensions
         return builder
             .WithKeyDeserializer(keyDeserializer)
             .WithValueDeserializer(valueDeserializer);
+    }
+
+    /// <summary>
+    /// Configures the consumer to use Protobuf Schema Registry deserialization for both keys and values.
+    /// </summary>
+    [Obsolete("Use WithProtobufSchemaRegistryForKeyAndValue instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        ProtobufDeserializerConfig? keyConfig = null,
+        ProtobufDeserializerConfig? valueConfig = null)
+        where TKey : IMessage<TKey>, IBufferMessage, new()
+        where TValue : IMessage<TValue>, IBufferMessage, new()
+    {
+        return builder.WithProtobufSchemaRegistryForKeyAndValue(schemaRegistry, keyConfig, valueConfig);
     }
 }

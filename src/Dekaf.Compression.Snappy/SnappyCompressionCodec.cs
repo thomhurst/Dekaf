@@ -189,9 +189,18 @@ public static class SnappyProducerBuilderExtensions
     /// <summary>
     /// Configures the producer to use Snappy compression.
     /// </summary>
+    public static ProducerBuilder<TKey, TValue> WithSnappyCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.WithCompression(CompressionType.Snappy);
+    }
+
+    /// <summary>
+    /// Configures the producer to use Snappy compression.
+    /// </summary>
+    [Obsolete("Use WithSnappyCompression instead.")]
     public static ProducerBuilder<TKey, TValue> UseSnappyCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
     {
-        return builder.UseCompression(CompressionType.Snappy);
+        return builder.WithSnappyCompression();
     }
 }
 

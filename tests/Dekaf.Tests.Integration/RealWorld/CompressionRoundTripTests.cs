@@ -18,7 +18,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -53,7 +53,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10)) // Encourage batching for better compression
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -109,7 +109,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -143,7 +143,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -191,7 +191,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForHighThroughput()
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -238,7 +238,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Batch them together
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -302,7 +302,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .UseGzipCompression()
+            .WithGzipCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 

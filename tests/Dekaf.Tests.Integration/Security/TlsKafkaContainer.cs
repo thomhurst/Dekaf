@@ -220,7 +220,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
-            .UseTls(DefaultTlsConfig)
+            .WithTls(DefaultTlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 

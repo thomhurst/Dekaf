@@ -295,16 +295,27 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    public ProducerBuilder<TKey, TValue> UseGzipCompression()
+    public ProducerBuilder<TKey, TValue> WithGzipCompression()
     {
-        _compressionType = Protocol.Records.CompressionType.Gzip;
-        return this;
+        return WithCompression(Protocol.Records.CompressionType.Gzip);
     }
 
-    public ProducerBuilder<TKey, TValue> UseCompression(Protocol.Records.CompressionType compressionType)
+    [Obsolete("Use WithGzipCompression instead.")]
+    public ProducerBuilder<TKey, TValue> UseGzipCompression()
+    {
+        return WithGzipCompression();
+    }
+
+    public ProducerBuilder<TKey, TValue> WithCompression(Protocol.Records.CompressionType compressionType)
     {
         _compressionType = compressionType;
         return this;
+    }
+
+    [Obsolete("Use WithCompression instead.")]
+    public ProducerBuilder<TKey, TValue> UseCompression(Protocol.Records.CompressionType compressionType)
+    {
+        return WithCompression(compressionType);
     }
 
     /// <summary>
@@ -341,23 +352,35 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <summary>
     /// Enables TLS for secure connections.
     /// </summary>
-    public ProducerBuilder<TKey, TValue> UseTls()
+    public ProducerBuilder<TKey, TValue> WithTls()
     {
         ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
 
+    [Obsolete("Use WithTls instead.")]
+    public ProducerBuilder<TKey, TValue> UseTls()
+    {
+        return WithTls();
+    }
+
     /// <summary>
     /// Configures TLS with custom settings.
     /// </summary>
     /// <param name="config">The TLS configuration.</param>
-    public ProducerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    public ProducerBuilder<TKey, TValue> WithTls(TlsConfig config)
     {
         ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
+    }
+
+    [Obsolete("Use WithTls instead.")]
+    public ProducerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    {
+        return WithTls(config);
     }
 
     /// <summary>
@@ -367,7 +390,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
     /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
     /// <param name="keyPassword">Optional password for the private key.</param>
-    public ProducerBuilder<TKey, TValue> UseMutualTls(
+    public ProducerBuilder<TKey, TValue> WithMutualTls(
         string caCertPath,
         string clientCertPath,
         string clientKeyPath,
@@ -379,12 +402,22 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    [Obsolete("Use WithMutualTls instead.")]
+    public ProducerBuilder<TKey, TValue> UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        return WithMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+    }
+
     /// <summary>
     /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
     /// </summary>
     /// <param name="clientCertificate">The client certificate with private key.</param>
     /// <param name="caCertificate">Optional CA certificate for server validation.</param>
-    public ProducerBuilder<TKey, TValue> UseMutualTls(
+    public ProducerBuilder<TKey, TValue> WithMutualTls(
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
@@ -392,6 +425,14 @@ public sealed class ProducerBuilder<TKey, TValue>
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
+    }
+
+    [Obsolete("Use WithMutualTls instead.")]
+    public ProducerBuilder<TKey, TValue> UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        return WithMutualTls(clientCertificate, caCertificate);
     }
 
     public ProducerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
@@ -1286,23 +1327,35 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <summary>
     /// Enables TLS for secure connections.
     /// </summary>
-    public ConsumerBuilder<TKey, TValue> UseTls()
+    public ConsumerBuilder<TKey, TValue> WithTls()
     {
         ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
 
+    [Obsolete("Use WithTls instead.")]
+    public ConsumerBuilder<TKey, TValue> UseTls()
+    {
+        return WithTls();
+    }
+
     /// <summary>
     /// Configures TLS with custom settings.
     /// </summary>
     /// <param name="config">The TLS configuration.</param>
-    public ConsumerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    public ConsumerBuilder<TKey, TValue> WithTls(TlsConfig config)
     {
         ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
+    }
+
+    [Obsolete("Use WithTls instead.")]
+    public ConsumerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    {
+        return WithTls(config);
     }
 
     /// <summary>
@@ -1312,7 +1365,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
     /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
     /// <param name="keyPassword">Optional password for the private key.</param>
-    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+    public ConsumerBuilder<TKey, TValue> WithMutualTls(
         string caCertPath,
         string clientCertPath,
         string clientKeyPath,
@@ -1324,12 +1377,22 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    [Obsolete("Use WithMutualTls instead.")]
+    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        return WithMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+    }
+
     /// <summary>
     /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
     /// </summary>
     /// <param name="clientCertificate">The client certificate with private key.</param>
     /// <param name="caCertificate">Optional CA certificate for server validation.</param>
-    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+    public ConsumerBuilder<TKey, TValue> WithMutualTls(
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
@@ -1337,6 +1400,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
+    }
+
+    [Obsolete("Use WithMutualTls instead.")]
+    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        return WithMutualTls(clientCertificate, caCertificate);
     }
 
     public ConsumerBuilder<TKey, TValue> WithSaslPlain(string username, string password)

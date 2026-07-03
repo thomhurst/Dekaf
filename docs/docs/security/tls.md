@@ -15,7 +15,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls()
+    .WithTls()
     .BuildAsync();
 ```
 
@@ -35,7 +35,7 @@ var tlsConfig = new TlsConfig
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls(tlsConfig)
+    .WithTls(tlsConfig)
     .BuildAsync();
 ```
 
@@ -49,7 +49,7 @@ using Dekaf;
 // Using file paths
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseMutualTls(
+    .WithMutualTls(
         caCertPath: "/path/to/ca.crt",
         clientCertPath: "/path/to/client.crt",
         clientKeyPath: "/path/to/client.key",
@@ -63,7 +63,7 @@ var caCert = new X509Certificate2("ca.crt");
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseMutualTls(clientCert, caCert)
+    .WithMutualTls(clientCert, caCert)
     .BuildAsync();
 ```
 
@@ -91,7 +91,7 @@ var tlsConfig = new TlsConfig
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls(tlsConfig)
+    .WithTls(tlsConfig)
     .BuildAsync();
 ```
 
@@ -104,7 +104,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker1.msk.us-east-1.amazonaws.com:9098")
-    .UseTls()
+    .WithTls()
     .WithSaslOAuthBearer(new AwsMskTokenProvider())
     .BuildAsync();
 ```
@@ -116,7 +116,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("pkc-xxxxx.us-east-1.aws.confluent.cloud:9092")
-    .UseTls()
+    .WithTls()
     .WithSaslPlain(apiKey, apiSecret)
     .BuildAsync();
 ```

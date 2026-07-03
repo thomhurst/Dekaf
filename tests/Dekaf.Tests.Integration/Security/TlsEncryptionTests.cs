@@ -33,7 +33,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-producer")
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -62,7 +62,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-producer-multi")
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -109,7 +109,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-consumer-producer")
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -126,7 +126,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
@@ -155,7 +155,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-admin")
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
@@ -204,7 +204,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(tlsKafka.BootstrapServers)
                 .WithClientId("test-tls-untrusted")
-                .UseTls(tlsConfig)
+                .WithTls(tlsConfig)
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
@@ -238,7 +238,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(tlsKafka.BootstrapServers)
                 .WithClientId("test-tls-no-ca")
-                .UseTls(tlsConfig)
+                .WithTls(tlsConfig)
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
@@ -279,7 +279,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-self-signed-trust")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -313,7 +313,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-ca-path")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -345,7 +345,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-no-validation")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -384,7 +384,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-mtls-producer-inmemory")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -420,7 +420,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-mtls-producer-files")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -447,7 +447,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-mtls-producer-factory")
-            .UseMutualTls(
+            .WithMutualTls(
                 tlsKafka.CaCertPemPath,
                 tlsKafka.ClientCertPemPath,
                 tlsKafka.ClientKeyPemPath)
@@ -487,7 +487,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-mtls-consumer-producer")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -504,7 +504,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-mtls-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
@@ -540,7 +540,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls12-producer")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -575,7 +575,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls13-producer")
-            .UseTls(tlsConfig)
+            .WithTls(tlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -610,7 +610,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-roundtrip-producer")
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -628,7 +628,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-roundtrip-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithTls(tlsKafka.DefaultTlsConfig)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);

@@ -236,7 +236,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .UseLz4Compression()
+    .WithLz4Compression()
     .BuildAsync();
 ```
 
@@ -274,7 +274,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls()
+    .WithTls()
     .BuildAsync();
 ```
 
@@ -286,14 +286,14 @@ using Dekaf;
 // SASL/PLAIN
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls()
+    .WithTls()
     .WithSaslPlain("username", "password")
     .BuildAsync();
 
 // SASL/SCRAM-SHA-512
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls()
+    .WithTls()
     .WithSaslScramSha512("username", "password")
     .BuildAsync();
 ```

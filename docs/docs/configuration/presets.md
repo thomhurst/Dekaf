@@ -159,7 +159,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
-    .UseTls()
+    .WithTls()
     .WithSaslScramSha512("username", "password")
     .ForReliability()  // Performance preset
     .BuildAsync();
@@ -179,7 +179,7 @@ public static class DekafPresets
     {
         return builder
             .ForReliability()
-            .UseLz4Compression()
+            .WithLz4Compression()
             .WithLingerMs(1);  // Slight batching for efficiency
     }
 
@@ -226,7 +226,7 @@ var producer = await Kafka.CreateProducer<string, string>()
     .WithLingerMs(2)
     .WithBatchSize(32768)
     .EnableIdempotence()
-    .UseZstdCompression()
+    .WithZstdCompression()
     .BuildAsync();
 ```
 

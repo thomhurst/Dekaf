@@ -190,7 +190,7 @@ var producer = await Kafka.CreateProducer<string, string>()
     .ForHighThroughput()  // Preset with good defaults
     .WithLingerMs(10)     // Allow more time for batching
     .WithBatchSize(131072) // Larger batches (128KB)
-    .UseLz4Compression()  // Compress batches
+    .WithLz4Compression()  // Compress batches
     .BuildAsync();
 ```
 

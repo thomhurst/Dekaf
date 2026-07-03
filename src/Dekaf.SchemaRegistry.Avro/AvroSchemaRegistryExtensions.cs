@@ -17,7 +17,7 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithAvroSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroSerializerConfig? config = null)
@@ -29,6 +29,19 @@ public static class AvroSchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use Avro Schema Registry serialization for values.
+    /// </summary>
+    [Obsolete("Use WithAvroSchemaRegistry instead.")]
+    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        AvroSerializerConfig? config = null)
+        where TValue : class
+    {
+        return builder.WithAvroSchemaRegistry(schemaRegistry, config);
+    }
+
+    /// <summary>
     /// Configures the producer to use Avro Schema Registry serialization for keys.
     /// </summary>
     /// <typeparam name="TKey">Key type. Must be ISpecificRecord or GenericRecord.</typeparam>
@@ -37,7 +50,7 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> WithAvroSchemaRegistryKey<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroSerializerConfig? config = null)
@@ -49,6 +62,19 @@ public static class AvroSchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use Avro Schema Registry serialization for keys.
+    /// </summary>
+    [Obsolete("Use WithAvroSchemaRegistryKey instead.")]
+    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        AvroSerializerConfig? config = null)
+        where TKey : class
+    {
+        return builder.WithAvroSchemaRegistryKey(schemaRegistry, config);
+    }
+
+    /// <summary>
     /// Configures the consumer to use Avro Schema Registry deserialization for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -57,7 +83,7 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistry<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithAvroSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroDeserializerConfig? config = null)
@@ -69,6 +95,19 @@ public static class AvroSchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the consumer to use Avro Schema Registry deserialization for values.
+    /// </summary>
+    [Obsolete("Use WithAvroSchemaRegistry instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        AvroDeserializerConfig? config = null)
+        where TValue : class
+    {
+        return builder.WithAvroSchemaRegistry(schemaRegistry, config);
+    }
+
+    /// <summary>
     /// Configures the consumer to use Avro Schema Registry deserialization for keys.
     /// </summary>
     /// <typeparam name="TKey">Key type. Must be ISpecificRecord or GenericRecord.</typeparam>
@@ -77,7 +116,7 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> WithAvroSchemaRegistryKey<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroDeserializerConfig? config = null)
@@ -86,6 +125,19 @@ public static class AvroSchemaRegistryExtensions
         ValidateAvroType<TKey>();
         var deserializer = new AvroSchemaRegistryDeserializer<TKey>(schemaRegistry, config);
         return builder.WithKeyDeserializer(deserializer);
+    }
+
+    /// <summary>
+    /// Configures the consumer to use Avro Schema Registry deserialization for keys.
+    /// </summary>
+    [Obsolete("Use WithAvroSchemaRegistryKey instead.")]
+    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        AvroDeserializerConfig? config = null)
+        where TKey : class
+    {
+        return builder.WithAvroSchemaRegistryKey(schemaRegistry, config);
     }
 
     private static void ValidateAvroType<T>()

@@ -188,9 +188,18 @@ public static class ZstdProducerBuilderExtensions
     /// <summary>
     /// Configures the producer to use Zstd compression.
     /// </summary>
+    public static ProducerBuilder<TKey, TValue> WithZstdCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.WithCompression(CompressionType.Zstd);
+    }
+
+    /// <summary>
+    /// Configures the producer to use Zstd compression.
+    /// </summary>
+    [Obsolete("Use WithZstdCompression instead.")]
     public static ProducerBuilder<TKey, TValue> UseZstdCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
     {
-        return builder.UseCompression(CompressionType.Zstd);
+        return builder.WithZstdCompression();
     }
 }
 

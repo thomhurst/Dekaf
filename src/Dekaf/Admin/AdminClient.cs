@@ -2534,23 +2534,35 @@ public sealed class AdminClientBuilder
         return this;
     }
 
-    public AdminClientBuilder UseTls()
+    public AdminClientBuilder WithTls()
     {
         ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
 
+    [Obsolete("Use WithTls instead.")]
+    public AdminClientBuilder UseTls()
+    {
+        return WithTls();
+    }
+
     /// <summary>
     /// Configures TLS with custom settings.
     /// </summary>
     /// <param name="config">The TLS configuration.</param>
-    public AdminClientBuilder UseTls(TlsConfig config)
+    public AdminClientBuilder WithTls(TlsConfig config)
     {
         ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
+    }
+
+    [Obsolete("Use WithTls instead.")]
+    public AdminClientBuilder UseTls(TlsConfig config)
+    {
+        return WithTls(config);
     }
 
     /// <summary>
@@ -2560,7 +2572,7 @@ public sealed class AdminClientBuilder
     /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
     /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
     /// <param name="keyPassword">Optional password for the private key.</param>
-    public AdminClientBuilder UseMutualTls(
+    public AdminClientBuilder WithMutualTls(
         string caCertPath,
         string clientCertPath,
         string clientKeyPath,
@@ -2572,12 +2584,22 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    [Obsolete("Use WithMutualTls instead.")]
+    public AdminClientBuilder UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        return WithMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+    }
+
     /// <summary>
     /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
     /// </summary>
     /// <param name="clientCertificate">The client certificate with private key.</param>
     /// <param name="caCertificate">Optional CA certificate for server validation.</param>
-    public AdminClientBuilder UseMutualTls(
+    public AdminClientBuilder WithMutualTls(
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
@@ -2585,6 +2607,14 @@ public sealed class AdminClientBuilder
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
+    }
+
+    [Obsolete("Use WithMutualTls instead.")]
+    public AdminClientBuilder UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        return WithMutualTls(clientCertificate, caCertificate);
     }
 
     public AdminClientBuilder WithSaslPlain(string username, string password)
