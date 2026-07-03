@@ -371,6 +371,83 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
     #endregion
 
+    #region Offset Request Grouping Tests
+
+    [Test]
+    public async Task CommitOffsetsAsync_RemovesEmptyPooledTopicGroups()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, OffsetCommitRequest.LowestSupportedVersion, OffsetCommitRequest.HighestSupportedVersion);
+
+        var topicSnapshots = new List<(string Name, int PartitionCount)[]>();
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<OffsetCommitRequest>();
+                topicSnapshots.Add(request.Topics
+                    .Select(static topic => (topic.Name, topic.Partitions.Count))
+                    .ToArray());
+
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics = []
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.CommitOffsetsAsync([new TopicPartitionOffset("alpha", 0, 42)], CancellationToken.None);
+        await coordinator.CommitOffsetsAsync([new TopicPartitionOffset("beta", 1, 43)], CancellationToken.None);
+
+        await Assert.That(topicSnapshots.Count).IsEqualTo(2);
+        await Assert.That(topicSnapshots[1].Length).IsEqualTo(1);
+        await Assert.That(topicSnapshots[1][0].Name).IsEqualTo("beta");
+        await Assert.That(topicSnapshots[1][0].PartitionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task FetchOffsetsAsync_RemovesEmptyPooledTopicGroups()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, OffsetFetchRequest.LowestSupportedVersion, OffsetFetchRequest.HighestSupportedVersion);
+        SetupSuccessfulConsumerProtocolJoin();
+
+        var topicSnapshots = new List<(string Name, int PartitionCount)[]>();
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<OffsetFetchRequest>();
+                topicSnapshots.Add(request.Topics!
+                    .Select(static topic => (topic.Name, topic.PartitionIndexes.Count))
+                    .ToArray());
+
+                return ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Topics = [],
+                    ErrorCode = ErrorCode.None
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await coordinator.FetchOffsetsAsync([new TopicPartition("alpha", 0)], CancellationToken.None);
+        await coordinator.FetchOffsetsAsync([new TopicPartition("beta", 1)], CancellationToken.None);
+
+        await Assert.That(topicSnapshots.Count).IsEqualTo(2);
+        await Assert.That(topicSnapshots[1].Length).IsEqualTo(1);
+        await Assert.That(topicSnapshots[1][0].Name).IsEqualTo("beta");
+        await Assert.That(topicSnapshots[1][0].PartitionCount).IsEqualTo(1);
+    }
+
+    #endregion
+
     #region Error Handling Tests
 
     [Test]
