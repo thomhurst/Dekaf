@@ -594,6 +594,69 @@ public sealed class ConnectionPoolTests
         }
     }
 
+    [Test]
+    [NotInParallel]
+    public async Task GetConnectionAsync_AfterReconnectBackoffReset_DisposesAttemptGate()
+    {
+        var attempts = 0;
+        var options = new ConnectionOptions
+        {
+            ReconnectBackoff = TimeSpan.FromMilliseconds(1),
+            ReconnectBackoffMax = TimeSpan.FromMilliseconds(1)
+        };
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) <= 2)
+                    return new ValueTask<IKafkaConnection>(Task.FromException<IKafkaConnection>(
+                        new InvalidOperationException("broker down")));
+
+                return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            Func<Task> firstAttempt = () => pool.GetConnectionAsync(1).AsTask();
+            await Assert.That(firstAttempt).Throws<InvalidOperationException>();
+            var gate = await AssertSingleReconnectBackoffGate(pool);
+
+            var connection = await pool.GetConnectionAsync(1);
+
+            await Assert.That(connection.IsConnected).IsTrue();
+            await Assert.That(() => gate.Wait(0)).Throws<ObjectDisposedException>();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task CloseAllAsync_DisposesReconnectBackoffAttemptGates()
+    {
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 2,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(Task.FromException<IKafkaConnection>(
+                new InvalidOperationException("broker down"))));
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            Func<Task> failedConnection = () => pool.GetConnectionAsync(1).AsTask();
+            await Assert.That(failedConnection).Throws<InvalidOperationException>();
+            var gate = await AssertSingleReconnectBackoffGate(pool);
+
+            await pool.CloseAllAsync();
+
+            await Assert.That(() => gate.Wait(0)).Throws<ObjectDisposedException>();
+        }
+    }
+
     private static OAuthBearerConfig CreateOAuthBearerConfig() => new()
     {
         TokenEndpointUrl = "https://auth.example.invalid/token",
@@ -618,6 +681,25 @@ public sealed class ConnectionPoolTests
     }
 
     private static long StaleIdleTimestamp() => Environment.TickCount64 - IdleThresholdMs - 1;
+
+    private static async Task<SemaphoreSlim> AssertSingleReconnectBackoffGate(ConnectionPool pool)
+    {
+        var field = typeof(ConnectionPool).GetField(
+            "_reconnectBackoffs",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        var backoffs = field!.GetValue(pool)!;
+        var values = (System.Collections.IEnumerable)backoffs.GetType().GetProperty("Values")!.GetValue(backoffs)!;
+        var gates = new List<SemaphoreSlim>();
+
+        foreach (var state in values)
+        {
+            var gateField = state.GetType().GetField("AttemptGate")!;
+            gates.Add((SemaphoreSlim)gateField.GetValue(state)!);
+        }
+
+        await Assert.That(gates).Count().IsEqualTo(1);
+        return gates[0];
+    }
 
     private static IKafkaConnection CreateConnectedConnection(int brokerId, string host, int port)
     {

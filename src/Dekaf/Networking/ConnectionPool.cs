@@ -907,22 +907,24 @@ public sealed partial class ConnectionPool : IConnectionPool
         Func<ValueTask<IKafkaConnection>> createConnection,
         CancellationToken cancellationToken)
     {
-        if (_reconnectBackoffs.TryGetValue(endpoint, out var state) && state.TryAddUser())
+        if (_reconnectBackoffs.TryGetValue(endpoint, out var state) && state.TryAddRef())
         {
-            var gateAcquired = false;
             try
             {
                 await state.AttemptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                gateAcquired = true;
-
-                await WaitForReconnectBackoffAsync(endpoint, state, brokerId, host, port, cancellationToken).ConfigureAwait(false);
-                return await createConnection().ConfigureAwait(false);
+                try
+                {
+                    await WaitForReconnectBackoffAsync(endpoint, state, brokerId, host, port, cancellationToken).ConfigureAwait(false);
+                    return await createConnection().ConfigureAwait(false);
+                }
+                finally
+                {
+                    state.AttemptGate.Release();
+                }
             }
             finally
             {
-                if (gateAcquired)
-                    state.AttemptGate.Release();
-                state.ReleaseUser();
+                state.ReleaseRef();
             }
         }
 
@@ -984,8 +986,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             state.FailureCount = 0;
             state.NextAttemptTimestamp = 0;
         }
-        state.RequestDispose();
-
+        state.MarkRemoved();
         LogReconnectBackoffReset(brokerId, host, port);
     }
 
@@ -1308,9 +1309,7 @@ public sealed partial class ConnectionPool : IConnectionPool
                 }
             }
 
-            _connectionsByEndpoint.Clear();
-            _connectionsById.Clear();
-            _connectionGroupsById.Clear();
+            foreach (var state in _reconnectBackoffs.Values) state.MarkRemoved();
 
             if (Volatile.Read(ref _disposed) != 0)
             {
@@ -1318,12 +1317,14 @@ public sealed partial class ConnectionPool : IConnectionPool
                 foreach (var sem in _connectionCreationLocks.Values) sem.Dispose();
                 foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
                 foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
-                foreach (var state in _reconnectBackoffs.Values) state.RequestDispose();
             }
+            _connectionsByEndpoint.Clear();
+            _connectionsById.Clear();
+            _connectionGroupsById.Clear();
+            _reconnectBackoffs.Clear();
             _connectionCreationLocks.Clear();
             _connectionReplacementLocks.Clear();
             _groupCreationLocks.Clear();
-            _reconnectBackoffs.Clear();
 
             LogAllConnectionsClosed();
         }
@@ -1432,58 +1433,47 @@ public sealed partial class ConnectionPool : IConnectionPool
         public int FailureCount;
         public long NextAttemptTimestamp;
         private int _activeUsers;
-        private bool _disposeRequested;
-        private bool _disposed;
+        private int _removed;
+        private int _disposed;
 
-        public bool TryAddUser()
+        public bool TryAddRef()
         {
-            lock (Sync)
+            while (true)
             {
-                if (_disposeRequested || _disposed)
+                if (Volatile.Read(ref _removed) != 0)
                     return false;
 
-                _activeUsers++;
-                return true;
+                var activeUsers = Volatile.Read(ref _activeUsers);
+                if (Interlocked.CompareExchange(ref _activeUsers, activeUsers + 1, activeUsers) != activeUsers)
+                    continue;
+
+                if (Volatile.Read(ref _removed) == 0)
+                    return true;
+
+                ReleaseRef();
+                return false;
             }
         }
 
-        public void ReleaseUser()
+        public void ReleaseRef()
         {
-            var shouldDispose = false;
-            lock (Sync)
-            {
-                _activeUsers--;
-                shouldDispose = _disposeRequested && _activeUsers == 0;
-            }
-
-            if (shouldDispose)
-                Dispose();
+            Interlocked.Decrement(ref _activeUsers);
+            TryDispose();
         }
 
-        public void RequestDispose()
+        public void MarkRemoved()
         {
-            var shouldDispose = false;
-            lock (Sync)
-            {
-                _disposeRequested = true;
-                shouldDispose = _activeUsers == 0;
-            }
-
-            if (shouldDispose)
-                Dispose();
+            Volatile.Write(ref _removed, 1);
+            TryDispose();
         }
 
-        private void Dispose()
+        private void TryDispose()
         {
-            lock (Sync)
-            {
-                if (_disposed)
-                    return;
+            if (Volatile.Read(ref _removed) == 0 || Volatile.Read(ref _activeUsers) != 0)
+                return;
 
-                _disposed = true;
-            }
-
-            AttemptGate.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                AttemptGate.Dispose();
         }
     }
 
