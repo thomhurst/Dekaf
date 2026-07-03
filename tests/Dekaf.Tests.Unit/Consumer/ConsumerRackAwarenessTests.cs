@@ -72,6 +72,88 @@ public sealed class ConsumerRackAwarenessTests
     }
 
     [Test]
+    public async Task PreferredReadReplica_GroupingCache_RemainsActiveWithPreferredReplica()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+
+        connection.SendAsync<FetchRequest, FetchResponse>(
+                Arg.Any<FetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateFetchResponse(preferredReadReplica: 2)));
+
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, clientRack: "rack-a");
+        consumer.Assign(Partition);
+
+        await InvokeFetchFromBrokerAsync(consumer, brokerId: 1, [Partition]);
+
+        var preferredGroups = await InvokeGroupPartitionsByBrokerAsync(consumer);
+        var cachedGroups = await InvokeGroupPartitionsByBrokerAsync(consumer);
+
+        await Assert.That(cachedGroups).IsSameReferenceAs(preferredGroups);
+        await Assert.That(cachedGroups).ContainsKey(2);
+    }
+
+    [Test]
+    public async Task PreferredReadReplica_IncrementalUnassign_PrunesPreferredReplica()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+
+        connection.SendAsync<FetchRequest, FetchResponse>(
+                Arg.Any<FetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateFetchResponse(preferredReadReplica: 2)));
+
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, clientRack: "rack-a");
+        consumer.Assign(Partition);
+
+        await InvokeFetchFromBrokerAsync(consumer, brokerId: 1, [Partition]);
+        await Assert.That(GetPreferredReadReplicaCount(consumer)).IsEqualTo(1);
+
+        consumer.IncrementalUnassign([Partition]);
+
+        await Assert.That(GetPreferredReadReplicaCount(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PreferredReadReplica_AssignClearsPreviousPreferredReplica()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+
+        connection.SendAsync<FetchRequest, FetchResponse>(
+                Arg.Any<FetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateFetchResponse(preferredReadReplica: 2)));
+
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, clientRack: "rack-a");
+        consumer.Assign(Partition);
+
+        await InvokeFetchFromBrokerAsync(consumer, brokerId: 1, [Partition]);
+        await Assert.That(GetPreferredReadReplicaCount(consumer)).IsEqualTo(1);
+
+        consumer.Assign(Partition);
+
+        await Assert.That(GetPreferredReadReplicaCount(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task PreferredReadReplica_FetchErrorFallsBackToLeader()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -360,5 +442,16 @@ public sealed class ConsumerRackAwarenessTests
             throw new InvalidOperationException("GroupPartitionsByBrokerAsync returned unexpected type");
 
         return await valueTask.ConfigureAwait(false);
+    }
+
+    private static int GetPreferredReadReplicaCount(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_preferredReadReplicas", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_preferredReadReplicas field not found");
+
+        var value = field.GetValue(consumer) ?? throw new InvalidOperationException("_preferredReadReplicas was null");
+        return (int)(value.GetType().GetProperty("Count")?.GetValue(value)
+            ?? throw new InvalidOperationException("_preferredReadReplicas Count property not found"));
     }
 }

@@ -712,6 +712,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Invalidated whenever _assignment, _paused, or preferred read replicas change.
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
+    private long _cachedPartitionsByBrokerPreferredReplicaExpiresAtTimestamp = long.MaxValue;
     private readonly object _partitionCacheLock = new();
     private int _assignmentVersion;
 
@@ -997,6 +998,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             _assignment.Clear();
+            _preferredReadReplicas.Clear();
             PublishAssignmentSnapshot();
         }
         finally
@@ -1012,6 +1014,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // one-time latency cost for the discarded prefetch.
         ClearFetchBuffer();
 
+        InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
 
@@ -1026,6 +1029,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             _assignment.Clear();
+            _preferredReadReplicas.Clear();
             PublishAssignmentSnapshot();
         }
         finally
@@ -1050,6 +1054,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             _assignment.Clear();
+            _preferredReadReplicas.Clear();
             PublishAssignmentSnapshot();
         }
         finally
@@ -1072,6 +1077,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             _assignment.Clear();
+            _preferredReadReplicas.Clear();
             foreach (var partition in partitions)
             {
                 _assignment.Add(partition);
@@ -1100,6 +1106,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             _assignment.Clear();
+            _preferredReadReplicas.Clear();
             PublishAssignmentSnapshot();
         }
         finally
@@ -2909,6 +2916,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _highWatermarks.TryRemove(partition, out _);
             _watermarks.TryRemove(partition, out _);
             _eofEmitted.TryRemove(partition, out _);
+            _preferredReadReplicas.TryRemove(partition, out _);
             hadPaused |= _paused.TryRemove(partition, out _);
         }
         return hadPaused;
@@ -3793,6 +3801,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_partitionCacheLock)
         {
             _cachedPartitionsByBroker = null;
+            _cachedPartitionsByBrokerPreferredReplicaExpiresAtTimestamp = long.MaxValue;
         }
     }
 
@@ -3802,13 +3811,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int capturedVersion;
         TopicPartition[] assignmentArray;
         int assignmentCount;
+        var now = Stopwatch.GetTimestamp();
 
         lock (_partitionCacheLock)
         {
-            if (_cachedPartitionsByBroker is not null && _preferredReadReplicas.IsEmpty)
+            if (_cachedPartitionsByBroker is not null
+                && _cachedPartitionsByBrokerPreferredReplicaExpiresAtTimestamp > now)
             {
                 return _cachedPartitionsByBroker;
             }
+
+            _cachedPartitionsByBroker = null;
+            _cachedPartitionsByBrokerPreferredReplicaExpiresAtTimestamp = long.MaxValue;
 
             // Capture version and copy assignment/paused data under lock
             // Uses the immutable snapshot for thread-safe enumeration without _assignmentLock
@@ -3846,6 +3860,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Build result dictionary from resolved partitions (tasks already completed)
         var result = new Dictionary<int, List<TopicPartition>>();
+        var cacheExpiresAtTimestamp = long.MaxValue;
         for (var i = 0; i < assignmentCount; i++)
         {
             var (partition, broker) = brokerTasks[i].Result;
@@ -3859,6 +3874,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             list.Add(partition);
+
+            if (_preferredReadReplicas.TryGetValue(partition, out var preferred)
+                && preferred.ExpiresAtTimestamp < cacheExpiresAtTimestamp)
+            {
+                cacheExpiresAtTimestamp = preferred.ExpiresAtTimestamp;
+            }
         }
 
         // Return pooled array after extracting results
@@ -3872,10 +3893,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_partitionCacheLock)
         {
             if (result.Count > 0 && _cachedPartitionsByBroker is null
-                && _preferredReadReplicas.IsEmpty
                 && Volatile.Read(ref _assignmentVersion) == capturedVersion)
             {
                 _cachedPartitionsByBroker = result;
+                _cachedPartitionsByBrokerPreferredReplicaExpiresAtTimestamp = cacheExpiresAtTimestamp;
             }
             return _cachedPartitionsByBroker ?? result;
         }
@@ -3903,6 +3924,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var now = Stopwatch.GetTimestamp();
         var metadata = _metadataManager.Metadata;
+        // LastRefreshed is cluster-wide, so this conservatively revalidates
+        // preferred replicas after any metadata refresh.
         if (preferred.ExpiresAtTimestamp <= now
             || preferred.MetadataLastRefreshed != metadata.LastRefreshed)
         {
