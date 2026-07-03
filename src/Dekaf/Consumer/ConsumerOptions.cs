@@ -59,6 +59,12 @@ public sealed class ConsumerOptions
     public string? GroupRemoteAssignor { get; init; }
 
     /// <summary>
+    /// Logical rack ID of this consumer. Brokers use this for rack-aware assignment and
+    /// preferred read-replica selection when the cluster has rack metadata configured.
+    /// </summary>
+    public string? ClientRack { get; init; }
+
+    /// <summary>
     /// Offset commit mode controlling how offsets are stored and committed.
     /// Default is <see cref="OffsetCommitMode.Auto"/>.
     /// </summary>

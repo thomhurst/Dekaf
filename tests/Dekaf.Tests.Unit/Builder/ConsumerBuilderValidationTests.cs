@@ -97,6 +97,26 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithClientRack_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+        var result = builder.WithClientRack("rack-a");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithClientRack_SetsOptions()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientRack("rack-a")
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.ClientRack).IsEqualTo("rack-a");
+    }
+
+    [Test]
     public async Task SubscribeTo_Single_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
