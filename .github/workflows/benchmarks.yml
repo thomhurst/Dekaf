@@ -129,8 +129,54 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release
 
+      # windows-latest runs Docker in Windows-container mode and cannot pull the Linux
+      # Kafka image, so Testcontainers fails. Instead run a native single-node KRaft broker
+      # (Java is preinstalled on the runner) and point the benchmarks at it via
+      # KAFKA_BOOTSTRAP_SERVERS, which KafkaTestEnvironment uses as an external broker.
+      - name: Start Kafka (KRaft, native)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:JAVA_HOME = $env:JAVA_HOME_17_X64
+          Write-Host "Using JAVA_HOME=$env:JAVA_HOME"
+
+          $version = '4.0.0'
+          $pkg = "kafka_2.13-$version"
+          Write-Host "Downloading Apache Kafka $version..."
+          Invoke-WebRequest -Uri "https://archive.apache.org/dist/kafka/$version/$pkg.tgz" -OutFile kafka.tgz
+          tar -xzf kafka.tgz
+          $kafka = Join-Path (Get-Location) $pkg
+
+          # Force clients (Confluent + Dekaf) to reconnect to localhost after bootstrap.
+          Add-Content "$kafka\config\server.properties" "`nadvertised.listeners=PLAINTEXT://localhost:9092`n"
+
+          $clusterId = & "$kafka\bin\windows\kafka-storage.bat" random-uuid
+          & "$kafka\bin\windows\kafka-storage.bat" format --standalone -t $clusterId -c "$kafka\config\server.properties"
+
+          $proc = Start-Process -FilePath "$kafka\bin\windows\kafka-server-start.bat" `
+            -ArgumentList "`"$kafka\config\server.properties`"" `
+            -RedirectStandardOutput "$kafka\kafka.out" -RedirectStandardError "$kafka\kafka.err" -PassThru
+          Write-Host "Kafka starting (PID $($proc.Id)); waiting for :9092..."
+
+          $ready = $false
+          for ($i = 1; $i -le 60; $i++) {
+            try {
+              $c = New-Object System.Net.Sockets.TcpClient
+              $c.Connect('127.0.0.1', 9092)
+              if ($c.Connected) { $c.Close(); $ready = $true; break }
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ready) {
+            Write-Host '----- kafka.out -----'; Get-Content "$kafka\kafka.out" -ErrorAction SilentlyContinue
+            Write-Host '----- kafka.err -----'; Get-Content "$kafka\kafka.err" -ErrorAction SilentlyContinue
+            throw 'Kafka did not become ready on :9092'
+          }
+          Write-Host 'Kafka is ready on localhost:9092'
+
       - name: Run Client Benchmarks with Native Memory Profiler
         shell: pwsh
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           cd tools/Dekaf.Benchmarks
           dotnet run -c Release --no-build -- --filter "*Client*" --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
