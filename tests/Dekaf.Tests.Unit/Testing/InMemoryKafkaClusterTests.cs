@@ -99,6 +99,24 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_ClientQuotas_AcceptsAlterAndDescribeReturnsEmptyState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+
+        await admin.AlterClientQuotasAsync(
+        [
+            ClientQuotaAlteration.Set(
+                ClientQuotaEntity.ForUser("alice"),
+                "consumer_byte_rate",
+                1024)
+        ]);
+        var quotas = await admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
+
+        await Assert.That(quotas).IsEmpty();
+    }
+
+    [Test]
     public async Task Admin_DescribeLogDirs_ReturnsInMemoryReplicaInfo()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -138,6 +156,16 @@ public sealed class InMemoryKafkaClusterTests
 
         await Assert.That(result[replica].TopicPartitionReplica).IsEqualTo(replica);
         await Assert.That(result[replica].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await producer.PurgeAsync(PurgeOptions.None);
+        await producer.PurgeAsync(PurgeOptions.All);
     }
 
     [Test]

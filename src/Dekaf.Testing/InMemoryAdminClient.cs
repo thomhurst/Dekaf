@@ -398,6 +398,54 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(result);
     }
 
+    public ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
+        ClientQuotaFilter filter,
+        DescribeClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        if (filter.Components is null)
+            throw new ArgumentException("Client quota filter components must not be null.", nameof(filter));
+
+        foreach (var component in filter.Components)
+            ValidateClientQuotaFilterComponent(component);
+
+        return ValueTask.FromResult<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(
+            new Dictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>());
+    }
+
+    public ValueTask AlterClientQuotasAsync(
+        IEnumerable<ClientQuotaAlteration> alterations,
+        AlterClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(alterations);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        foreach (var alteration in alterations)
+        {
+            ArgumentNullException.ThrowIfNull(alteration);
+            ArgumentNullException.ThrowIfNull(alteration.Entity);
+            if (alteration.Entity.Components is null || alteration.Entity.Components.Count == 0)
+                throw new ArgumentException("Client quota alteration entity must contain at least one component.", nameof(alterations));
+
+            if (alteration.Operations is null || alteration.Operations.Count == 0)
+                throw new ArgumentException("Client quota alteration must contain at least one operation.", nameof(alterations));
+
+            foreach (var operation in alteration.Operations)
+            {
+                ArgumentNullException.ThrowIfNull(operation);
+                ArgumentException.ThrowIfNullOrEmpty(operation.Key);
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
         IEnumerable<int> brokerIds,
         IEnumerable<TopicPartition>? partitions = null,
@@ -582,6 +630,25 @@ public sealed class InMemoryAdminClient : IAdminClient
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private static void ValidateClientQuotaFilterComponent(ClientQuotaFilterComponent component)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+
+        switch (component.MatchType)
+        {
+            case ClientQuotaMatchType.Exact when component.Match is null:
+                throw new ArgumentException("Exact client quota filter components must specify a match.");
+            case ClientQuotaMatchType.Exact:
+                return;
+            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified when component.Match is not null:
+                throw new ArgumentException("Only exact client quota filter components can specify a match.");
+            case ClientQuotaMatchType.Default or ClientQuotaMatchType.AnySpecified:
+                return;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(component), component.MatchType, "Unsupported client quota match type.");
+        }
     }
 
     private static void ValidateTopicPartition(TopicPartition topicPartition)
