@@ -68,6 +68,74 @@ public sealed class AdminLogDirsTests
         await Assert.That(result[brokerTwo].ErrorCode).IsEqualTo(ErrorCode.None);
     }
 
+    [Test]
+    public async Task DescribeLogDirsAsync_NullBrokerIds_ThrowsArgumentNullException()
+    {
+        await using var context = new AdminTestContext();
+
+        async Task Act() => await context.Client.DescribeLogDirsAsync(null!);
+
+        await Assert.That(Act).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task DescribeLogDirsAsync_NegativeBrokerId_ThrowsArgumentOutOfRangeException()
+    {
+        await using var context = new AdminTestContext();
+
+        async Task Act() => await context.Client.DescribeLogDirsAsync([-1]);
+
+        await Assert.That(Act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task DescribeLogDirsAsync_NegativePartition_ThrowsArgumentOutOfRangeException()
+    {
+        await using var context = new AdminTestContext();
+
+        async Task Act() => await context.Client.DescribeLogDirsAsync(
+            [1],
+            [new TopicPartition("topic-a", -1)]);
+
+        await Assert.That(Act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task AlterReplicaLogDirsAsync_NullAssignments_ThrowsArgumentNullException()
+    {
+        await using var context = new AdminTestContext();
+
+        async Task Act() => await context.Client.AlterReplicaLogDirsAsync(null!);
+
+        await Assert.That(Act).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task AlterReplicaLogDirsAsync_NegativeBrokerId_ThrowsArgumentOutOfRangeException()
+    {
+        await using var context = new AdminTestContext();
+
+        async Task Act() => await context.Client.AlterReplicaLogDirsAsync(new Dictionary<TopicPartitionReplica, string>
+        {
+            [new TopicPartitionReplica("topic-a", 0, -1)] = "/data-1"
+        });
+
+        await Assert.That(Act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task AlterReplicaLogDirsAsync_EmptyLogDir_ThrowsArgumentException()
+    {
+        await using var context = new AdminTestContext();
+
+        async Task Act() => await context.Client.AlterReplicaLogDirsAsync(new Dictionary<TopicPartitionReplica, string>
+        {
+            [new TopicPartitionReplica("topic-a", 0, 1)] = " "
+        });
+
+        await Assert.That(Act).Throws<ArgumentException>();
+    }
+
     private static DescribeLogDirsResponse DescribeResponse(
         string logDir,
         string topicName,

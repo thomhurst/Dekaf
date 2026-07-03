@@ -1963,8 +1963,8 @@ public sealed class AdminClient : IAdminClient
                 DescribeLogDirsRequest.LowestSupportedVersion,
                 DescribeLogDirsRequest.HighestSupportedVersion);
 
-            var results = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
-            foreach (var brokerId in brokerIdList)
+            // Fan out to all requested brokers in parallel.
+            var brokerResults = await Task.WhenAll(brokerIdList.Select(async brokerId =>
             {
                 var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
                 var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
@@ -2006,7 +2006,13 @@ public sealed class AdminClient : IAdminClient
                     };
                 }
 
-                results[brokerId] = brokerResult;
+                return (BrokerId: brokerId, Result: brokerResult);
+            })).ConfigureAwait(false);
+
+            var results = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>(brokerResults.Length);
+            foreach (var brokerResult in brokerResults)
+            {
+                results[brokerResult.BrokerId] = brokerResult.Result;
             }
 
             return results;
@@ -2047,8 +2053,8 @@ public sealed class AdminClient : IAdminClient
                 AlterReplicaLogDirsRequest.LowestSupportedVersion,
                 AlterReplicaLogDirsRequest.HighestSupportedVersion);
 
-            var results = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>();
-            foreach (var brokerAssignments in assignmentsByBroker)
+            // Fan out to all target brokers in parallel.
+            var brokerResults = await Task.WhenAll(assignmentsByBroker.Select(async brokerAssignments =>
             {
                 var brokerId = brokerAssignments.Key;
                 var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
@@ -2062,17 +2068,29 @@ public sealed class AdminClient : IAdminClient
                     apiVersion,
                     cancellationToken).ConfigureAwait(false);
 
+                var brokerResult = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>();
                 foreach (var topic in response.Results)
                 {
                     foreach (var partition in topic.Partitions)
                     {
                         var replica = new TopicPartitionReplica(topic.TopicName, partition.PartitionIndex, brokerId);
-                        results[replica] = new AlterReplicaLogDirResultInfo
+                        brokerResult[replica] = new AlterReplicaLogDirResultInfo
                         {
                             TopicPartitionReplica = replica,
                             ErrorCode = partition.ErrorCode
                         };
                     }
+                }
+
+                return brokerResult;
+            })).ConfigureAwait(false);
+
+            var results = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(replicaAssignments.Count);
+            foreach (var brokerResult in brokerResults)
+            {
+                foreach (var (replica, result) in brokerResult)
+                {
+                    results[replica] = result;
                 }
             }
 
