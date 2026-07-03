@@ -74,7 +74,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 
 | Fluent API | Config key | Notes |
 |------------|------------|-------|
-| `WithBootstrapServers(...)` | `BootstrapServers` | Comma-separated string or JSON array |
+| `WithBootstrapServers(...)` | `BootstrapServers` | Server list (prefer `params string[]` in code; comma-separated string and JSON arrays are also supported) |
 | `WithClientId(...)` | `ClientId` | String |
 | `WithGroupId(...)` | `GroupId` | String |
 | `WithGroupInstanceId(...)` | `GroupInstanceId` | String |
@@ -112,10 +112,11 @@ Topics, deserializers, rebalance listeners, interceptors, and retry policies are
 
 ### WithBootstrapServers
 
-Kafka broker addresses:
+Kafka broker addresses. Prefer the typed `params string[]` overload in code; the single-string overload remains a convenience for configuration-style comma-separated values.
 
 ```csharp
 .WithBootstrapServers("localhost:9092")
+.WithBootstrapServers("broker1:9092", "broker2:9092")
 .WithBootstrapServers("broker1:9092,broker2:9092")
 ```
 

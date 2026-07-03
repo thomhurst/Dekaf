@@ -2517,14 +2517,14 @@ public sealed class AdminClientBuilder
     public AdminClientBuilder WithBootstrapServers(string servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        _bootstrapServers = BootstrapServerList.FromCommaSeparated(servers);
         return this;
     }
 
     public AdminClientBuilder WithBootstrapServers(params string[] servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = [..servers];
+        _bootstrapServers = BootstrapServerList.FromValues(servers);
         return this;
     }
 

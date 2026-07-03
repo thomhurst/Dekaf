@@ -84,14 +84,14 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        _bootstrapServers = BootstrapServerList.FromCommaSeparated(servers);
         return this;
     }
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = [..servers];
+        _bootstrapServers = BootstrapServerList.FromValues(servers);
         return this;
     }
 
@@ -1027,14 +1027,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        _bootstrapServers = BootstrapServerList.FromCommaSeparated(servers);
         return this;
     }
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = [..servers];
+        _bootstrapServers = BootstrapServerList.FromValues(servers);
         return this;
     }
 
@@ -1967,14 +1967,14 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        _bootstrapServers = BootstrapServerList.FromCommaSeparated(servers);
         return this;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(params string[] servers)
     {
         ThrowIfClientOwnedBootstrap();
-        _bootstrapServers = [..servers];
+        _bootstrapServers = BootstrapServerList.FromValues(servers);
         return this;
     }
 
