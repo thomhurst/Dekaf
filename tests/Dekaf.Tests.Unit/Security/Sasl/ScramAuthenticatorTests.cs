@@ -7,25 +7,27 @@ namespace Dekaf.Tests.Unit.Security.Sasl;
 public class ScramAuthenticatorTests
 {
     [Test]
-    public async Task Hmac_ScramSha256_MatchesOneShotHashData()
+    public async Task Hmac_ScramSha256_MatchesInstanceHmac()
     {
         var key = "test-key"u8.ToArray();
         var message = "test-message"u8.ToArray();
 
         var result = InvokeHmac(SaslMechanism.ScramSha256, key, message);
 
-        await Assert.That(result).IsEquivalentTo(HMACSHA256.HashData(key, message));
+        using var hmac = new HMACSHA256(key);
+        await Assert.That(result).IsEquivalentTo(hmac.ComputeHash(message));
     }
 
     [Test]
-    public async Task Hmac_ScramSha512_MatchesOneShotHashData()
+    public async Task Hmac_ScramSha512_MatchesInstanceHmac()
     {
         var key = "test-key"u8.ToArray();
         var message = "test-message"u8.ToArray();
 
         var result = InvokeHmac(SaslMechanism.ScramSha512, key, message);
 
-        await Assert.That(result).IsEquivalentTo(HMACSHA512.HashData(key, message));
+        using var hmac = new HMACSHA512(key);
+        await Assert.That(result).IsEquivalentTo(hmac.ComputeHash(message));
     }
 
     private static byte[] InvokeHmac(SaslMechanism mechanism, byte[] key, byte[] message)
