@@ -213,6 +213,40 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task ConnectAsync_ConfiguresTcpKeepAlive(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions
+                {
+                    TcpKeepAliveTime = TimeSpan.FromSeconds(10),
+                    TcpKeepAliveInterval = TimeSpan.FromSeconds(2),
+                    TcpKeepAliveRetryCount = 2
+                });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var socket = GetPrivateField<Socket>(connection, "_socket");
+
+            await Assert.That(IsKeepAliveEnabled(socket)).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task SendFireAndForgetAsync_WritesFrameToStream(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -285,5 +319,27 @@ public sealed class KafkaConnectionTests
             throw new InvalidOperationException($"Field '{name}' was not found.");
 
         field.SetValue(connection, value);
+    }
+
+    private static T GetPrivateField<T>(KafkaConnection connection, string name)
+    {
+        var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field is null)
+            throw new InvalidOperationException($"Field '{name}' was not found.");
+
+        return (T)field.GetValue(connection)!;
+    }
+
+    private static bool IsKeepAliveEnabled(Socket socket)
+    {
+        var option = socket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive);
+        return option switch
+        {
+            int value => value != 0,
+            bool value => value,
+            byte[] bytes when bytes.Length >= sizeof(int) => BitConverter.ToInt32(bytes) != 0,
+            byte[] bytes when bytes.Length > 0 => bytes[0] != 0,
+            _ => false
+        };
     }
 }

@@ -372,6 +372,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             _socket.SendBufferSize = _options.SendBufferSize;
         if (_options.ReceiveBufferSize > 0)
             _socket.ReceiveBufferSize = _options.ReceiveBufferSize;
+        ConfigureTcpKeepAlive(_socket);
 
         var endpoint = new DnsEndPoint(_host, _port);
         await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
@@ -1587,6 +1588,50 @@ public sealed partial class KafkaConnection : IKafkaConnection
         return options;
     }
 
+    private void ConfigureTcpKeepAlive(Socket socket)
+    {
+        if (!_options.EnableTcpKeepAlive)
+            return;
+
+        TrySetSocketOption(socket, SocketOptionLevel.Socket, SocketOptionName.KeepAlive, 1);
+
+        var keepAliveTimeSeconds = ToPositiveSeconds(_options.TcpKeepAliveTime);
+        if (keepAliveTimeSeconds > 0)
+            TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, keepAliveTimeSeconds);
+
+        var keepAliveIntervalSeconds = ToPositiveSeconds(_options.TcpKeepAliveInterval);
+        if (keepAliveIntervalSeconds > 0)
+            TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, keepAliveIntervalSeconds);
+
+        if (_options.TcpKeepAliveRetryCount > 0)
+            TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, _options.TcpKeepAliveRetryCount);
+    }
+
+    private static int ToPositiveSeconds(TimeSpan value)
+    {
+        if (value <= TimeSpan.Zero)
+            return 0;
+
+        return (int)Math.Min(Math.Ceiling(value.TotalSeconds), int.MaxValue);
+    }
+
+    private static void TrySetSocketOption(Socket socket, SocketOptionLevel level, SocketOptionName name, int value)
+    {
+        try
+        {
+            socket.SetSocketOption(level, name, value);
+        }
+        catch (SocketException)
+        {
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
+        catch (NotSupportedException)
+        {
+        }
+    }
+
     private static bool HasCustomCaCertificate(TlsConfig? tlsConfig)
     {
         if (tlsConfig is null)
@@ -2598,6 +2643,27 @@ public sealed class ConnectionOptions
     /// Receive buffer size in bytes.
     /// </summary>
     public int ReceiveBufferSize { get; init; }
+
+    /// <summary>
+    /// Whether to enable TCP keepalive on broker sockets.
+    /// </summary>
+    public bool EnableTcpKeepAlive { get; init; } = true;
+
+    /// <summary>
+    /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Number of TCP keepalive probes before the connection is considered dead.
+    /// Unsupported platforms ignore this.
+    /// </summary>
+    public int TcpKeepAliveRetryCount { get; init; } = 3;
 
     /// <summary>
     /// Minimum segment size for pipe.
