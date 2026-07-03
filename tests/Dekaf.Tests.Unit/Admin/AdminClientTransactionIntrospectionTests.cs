@@ -1,4 +1,6 @@
+using System.Reflection;
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -48,6 +50,12 @@ public sealed class AdminClientTransactionIntrospectionTests
                         TransactionalId = "tx-b",
                         ProducerId = 202,
                         TransactionState = "PrepareCommit"
+                    },
+                    new ListTransactionsResponseState
+                    {
+                        TransactionalId = "tx-a",
+                        ProducerId = 999,
+                        TransactionState = "Ongoing"
                     }
                 ]
             }));
@@ -62,6 +70,8 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await Assert.That(result.UnknownStateFilters).IsEquivalentTo(["UnknownState"]);
         await Assert.That(result.Transactions.Select(t => t.TransactionalId)).IsEquivalentTo(["tx-a", "tx-b"]);
+        await Assert.That(result.Transactions.Count(t => t.TransactionalId == "tx-a")).IsEqualTo(1);
+        await Assert.That(result.Transactions.Single(t => t.TransactionalId == "tx-a").CoordinatorId).IsEqualTo(1);
         await Assert.That(result.Transactions.Single(t => t.TransactionalId == "tx-b").CoordinatorId).IsEqualTo(2);
 
         await connections[1].Received(1).SendAsync<ListTransactionsRequest, ListTransactionsResponse>(
@@ -74,6 +84,39 @@ public sealed class AdminClientTransactionIntrospectionTests
                 r.TransactionalIdPattern == "tx-.*"),
             2,
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ListTransactionsAsync_DurationFilterOnV0Broker_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(listTransactionsMaxVersion: 0);
+
+        await Assert.That(async () =>
+        {
+            await admin.ListTransactionsAsync(new ListTransactionsOptions { DurationFilterMs = 1000 });
+        }).Throws<BrokerVersionException>();
+    }
+
+    [Test]
+    public async Task ListTransactionsAsync_TransactionalIdPatternOnV1Broker_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(listTransactionsMaxVersion: 1);
+
+        await Assert.That(async () =>
+        {
+            await admin.ListTransactionsAsync(new ListTransactionsOptions { TransactionalIdPattern = "tx-.*" });
+        }).Throws<BrokerVersionException>();
+    }
+
+    [Test]
+    public async Task ListTransactionsAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(includeListTransactionsApi: false);
+
+        await Assert.That(async () =>
+        {
+            await admin.ListTransactionsAsync();
+        }).Throws<BrokerVersionException>();
     }
 
     [Test]
@@ -133,6 +176,66 @@ public sealed class AdminClientTransactionIntrospectionTests
     }
 
     [Test]
+    public async Task DescribeTransactionsAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(includeDescribeTransactionsApi: false);
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeTransactionsAsync([]);
+        }).Throws<BrokerVersionException>();
+    }
+
+    [Test]
+    public async Task DescribeTransactionsAsync_EmptyInput_ReturnsEmptyResult()
+    {
+        var (admin, _) = CreateAdminWithMockConnections();
+
+        var result = await admin.DescribeTransactionsAsync([]);
+
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
+    public async Task DescribeTransactionsAsync_MetadataRefreshItemError_ThrowsKafkaException()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        connections[1].SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
+                Arg.Any<DescribeTransactionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateDescribeTransactionsResponse(
+                new DescribeTransactionsRequest { TransactionalIds = ["tx-a"] },
+                producerId: 101,
+                errorCode: ErrorCode.BrokerNotAvailable)));
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeTransactionsAsync(["tx-a"]);
+        }).Throws<KafkaException>();
+    }
+
+    [Test]
+    public async Task DescribeTransactionsAsync_NonRetriableItemError_ReturnsResultError()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        connections[1].SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
+                Arg.Any<DescribeTransactionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateDescribeTransactionsResponse(
+                new DescribeTransactionsRequest { TransactionalIds = ["tx-a"] },
+                producerId: 101,
+                errorCode: ErrorCode.TransactionalIdAuthorizationFailed)));
+
+        var result = await admin.DescribeTransactionsAsync(["tx-a"]);
+
+        await Assert.That(result["tx-a"].ErrorCode).IsEqualTo(ErrorCode.TransactionalIdAuthorizationFailed);
+    }
+
+    [Test]
     public async Task DescribeProducersAsync_GroupsPartitionsByLeaderAndMapsActiveProducers()
     {
         var (admin, connections) = CreateAdminWithMockConnections();
@@ -174,15 +277,88 @@ public sealed class AdminClientTransactionIntrospectionTests
             Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    public async Task DescribeProducersAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(includeDescribeProducersApi: false);
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeProducersAsync([]);
+        }).Throws<BrokerVersionException>();
+    }
+
+    [Test]
+    public async Task DescribeProducersAsync_EmptyInput_ReturnsEmptyResult()
+    {
+        var (admin, _) = CreateAdminWithMockConnections();
+
+        var result = await admin.DescribeProducersAsync([]);
+
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
+    public async Task DescribeProducersAsync_MetadataRefreshPartitionError_ThrowsKafkaException()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        connections[1].SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
+                Arg.Any<DescribeProducersRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(
+                callInfo.Arg<DescribeProducersRequest>(),
+                producerId: 101,
+                errorCode: ErrorCode.BrokerNotAvailable)));
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeProducersAsync([new TopicPartition("orders", 0)]);
+        }).Throws<KafkaException>();
+    }
+
+    [Test]
+    public async Task DescribeProducersAsync_NonRetriablePartitionError_ReturnsResultError()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        connections[1].SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
+                Arg.Any<DescribeProducersRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(
+                callInfo.Arg<DescribeProducersRequest>(),
+                producerId: 101,
+                errorCode: ErrorCode.TopicAuthorizationFailed,
+                errorMessage: "denied")));
+
+        var result = await admin.DescribeProducersAsync([new TopicPartition("orders", 0)]);
+
+        await Assert.That(result[new TopicPartition("orders", 0)].ErrorCode).IsEqualTo(ErrorCode.TopicAuthorizationFailed);
+        await Assert.That(result[new TopicPartition("orders", 0)].ErrorMessage).IsEqualTo("denied");
+        await Assert.That(result[new TopicPartition("orders", 0)].ActiveProducers).IsEmpty();
+    }
+
+    [Test]
+    public async Task DescribeProducersAsync_LeaderNotAvailable_ThrowsKafkaException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections();
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeProducersAsync([new TopicPartition("orders", 9)]);
+        }).Throws<KafkaException>();
+    }
+
     private static DescribeTransactionsResponse CreateDescribeTransactionsResponse(
         DescribeTransactionsRequest request,
-        long producerId)
+        long producerId,
+        ErrorCode errorCode = ErrorCode.None)
     {
         return new DescribeTransactionsResponse
         {
             TransactionStates = request.TransactionalIds.Select(transactionalId => new DescribeTransactionsResponseState
             {
-                ErrorCode = ErrorCode.None,
+                ErrorCode = errorCode,
                 TransactionalId = transactionalId,
                 TransactionState = "Ongoing",
                 TransactionTimeoutMs = 60000,
@@ -203,7 +379,9 @@ public sealed class AdminClientTransactionIntrospectionTests
 
     private static DescribeProducersResponse CreateDescribeProducersResponse(
         DescribeProducersRequest request,
-        long producerId)
+        long producerId,
+        ErrorCode errorCode = ErrorCode.None,
+        string? errorMessage = null)
     {
         return new DescribeProducersResponse
         {
@@ -213,25 +391,40 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Partitions = topic.PartitionIndexes.Select(partition => new DescribeProducersResponsePartition
                 {
                     PartitionIndex = partition,
-                    ErrorCode = ErrorCode.None,
-                    ActiveProducers =
-                    [
-                        new DescribeProducersResponseProducer
-                        {
-                            ProducerId = producerId,
-                            ProducerEpoch = 4,
-                            LastSequence = 10,
-                            LastTimestamp = 1700000000000,
-                            CoordinatorEpoch = 5,
-                            CurrentTxnStartOffset = 99
-                        }
-                    ]
+                    ErrorCode = errorCode,
+                    ErrorMessage = errorMessage,
+                    ActiveProducers = CreateActiveProducers(errorCode, producerId)
                 }).ToList()
             }).ToList()
         };
     }
 
-    private static (AdminClient Admin, IReadOnlyDictionary<int, IKafkaConnection> Connections) CreateAdminWithMockConnections()
+    private static IReadOnlyList<DescribeProducersResponseProducer> CreateActiveProducers(
+        ErrorCode errorCode,
+        long producerId)
+    {
+        if (errorCode != ErrorCode.None)
+            return [];
+
+        return
+        [
+            new DescribeProducersResponseProducer
+            {
+                ProducerId = producerId,
+                ProducerEpoch = 4,
+                LastSequence = 10,
+                LastTimestamp = 1700000000000,
+                CoordinatorEpoch = 5,
+                CurrentTxnStartOffset = 99
+            }
+        ];
+    }
+
+    private static (AdminClient Admin, IReadOnlyDictionary<int, IKafkaConnection> Connections) CreateAdminWithMockConnections(
+        bool includeListTransactionsApi = true,
+        bool includeDescribeTransactionsApi = true,
+        bool includeDescribeProducersApi = true,
+        short listTransactionsMaxVersion = 2)
     {
         var connections = new Dictionary<int, IKafkaConnection>
         {
@@ -242,9 +435,66 @@ public sealed class AdminClientTransactionIntrospectionTests
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(callInfo => ValueTask.FromResult(connections[callInfo.ArgAt<int>(0)]));
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connections[1]));
 
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
-        metadataManager.Metadata.Update(new MetadataResponse
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+        SetInstanceField(metadataManager, "_metadataApiVersion", MetadataRequest.HighestSupportedVersion);
+
+        connections[1].SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateMetadataResponse()));
+
+        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.SetApiVersion(ApiKey.Metadata, MetadataRequest.LowestSupportedVersion, MetadataRequest.HighestSupportedVersion);
+        if (includeListTransactionsApi)
+            metadataManager.SetApiVersion(ApiKey.ListTransactions, 0, listTransactionsMaxVersion);
+        if (includeDescribeTransactionsApi)
+            metadataManager.SetApiVersion(ApiKey.DescribeTransactions, 0, 0);
+        if (includeDescribeProducersApi)
+            metadataManager.SetApiVersion(ApiKey.DescribeProducers, 0, 0);
+
+        var admin = new AdminClient(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            pool,
+            metadataManager);
+
+        return (admin, connections);
+    }
+
+    private static void SetupTransactionCoordinatorLookup(IKafkaConnection connection, int coordinatorId)
+    {
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<FindCoordinatorRequest>();
+
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = coordinatorId,
+                            Host = $"broker-{coordinatorId}",
+                            Port = 9090 + coordinatorId,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+    }
+
+    private static MetadataResponse CreateMetadataResponse()
+    {
+        return new MetadataResponse
         {
             Brokers =
             [
@@ -280,19 +530,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                     ]
                 }
             ]
-        });
-
-        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
-        metadataManager.SetApiVersion(ApiKey.ListTransactions, 0, 2);
-        metadataManager.SetApiVersion(ApiKey.DescribeTransactions, 0, 0);
-        metadataManager.SetApiVersion(ApiKey.DescribeProducers, 0, 0);
-
-        var admin = new AdminClient(
-            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
-            pool,
-            metadataManager);
-
-        return (admin, connections);
+        };
     }
 
     private static IKafkaConnection CreateConnection(int brokerId)
@@ -303,5 +541,13 @@ public sealed class AdminClientTransactionIntrospectionTests
         connection.Port.Returns(9090 + brokerId);
         connection.IsConnected.Returns(true);
         return connection;
+    }
+
+    private static void SetInstanceField<T>(object target, string name, T value)
+    {
+        const BindingFlags instanceFieldFlags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var field = target.GetType().GetField(name, instanceFieldFlags);
+        field!.SetValue(target, value);
     }
 }

@@ -152,6 +152,70 @@ public sealed class TransactionIntrospectionMessageTests
     }
 
     [Test]
+    public async Task ListTransactionsRequest_V0_OmitsDurationAndTransactionalIdPattern()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new ListTransactionsRequest
+        {
+            StateFilters = ["Ongoing"],
+            ProducerIdFilters = [77],
+            DurationFilterMs = 30000,
+            TransactionalIdPattern = "tx-.*"
+        };
+
+        request.Write(ref writer, version: 0);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var statesLengthPlus1 = reader.ReadUnsignedVarInt();
+        var state = reader.ReadCompactNonNullableString();
+        var producerIdsLengthPlus1 = reader.ReadUnsignedVarInt();
+        var producerId = reader.ReadInt64();
+        reader.SkipTaggedFields();
+        var remaining = reader.Remaining;
+
+        await Assert.That(statesLengthPlus1).IsEqualTo(2);
+        await Assert.That(state).IsEqualTo("Ongoing");
+        await Assert.That(producerIdsLengthPlus1).IsEqualTo(2);
+        await Assert.That(producerId).IsEqualTo(77);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ListTransactionsRequest_V1_EncodesDurationAndOmitsTransactionalIdPattern()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new ListTransactionsRequest
+        {
+            StateFilters = ["Ongoing"],
+            ProducerIdFilters = [77],
+            DurationFilterMs = 30000,
+            TransactionalIdPattern = "tx-.*"
+        };
+
+        request.Write(ref writer, version: 1);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var statesLengthPlus1 = reader.ReadUnsignedVarInt();
+        var state = reader.ReadCompactNonNullableString();
+        var producerIdsLengthPlus1 = reader.ReadUnsignedVarInt();
+        var producerId = reader.ReadInt64();
+        var durationFilterMs = reader.ReadInt64();
+        reader.SkipTaggedFields();
+        var remaining = reader.Remaining;
+
+        await Assert.That(statesLengthPlus1).IsEqualTo(2);
+        await Assert.That(state).IsEqualTo("Ongoing");
+        await Assert.That(producerIdsLengthPlus1).IsEqualTo(2);
+        await Assert.That(producerId).IsEqualTo(77);
+        await Assert.That(durationFilterMs).IsEqualTo(30000);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ListTransactionsResponse_V2_ParsesUnknownFiltersAndStates()
     {
         var buffer = new ArrayBufferWriter<byte>();
