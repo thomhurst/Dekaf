@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
@@ -25,6 +26,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly string? _memberId;
+    private string? _subscriptionPattern;
     private bool _disposed;
 
     public InMemoryConsumer(InMemoryKafkaCluster cluster)
@@ -74,6 +76,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             lock (_gate)
                 return _subscription.ToHashSet(StringComparer.Ordinal);
+        }
+    }
+
+    public string? SubscriptionPattern
+    {
+        get
+        {
+            lock (_gate)
+                return _subscriptionPattern;
         }
     }
 
@@ -136,6 +147,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            _subscriptionPattern = null;
             _subscription.Clear();
             foreach (var topic in topics.Where(topic => !string.IsNullOrWhiteSpace(topic)).Distinct(StringComparer.Ordinal))
                 _subscription.Add(topic);
@@ -157,12 +169,39 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         Subscribe(topics);
     }
 
+    public void SubscribePattern(string pattern)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        if (string.IsNullOrWhiteSpace(pattern))
+            throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
+
+        if (string.IsNullOrWhiteSpace(_options.GroupId))
+            throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
+
+        ThrowIfDisposed();
+
+        var regex = new Regex(pattern, RegexOptions.CultureInvariant);
+        var topicPartitions = _cluster.ListTopics()
+            .Where(topic => IsFullMatch(regex, topic))
+            .SelectMany(topic => _cluster.GetTopicPartitions(topic))
+            .ToArray();
+
+        lock (_gate)
+        {
+            _subscriptionPattern = pattern;
+            _subscription.Clear();
+            ReplaceAssignment(topicPartitions);
+            RegisterConsumerGroupMemberUnderLock();
+        }
+    }
+
     public void Unsubscribe()
     {
         ThrowIfDisposed();
 
         lock (_gate)
         {
+            _subscriptionPattern = null;
             _subscription.Clear();
             _assignment.Clear();
             _paused.Clear();
@@ -367,6 +406,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            _subscriptionPattern = null;
             _subscription.Clear();
             ReplaceAssignment(partitions);
             RegisterConsumerGroupMemberUnderLock();
@@ -572,6 +612,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private IEnumerable<TopicPartition> SelectTargetPartitions(TopicPartition[] partitions)
     {
         return partitions.Length == 0 ? _assignment.ToArray() : partitions;
+    }
+
+    private static bool IsFullMatch(Regex regex, string topic)
+    {
+        var match = regex.Match(topic);
+        return match.Success && match.Index == 0 && match.Length == topic.Length;
     }
 
     private void CommitCurrentOffsets()
