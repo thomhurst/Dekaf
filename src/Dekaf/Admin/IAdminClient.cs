@@ -123,6 +123,29 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes client quotas matching the filter.
+    /// </summary>
+    /// <param name="filter">The quota filter.</param>
+    /// <param name="options">Options for the request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A dictionary mapping quota entities to quota key/value pairs.</returns>
+    ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
+        ClientQuotaFilter filter,
+        DescribeClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alters client quotas.
+    /// </summary>
+    /// <param name="alterations">The quota alterations to perform.</param>
+    /// <param name="options">Options for the request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask AlterClientQuotasAsync(
+        IEnumerable<ClientQuotaAlteration> alterations,
+        AlterClientQuotasOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes configurations for the specified resources.
     /// </summary>
     /// <param name="resources">The resources to describe configurations for.</param>
