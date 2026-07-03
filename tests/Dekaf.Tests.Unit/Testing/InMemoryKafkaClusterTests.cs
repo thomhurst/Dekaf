@@ -2,6 +2,7 @@ using System.Reflection;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
@@ -95,6 +96,48 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(listings.Single().Name).IsEqualTo("events");
         await Assert.That(descriptions["events"].Partitions.Count).IsEqualTo(3);
         await Assert.That(afterDelete).IsEmpty();
+    }
+
+    [Test]
+    public async Task Admin_DescribeLogDirs_ReturnsInMemoryReplicaInfo()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var admin = new InMemoryAdminClient(cluster);
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "events",
+            Partition = 1,
+            Key = "k",
+            Value = "v"
+        });
+
+        var result = await admin.DescribeLogDirsAsync([0], [new TopicPartition("events", 1)]);
+
+        await Assert.That(result.Keys).IsEquivalentTo([0]);
+        await Assert.That(result[0].Keys).IsEquivalentTo(["in-memory"]);
+        var replica = result[0]["in-memory"].ReplicaInfos[new TopicPartition("events", 1)];
+        await Assert.That(replica.Size).IsEqualTo(1);
+        await Assert.That(replica.OffsetLag).IsEqualTo(0);
+        await Assert.That(replica.IsFuture).IsFalse();
+    }
+
+    [Test]
+    public async Task Admin_AlterReplicaLogDirs_ReturnsSuccessPerReplica()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var replica = new TopicPartitionReplica("events", 0, 0);
+
+        var result = await admin.AlterReplicaLogDirsAsync(new Dictionary<TopicPartitionReplica, string>
+        {
+            [replica] = "in-memory"
+        });
+
+        await Assert.That(result[replica].TopicPartitionReplica).IsEqualTo(replica);
+        await Assert.That(result[replica].ErrorCode).IsEqualTo(ErrorCode.None);
     }
 
     [Test]
