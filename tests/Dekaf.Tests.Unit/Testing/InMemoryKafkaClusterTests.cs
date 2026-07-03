@@ -1,6 +1,7 @@
 using System.Reflection;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
@@ -170,6 +171,18 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(filtered).IsEmpty();
         await Assert.That(renewed <= token.MaxTimestamp).IsTrue();
         await Assert.That(afterExpire.Single().ExpiryTimestamp).IsEqualTo(expired);
+    }
+
+    [Test]
+    public async Task Admin_DelegationTokenRenewMissing_ThrowsKafkaException()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.RenewDelegationTokenAsync([1, 2, 3]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenNotFound);
     }
 
     [Test]

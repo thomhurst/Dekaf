@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Telemetry;
@@ -925,7 +926,9 @@ public sealed class InMemoryAdminClient : IAdminClient
         lock (_delegationTokenGate)
         {
             if (!_delegationTokens.TryGetValue(key, out var token))
-                throw new InvalidOperationException("Delegation token was not found.");
+                throw KafkaException.FromErrorCode(
+                    ErrorCode.DelegationTokenNotFound,
+                    "Delegation token was not found.");
 
             var expiry = DateTimeOffset.UtcNow + period;
             if (expiry > token.MaxTimestamp)

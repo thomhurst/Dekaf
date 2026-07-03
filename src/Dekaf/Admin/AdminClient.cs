@@ -1928,38 +1928,36 @@ public sealed class AdminClient : IAdminClient
         var ownerPrincipal = owner is { } value ? ToProtocolPrincipal(value) : null;
         var maxLifetimeMs = ToKafkaMilliseconds(maxLifetime, nameof(maxLifetime));
 
-        return await WithRetryAsync<DelegationToken>(async () =>
+        // CreateDelegationToken has no client idempotency key; do not auto-retry after the broker may have minted a token.
+        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+        var request = new CreateDelegationTokenRequest
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-            var request = new CreateDelegationTokenRequest
-            {
-                Owner = ownerPrincipal,
-                Renewers = protocolRenewers,
-                MaxLifetimeMs = maxLifetimeMs
-            };
+            Owner = ownerPrincipal,
+            Renewers = protocolRenewers,
+            MaxLifetimeMs = maxLifetimeMs
+        };
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.CreateDelegationToken,
-                CreateDelegationTokenRequest.LowestSupportedVersion,
-                CreateDelegationTokenRequest.HighestSupportedVersion);
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.CreateDelegationToken,
+            CreateDelegationTokenRequest.LowestSupportedVersion,
+            CreateDelegationTokenRequest.HighestSupportedVersion);
 
-            if (ownerPrincipal is not null && apiVersion < 3)
-            {
-                throw new NotSupportedException("CreateDelegationToken owner override requires CreateDelegationToken API v3 or later.");
-            }
+        if (ownerPrincipal is not null && apiVersion < 3)
+        {
+            throw new NotSupportedException("CreateDelegationToken owner override requires CreateDelegationToken API v3 or later.");
+        }
 
-            var response = await controller.SendAsync<CreateDelegationTokenRequest, CreateDelegationTokenResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+        var response = await controller.SendAsync<CreateDelegationTokenRequest, CreateDelegationTokenResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
 
-            if (response.ErrorCode != Protocol.ErrorCode.None)
-            {
-                throw KafkaException.FromErrorCode(response.ErrorCode, $"CreateDelegationToken failed: {response.ErrorCode}");
-            }
+        if (response.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw KafkaException.FromErrorCode(response.ErrorCode, $"CreateDelegationToken failed: {response.ErrorCode}");
+        }
 
-            return MapDelegationToken(response, renewerList);
-        }, cancellationToken).ConfigureAwait(false);
+        return MapDelegationToken(response, renewerList);
     }
 
     public async ValueTask<DateTimeOffset> RenewDelegationTokenAsync(
