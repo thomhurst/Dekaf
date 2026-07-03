@@ -104,6 +104,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
         lock (_gate)
         {
+            ReleasePendingUnderLock();
             _subscription.Clear();
             foreach (var topic in topics.Where(topic => !string.IsNullOrWhiteSpace(topic)).Distinct(StringComparer.Ordinal))
                 _subscription.Add(topic);
@@ -111,8 +112,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _assignment.Clear();
             foreach (var topicPartition in topicPartitions)
                 _assignment.Add(topicPartition);
-
-            _pending.Clear();
         }
 
         return this;
@@ -124,9 +123,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
         lock (_gate)
         {
+            ReleasePendingUnderLock();
             _subscription.Clear();
             _assignment.Clear();
-            _pending.Clear();
         }
 
         return this;
@@ -137,10 +136,13 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         await CommitAsync(cancellationToken).ConfigureAwait(false);
 
-        var records = TakeAvailableRecords();
-        foreach (var record in records)
+        for (var i = 0; i < _options.MaxPollRecords; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var record = TryTakeAvailableRecord();
+            if (record is null)
+                yield break;
+
             yield return record;
         }
     }
@@ -171,11 +173,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             if (_pending.Count == 0)
                 return ValueTask.CompletedTask;
 
-            var offsets = BuildCommitOffsets(_pending.Values);
+            var pending = _pending.Values.ToArray();
+            var offsets = BuildCommitOffsets(pending);
+            var completedRecords = BuildCompletedRecords(pending);
 
-            if (offsets.Length > 0)
-                _cluster.CommitOffsets(_options.GroupId, offsets);
-
+            _cluster.CompleteShareRecords(_options.GroupId, _memberId, completedRecords, offsets);
             _pending.Clear();
         }
 
@@ -199,10 +201,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         await CloseAsync().ConfigureAwait(false);
     }
 
-    private IReadOnlyList<ShareConsumeResult<TKey, TValue>> TakeAvailableRecords()
+    private ShareConsumeResult<TKey, TValue>? TryTakeAvailableRecord()
     {
-        var results = new List<ShareConsumeResult<TKey, TValue>>();
-        Dictionary<TopicPartition, long> nextOffsets;
         TopicPartition[] assignment;
 
         lock (_gate)
@@ -213,42 +213,36 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 .ToArray();
         }
 
-        nextOffsets = assignment.ToDictionary(
-            partition => partition,
-            partition => _cluster.GetCommittedOffset(_options.GroupId, partition) ??
-                         _cluster.GetWatermarks(partition).Low);
-
-        while (results.Count < _options.MaxPollRecords)
+        foreach (var partition in assignment)
         {
-            var madeProgress = false;
-            foreach (var partition in assignment)
+            long offset;
+            lock (_gate)
+                offset = GetNextOffsetUnderLock(partition);
+
+            if (!_cluster.TryAcquireShareRecord(
+                    _options.GroupId,
+                    _memberId,
+                    partition,
+                    offset,
+                    out var record,
+                    out var deliveryCount))
             {
-                if (results.Count >= _options.MaxPollRecords)
-                    break;
-
-                var offset = nextOffsets[partition];
-                if (!_cluster.TryRead(partition, offset, out var record))
-                    continue;
-
-                var result = ToShareResult(record);
-                var pending = new PendingShareRecord(partition, record.Offset + 1);
-
-                lock (_gate)
-                    _pending[result] = pending;
-
-                results.Add(result);
-                nextOffsets[partition] = record.Offset + 1;
-                madeProgress = true;
+                continue;
             }
 
-            if (!madeProgress)
-                break;
+            var result = ToShareResult(record, deliveryCount);
+            var pending = new PendingShareRecord(partition, record.Offset, record.Offset + 1);
+
+            lock (_gate)
+                _pending[result] = pending;
+
+            return result;
         }
 
-        return results;
+        return null;
     }
 
-    private ShareConsumeResult<TKey, TValue> ToShareResult(InMemoryRecord record)
+    private ShareConsumeResult<TKey, TValue> ToShareResult(InMemoryRecord record, int deliveryCount)
     {
         var key = record.IsKeyNull
             ? default
@@ -273,8 +267,31 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             Value = value,
             Headers = record.Headers,
             TimestampMs = record.TimestampMs,
-            DeliveryCount = 1
+            DeliveryCount = deliveryCount
         };
+    }
+
+    private long GetNextOffsetUnderLock(TopicPartition partition)
+    {
+        var offset = _cluster.GetCommittedOffset(_options.GroupId, partition) ??
+                     _cluster.GetWatermarks(partition).Low;
+
+        foreach (var pending in _pending.Values)
+        {
+            if (pending.TopicPartition == partition && pending.NextOffset > offset)
+                offset = pending.NextOffset;
+        }
+
+        return offset;
+    }
+
+    private void ReleasePendingUnderLock()
+    {
+        if (_pending.Count == 0)
+            return;
+
+        _cluster.ReleaseShareRecords(_options.GroupId, _memberId, BuildCompletedRecords(_pending.Values));
+        _pending.Clear();
     }
 
     private static TopicPartitionOffset[] BuildCommitOffsets(IEnumerable<PendingShareRecord> records)
@@ -312,6 +329,16 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         return offsets.ToArray();
     }
 
+    private static TopicPartitionOffset[] BuildCompletedRecords(IEnumerable<PendingShareRecord> records)
+    {
+        return records
+            .Select(record => new TopicPartitionOffset(
+                record.TopicPartition.Topic,
+                record.TopicPartition.Partition,
+                record.Offset))
+            .ToArray();
+    }
+
     private static SerializationContext Context(
         string topic,
         SerializationComponent component,
@@ -332,13 +359,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private sealed class PendingShareRecord
     {
-        public PendingShareRecord(TopicPartition topicPartition, long nextOffset)
+        public PendingShareRecord(TopicPartition topicPartition, long offset, long nextOffset)
         {
             TopicPartition = topicPartition;
+            Offset = offset;
             NextOffset = nextOffset;
         }
 
         public TopicPartition TopicPartition { get; }
+        public long Offset { get; }
         public long NextOffset { get; }
         public AcknowledgeType AcknowledgeType { get; set; } = AcknowledgeType.Accept;
     }

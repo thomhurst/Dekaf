@@ -82,7 +82,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         get
         {
             lock (_gate)
-                return _assignment.ToHashSet();
+                return GetCurrentAssignmentUnderLock().ToHashSet();
         }
     }
 
@@ -141,6 +141,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _subscription.Add(topic);
 
             ReplaceAssignment(topicPartitions);
+            RegisterConsumerGroupMemberUnderLock();
         }
     }
 
@@ -166,6 +167,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            UnregisterConsumerGroupMemberUnderLock();
         }
     }
 
@@ -280,14 +282,28 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _disposed = true;
+
+        if (_disposed)
+            return ValueTask.CompletedTask;
+
+        lock (_gate)
+        {
+            if (_disposed)
+                return ValueTask.CompletedTask;
+
+            if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                CommitCurrentOffsets();
+
+            UnregisterConsumerGroupMemberUnderLock();
+            _disposed = true;
+        }
+
         return ValueTask.CompletedTask;
     }
 
     public ValueTask DisposeAsync()
     {
-        _disposed = true;
-        return ValueTask.CompletedTask;
+        return CloseAsync();
     }
 
     public ValueTask<long?> GetCommittedOffsetAsync(
@@ -309,7 +325,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         lock (_gate)
-            return _positions.GetValueOrDefault(partition);
+            return _positions.TryGetValue(partition, out var position) ? position : null;
     }
 
     public void Seek(TopicPartitionOffset offset)
@@ -353,6 +369,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             _subscription.Clear();
             ReplaceAssignment(partitions);
+            RegisterConsumerGroupMemberUnderLock();
         }
     }
 
@@ -365,6 +382,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            UnregisterConsumerGroupMemberUnderLock();
         }
     }
 
@@ -378,9 +396,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             foreach (var offset in partitions)
             {
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
+                var position = offset.Offset >= 0 ? offset.Offset : GetStartOffset(partition);
                 _assignment.Add(partition);
-                _positions[partition] = offset.Offset >= 0 ? offset.Offset : GetStartOffset(partition);
+                _positions[partition] = position;
             }
+
+            RegisterConsumerGroupMemberUnderLock();
         }
     }
 
@@ -397,6 +418,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _paused.Remove(partition);
                 _positions.Remove(partition);
             }
+
+            RegisterConsumerGroupMemberUnderLock();
         }
     }
 
@@ -461,12 +484,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            foreach (var partition in _assignment.OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+            foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
             {
                 if (_paused.Contains(partition))
                     continue;
 
-                var position = _positions.GetValueOrDefault(partition);
+                if (!_positions.TryGetValue(partition, out var position))
+                    continue;
+
                 if (!_cluster.TryRead(partition, position, out var record))
                     continue;
 
@@ -509,14 +534,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private void ReplaceAssignment(IEnumerable<TopicPartition> partitions)
     {
+        var nextPositions = new Dictionary<TopicPartition, long>();
+        foreach (var partition in partitions.Distinct())
+            nextPositions[partition] = GetStartOffset(partition);
+
         _assignment.Clear();
         _paused.Clear();
         _positions.Clear();
 
-        foreach (var partition in partitions.Distinct())
+        foreach (var (partition, position) in nextPositions)
         {
             _assignment.Add(partition);
-            _positions[partition] = GetStartOffset(partition);
+            _positions[partition] = position;
         }
     }
 
@@ -550,12 +579,42 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_options.GroupId is null)
             return;
 
-        var offsets = _positions.Select(item => new TopicPartitionOffset(
-            item.Key.Topic,
-            item.Key.Partition,
-            item.Value));
+        var assignment = GetCurrentAssignmentUnderLock();
+        var offsets = _positions
+            .Where(item => assignment.Contains(item.Key))
+            .Select(item => new TopicPartitionOffset(
+                item.Key.Topic,
+                item.Key.Partition,
+                item.Value))
+            .ToArray();
 
-        _cluster.CommitOffsets(_options.GroupId, offsets);
+        if (offsets.Length > 0)
+            _cluster.CommitOffsets(_options.GroupId, offsets);
+    }
+
+    private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock()
+    {
+        if (_options.GroupId is null || _memberId is null)
+            return _assignment;
+
+        var owned = _cluster.GetConsumerGroupAssignment(_options.GroupId, _memberId);
+        return owned.Where(_assignment.Contains).ToHashSet();
+    }
+
+    private void RegisterConsumerGroupMemberUnderLock()
+    {
+        if (_options.GroupId is null || _memberId is null)
+            return;
+
+        _cluster.RegisterConsumerGroupMember(_options.GroupId, _memberId, _assignment);
+    }
+
+    private void UnregisterConsumerGroupMemberUnderLock()
+    {
+        if (_options.GroupId is null || _memberId is null)
+            return;
+
+        _cluster.UnregisterConsumerGroupMember(_options.GroupId, _memberId);
     }
 
     private void ThrowIfDisposed()

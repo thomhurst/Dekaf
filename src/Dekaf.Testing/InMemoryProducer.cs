@@ -67,14 +67,24 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         return ProduceCoreAsync(topic, partition: null, key, value, headers: null, DateTimeOffset.UtcNow, cancellationToken);
     }
 
-    public async ValueTask FireAsync(ProducerMessage<TKey, TValue> message)
+    public ValueTask FireAsync(ProducerMessage<TKey, TValue> message)
     {
-        await ProduceAsync(message).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(message);
+        ThrowIfDisposed();
+
+        return FireAndForgetCoreAsync(
+            message.Topic,
+            message.Partition,
+            message.Key,
+            message.Value,
+            message.Headers,
+            message.Timestamp ?? DateTimeOffset.UtcNow);
     }
 
-    public async ValueTask FireAsync(string topic, TKey? key, TValue value)
+    public ValueTask FireAsync(string topic, TKey? key, TValue value)
     {
-        await ProduceAsync(topic, key, value).ConfigureAwait(false);
+        ThrowIfDisposed();
+        return FireAndForgetCoreAsync(topic, partition: null, key, value, headers: null, DateTimeOffset.UtcNow);
     }
 
     public async ValueTask FireAsync(
@@ -191,6 +201,25 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             headers?.ToList(),
             timestamp,
             cancellationToken);
+    }
+
+    private async ValueTask FireAndForgetCoreAsync(
+        string topic,
+        int? partition,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        DateTimeOffset timestamp)
+    {
+        try
+        {
+            await ProduceCoreAsync(topic, partition, key, value, headers, timestamp, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Matches IKafkaProducer fire-and-forget delivery semantics: failures are not surfaced.
+        }
     }
 
     private static byte[] Serialize<T>(

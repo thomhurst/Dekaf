@@ -24,10 +24,7 @@ public static class ServiceCollectionExtensions
         var options = new InMemoryKafkaClusterOptions();
         configure?.Invoke(options);
 
-        services.RemoveAll(typeof(IKafkaProducer<,>));
-        services.RemoveAll(typeof(IKafkaConsumer<,>));
-        services.RemoveAll(typeof(IKafkaShareConsumer<,>));
-        services.RemoveAll<IAdminClient>();
+        RemoveDekafClientRegistrations(services);
 
         services.AddSingleton(options);
         services.TryAddSingleton(new InMemoryConsumerOptions());
@@ -39,5 +36,31 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAdminClient, InMemoryAdminClient>();
 
         return services;
+    }
+
+    private static void RemoveDekafClientRegistrations(IServiceCollection services)
+    {
+        for (var i = services.Count - 1; i >= 0; i--)
+        {
+            if (IsDekafClientServiceType(services[i].ServiceType))
+                services.RemoveAt(i);
+        }
+    }
+
+    private static bool IsDekafClientServiceType(Type serviceType)
+    {
+        if (serviceType == typeof(IAdminClient) ||
+            serviceType == typeof(IInitializableKafkaClient))
+        {
+            return true;
+        }
+
+        if (!serviceType.IsGenericType)
+            return false;
+
+        var definition = serviceType.GetGenericTypeDefinition();
+        return definition == typeof(IKafkaProducer<,>) ||
+               definition == typeof(IKafkaConsumer<,>) ||
+               definition == typeof(IKafkaShareConsumer<,>);
     }
 }

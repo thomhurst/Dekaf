@@ -14,6 +14,9 @@ public sealed class InMemoryKafkaCluster
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, long>> _consumerGroupOffsets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, HashSet<TopicPartition>>> _consumerGroupMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
@@ -100,6 +103,59 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal void RegisterConsumerGroupMember(
+        string groupId,
+        string memberId,
+        IEnumerable<TopicPartition> subscribedPartitions)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+        ArgumentNullException.ThrowIfNull(subscribedPartitions);
+
+        var partitions = subscribedPartitions.Distinct().ToHashSet();
+
+        lock (_gate)
+        {
+            if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
+            {
+                members = new Dictionary<string, HashSet<TopicPartition>>(StringComparer.Ordinal);
+                _consumerGroupMembers[groupId] = members;
+            }
+
+            members[memberId] = partitions;
+        }
+    }
+
+    internal void UnregisterConsumerGroupMember(string groupId, string memberId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
+                return;
+
+            members.Remove(memberId);
+            if (members.Count == 0)
+                _consumerGroupMembers.Remove(groupId);
+        }
+    }
+
+    internal IReadOnlySet<TopicPartition> GetConsumerGroupAssignment(string groupId, string memberId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            var assignments = BuildConsumerGroupAssignments(groupId);
+            return assignments.TryGetValue(memberId, out var partitions)
+                ? partitions.ToHashSet()
+                : new HashSet<TopicPartition>();
+        }
+    }
+
     public IReadOnlyList<InMemoryRecord> ReadRecords(string topic, int partition = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
@@ -183,26 +239,101 @@ public sealed class InMemoryKafkaCluster
     {
         lock (_gate)
         {
-            if (!_topics.TryGetValue(topicPartition.Topic, out var topic) ||
-                (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
+            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate))
             {
                 record = null!;
                 return false;
             }
 
-            var partition = topic.Partitions[topicPartition.Partition];
-            foreach (var candidate in partition.Records)
+            record = CloneRecord(candidate);
+            return true;
+        }
+    }
+
+    internal bool TryAcquireShareRecord(
+        string groupId,
+        string memberId,
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record,
+        out int deliveryCount)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate))
             {
-                if (candidate.Offset >= offset)
-                {
-                    record = CloneRecord(candidate);
-                    return true;
-                }
+                record = null!;
+                deliveryCount = 0;
+                return false;
             }
 
-            record = null!;
-            return false;
+            var partitionLeases = GetShareLeasePartition(groupId, topicPartition, create: true)!;
+            if (partitionLeases.TryGetValue(candidate.Offset, out var lease) &&
+                !StringComparer.Ordinal.Equals(lease.MemberId, memberId))
+            {
+                record = null!;
+                deliveryCount = 0;
+                return false;
+            }
+
+            var partitionDeliveryCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: true)!;
+            if (!partitionLeases.ContainsKey(candidate.Offset))
+            {
+                partitionDeliveryCounts.TryGetValue(candidate.Offset, out deliveryCount);
+                deliveryCount++;
+                partitionDeliveryCounts[candidate.Offset] = deliveryCount;
+                partitionLeases[candidate.Offset] = new ShareLeaseState(memberId);
+            }
+            else
+            {
+                deliveryCount = partitionDeliveryCounts.GetValueOrDefault(candidate.Offset, 1);
+            }
+
+            record = CloneRecord(candidate);
+            return true;
         }
+    }
+
+    internal void CompleteShareRecords(
+        string groupId,
+        string memberId,
+        IEnumerable<TopicPartitionOffset> completedRecords,
+        IEnumerable<TopicPartitionOffset> commitOffsets)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+        ArgumentNullException.ThrowIfNull(completedRecords);
+        ArgumentNullException.ThrowIfNull(commitOffsets);
+
+        var completed = completedRecords.ToArray();
+        var commits = commitOffsets.ToArray();
+
+        lock (_gate)
+        {
+            ReleaseShareLeasesUnderLock(groupId, memberId, completed);
+            if (commits.Length > 0)
+            {
+                CommitOffsetsUnderLock(groupId, commits);
+                foreach (var commitOffset in commits)
+                    RemoveCommittedShareDeliveryCountsUnderLock(groupId, commitOffset);
+            }
+        }
+    }
+
+    internal void ReleaseShareRecords(
+        string groupId,
+        string memberId,
+        IEnumerable<TopicPartitionOffset> records)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+        ArgumentNullException.ThrowIfNull(records);
+
+        lock (_gate)
+            ReleaseShareLeasesUnderLock(groupId, memberId, records);
     }
 
     internal async Task WaitForRecordsAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -279,16 +410,7 @@ public sealed class InMemoryKafkaCluster
     internal void CommitOffsets(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
         lock (_gate)
-        {
-            if (!_consumerGroupOffsets.TryGetValue(groupId, out var groupOffsets))
-            {
-                groupOffsets = [];
-                _consumerGroupOffsets[groupId] = groupOffsets;
-            }
-
-            foreach (var offset in offsets)
-                groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
-        }
+            CommitOffsetsUnderLock(groupId, offsets);
     }
 
     internal IReadOnlyDictionary<TopicPartition, long> GetGroupOffsets(string groupId)
@@ -415,6 +537,175 @@ public sealed class InMemoryKafkaCluster
             throw new InvalidOperationException($"Topic '{name}' does not exist.");
 
         return EnsureTopic(name, _options.DefaultPartitionCount, configs: null);
+    }
+
+    private bool TryReadRecordUnderLock(TopicPartition topicPartition, long offset, out InMemoryRecord record)
+    {
+        if (!_topics.TryGetValue(topicPartition.Topic, out var topic) ||
+            (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
+        {
+            record = null!;
+            return false;
+        }
+
+        var partition = topic.Partitions[topicPartition.Partition];
+        foreach (var candidate in partition.Records)
+        {
+            if (candidate.Offset >= offset)
+            {
+                record = candidate;
+                return true;
+            }
+        }
+
+        record = null!;
+        return false;
+    }
+
+    private Dictionary<string, HashSet<TopicPartition>> BuildConsumerGroupAssignments(string groupId)
+    {
+        var result = new Dictionary<string, HashSet<TopicPartition>>(StringComparer.Ordinal);
+        if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
+            return result;
+
+        foreach (var memberId in members.Keys)
+            result[memberId] = [];
+
+        var partitions = members
+            .Values
+            .SelectMany(static item => item)
+            .Distinct()
+            .OrderBy(static item => item.Topic, StringComparer.Ordinal)
+            .ThenBy(static item => item.Partition)
+            .ToArray();
+
+        for (var i = 0; i < partitions.Length; i++)
+        {
+            var partition = partitions[i];
+            var eligibleMembers = members
+                .Where(member => member.Value.Contains(partition))
+                .Select(static member => member.Key)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
+            if (eligibleMembers.Length == 0)
+                continue;
+
+            var owner = eligibleMembers[i % eligibleMembers.Length];
+            result[owner].Add(partition);
+        }
+
+        return result;
+    }
+
+    private void CommitOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
+    {
+        if (!_consumerGroupOffsets.TryGetValue(groupId, out var groupOffsets))
+        {
+            groupOffsets = [];
+            _consumerGroupOffsets[groupId] = groupOffsets;
+        }
+
+        foreach (var offset in offsets)
+            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+    }
+
+    private Dictionary<long, ShareLeaseState>? GetShareLeasePartition(
+        string groupId,
+        TopicPartition topicPartition,
+        bool create)
+    {
+        if (!_shareLeases.TryGetValue(groupId, out var groupLeases))
+        {
+            if (!create)
+                return null;
+
+            groupLeases = [];
+            _shareLeases[groupId] = groupLeases;
+        }
+
+        if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases))
+        {
+            if (!create)
+                return null;
+
+            partitionLeases = [];
+            groupLeases[topicPartition] = partitionLeases;
+        }
+
+        return partitionLeases;
+    }
+
+    private Dictionary<long, int>? GetShareDeliveryCountPartition(
+        string groupId,
+        TopicPartition topicPartition,
+        bool create)
+    {
+        if (!_shareDeliveryCounts.TryGetValue(groupId, out var groupCounts))
+        {
+            if (!create)
+                return null;
+
+            groupCounts = [];
+            _shareDeliveryCounts[groupId] = groupCounts;
+        }
+
+        if (!groupCounts.TryGetValue(topicPartition, out var partitionCounts))
+        {
+            if (!create)
+                return null;
+
+            partitionCounts = [];
+            groupCounts[topicPartition] = partitionCounts;
+        }
+
+        return partitionCounts;
+    }
+
+    private void ReleaseShareLeasesUnderLock(
+        string groupId,
+        string memberId,
+        IEnumerable<TopicPartitionOffset> records)
+    {
+        if (!_shareLeases.TryGetValue(groupId, out var groupLeases))
+            return;
+
+        foreach (var record in records)
+        {
+            var topicPartition = new TopicPartition(record.Topic, record.Partition);
+            if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
+                !partitionLeases.TryGetValue(record.Offset, out var lease) ||
+                !StringComparer.Ordinal.Equals(lease.MemberId, memberId))
+            {
+                continue;
+            }
+
+            partitionLeases.Remove(record.Offset);
+            if (partitionLeases.Count == 0)
+                groupLeases.Remove(topicPartition);
+        }
+
+        if (groupLeases.Count == 0)
+            _shareLeases.Remove(groupId);
+    }
+
+    private void RemoveCommittedShareDeliveryCountsUnderLock(string groupId, TopicPartitionOffset commitOffset)
+    {
+        var topicPartition = new TopicPartition(commitOffset.Topic, commitOffset.Partition);
+        var partitionCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: false);
+        if (partitionCounts is null)
+            return;
+
+        foreach (var offset in partitionCounts.Keys.Where(offset => offset < commitOffset.Offset).ToArray())
+            partitionCounts.Remove(offset);
+
+        if (partitionCounts.Count == 0 &&
+            _shareDeliveryCounts.TryGetValue(groupId, out var groupCounts))
+        {
+            groupCounts.Remove(topicPartition);
+            if (groupCounts.Count == 0)
+                _shareDeliveryCounts.Remove(groupId);
+        }
     }
 
     private TopicState GetTopicForRead(string name)
@@ -558,5 +849,15 @@ public sealed class InMemoryKafkaCluster
         public List<InMemoryRecord> Records { get; } = [];
         public long LogStartOffset { get; set; }
         public long HighWatermark => Records.Count == 0 ? LogStartOffset : Records[^1].Offset + 1;
+    }
+
+    private sealed class ShareLeaseState
+    {
+        public ShareLeaseState(string memberId)
+        {
+            MemberId = memberId;
+        }
+
+        public string MemberId { get; }
     }
 }

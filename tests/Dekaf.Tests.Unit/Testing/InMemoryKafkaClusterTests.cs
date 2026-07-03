@@ -163,6 +163,140 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task ShareConsumer_PartialPollOnlyCommitsYieldedRecords()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var shareConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions
+            {
+                GroupId = "share-partial",
+                MaxPollRecords = 2
+            });
+
+        for (var i = 0; i < 2; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "shared",
+                Partition = 0,
+                Key = $"k-{i}",
+                Value = $"v-{i}"
+            });
+        }
+
+        shareConsumer.Subscribe("shared");
+        var first = await shareConsumer.PollAsync().FirstAsync();
+        await shareConsumer.CommitAsync();
+        var second = await shareConsumer.PollAsync().FirstAsync();
+
+        await Assert.That(first.Offset).IsEqualTo(0);
+        await Assert.That(second.Offset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareConsumer_LeasesRecordsAcrossMembersUntilRelease()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var firstConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-leases", MemberId = "a" });
+        var secondConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-leases", MemberId = "b" });
+
+        await producer.ProduceAsync("leased", "k", "v");
+        firstConsumer.Subscribe("leased");
+        secondConsumer.Subscribe("leased");
+
+        var first = await firstConsumer.PollAsync().FirstAsync();
+        var blocked = new List<ShareConsumeResult<string, string>>();
+        await foreach (var record in secondConsumer.PollAsync())
+            blocked.Add(record);
+
+        firstConsumer.Acknowledge(first, AcknowledgeType.Release);
+        await firstConsumer.CommitAsync();
+        var redelivered = await secondConsumer.PollAsync().FirstAsync();
+
+        await Assert.That(blocked).IsEmpty();
+        await Assert.That(redelivered.Offset).IsEqualTo(0);
+        await Assert.That(redelivered.DeliveryCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumerGroupMembersSplitAssignedPartitions()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("balanced", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var firstConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "balanced-group",
+                MemberId = "a",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        var secondConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "balanced-group",
+                MemberId = "b",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "balanced",
+            Partition = 0,
+            Key = "k-0",
+            Value = "v-0"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "balanced",
+            Partition = 1,
+            Key = "k-1",
+            Value = "v-1"
+        });
+
+        firstConsumer.Subscribe("balanced");
+        secondConsumer.Subscribe("balanced");
+
+        var firstAssignment = firstConsumer.Assignment;
+        var secondAssignment = secondConsumer.Assignment;
+        var first = await firstConsumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(50));
+        var second = await secondConsumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(50));
+
+        await Assert.That(firstAssignment.Intersect(secondAssignment).ToArray()).IsEmpty();
+        await Assert.That(firstAssignment.Concat(secondAssignment).Select(item => item.Partition).ToArray())
+            .IsEquivalentTo([0, 1]);
+        await Assert.That(new[] { first!.Value.Partition, second!.Value.Partition })
+            .IsEquivalentTo([0, 1]);
+    }
+
+    [Test]
+    public async Task Consumer_AssignFailureDoesNotLeavePartialState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("strict");
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.None });
+        var partition = new TopicPartition("strict", 0);
+
+        await Assert.That(() => consumer.Assign(partition)).Throws<InvalidOperationException>();
+        await Assert.That(() => consumer.IncrementalAssign([new TopicPartitionOffset("strict", 0, -1)]))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(consumer.Assignment).IsEmpty();
+        await Assert.That(consumer.GetPosition(partition)).IsNull();
+    }
+
+    [Test]
     public async Task WaitForRecordsAsync_ReturnsWhenRecordWasAppendedBeforeWait()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -206,6 +340,16 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task FireAsync_DoesNotThrowDeliveryFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        cluster.FailProduces("fire", new InvalidOperationException("produce failed"));
+
+        await producer.FireAsync("fire", "k", "v");
+    }
+
+    [Test]
     public async Task AddDekafInMemory_RegistersClientDoubles()
     {
         var services = new ServiceCollection();
@@ -226,6 +370,31 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(consumer).IsTypeOf<InMemoryConsumer<string, string>>();
         await Assert.That(admin).IsTypeOf<InMemoryAdminClient>();
         await Assert.That(shareConsumer).IsTypeOf<InMemoryShareConsumer<string, string>>();
+    }
+
+    [Test]
+    public async Task AddDekafInMemory_ReplacesClosedClientRegistrations()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IKafkaProducer<string, string>>(_ => throw new InvalidOperationException("real producer"));
+        services.AddSingleton<IKafkaConsumer<string, string>>(_ => throw new InvalidOperationException("real consumer"));
+        services.AddSingleton<IKafkaShareConsumer<string, string>>(_ => throw new InvalidOperationException("real share consumer"));
+        services.AddSingleton<IAdminClient>(_ => throw new InvalidOperationException("real admin"));
+        services.AddSingleton<IInitializableKafkaClient>(_ => throw new InvalidOperationException("real initializer"));
+
+        services.AddDekafInMemory();
+
+        await using var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        var shareConsumer = provider.GetRequiredService<IKafkaShareConsumer<string, string>>();
+        var admin = provider.GetRequiredService<IAdminClient>();
+
+        await Assert.That(producer).IsTypeOf<InMemoryProducer<string, string>>();
+        await Assert.That(consumer).IsTypeOf<InMemoryConsumer<string, string>>();
+        await Assert.That(shareConsumer).IsTypeOf<InMemoryShareConsumer<string, string>>();
+        await Assert.That(admin).IsTypeOf<InMemoryAdminClient>();
+        await Assert.That(provider.GetServices<IInitializableKafkaClient>().ToArray()).IsEmpty();
     }
 
     private static Task InvokeWaitForRecordsAsync(
