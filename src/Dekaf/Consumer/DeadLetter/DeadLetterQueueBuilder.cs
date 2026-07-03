@@ -64,7 +64,7 @@ public sealed class DeadLetterQueueBuilder
     /// <returns>The builder instance for method chaining.</returns>
     public DeadLetterQueueBuilder WithBootstrapServers(string servers)
     {
-        _bootstrapServers = servers;
+        _bootstrapServers = string.Join(",", BootstrapServerList.FromCommaSeparated(servers));
         return this;
     }
 
@@ -85,7 +85,7 @@ public sealed class DeadLetterQueueBuilder
     /// </summary>
     internal DeadLetterQueueBuilder WithDefaultBootstrapServers(string servers)
     {
-        _bootstrapServers ??= servers;
+        _bootstrapServers ??= string.Join(",", BootstrapServerList.FromCommaSeparated(servers));
         return this;
     }
 

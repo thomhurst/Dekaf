@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Dekaf;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -2485,6 +2486,7 @@ public sealed class AdminClientOptions
 /// </summary>
 public sealed class AdminClientBuilder
 {
+    private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private int _requestTimeoutMs = 30000;
@@ -2501,15 +2503,28 @@ public sealed class AdminClientBuilder
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private TimeSpan? _metadataMaxAge;
 
+    public AdminClientBuilder()
+    {
+    }
+
+    internal AdminClientBuilder(KafkaClientInfrastructure clientInfrastructure)
+    {
+        _clientInfrastructure = clientInfrastructure;
+        _bootstrapServers = clientInfrastructure.BootstrapServers;
+        _loggerFactory = clientInfrastructure.LoggerFactory;
+    }
+
     public AdminClientBuilder WithBootstrapServers(string servers)
     {
-        _bootstrapServers = servers.Split(',').Select(s => s.Trim()).ToArray();
+        ThrowIfClientOwnedBootstrap();
+        _bootstrapServers = BootstrapServerList.FromCommaSeparated(servers);
         return this;
     }
 
     public AdminClientBuilder WithBootstrapServers(params string[] servers)
     {
-        _bootstrapServers = [..servers];
+        ThrowIfClientOwnedBootstrap();
+        _bootstrapServers = BootstrapServerList.FromValues(servers);
         return this;
     }
 
@@ -2521,6 +2536,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder UseTls()
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         return this;
     }
@@ -2531,6 +2547,7 @@ public sealed class AdminClientBuilder
     /// <param name="config">The TLS configuration.</param>
     public AdminClientBuilder UseTls(TlsConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = config;
         return this;
@@ -2549,6 +2566,7 @@ public sealed class AdminClientBuilder
         string clientKeyPath,
         string? keyPassword = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
         return this;
@@ -2563,6 +2581,7 @@ public sealed class AdminClientBuilder
         X509Certificate2 clientCertificate,
         X509Certificate2? caCertificate = null)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _useTls = true;
         _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
@@ -2570,6 +2589,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithSaslPlain(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
@@ -2578,6 +2598,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithSaslScramSha256(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
@@ -2586,6 +2607,7 @@ public sealed class AdminClientBuilder
 
     public AdminClientBuilder WithSaslScramSha512(string username, string password)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
@@ -2598,6 +2620,7 @@ public sealed class AdminClientBuilder
     /// <param name="config">The GSSAPI configuration.</param>
     public AdminClientBuilder WithGssapi(GssapiConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.Gssapi;
         _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
         return this;
@@ -2609,6 +2632,7 @@ public sealed class AdminClientBuilder
     /// <param name="config">The OAuth configuration describing the token endpoint and client.</param>
     public AdminClientBuilder WithOAuthBearer(OAuthBearerConfig config)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
         _oauthTokenProvider = null;
@@ -2621,6 +2645,7 @@ public sealed class AdminClientBuilder
     /// <param name="tokenProvider">A callback that returns an OAuth bearer token on demand.</param>
     public AdminClientBuilder WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _oauthConfig = null;
@@ -2688,6 +2713,7 @@ public sealed class AdminClientBuilder
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
@@ -2723,6 +2749,24 @@ public sealed class AdminClientBuilder
             ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
-        return new AdminClient(options, _loggerFactory, metadataOptions);
+        return _clientInfrastructure is null
+            ? new AdminClient(options, _loggerFactory, metadataOptions)
+            : new AdminClient(
+                options,
+                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.MetadataManager,
+                _loggerFactory);
+    }
+
+    private void ThrowIfClientOwnedBootstrap()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+    }
+
+    private void ThrowIfClientOwnedConnectionSettings()
+    {
+        if (_clientInfrastructure is not null)
+            throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
     }
 }

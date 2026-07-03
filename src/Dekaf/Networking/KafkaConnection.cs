@@ -11,6 +11,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
 using Dekaf.Internal;
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
@@ -200,12 +201,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
 
-    // Thread-local reusable buffer used ONLY for the SASL handshake cold path
-    // (SendSaslMessageAsync). Normal request serialization uses RentedBufferWriter via
-    // PreSerializeRequest, which rents from ArrayPool per request.
-    [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_requestBuffer;
-
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
@@ -372,6 +367,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             _socket.SendBufferSize = _options.SendBufferSize;
         if (_options.ReceiveBufferSize > 0)
             _socket.ReceiveBufferSize = _options.ReceiveBufferSize;
+        ConfigureTcpKeepAlive(_socket);
 
         var endpoint = new DnsEndPoint(_host, _port);
         await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
@@ -731,6 +727,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 {
                     pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException(cancellationToken);
+                }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
                     throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
@@ -809,26 +809,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
         new($"Request {apiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
 
     /// <summary>
-    /// Returns the thread-local request buffer for SASL handshake serialization only.
-    /// Normal (post-handshake) requests use <see cref="RentedBufferWriter"/> via PreSerializeRequest.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ArrayBufferWriter<byte> GetRequestBuffer()
-    {
-        var buffer = t_requestBuffer;
-        if (buffer is null)
-        {
-            buffer = new ArrayBufferWriter<byte>(4096);
-            t_requestBuffer = buffer;
-        }
-        else
-        {
-            buffer.Clear();
-        }
-        return buffer;
-    }
-
-    /// <summary>
     /// Serializes a request (size prefix + header + body) directly into a pooled buffer,
     /// outside the write lock. Returns the rented array and the number of valid bytes.
     /// The caller must return the array to <see cref="ArrayPool{T}.Shared"/> after use.
@@ -890,6 +870,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TResponse : IKafkaResponse
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
+        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
         byte[]? arrayToReturn = serializedArray;
         try
         {
@@ -913,7 +894,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             if (arrayToReturn is not null)
-                DekafPools.SerializationBuffers.Return(arrayToReturn);
+                DekafPools.SerializationBuffers.Return(arrayToReturn, clearArray: clearSerializedArray);
         }
     }
 
@@ -965,6 +946,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
             try
             {
                 await _stream.WriteAsync(memory, timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
@@ -1212,6 +1197,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
             _pendingRequestSlots.Release();
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
         }
         catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0 && !cancellationToken.IsCancellationRequested)
         {
@@ -1587,6 +1576,50 @@ public sealed partial class KafkaConnection : IKafkaConnection
         return options;
     }
 
+    private void ConfigureTcpKeepAlive(Socket socket)
+    {
+        if (!_options.EnableTcpKeepAlive)
+            return;
+
+        TrySetSocketOption(socket, SocketOptionLevel.Socket, SocketOptionName.KeepAlive, 1);
+
+        var keepAliveTimeSeconds = ToPositiveSeconds(_options.TcpKeepAliveTime);
+        if (keepAliveTimeSeconds > 0)
+            TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, keepAliveTimeSeconds);
+
+        var keepAliveIntervalSeconds = ToPositiveSeconds(_options.TcpKeepAliveInterval);
+        if (keepAliveIntervalSeconds > 0)
+            TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, keepAliveIntervalSeconds);
+
+        if (_options.TcpKeepAliveRetryCount > 0)
+            TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, _options.TcpKeepAliveRetryCount);
+    }
+
+    private static int ToPositiveSeconds(TimeSpan value)
+    {
+        if (value <= TimeSpan.Zero)
+            return 0;
+
+        return (int)Math.Min(Math.Ceiling(value.TotalSeconds), int.MaxValue);
+    }
+
+    private static void TrySetSocketOption(Socket socket, SocketOptionLevel level, SocketOptionName name, int value)
+    {
+        try
+        {
+            socket.SetSocketOption(level, name, value);
+        }
+        catch (SocketException)
+        {
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
+        catch (NotSupportedException)
+        {
+        }
+    }
+
     private static bool HasCustomCaCertificate(TlsConfig? tlsConfig)
     {
         if (tlsConfig is null)
@@ -1814,10 +1847,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // the send on !IsComplete would skip transmitting credentials entirely.
             do
             {
-                var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
-                    new SaslAuthenticateRequest { AuthBytes = authBytes },
-                    2, // Use v2 for SaslAuthenticate (flexible version)
-                    cancellationToken).ConfigureAwait(false);
+                var sentAuthBytes = authBytes;
+                SaslAuthenticateResponse authResponse;
+                try
+                {
+                    authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                        new SaslAuthenticateRequest { AuthBytes = sentAuthBytes },
+                        2, // Use v2 for SaslAuthenticate (flexible version)
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    SaslCredentialBuffers.Clear(sentAuthBytes);
+                }
 
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
@@ -2026,10 +2068,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Always send the initial client response at least once (see PerformSaslExchangeAsync).
             do
             {
-                var authResponse = await SendAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
-                    new SaslAuthenticateRequest { AuthBytes = authBytes },
-                    2,
-                    cancellationToken).ConfigureAwait(false);
+                var sentAuthBytes = authBytes;
+                SaslAuthenticateResponse authResponse;
+                try
+                {
+                    authResponse = await SendAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                        new SaslAuthenticateRequest { AuthBytes = sentAuthBytes },
+                        2,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    SaslCredentialBuffers.Clear(sentAuthBytes);
+                }
 
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
@@ -2098,36 +2149,22 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
 
-        // Build the request
-        var bodyBuffer = GetRequestBuffer();
-        var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
-
-        var header = new RequestHeader
-        {
-            ApiKey = TRequest.ApiKey,
-            ApiVersion = apiVersion,
-            CorrelationId = correlationId,
-            ClientId = _clientId,
-            HeaderVersion = headerVersion
-        };
-        header.Write(ref bodyWriter);
-        request.Write(ref bodyWriter, apiVersion);
-
-        // Write to stream directly (no pipe yet)
-        var totalSize = bodyBuffer.WrittenCount;
-        var buffer = ArrayPool<byte>.Shared.Rent(4 + totalSize);
+        // Write to stream directly (no pipe yet). Use the pooled serializer path instead
+        // of the thread-local SASL buffer so credential-bearing requests can be cleared.
+        var (buffer, totalSize) = PreSerializeRequest<TRequest, TResponse>(
+            request,
+            correlationId,
+            apiVersion,
+            headerVersion);
+        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
         try
         {
-            BinaryPrimitives.WriteInt32BigEndian(buffer, totalSize);
-            bodyBuffer.WrittenSpan.CopyTo(buffer.AsSpan(4));
-
-            await _stream.WriteAsync(buffer.AsMemory(0, 4 + totalSize), cancellationToken).ConfigureAwait(false);
+            await _stream.WriteAsync(buffer.AsMemory(0, totalSize), cancellationToken).ConfigureAwait(false);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            // Clear buffer to prevent SASL credential leakage (contains passwords, tokens, secrets)
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+            DekafPools.SerializationBuffers.Return(buffer, clearArray: clearSerializedArray);
         }
 
         // Read response
@@ -2600,6 +2637,27 @@ public sealed class ConnectionOptions
     public int ReceiveBufferSize { get; init; }
 
     /// <summary>
+    /// Whether to enable TCP keepalive on broker sockets.
+    /// </summary>
+    public bool EnableTcpKeepAlive { get; init; } = true;
+
+    /// <summary>
+    /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Number of TCP keepalive probes before the connection is considered dead.
+    /// Unsupported platforms ignore this.
+    /// </summary>
+    public int TcpKeepAliveRetryCount { get; init; } = 3;
+
+    /// <summary>
     /// Minimum segment size for pipe.
     /// </summary>
     public int MinimumSegmentSize { get; init; } = 4096;
@@ -2644,12 +2702,14 @@ internal sealed class ResponseBufferPool
     /// Matches the previous static pool size (16 MB).
     /// </summary>
     internal const int DefaultMaxArrayLength = 16 * 1024 * 1024;
+    private const int SizeTierBytes = 1024 * 1024;
 
     /// <summary>
     /// Default shared instance used by producers, admin clients, and connections
     /// that don't have consumer-specific configuration.
     /// </summary>
     internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength);
+    private static readonly ConcurrentDictionary<int, ResponseBufferPool> s_sharedPools = new();
 
     internal ArrayPool<byte> Pool { get; }
     internal int MaxArrayLength { get; }
@@ -2667,16 +2727,33 @@ internal sealed class ResponseBufferPool
     }
 
     /// <summary>
-    /// Creates a <see cref="ResponseBufferPool"/> sized for the given <c>FetchMaxBytes</c>
-    /// configuration. The pool's max array length is <c>max(fetchMaxBytes + ProtocolOverheadBytes, DefaultMaxArrayLength)</c>
-    /// so it always accommodates at least the default 16 MB.
+    /// Returns a process-shared <see cref="ResponseBufferPool"/> sized for the given
+    /// <c>FetchMaxBytes</c> configuration. The pool's max array length is rounded up to
+    /// a MiB tier after adding protocol overhead, with a minimum of <see cref="DefaultMaxArrayLength"/>.
     /// </summary>
     internal static ResponseBufferPool Create(int fetchMaxBytes)
     {
+        var maxArrayLength = ComputeMaxArrayLength(fetchMaxBytes);
+        return maxArrayLength == DefaultMaxArrayLength
+            ? Default
+            : s_sharedPools.GetOrAdd(maxArrayLength, static length => new ResponseBufferPool(length));
+    }
+
+    internal static int ComputeMaxArrayLength(int fetchMaxBytes)
+    {
         // Use long arithmetic to avoid silent overflow when fetchMaxBytes is near int.MaxValue
-        var maxArrayLength = (int)Math.Min((long)fetchMaxBytes + ProtocolOverheadBytes, int.MaxValue);
-        maxArrayLength = Math.Max(maxArrayLength, DefaultMaxArrayLength);
-        return new ResponseBufferPool(maxArrayLength);
+        var requiredLength = Math.Min((long)fetchMaxBytes + ProtocolOverheadBytes, int.MaxValue);
+        var tieredLength = RoundUpToMiBTier(requiredLength);
+        return Math.Max(tieredLength, DefaultMaxArrayLength);
+    }
+
+    private static int RoundUpToMiBTier(long value)
+    {
+        if (value >= int.MaxValue)
+            return int.MaxValue;
+
+        var rounded = ((value + SizeTierBytes - 1) / SizeTierBytes) * SizeTierBytes;
+        return rounded >= int.MaxValue ? int.MaxValue : (int)rounded;
     }
 }
 
@@ -2716,7 +2793,7 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// </summary>
     public PooledResponseMemory TransferOwnership()
     {
-        return new PooledResponseMemory(_buffer, Length, IsPooled, _offset, _pool);
+        return PooledResponseMemory.Create(_buffer, Length, IsPooled, _offset, _pool);
     }
 
     public void Dispose()
@@ -2736,19 +2813,34 @@ internal readonly struct PooledResponseBuffer : IDisposable
 /// </summary>
 internal sealed class PooledResponseMemory : IPooledMemory
 {
-    private byte[]? _buffer;
-    private readonly int _length;
-    private readonly bool _isPooled;
-    private readonly int _offset;
-    private readonly ResponseBufferPool? _pool;
+    private static readonly PooledResponseMemoryPool s_pool = new();
 
-    public PooledResponseMemory(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
+    private byte[]? _buffer;
+    private int _length;
+    private bool _isPooled;
+    private int _offset;
+    private ResponseBufferPool? _pool;
+    private int _pooled;
+    private int _disposed = 1;
+
+    private PooledResponseMemory() { }
+
+    internal static PooledResponseMemory Create(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
+    {
+        var memory = s_pool.Rent();
+        memory.Initialize(buffer, length, isPooled, offset, pool, pooled: true);
+        return memory;
+    }
+
+    private void Initialize(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool, bool pooled)
     {
         _buffer = buffer;
         _length = length;
         _isPooled = isPooled;
         _offset = offset;
         _pool = pool;
+        _pooled = pooled ? 1 : 0;
+        Volatile.Write(ref _disposed, 0);
     }
 
     public ReadOnlyMemory<byte> Memory => _buffer is not null
@@ -2757,11 +2849,33 @@ internal sealed class PooledResponseMemory : IPooledMemory
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         var buffer = Interlocked.Exchange(ref _buffer, null);
         if (_isPooled && buffer is not null)
         {
             Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
             _pool!.Pool.Return(buffer);
+        }
+
+        if (Volatile.Read(ref _pooled) != 0)
+            s_pool.Return(this);
+    }
+
+    private sealed class PooledResponseMemoryPool() : ObjectPool<PooledResponseMemory>(maxPoolSize: 256)
+    {
+        protected override PooledResponseMemory Create() => new();
+
+        protected override void Reset(PooledResponseMemory item)
+        {
+            item._buffer = null;
+            item._length = 0;
+            item._isPooled = false;
+            item._offset = 0;
+            item._pool = null;
+            item._pooled = 0;
+            Volatile.Write(ref item._disposed, 1);
         }
     }
 }
@@ -2841,6 +2955,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core = new() { RunContinuationsAsynchronously = true };
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
+    private CancellationToken _cancellationToken;
     private int _state; // High 16 bits = core version; low 16 bits = State*
 
     /// <summary>
@@ -2849,6 +2964,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     public void Initialize(short responseHeaderVersion, CancellationToken cancellationToken, bool registerCancellation = true)
     {
         _responseHeaderVersion = responseHeaderVersion;
+        _cancellationToken = cancellationToken;
         _state = CreateState(_core.Version, StatePending);
 
         // Register for cancellation if the token can be cancelled
@@ -2866,6 +2982,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     public void RegisterCancellation(CancellationToken cancellationToken)
     {
+        _cancellationToken = cancellationToken;
         var newRegistration = cancellationToken.CanBeCanceled
             ? cancellationToken.Register(
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
@@ -2889,7 +3006,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
 
     private void OnCancelled()
     {
-        TrySetCanceled();
+        TrySetCanceled(_cancellationToken);
     }
 
     /// <summary>
@@ -2986,6 +3103,13 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// Returns false if already completed.
     /// </summary>
     public bool TrySetCanceled()
+        => TrySetCanceled(_cancellationToken);
+
+    /// <summary>
+    /// Attempts to cancel the request with the token that triggered cancellation.
+    /// Returns false if already completed.
+    /// </summary>
+    public bool TrySetCanceled(CancellationToken cancellationToken)
     {
         var version = _core.Version;
         if (!TryClaimCompletion(version))
@@ -2996,7 +3120,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // Mark as completed before publishing completion; a continuation may
         // return this instance to the pool afterwards.
         Volatile.Write(ref _state, CreateState(version, StateCompleted));
-        _core.SetException(new OperationCanceledException());
+        _core.SetException(new OperationCanceledException(cancellationToken));
         return true;
     }
 
@@ -3108,6 +3232,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // Dispose cancellation registration
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;
+        _cancellationToken = default;
 
         // Reset the core for reuse
         _core.Reset();

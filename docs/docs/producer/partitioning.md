@@ -47,17 +47,6 @@ var message = new ProducerMessage<string, string>
 await producer.ProduceAsync(message);
 ```
 
-Or using the factory method:
-
-```csharp
-var message = ProducerMessage<string, string>.Create(
-    topic: "events",
-    partition: 2,
-    key: "key",
-    value: "value"
-);
-```
-
 :::warning
 Using explicit partitions couples your code to the topic's partition count. If the topic is re-partitioned, your code may break.
 :::

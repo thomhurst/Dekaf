@@ -46,7 +46,7 @@ public class KafkaProducerFastPathTests
         {
             var innerResult = InvokeTryProduceSyncCore(
                 producer,
-                ProducerMessage<string, string>.Create(Topic, "inner", "inner-value"),
+                new ProducerMessage<string, string> { Topic = Topic, Key = "inner", Value = "inner-value" },
                 topicInfo,
                 innerCompletion);
 
@@ -56,7 +56,7 @@ public class KafkaProducerFastPathTests
 
         var outerResult = InvokeTryProduceSyncCore(
             producer,
-            ProducerMessage<string, string>.Create(Topic, "outer", "outer-value"),
+            new ProducerMessage<string, string> { Topic = Topic, Key = "outer", Value = "outer-value" },
             topicInfo,
             outerCompletion);
 

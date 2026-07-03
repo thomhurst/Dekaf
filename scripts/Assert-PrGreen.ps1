@@ -29,6 +29,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'AssertPrGreenReviewHeuristics.ps1')
 
 function Deny([string]$reason) {
     [Console]::Error.WriteLine("DO NOT MERGE #${Pr} -- $reason")
@@ -85,7 +86,7 @@ if ($bad.Count -gt 0) {
 }
 
 # Top-level review comments are not review threads, so GitHub does not expose a
-# resolved flag for them. Fail closed on common review-finding headings instead
+# resolved flag for them. Fail closed on common review-finding shapes instead
 # of treating a COMMENTED review as automatically safe.
 $latestReviews = @($view.latestReviews | Where-Object { $null -ne $_ })
 $requestedChanges = @($latestReviews | Where-Object { $_.state -eq 'CHANGES_REQUESTED' })
@@ -94,15 +95,13 @@ if ($requestedChanges.Count -gt 0) {
     Deny "latest review requests changes from: $authors"
 }
 
-$actionableHeadingPattern = '(?im)^\s*#{2,4}\s+.*\b(Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix)\b'
 $actionableReviews = @()
 foreach ($review in $latestReviews) {
     if ($review.state -ne 'COMMENTED') { continue }
     $body = [string]$review.body
-    if (-not $body) { continue }
-    if ($body -match $actionableHeadingPattern) {
-        $heading = $Matches[0].Trim()
-        $actionableReviews += "$($review.author.login): $heading"
+    $reason = Get-ActionableReviewBodyReason -Body $body
+    if ($reason) {
+        $actionableReviews += "$($review.author.login): $reason"
     }
 }
 if ($actionableReviews.Count -gt 0) {

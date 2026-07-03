@@ -28,7 +28,7 @@ var consumer = await Kafka.CreateConsumer<string, string>()
     .BuildAsync();
 
 // Assign specific partitions
-consumer.Assign(
+consumer.Partitions.Assign(
     new TopicPartition("my-topic", 0),
     new TopicPartition("my-topic", 1)
 );
@@ -44,10 +44,12 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 Specify where to start consuming:
 
 ```csharp
-consumer.Assign(
-    new TopicPartitionOffset("my-topic", 0, 100),  // Start at offset 100
-    new TopicPartitionOffset("my-topic", 1, 200)   // Start at offset 200
-);
+var first = new TopicPartition("my-topic", 0);
+var second = new TopicPartition("my-topic", 1);
+
+consumer.Partitions.Assign(first, second);
+consumer.Positions.Seek(new TopicPartitionOffset("my-topic", 0, 100));  // Start at offset 100
+consumer.Positions.Seek(new TopicPartitionOffset("my-topic", 1, 200));  // Start at offset 200
 ```
 
 ## Differences from Subscribe
@@ -78,9 +80,16 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 // Load saved offsets from your storage
 var savedOffsets = await LoadOffsetsFromDatabaseAsync();
 
-consumer.Assign(savedOffsets.Select(o =>
-    new TopicPartitionOffset(o.Topic, o.Partition, o.Offset)
-));
+var partitions = savedOffsets
+    .Select(o => new TopicPartition(o.Topic, o.Partition))
+    .ToArray();
+
+consumer.Partitions.Assign(partitions);
+
+foreach (var offset in savedOffsets)
+{
+    consumer.Positions.Seek(new TopicPartitionOffset(offset.Topic, offset.Partition, offset.Offset));
+}
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {
@@ -97,16 +106,16 @@ Add or remove partitions without replacing the entire assignment:
 
 ```csharp
 // Initial assignment
-consumer.Assign(new TopicPartition("my-topic", 0));
+consumer.Partitions.Assign(new TopicPartition("my-topic", 0));
 
 // Later, add partition 1
-consumer.IncrementalAssign(new[]
+consumer.Partitions.IncrementalAssign(new[]
 {
-    new TopicPartitionOffset("my-topic", 1, Offset.Beginning)
+    new TopicPartitionOffset("my-topic", 1, 0)
 });
 
 // Remove partition 0
-consumer.IncrementalUnassign(new[]
+consumer.Partitions.IncrementalUnassign(new[]
 {
     new TopicPartition("my-topic", 0)
 });
@@ -120,8 +129,8 @@ consumer.Assign(new TopicPartition("my-topic", 0))
     .SeekToBeginning(new TopicPartition("my-topic", 0));
 
 // After
-consumer.Assign(new TopicPartition("my-topic", 0));
-consumer.SeekToBeginning(new TopicPartition("my-topic", 0));
+consumer.Partitions.Assign(new TopicPartition("my-topic", 0));
+consumer.Positions.SeekToBeginning(new TopicPartition("my-topic", 0));
 ```
 
 ## Seeking
@@ -129,16 +138,16 @@ consumer.SeekToBeginning(new TopicPartition("my-topic", 0));
 With manual assignment, you can freely seek to any offset:
 
 ```csharp
-consumer.Assign(new TopicPartition("my-topic", 0));
+consumer.Partitions.Assign(new TopicPartition("my-topic", 0));
 
 // Seek to beginning
-consumer.SeekToBeginning(new TopicPartition("my-topic", 0));
+consumer.Positions.SeekToBeginning(new TopicPartition("my-topic", 0));
 
 // Seek to end
-consumer.SeekToEnd(new TopicPartition("my-topic", 0));
+consumer.Positions.SeekToEnd(new TopicPartition("my-topic", 0));
 
 // Seek to specific offset
-consumer.Seek(new TopicPartitionOffset("my-topic", 0, 12345));
+consumer.Positions.Seek(new TopicPartitionOffset("my-topic", 0, 12345));
 ```
 
 ## Unassigning
@@ -146,7 +155,7 @@ consumer.Seek(new TopicPartitionOffset("my-topic", 0, 12345));
 Remove all partition assignments:
 
 ```csharp
-consumer.Unassign();
+consumer.Partitions.Unassign();
 ```
 
 ## Complete Example: Partition Reader
@@ -170,7 +179,9 @@ public class PartitionReader
             .WithAutoOffsetReset(AutoOffsetReset.None)
             .BuildAsync();
 
-        consumer.Assign(new TopicPartitionOffset(topic, partition, startOffset));
+        var topicPartition = new TopicPartition(topic, partition);
+        consumer.Partitions.Assign(topicPartition);
+        consumer.Positions.Seek(new TopicPartitionOffset(topic, partition, startOffset));
 
         await foreach (var msg in consumer.ConsumeAsync(ct))
         {
@@ -225,9 +236,19 @@ public class MultiPartitionWorker
         }
 
         // Assign with loaded offsets
-        _consumer.Assign(partitions.Select(p =>
-            new TopicPartitionOffset(topic, p, _offsets[p])
-        ));
+        var assignedPartitions = partitions
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray();
+
+        _consumer.Partitions.Assign(assignedPartitions);
+
+        foreach (var assignedPartition in assignedPartitions)
+        {
+            _consumer.Positions.Seek(new TopicPartitionOffset(
+                assignedPartition.Topic,
+                assignedPartition.Partition,
+                _offsets[assignedPartition.Partition]));
+        }
 
         // Process messages
         await foreach (var msg in _consumer.ConsumeAsync(ct))

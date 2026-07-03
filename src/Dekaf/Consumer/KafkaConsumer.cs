@@ -435,6 +435,68 @@ internal sealed class PendingFetchData : IDisposable
     }
 }
 
+internal static class ConsumerFetchPools
+{
+    private static readonly PendingFetchDataListPool s_pendingFetchDataLists = new();
+    private static readonly FetchRequestTopicListPool s_fetchRequestTopicLists = new();
+    private static readonly FetchRequestPartitionListPool s_fetchRequestPartitionLists = new();
+
+    internal static List<PendingFetchData> RentPendingFetchDataList()
+    {
+        var list = s_pendingFetchDataLists.Rent();
+        return list;
+    }
+
+    internal static void ReturnPendingFetchDataList(List<PendingFetchData> list)
+        => s_pendingFetchDataLists.Return(list);
+
+    internal static List<FetchRequestTopic> RentFetchRequestTopicList(int capacity)
+    {
+        var list = s_fetchRequestTopicLists.Rent();
+        list.EnsureCapacity(capacity);
+        return list;
+    }
+
+    internal static List<FetchRequestPartition> RentFetchRequestPartitionList(int capacity)
+    {
+        var list = s_fetchRequestPartitionLists.Rent();
+        list.EnsureCapacity(capacity);
+        return list;
+    }
+
+    internal static void ReturnFetchRequestTopics(List<FetchRequestTopic> topics)
+    {
+        for (var i = 0; i < topics.Count; i++)
+        {
+            if (topics[i].Partitions is List<FetchRequestPartition> partitions)
+                s_fetchRequestPartitionLists.Return(partitions);
+        }
+
+        s_fetchRequestTopicLists.Return(topics);
+    }
+
+    private sealed class PendingFetchDataListPool() : ObjectPool<List<PendingFetchData>>(maxPoolSize: 64)
+    {
+        protected override List<PendingFetchData> Create() => [];
+
+        protected override void Reset(List<PendingFetchData> item) => item.Clear();
+    }
+
+    private sealed class FetchRequestTopicListPool() : ObjectPool<List<FetchRequestTopic>>(maxPoolSize: 64)
+    {
+        protected override List<FetchRequestTopic> Create() => [];
+
+        protected override void Reset(List<FetchRequestTopic> item) => item.Clear();
+    }
+
+    private sealed class FetchRequestPartitionListPool() : ObjectPool<List<FetchRequestPartition>>(maxPoolSize: 128)
+    {
+        protected override List<FetchRequestPartition> Create() => [];
+
+        protected override void Reset(List<FetchRequestPartition> item) => item.Clear();
+    }
+}
+
 /// <summary>
 /// Kafka consumer implementation.
 /// </summary>
@@ -463,7 +525,13 @@ internal sealed class PendingFetchData : IDisposable
 /// </remarks>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>, DeadLetter.IRawRecordAccessor, IBudgetedInstance
+public sealed partial class KafkaConsumer<TKey, TValue> :
+    IKafkaConsumer<TKey, TValue>,
+    IConsumerPositions,
+    IConsumerPartitions,
+    IConsumerOffsets,
+    DeadLetter.IRawRecordAccessor,
+    IBudgetedInstance
 {
     /// <summary>
     /// Delay in milliseconds when all assigned partitions are paused, to prevent
@@ -489,6 +557,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryManager _telemetryManager;
+    private readonly IDekafMemoryBudget _memoryBudget;
+    private readonly bool _ownsInfrastructure;
     private readonly ConsumerCoordinator? _coordinator;
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
@@ -580,6 +650,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
     private readonly Dictionary<string, System.Diagnostics.TagList> _metricTagsCache = [];
 
+    private const long EarliestOffsetTimestamp = -2;
+    private const long LatestOffsetTimestamp = -1;
+
     // Cached activity names per topic to avoid repeated string interpolation in fetch paths
     // Instance-level to avoid unbounded growth with dynamic topic names across consumer instances
     private readonly ConcurrentDictionary<string, string> _activityNameCache = new();
@@ -614,7 +687,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         MetadataOptions? metadataOptions = null)
         : this(options, keyDeserializer, valueDeserializer,
             CreateInfrastructure(options, loggerFactory, metadataOptions),
-            loggerFactory)
+            loggerFactory,
+            ownsInfrastructure: true,
+            DekafMemoryBudget.Global)
     {
     }
 
@@ -631,7 +706,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         ILoggerFactory? loggerFactory = null)
         : this(options, keyDeserializer, valueDeserializer,
             (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
-            loggerFactory)
+            loggerFactory,
+            ownsInfrastructure: true,
+            DekafMemoryBudget.Global)
+    {
+    }
+
+    internal KafkaConsumer(
+        ConsumerOptions options,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        IDekafMemoryBudget memoryBudget,
+        ILoggerFactory? loggerFactory = null)
+        : this(options, keyDeserializer, valueDeserializer,
+            (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
+            loggerFactory,
+            ownsInfrastructure: false,
+            memoryBudget)
     {
     }
 
@@ -674,7 +767,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
         (IConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
-        ILoggerFactory? loggerFactory)
+        ILoggerFactory? loggerFactory,
+        bool ownsInfrastructure,
+        IDekafMemoryBudget memoryBudget)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
@@ -708,6 +803,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _connectionPool = infrastructure.Pool;
         _metadataManager = infrastructure.Metadata;
+        _ownsInfrastructure = ownsInfrastructure;
+        _memoryBudget = memoryBudget;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
@@ -771,6 +868,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
+    public IConsumerPositions Positions => this;
+    public IConsumerPartitions Partitions => this;
+    public IConsumerOffsets Offsets => this;
+
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.
     /// No-op when the consumer has no group coordinator (manual assignment mode).
@@ -1617,9 +1718,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // across connections to issue concurrent fetches to the same broker.
 
             // Lazily prune stale entries from scaled-down connections.
-            // O(k) over a small dictionary (brokers × connections), once per fetch cycle — not hot path.
-            foreach (var key in _prefetchPendingItemsByBroker.Keys)
+            // Enumerate entries directly to avoid the allocating .Keys snapshot.
+            foreach (var entry in _prefetchPendingItemsByBroker)
             {
+                var key = entry.Key;
                 if (key.ConnectionIndex >= fetchConnectionCount)
                     _prefetchPendingItemsByBroker.TryRemove(key, out _);
             }
@@ -1854,6 +1956,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             finally
             {
                 request.ReturnToPool();
+                ConsumerFetchPools.ReturnFetchRequestTopics(topicData);
             }
 
             // Record fetch round-trip duration (~3ns no-op when no listener)
@@ -2532,6 +2635,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return null;
     }
 
+    private static ListOffsetsRequest CreateWatermarkListOffsetsRequest(
+        TopicPartition topicPartition,
+        IsolationLevel isolationLevel,
+        long timestamp) => new()
+        {
+            ReplicaId = -1,
+            IsolationLevel = isolationLevel,
+            Topics =
+            [
+                new ListOffsetsRequestTopic
+                {
+                    Name = topicPartition.Topic,
+                    Partitions =
+                    [
+                        new ListOffsetsRequestPartition
+                        {
+                            PartitionIndex = topicPartition.Partition,
+                            Timestamp = timestamp,
+                            CurrentLeaderEpoch = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
+    private static ListOffsetsResponsePartition? FindListOffsetsPartition(
+        ListOffsetsResponse response,
+        TopicPartition topicPartition)
+    {
+        foreach (var topic in response.Topics)
+        {
+            if (topic.Name != topicPartition.Topic)
+                continue;
+
+            foreach (var partition in topic.Partitions)
+            {
+                if (partition.PartitionIndex == topicPartition.Partition)
+                    return partition;
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
     public async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
@@ -2550,50 +2699,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             ListOffsetsRequest.LowestSupportedVersion,
             ListOffsetsRequest.HighestSupportedVersion);
 
-        // Query for earliest offset (low watermark) with timestamp -2
-        var earliestRequest = new ListOffsetsRequest
-        {
-            ReplicaId = -1,
-            IsolationLevel = _options.IsolationLevel,
-            Topics =
-            [
-                new ListOffsetsRequestTopic
-                {
-                    Name = topicPartition.Topic,
-                    Partitions =
-                    [
-                        new ListOffsetsRequestPartition
-                        {
-                            PartitionIndex = topicPartition.Partition,
-                            Timestamp = -2, // Earliest
-                            CurrentLeaderEpoch = -1
-                        }
-                    ]
-                }
-            ]
-        };
+        var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
+        var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
 
-        var earliestResponse = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+        var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             earliestRequest,
             listOffsetsVersion,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken).AsTask();
 
-        ListOffsetsResponsePartition? earliestPartitionResponse = null;
-        foreach (var topic in earliestResponse.Topics)
-        {
-            if (topic.Name == topicPartition.Topic)
-            {
-                foreach (var partition in topic.Partitions)
-                {
-                    if (partition.PartitionIndex == topicPartition.Partition)
-                    {
-                        earliestPartitionResponse = partition;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
+        var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+            latestRequest,
+            listOffsetsVersion,
+            cancellationToken).AsTask();
+
+        await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
+
+        var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
         if (earliestPartitionResponse?.ErrorCode != ErrorCode.None)
         {
@@ -2603,50 +2724,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
 
-        // Query for latest offset (high watermark) with timestamp -1
-        var latestRequest = new ListOffsetsRequest
-        {
-            ReplicaId = -1,
-            IsolationLevel = _options.IsolationLevel,
-            Topics =
-            [
-                new ListOffsetsRequestTopic
-                {
-                    Name = topicPartition.Topic,
-                    Partitions =
-                    [
-                        new ListOffsetsRequestPartition
-                        {
-                            PartitionIndex = topicPartition.Partition,
-                            Timestamp = -1, // Latest
-                            CurrentLeaderEpoch = -1
-                        }
-                    ]
-                }
-            ]
-        };
-
-        var latestResponse = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            latestRequest,
-            listOffsetsVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        ListOffsetsResponsePartition? latestPartitionResponse = null;
-        foreach (var topic in latestResponse.Topics)
-        {
-            if (topic.Name == topicPartition.Topic)
-            {
-                foreach (var partition in topic.Partitions)
-                {
-                    if (partition.PartitionIndex == topicPartition.Partition)
-                    {
-                        latestPartitionResponse = partition;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
+        var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
 
         if (latestPartitionResponse?.ErrorCode != ErrorCode.None)
         {
@@ -3131,9 +3209,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var pendingItems = fetchTasks[j].Result;
                     if (pendingItems is not null)
                     {
-                        foreach (var pending in pendingItems)
+                        try
                         {
-                            _pendingFetches.Enqueue(pending);
+                            foreach (var pending in pendingItems)
+                            {
+                                _pendingFetches.Enqueue(pending);
+                            }
+                        }
+                        finally
+                        {
+                            ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
                         }
                     }
                 }
@@ -3362,6 +3447,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         finally
         {
             request.ReturnToPool();
+            ConsumerFetchPools.ReturnFetchRequestTopics(topicData);
         }
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
@@ -3430,7 +3516,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         _eofEmitted.TryRemove(tp, out _);
 
                         // Collect pending fetch data for lazy record iteration
-                        pendingItems ??= [];
+                        pendingItems ??= ConsumerFetchPools.RentPendingFetchDataList();
                         pendingItems.Add(PendingFetchData.Create(
                             topic,
                             partitionResponse.PartitionIndex,
@@ -3478,7 +3564,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// </summary>
     private static void AssignSharedMemoryOwner(List<PendingFetchData> pendingItems, IPooledMemory memoryOwner)
     {
-        var shared = new RefCountedMemoryOwner(memoryOwner, pendingItems.Count);
+        var shared = RefCountedMemoryOwner.Create(memoryOwner, pendingItems.Count);
         for (var i = 0; i < pendingItems.Count; i++)
         {
             pendingItems[i].SetMemoryOwner(shared);
@@ -3730,7 +3816,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         List<TopicPartition> partitions, int startIndex, int count)
     {
         if (count == 0)
-            return [];
+            return ConsumerFetchPools.RentFetchRequestTopicList(0);
 
         var isFullList = startIndex == 0 && count == partitions.Count;
 
@@ -3834,12 +3920,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         int? adaptivePartitionMaxBytes = null,
         ClusterMetadata? clusterMetadata = null)
     {
-        var result = new List<FetchRequestTopic>(templateDict.Count);
+        var result = ConsumerFetchPools.RentFetchRequestTopicList(templateDict.Count);
 
         foreach (var kvp in templateDict)
         {
             var cachedPartitions = kvp.Value;
-            var partitionList = new List<FetchRequestPartition>(cachedPartitions.Count);
+            var partitionList = ConsumerFetchPools.RentFetchRequestPartitionList(cachedPartitions.Count);
 
             foreach (var (template, tp) in cachedPartitions)
             {
@@ -4261,9 +4347,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             return;
 
         if (_options.IsAutoTuned)
-            DekafMemoryBudget.UnregisterConsumer(this);
+            _memoryBudget.UnregisterConsumer(this);
         else
-            DekafMemoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
+            _memoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
 
         var disposeStart = System.Diagnostics.Stopwatch.GetTimestamp();
         LogConsumerDisposing();
@@ -4351,8 +4437,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             await _coordinator.DisposeAsync().ConfigureAwait(false);
 
         await _telemetryManager.DisposeAsync().ConfigureAwait(false);
-        await _metadataManager.DisposeAsync().ConfigureAwait(false);
-        await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        if (_ownsInfrastructure)
+        {
+            await _metadataManager.DisposeAsync().ConfigureAwait(false);
+            await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        }
 
         var disposeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogConsumerDisposed(disposeElapsedMs);

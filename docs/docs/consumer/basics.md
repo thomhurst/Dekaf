@@ -21,6 +21,16 @@ await using var consumer = await Kafka.CreateConsumer<string, string>()
 
 The type parameters `<TKey, TValue>` define the expected key and value types.
 
+For services with multiple Kafka clients, create a root client once and build consumers from it. Bootstrap servers, TLS/SASL, and memory budgeting are owned by the root; group IDs and subscription settings stay on the consumer builder.
+
+```csharp
+await using var kafka = Kafka.Connect("localhost:9092");
+
+await using var consumer = await kafka.CreateConsumer<string, string>("my-consumer-group")
+    .SubscribeTo("my-topic")
+    .BuildAsync();
+```
+
 ## Subscribing to Topics
 
 Before consuming, subscribe to one or more topics:
@@ -50,7 +60,7 @@ consumer.Subscribe("my-topic").Pause(new TopicPartition("my-topic", 0));
 
 // After
 consumer.Subscribe("my-topic");
-consumer.Pause(new TopicPartition("my-topic", 0));
+consumer.Partitions.Pause(new TopicPartition("my-topic", 0));
 ```
 
 ## Consuming Messages
@@ -207,13 +217,13 @@ Temporarily stop consuming from specific partitions:
 
 ```csharp
 // Pause consumption from a partition
-consumer.Pause(new TopicPartition("my-topic", 0));
+consumer.Partitions.Pause(new TopicPartition("my-topic", 0));
 
 // Check what's paused
-var paused = consumer.Paused;
+var paused = consumer.Partitions.Paused;
 
 // Resume
-consumer.Resume(new TopicPartition("my-topic", 0));
+consumer.Partitions.Resume(new TopicPartition("my-topic", 0));
 ```
 
 This is useful for backpressure - if your processing can't keep up, pause some partitions.
@@ -225,7 +235,7 @@ This is useful for backpressure - if your processing can't keep up, pause some p
 IReadOnlySet<string> topics = consumer.Subscription;
 
 // Current assignment (partitions being consumed)
-IReadOnlySet<TopicPartition> partitions = consumer.Assignment;
+IReadOnlySet<TopicPartition> partitions = consumer.Partitions.Assignment;
 
 // Consumer's member ID in the group
 string? memberId = consumer.MemberId;

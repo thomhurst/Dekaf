@@ -6,6 +6,8 @@ sidebar_position: 11
 
 Dekaf plays nicely with ASP.NET Core's DI container. Here's how to wire it up.
 
+DI registration owns each registered client for you. For manual wiring outside DI, prefer `Kafka.Connect(...)` when multiple clients should share a connection pool and memory budget.
+
 ## Installation
 
 ```bash

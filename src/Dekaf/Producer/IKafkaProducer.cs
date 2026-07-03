@@ -221,55 +221,6 @@ public sealed record ProducerMessage<TKey, TValue>
     /// Optional timestamp. If not set, current time will be used.
     /// </summary>
     public DateTimeOffset? Timestamp { get; init; }
-
-    /// <summary>
-    /// Creates a new producer message with a null key.
-    /// </summary>
-    /// <param name="topic">The topic to produce to.</param>
-    /// <param name="value">The message value.</param>
-    /// <returns>A new producer message with a null key.</returns>
-#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
-    public static ProducerMessage<TKey, TValue> Create(string topic, TValue value)
-#pragma warning restore CA1000
-        => new() { Topic = topic, Value = value };
-
-    /// <summary>
-    /// Creates a new producer message.
-    /// </summary>
-    /// <param name="topic">The topic to produce to.</param>
-    /// <param name="key">The message key (can be null).</param>
-    /// <param name="value">The message value.</param>
-    /// <returns>A new producer message.</returns>
-#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
-    public static ProducerMessage<TKey, TValue> Create(string topic, TKey? key, TValue value)
-#pragma warning restore CA1000
-        => new() { Topic = topic, Key = key, Value = value };
-
-    /// <summary>
-    /// Creates a new producer message with headers.
-    /// </summary>
-    /// <param name="topic">The topic to produce to.</param>
-    /// <param name="key">The message key (can be null).</param>
-    /// <param name="value">The message value.</param>
-    /// <param name="headers">The message headers.</param>
-    /// <returns>A new producer message.</returns>
-#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
-    public static ProducerMessage<TKey, TValue> Create(string topic, TKey? key, TValue value, Headers headers)
-#pragma warning restore CA1000
-        => new() { Topic = topic, Key = key, Value = value, Headers = headers };
-
-    /// <summary>
-    /// Creates a new producer message with a specific partition.
-    /// </summary>
-    /// <param name="topic">The topic to produce to.</param>
-    /// <param name="partition">The partition to produce to.</param>
-    /// <param name="key">The message key (can be null).</param>
-    /// <param name="value">The message value.</param>
-    /// <returns>A new producer message.</returns>
-#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
-    public static ProducerMessage<TKey, TValue> Create(string topic, int partition, TKey? key, TValue value)
-#pragma warning restore CA1000
-        => new() { Topic = topic, Partition = partition, Key = key, Value = value };
 }
 
 /// <summary>

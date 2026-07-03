@@ -5,61 +5,32 @@ namespace Dekaf.Tests.Unit.Producer;
 
 public class ProducerMessageTests
 {
-    #region Create Factory Method Tests
+    #region Init Property Tests
 
     [Test]
-    public async Task Create_WithTopicKeyValue_SetsProperties()
+    public async Task Init_WithTopicKeyValue_SetsProperties()
     {
-        var message = ProducerMessage<string, string>.Create("my-topic", "key", "value");
-        await Assert.That(message.Topic).IsEqualTo("my-topic");
+        var message = new ProducerMessage<string, string> { Topic = "topic", Key = "key", Value = "value" };
+        await Assert.That(message.Topic).IsEqualTo("topic");
         await Assert.That(message.Key).IsEqualTo("key");
         await Assert.That(message.Value).IsEqualTo("value");
     }
 
     [Test]
-    public async Task Create_WithTopicKeyValue_DefaultsAreNull()
+    public async Task Init_WithTopicKeyValue_DefaultsAreNull()
     {
-        var message = ProducerMessage<string, string>.Create("my-topic", "key", "value");
+        var message = new ProducerMessage<string, string> { Topic = "topic", Key = "key", Value = "value" };
         await Assert.That(message.Partition).IsNull();
         await Assert.That(message.Timestamp).IsNull();
         await Assert.That(message.Headers).IsNull();
     }
 
     [Test]
-    public async Task Create_WithNullKey_Succeeds()
+    public async Task Init_WithNullKey_Succeeds()
     {
-        var message = ProducerMessage<string, string>.Create("my-topic", null, "value");
+        var message = new ProducerMessage<string, string> { Topic = "topic", Key = null, Value = "value" };
         await Assert.That(message.Key).IsNull();
         await Assert.That(message.Value).IsEqualTo("value");
-    }
-
-    [Test]
-    public async Task Create_WithHeaders_SetsHeaders()
-    {
-        var headers = new Headers().Add("h1", "v1");
-        var message = ProducerMessage<string, string>.Create("my-topic", "key", "value", headers);
-        await Assert.That(message.Headers).IsSameReferenceAs(headers);
-    }
-
-    [Test]
-    public async Task Create_WithPartition_SetsPartition()
-    {
-        var message = ProducerMessage<string, string>.Create("my-topic", 5, "key", "value");
-        await Assert.That(message.Partition).IsEqualTo(5);
-        await Assert.That(message.Topic).IsEqualTo("my-topic");
-        await Assert.That(message.Key).IsEqualTo("key");
-        await Assert.That(message.Value).IsEqualTo("value");
-    }
-
-    #endregion
-
-    #region Init Property Tests
-
-    [Test]
-    public async Task Topic_IsRequired()
-    {
-        var message = new ProducerMessage<string, string> { Topic = "topic", Value = "value" };
-        await Assert.That(message.Topic).IsEqualTo("topic");
     }
 
     [Test]
@@ -118,9 +89,9 @@ public class ProducerMessageTests
     #region Int Key Type Tests
 
     [Test]
-    public async Task Create_WithIntKey_SetsProperties()
+    public async Task Init_WithIntKey_SetsProperties()
     {
-        var message = ProducerMessage<int, string>.Create("topic", 42, "value");
+        var message = new ProducerMessage<int, string> { Topic = "topic", Key = 42, Value = "value" };
         await Assert.That(message.Key).IsEqualTo(42);
         await Assert.That(message.Value).IsEqualTo("value");
     }

@@ -21,6 +21,11 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     IReadOnlySet<TopicPartition> Assignment { get; }
 
     /// <summary>
+    /// Gets the paused partitions.
+    /// </summary>
+    IReadOnlySet<TopicPartition> Paused { get; }
+
+    /// <summary>
     /// Gets the member ID if part of a consumer group.
     /// </summary>
     string? MemberId { get; }
@@ -30,6 +35,21 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Returns null if not part of a consumer group or if the group has not yet been joined.
     /// </summary>
     ConsumerGroupMetadata? ConsumerGroupMetadata { get; }
+
+    /// <summary>
+    /// Gets position and seek operations.
+    /// </summary>
+    IConsumerPositions Positions { get; }
+
+    /// <summary>
+    /// Gets assignment and pause/resume operations.
+    /// </summary>
+    IConsumerPartitions Partitions { get; }
+
+    /// <summary>
+    /// Gets offset lookup operations.
+    /// </summary>
+    IConsumerOffsets Offsets { get; }
 
     /// <summary>
     /// Subscribes to topics.
@@ -45,32 +65,6 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Unsubscribes from all topics.
     /// </summary>
     void Unsubscribe();
-
-    /// <summary>
-    /// Manually assigns partitions.
-    /// </summary>
-    void Assign(params TopicPartition[] partitions);
-
-    /// <summary>
-    /// Unassigns all partitions.
-    /// </summary>
-    void Unassign();
-
-    /// <summary>
-    /// Incrementally adds partitions to the current assignment.
-    /// Used with cooperative rebalancing (CooperativeSticky assignor).
-    /// Unlike <see cref="Assign"/>, does not replace the entire assignment.
-    /// </summary>
-    /// <param name="partitions">The partitions to add with optional starting offsets.</param>
-    void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
-
-    /// <summary>
-    /// Incrementally removes partitions from the current assignment.
-    /// Used with cooperative rebalancing (CooperativeSticky assignor).
-    /// Unlike <see cref="Unassign"/>, only removes the specified partitions.
-    /// </summary>
-    /// <param name="partitions">The partitions to remove.</param>
-    void IncrementalUnassign(IEnumerable<TopicPartition> partitions);
 
     /// <summary>
     /// Consumes messages as an async enumerable.
@@ -111,6 +105,32 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
+    /// commits pending offsets, leaves the consumer group, and releases resources.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Optional:</b> Calling <c>CloseAsync</c> explicitly is not required.
+    /// <see cref="IAsyncDisposable.DisposeAsync"/> calls <c>CloseAsync</c> automatically if it
+    /// has not already been called. Use <c>CloseAsync</c> when you need explicit control over
+    /// close timing before disposal — for example, to observe close errors, to ensure a final
+    /// commit completes before the <c>await using</c> block exits, or to close with a specific
+    /// cancellation token.</para>
+    /// <para><b>Idempotent:</b> Safe to call multiple times. Subsequent calls after the first
+    /// return immediately with no side effects. It is also safe to call <c>DisposeAsync</c>
+    /// after <c>CloseAsync</c> — disposal will detect that close has already completed and
+    /// skip the close step.</para>
+    /// </remarks>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous close operation.</returns>
+    ValueTask CloseAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Position and seek operations for a Kafka consumer.
+/// </summary>
+public interface IConsumerPositions
+{
+    /// <summary>
     /// Gets the committed offset for a partition.
     /// </summary>
     ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default);
@@ -136,6 +156,48 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Seeks to the end of partitions.
     /// </summary>
     void SeekToEnd(params TopicPartition[] partitions);
+}
+
+/// <summary>
+/// Assignment and pause/resume operations for a Kafka consumer.
+/// </summary>
+public interface IConsumerPartitions
+{
+    /// <summary>
+    /// Gets the current assignment.
+    /// </summary>
+    IReadOnlySet<TopicPartition> Assignment { get; }
+
+    /// <summary>
+    /// Gets the paused partitions.
+    /// </summary>
+    IReadOnlySet<TopicPartition> Paused { get; }
+
+    /// <summary>
+    /// Manually assigns partitions.
+    /// </summary>
+    void Assign(params TopicPartition[] partitions);
+
+    /// <summary>
+    /// Unassigns all partitions.
+    /// </summary>
+    void Unassign();
+
+    /// <summary>
+    /// Incrementally adds partitions to the current assignment.
+    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Unlike <see cref="Assign"/>, does not replace the entire assignment.
+    /// </summary>
+    /// <param name="partitions">The partitions to add with optional starting offsets.</param>
+    void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
+
+    /// <summary>
+    /// Incrementally removes partitions from the current assignment.
+    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Unlike <see cref="Unassign"/>, only removes the specified partitions.
+    /// </summary>
+    /// <param name="partitions">The partitions to remove.</param>
+    void IncrementalUnassign(IEnumerable<TopicPartition> partitions);
 
     /// <summary>
     /// Pauses consumption from partitions.
@@ -146,32 +208,13 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Resumes consumption from partitions.
     /// </summary>
     void Resume(params TopicPartition[] partitions);
+}
 
-    /// <summary>
-    /// Gets the paused partitions.
-    /// </summary>
-    IReadOnlySet<TopicPartition> Paused { get; }
-
-    /// <summary>
-    /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
-    /// commits pending offsets, leaves the consumer group, and releases resources.
-    /// </summary>
-    /// <remarks>
-    /// <para><b>Optional:</b> Calling <c>CloseAsync</c> explicitly is not required.
-    /// <see cref="IAsyncDisposable.DisposeAsync"/> calls <c>CloseAsync</c> automatically if it
-    /// has not already been called. Use <c>CloseAsync</c> when you need explicit control over
-    /// close timing before disposal — for example, to observe close errors, to ensure a final
-    /// commit completes before the <c>await using</c> block exits, or to close with a specific
-    /// cancellation token.</para>
-    /// <para><b>Idempotent:</b> Safe to call multiple times. Subsequent calls after the first
-    /// return immediately with no side effects. It is also safe to call <c>DisposeAsync</c>
-    /// after <c>CloseAsync</c> — disposal will detect that close has already completed and
-    /// skip the close step.</para>
-    /// </remarks>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A task representing the asynchronous close operation.</returns>
-    ValueTask CloseAsync(CancellationToken cancellationToken = default);
-
+/// <summary>
+/// Offset lookup operations for a Kafka consumer.
+/// </summary>
+public interface IConsumerOffsets
+{
     /// <summary>
     /// Look up the offsets for the given partitions by timestamp.
     /// The returned offset for each partition is the earliest offset whose timestamp is greater than or equal to the given timestamp.

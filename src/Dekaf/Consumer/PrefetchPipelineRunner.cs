@@ -46,7 +46,8 @@ internal sealed class PrefetchPipelineRunner
     private readonly Action<Exception?>? _onComplete;
     private readonly int _pipelineDepth;
     private readonly Action<int, int>? _onIterationComplete;
-    private readonly Queue<Task> _inFlightQueue = new();
+    // Queued ValueTasks are awaited exactly once by the drain helpers.
+    private readonly Queue<ValueTask> _inFlightQueue;
 
     /// <summary>
     /// The number of currently in-flight prefetch tasks. Exposed for testing.
@@ -104,6 +105,7 @@ internal sealed class PrefetchPipelineRunner
         _onComplete = onComplete;
         _pipelineDepth = pipelineDepth;
         _onIterationComplete = onIterationComplete;
+        _inFlightQueue = new Queue<ValueTask>(Math.Max(pipelineDepth - 1, 0));
     }
 
     /// <summary>
@@ -176,7 +178,7 @@ internal sealed class PrefetchPipelineRunner
                         && currentPrefetchedBytes < maxBytes
                         && !cancellationToken.IsCancellationRequested)
                     {
-                        _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
+                        _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken));
 
                         // Fast-drain completed fetches and refill: if the oldest in-flight fetch
                         // already completed (e.g., fast empty response), drain it immediately
@@ -194,7 +196,7 @@ internal sealed class PrefetchPipelineRunner
                             if (currentPrefetchedBytes >= maxBytes)
                                 break;
 
-                            _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken).AsTask());
+                            _inFlightQueue.Enqueue(_prefetchRecords(cancellationToken));
                         }
                     }
 

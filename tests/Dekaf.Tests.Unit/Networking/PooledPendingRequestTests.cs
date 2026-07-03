@@ -145,10 +145,11 @@ public class PooledPendingRequestTests
         // Cancel before completion — callback fires synchronously
         cts.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        var thrown = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
             await request.AsValueTask().ConfigureAwait(false);
         });
+        await Assert.That(thrown!.CancellationToken).IsEqualTo(cts.Token);
 
         pool.Return(request);
     }
@@ -400,10 +401,11 @@ public class PooledPendingRequestTests
         // Cancel via registered token — callback fires synchronously
         cts.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        var thrown = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
             await request.AsValueTask().ConfigureAwait(false);
         });
+        await Assert.That(thrown!.CancellationToken).IsEqualTo(cts.Token);
 
         pool.Return(request);
     }
@@ -484,6 +486,7 @@ public class PooledPendingRequestTests
         });
 
         await Assert.That(thrown).IsNotNull();
+        await Assert.That(thrown!.CancellationToken).IsEqualTo(cts.Token);
 
         pool.Return(request);
     }

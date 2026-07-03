@@ -6,11 +6,10 @@ namespace Dekaf.Producer;
 /// A producer bound to a specific topic, providing a simplified API without topic parameters.
 /// </summary>
 /// <remarks>
-/// <para>Topic producers can be created in several ways:</para>
+/// <para>Topic producers can be created in two ways:</para>
 /// <list type="bullet">
-/// <item><description>From the builder: <c>Dekaf.CreateProducer&lt;K,V&gt;().WithBootstrapServers(...).BuildForTopic("my-topic")</c></description></item>
+/// <item><description>From the builder: <c>Kafka.CreateProducer&lt;K,V&gt;().WithBootstrapServers(...).BuildForTopic("my-topic")</c></description></item>
 /// <item><description>From an existing producer: <c>producer.ForTopic("my-topic")</c></description></item>
-/// <item><description>Direct factory: <c>Kafka.CreateTopicProducer&lt;K,V&gt;("localhost:9092", "my-topic")</c></description></item>
 /// </list>
 /// <para>When created from an existing producer via <see cref="IKafkaProducer{TKey,TValue}.ForTopic"/>,
 /// multiple topic producers can share the same underlying connections and worker threads.</para>

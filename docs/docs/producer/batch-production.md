@@ -30,9 +30,9 @@ var results = await producer.ProduceAllAsync(messages);
 ```csharp
 var messages = new[]
 {
-    ProducerMessage<string, string>.Create("orders", "order-1", orderJson1),
-    ProducerMessage<string, string>.Create("orders", "order-2", orderJson2),
-    ProducerMessage<string, string>.Create("orders", "order-3", orderJson3),
+    new ProducerMessage<string, string> { Topic = "orders", Key = "order-1", Value = orderJson1 },
+    new ProducerMessage<string, string> { Topic = "orders", Key = "order-2", Value = orderJson2 },
+    new ProducerMessage<string, string> { Topic = "orders", Key = "order-3", Value = orderJson3 },
 };
 
 var results = await producer.ProduceAllAsync(messages);
@@ -67,7 +67,12 @@ Works with any `IEnumerable`:
 var orders = await GetPendingOrdersAsync();
 
 var messages = orders.Select(order =>
-    ProducerMessage<string, string>.Create("orders", order.Id, JsonSerializer.Serialize(order))
+    new ProducerMessage<string, string>
+    {
+        Topic = "orders",
+        Key = order.Id,
+        Value = JsonSerializer.Serialize(order)
+    }
 );
 
 var results = await producer.ProduceAllAsync(messages);
@@ -172,14 +177,15 @@ Here's a complete example processing a batch of orders:
 ```csharp
 public async Task ProcessOrderBatchAsync(IReadOnlyList<Order> orders)
 {
-    var messages = orders.Select(order => ProducerMessage<string, Order>.Create(
-        topic: "orders",
-        key: order.Id,
-        value: order,
-        headers: Headers.Create()
+    var messages = orders.Select(order => new ProducerMessage<string, Order>
+    {
+        Topic = "orders",
+        Key = order.Id,
+        Value = order,
+        Headers = Headers.Create()
             .Add("source", "batch-processor")
             .Add("batch-size", orders.Count.ToString())
-    )).ToList();
+    }).ToList();
 
     try
     {

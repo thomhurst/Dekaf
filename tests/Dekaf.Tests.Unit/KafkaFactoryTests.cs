@@ -1,105 +1,98 @@
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Unit;
 
 public sealed class KafkaFactoryTests
 {
-    #region CreateProducer
-
     [Test]
-    public async Task CreateProducer_Generic_ReturnsBuilder()
+    public async Task CreateProducer_ReturnsBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
+
         await Assert.That(builder).IsNotNull();
     }
 
     [Test]
-    public async Task CreateProducer_WithBootstrapServers_ReturnsProducer()
+    public async Task CreateProducer_BuilderCanBuildProducer()
     {
-        var producer = Kafka.CreateProducer<string, string>("localhost:9092");
-        await Assert.That(producer).IsNotNull();
-        await producer.DisposeAsync();
-    }
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
 
-    [Test]
-    public async Task CreateProducer_ImplementsIKafkaProducer()
-    {
-        var producer = Kafka.CreateProducer<string, string>("localhost:9092");
         await Assert.That(producer).IsAssignableTo<IKafkaProducer<string, string>>();
-        await producer.DisposeAsync();
     }
 
-    #endregion
-
-    #region CreateTopicProducer
-
     [Test]
-    public async Task CreateTopicProducer_ReturnsTopicProducer()
+    public async Task CreateProducer_BuilderCanBuildTopicProducer()
     {
-        await using var producer = Kafka.CreateTopicProducer<string, string>("localhost:9092", "my-topic");
-        await Assert.That(producer).IsNotNull();
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .BuildForTopic("my-topic");
+
+        await Assert.That(producer).IsAssignableTo<ITopicProducer<string, string>>();
         await Assert.That(producer.Topic).IsEqualTo("my-topic");
     }
 
     [Test]
-    public async Task CreateTopicProducer_ImplementsITopicProducer()
-    {
-        await using var producer = Kafka.CreateTopicProducer<string, string>("localhost:9092", "my-topic");
-        await Assert.That(producer).IsAssignableTo<ITopicProducer<string, string>>();
-    }
-
-    #endregion
-
-    #region CreateConsumer
-
-    [Test]
-    public async Task CreateConsumer_Generic_ReturnsBuilder()
+    public async Task CreateConsumer_ReturnsBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
+
         await Assert.That(builder).IsNotNull();
     }
 
     [Test]
-    public async Task CreateConsumer_WithBootstrapAndGroupId_ReturnsConsumer()
+    public async Task CreateConsumer_BuilderCanBuildConsumerWithSubscription()
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>("localhost:9092", "my-group");
-        await Assert.That(consumer).IsNotNull();
-    }
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("my-group")
+            .SubscribeTo("topic-a", "topic-b")
+            .Build();
 
-    [Test]
-    public async Task CreateConsumer_WithBootstrapAndGroupId_ImplementsIKafkaConsumer()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>("localhost:9092", "my-group");
         await Assert.That(consumer).IsAssignableTo<IKafkaConsumer<string, string>>();
-    }
-
-    [Test]
-    public async Task CreateConsumer_WithTopics_ReturnsConsumerWithSubscription()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>("localhost:9092", "my-group", "topic-a", "topic-b");
-        await Assert.That(consumer).IsNotNull();
         await Assert.That(consumer.Subscription).Contains("topic-a");
         await Assert.That(consumer.Subscription).Contains("topic-b");
     }
 
-    #endregion
-
-    #region CreateAdminClient
-
     [Test]
-    public async Task CreateAdminClient_Generic_ReturnsBuilder()
+    public async Task CreateShareConsumer_ReturnsBuilder()
     {
-        var builder = Kafka.CreateAdminClient();
+        var builder = Kafka.CreateShareConsumer<string, string>();
+
         await Assert.That(builder).IsNotNull();
     }
 
     [Test]
-    public async Task CreateAdminClient_WithBootstrapServers_ReturnsAdminClient()
+    public async Task CreateShareConsumer_BuilderCanBuildShareConsumer()
     {
-        await using var admin = Kafka.CreateAdminClient("localhost:9092");
-        await Assert.That(admin).IsNotNull();
+        await using var consumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("my-group")
+            .SubscribeTo("topic-a")
+            .Build();
+
+        await Assert.That(consumer).IsAssignableTo<IKafkaShareConsumer<string, string>>();
     }
 
-    #endregion
+    [Test]
+    public async Task CreateAdminClient_ReturnsBuilder()
+    {
+        var builder = Kafka.CreateAdminClient();
+
+        await Assert.That(builder).IsNotNull();
+    }
+
+    [Test]
+    public async Task CreateAdminClient_BuilderCanBuildAdminClient()
+    {
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        await Assert.That(admin).IsAssignableTo<IAdminClient>();
+    }
 }

@@ -27,6 +27,8 @@ internal sealed class CancelledCorrelationIdTracker
     public bool TryRemove(int correlationId)
         => _ids.TryRemove(correlationId, out _);
 
+    internal int QueuedCount => _order.Count;
+
     public void Clear()
     {
         _ids.Clear();
@@ -38,7 +40,7 @@ internal sealed class CancelledCorrelationIdTracker
 
     private void Trim()
     {
-        while (_ids.Count > _capacity && _order.TryDequeue(out var oldestCorrelationId))
+        while (_order.Count > _capacity && _order.TryDequeue(out var oldestCorrelationId))
         {
             _ids.TryRemove(oldestCorrelationId, out _);
         }

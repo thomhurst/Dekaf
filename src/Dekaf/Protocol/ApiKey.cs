@@ -85,6 +85,8 @@ public enum ApiKey : short
     ShareGroupDescribe = 77,
     ShareFetch = 78,
     ShareAcknowledge = 79,
+    StreamsGroupHeartbeat = 88,
+    StreamsGroupDescribe = 89,
     DescribeShareGroupOffsets = 90,
     AlterShareGroupOffsets = 91,
     DeleteShareGroupOffsets = 92

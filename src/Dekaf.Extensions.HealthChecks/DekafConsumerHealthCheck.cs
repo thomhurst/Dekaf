@@ -38,7 +38,10 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
     {
         try
         {
-            var assignment = _consumer.Assignment;
+            var partitions = _consumer.Partitions;
+            var positions = _consumer.Positions;
+            var offsets = _consumer.Offsets;
+            var assignment = partitions.Assignment;
 
             if (assignment.Count == 0)
             {
@@ -52,7 +55,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
 
             foreach (var topicPartition in assignment)
             {
-                var position = _consumer.GetPosition(topicPartition);
+                var position = positions.GetPosition(topicPartition);
 
                 if (position is not null)
                 {
@@ -72,7 +75,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             }
 
             var watermarkTasks = partitionsWithPositions
-                .Select(p => _consumer.QueryWatermarkOffsetsAsync(p.TopicPartition, timeoutCts.Token))
+                .Select(p => offsets.QueryWatermarkOffsetsAsync(p.TopicPartition, timeoutCts.Token))
                 .ToArray();
 
             var watermarkResults = await Task.WhenAll(

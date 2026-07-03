@@ -5,62 +5,11 @@ using Dekaf.Serialization;
 namespace Dekaf.Tests.Unit;
 
 /// <summary>
-/// Tests for the API improvements: ProducerMessage.Create, Headers convenience methods,
-/// configuration presets, and consumer extensions.
+/// Tests for the API improvements: Headers convenience methods, configuration presets,
+/// and consumer extensions.
 /// </summary>
 public class ApiImprovementsTests
 {
-    #region ProducerMessage.Create Tests
-
-    [Test]
-    public async Task ProducerMessage_Create_WithTopicKeyValue_SetsProperties()
-    {
-        var message = ProducerMessage<string, string>.Create("my-topic", "my-key", "my-value");
-
-        await Assert.That(message.Topic).IsEqualTo("my-topic");
-        await Assert.That(message.Key).IsEqualTo("my-key");
-        await Assert.That(message.Value).IsEqualTo("my-value");
-        await Assert.That(message.Headers).IsNull();
-        await Assert.That(message.Partition).IsNull();
-        await Assert.That(message.Timestamp).IsNull();
-    }
-
-    [Test]
-    public async Task ProducerMessage_Create_WithNullKey_SetsKeyToNull()
-    {
-        var message = ProducerMessage<string, string>.Create("my-topic", null, "my-value");
-
-        await Assert.That(message.Topic).IsEqualTo("my-topic");
-        await Assert.That(message.Key).IsNull();
-        await Assert.That(message.Value).IsEqualTo("my-value");
-    }
-
-    [Test]
-    public async Task ProducerMessage_Create_WithHeaders_SetsHeaders()
-    {
-        var headers = Headers.Create().Add("key1", "value1");
-        var message = ProducerMessage<string, string>.Create("my-topic", "my-key", "my-value", headers);
-
-        await Assert.That(message.Topic).IsEqualTo("my-topic");
-        await Assert.That(message.Key).IsEqualTo("my-key");
-        await Assert.That(message.Value).IsEqualTo("my-value");
-        await Assert.That(message.Headers).IsNotNull();
-        await Assert.That(message.Headers!.Count).IsEqualTo(1);
-    }
-
-    [Test]
-    public async Task ProducerMessage_Create_WithPartition_SetsPartition()
-    {
-        var message = ProducerMessage<string, string>.Create("my-topic", 3, "my-key", "my-value");
-
-        await Assert.That(message.Topic).IsEqualTo("my-topic");
-        await Assert.That(message.Partition).IsEqualTo(3);
-        await Assert.That(message.Key).IsEqualTo("my-key");
-        await Assert.That(message.Value).IsEqualTo("my-value");
-    }
-
-    #endregion
-
     #region Headers Factory and Convenience Method Tests
 
     [Test]

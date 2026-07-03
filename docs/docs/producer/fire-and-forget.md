@@ -60,7 +60,7 @@ If you need to know about delivery success/failure without blocking, use the cal
 
 ```csharp
 producer.Produce(
-    ProducerMessage<string, string>.Create("orders", orderId, orderJson),
+    new ProducerMessage<string, string> { Topic = "orders", Key = orderId, Value = orderJson },
     (metadata, error) =>
     {
         if (error != null)

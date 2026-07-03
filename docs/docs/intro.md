@@ -33,6 +33,7 @@ We use the same patterns you're using in your own code:
 
 - Nullable reference types (no more guessing what can be null)
 - `IAsyncEnumerable<T>` for streaming consumption
+- `KafkaClient` root objects when producers, consumers, and admin clients should share connections and memory budgeting
 - `ConfigureAwait(false)` everywhere (we're a library, we know the rules)
 - Fluent builders that guide you to valid configurations
 
