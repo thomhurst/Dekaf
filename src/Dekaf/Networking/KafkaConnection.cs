@@ -1968,11 +1968,13 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         SaslMechanism.ScramSha256 => new ScramAuthenticator(
             SaslMechanism.ScramSha256,
             _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured"),
+            _options.SaslScramTokenAuth),
         SaslMechanism.ScramSha512 => new ScramAuthenticator(
             SaslMechanism.ScramSha512,
             _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured"),
+            _options.SaslScramTokenAuth),
         SaslMechanism.Gssapi => new GssapiAuthenticator(
             _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
             _resolvedTargetHost ?? _host),
@@ -2663,6 +2665,11 @@ public sealed class ConnectionOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// Whether SCRAM authentication uses Kafka delegation token credentials.
+    /// </summary>
+    public bool SaslScramTokenAuth { get; init; }
 
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.

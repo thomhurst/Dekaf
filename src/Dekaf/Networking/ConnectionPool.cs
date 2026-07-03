@@ -175,6 +175,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             SaslMechanism = options.SaslMechanism,
             SaslUsername = options.SaslUsername,
             SaslPassword = options.SaslPassword,
+            SaslScramTokenAuth = options.SaslScramTokenAuth,
             GssapiConfig = options.GssapiConfig,
             OAuthBearerTokenProvider = sharedProvider.GetTokenAsync,
             OAuthBearerToken = options.OAuthBearerToken,

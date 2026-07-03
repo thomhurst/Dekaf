@@ -15,6 +15,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
     private readonly HashAlgorithmName _hashAlgorithm;
     private readonly int _hashSize;
     private readonly string _mechanismName;
+    private readonly bool _tokenAuth;
 
     private string? _clientNonce;
     private string? _clientFirstMessageBare;
@@ -36,7 +37,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
     /// <param name="mechanism">The SCRAM mechanism (ScramSha256 or ScramSha512).</param>
     /// <param name="username">The username.</param>
     /// <param name="password">The password.</param>
-    public ScramAuthenticator(SaslMechanism mechanism, string username, string password)
+    public ScramAuthenticator(SaslMechanism mechanism, string username, string password, bool tokenAuth = false)
     {
         if (mechanism != SaslMechanism.ScramSha256 && mechanism != SaslMechanism.ScramSha512)
         {
@@ -45,6 +46,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
 
         _username = username ?? throw new ArgumentNullException(nameof(username));
         _password = password ?? throw new ArgumentNullException(nameof(password));
+        _tokenAuth = tokenAuth;
 
         if (mechanism == SaslMechanism.ScramSha256)
         {
@@ -77,9 +79,11 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
         // Generate client nonce
         _clientNonce = GenerateNonce();
 
-        // Build client-first-message-bare: n=<username>,r=<nonce>
+        // Build client-first-message-bare: n=<username>,r=<nonce>[,tokenauth=true]
         var saslName = SaslPrepUsername(_username);
-        _clientFirstMessageBare = $"n={saslName},r={_clientNonce}";
+        _clientFirstMessageBare = _tokenAuth
+            ? $"n={saslName},r={_clientNonce},tokenauth=true"
+            : $"n={saslName},r={_clientNonce}";
 
         // client-first-message: gs2-header client-first-message-bare
         // gs2-header for no channel binding: n,,
