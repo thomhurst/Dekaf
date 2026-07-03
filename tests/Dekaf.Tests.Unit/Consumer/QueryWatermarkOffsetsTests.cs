@@ -52,6 +52,10 @@ public sealed class QueryWatermarkOffsetsTests
             {
                 var request = ci.Arg<ListOffsetsRequest>();
                 var timestamp = request.Topics[0].Partitions[0].Timestamp;
+                var currentLeaderEpoch = request.Topics[0].Partitions[0].CurrentLeaderEpoch;
+
+                if (currentLeaderEpoch != 3)
+                    throw new InvalidOperationException($"Unexpected CurrentLeaderEpoch {currentLeaderEpoch}");
 
                 if (timestamp == EarliestOffsetTimestamp)
                     earliestStarted.TrySetResult();
@@ -133,6 +137,7 @@ public sealed class QueryWatermarkOffsetsTests
                     {
                         PartitionIndex = Partition,
                         LeaderId = 0,
+                        LeaderEpoch = 3,
                         ErrorCode = ErrorCode.None,
                         ReplicaNodes = [0],
                         IsrNodes = [0]

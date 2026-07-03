@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -164,6 +165,31 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         refreshResponse.SetResult(CreateMetadataResponse());
         await WaitForLeaderRefreshToDrainAsync(consumer);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_RepositionsAndQueuesConsumeException()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+
+        var partitionResponse = new FetchResponsePartition
+        {
+            PartitionIndex = 0,
+            DivergingEpoch = new EpochEndOffset
+            {
+                Epoch = 7,
+                EndOffset = 42
+            }
+        };
+
+        InvokeResetToDivergingEpoch(consumer, partitionResponse);
+
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(42);
+        var exception = DrainPendingFetchException(consumer);
+        await Assert.That(exception).IsTypeOf<ConsumeException>();
+        await Assert.That(((ConsumeException)exception!).ErrorCode).IsEqualTo(ErrorCode.OffsetOutOfRange);
     }
 
     [Test]
@@ -334,5 +360,33 @@ public sealed class ConsumerLeaderDiscoveryTests
             throw new InvalidOperationException("HandleNotLeaderOrFollowerAsync did not return ValueTask");
 
         await valueTask.ConfigureAwait(false);
+    }
+
+    private static void InvokeResetToDivergingEpoch(
+        KafkaConsumer<string, string> consumer,
+        FetchResponsePartition partitionResponse)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("ResetToDivergingEpoch", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ResetToDivergingEpoch method not found");
+
+        method.Invoke(consumer, [Topic, partitionResponse]);
+    }
+
+    private static Exception? DrainPendingFetchException(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("ThrowPendingFetchException", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ThrowPendingFetchException method not found");
+
+        try
+        {
+            method.Invoke(consumer, []);
+            return null;
+        }
+        catch (TargetInvocationException ex)
+        {
+            return ex.InnerException;
+        }
     }
 }

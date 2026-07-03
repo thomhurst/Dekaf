@@ -30,7 +30,7 @@ public class BuildFetchResultTests
         return (dict, tp);
     }
 
-    private static ClusterMetadata CreateClusterMetadata(string topic, Guid topicId)
+    private static ClusterMetadata CreateClusterMetadata(string topic, Guid topicId, int leaderEpoch = -1)
     {
         var clusterMetadata = new ClusterMetadata();
         clusterMetadata.Update(new MetadataResponse
@@ -43,7 +43,18 @@ public class BuildFetchResultTests
                     Name = topic,
                     TopicId = topicId,
                     ErrorCode = ErrorCode.None,
-                    Partitions = [new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }]
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 1,
+                            LeaderEpoch = leaderEpoch,
+                            ReplicaNodes = [1],
+                            IsrNodes = [1]
+                        }
+                    ]
                 }
             ]
         });
@@ -150,6 +161,26 @@ public class BuildFetchResultTests
         var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions, clusterMetadata: clusterMetadata);
 
         await Assert.That(result[0].TopicId).IsEqualTo(topicId);
+    }
+
+    [Test]
+    public async Task BuildFetchResult_WithLeaderEpochState_PopulatesFetchEpochs()
+    {
+        var topicId = Guid.NewGuid();
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 42 };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 8 };
+        var clusterMetadata = CreateClusterMetadata("topic-a", topicId, leaderEpoch: 6);
+
+        var result = KafkaConsumer<string, string>.BuildFetchResult(
+            templateDict,
+            fetchPositions,
+            clusterMetadata: clusterMetadata,
+            lastConsumedLeaderEpochs: lastConsumedLeaderEpochs);
+
+        var partition = result[0].Partitions[0];
+        await Assert.That(partition.CurrentLeaderEpoch).IsEqualTo(6);
+        await Assert.That(partition.LastFetchedEpoch).IsEqualTo(8);
     }
 
     [Test]

@@ -8,7 +8,19 @@ public readonly record struct TopicPartition(string Topic, int Partition);
 /// <summary>
 /// Represents a topic, partition, and offset.
 /// </summary>
-public readonly record struct TopicPartitionOffset(string Topic, int Partition, long Offset);
+public readonly record struct TopicPartitionOffset(string Topic, int Partition, long Offset)
+{
+    public TopicPartitionOffset(string topic, int partition, long offset, int leaderEpoch)
+        : this(topic, partition, offset)
+    {
+        LeaderEpoch = leaderEpoch;
+    }
+
+    /// <summary>
+    /// Leader epoch associated with the offset, or -1 when unknown.
+    /// </summary>
+    public int LeaderEpoch { get; init; } = -1;
+}
 
 /// <summary>
 /// Represents a topic, partition, and timestamp for offset lookup.
