@@ -73,10 +73,6 @@ public sealed class BrokerSenderMuteOrderingTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
-            pooledDataArrays: null,
-            pooledDataArraysCount: 0,
-            pooledHeaderArrays: null,
-            pooledHeaderArraysCount: 0,
             dataSize: 100);
 
         batch.TrySetMemoryReleased();

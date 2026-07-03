@@ -840,10 +840,6 @@ public class PooledValueTaskSourceTests
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
-            pooledDataArrays: null,
-            pooledDataArraysCount: 0,
-            pooledHeaderArrays: null,
-            pooledHeaderArraysCount: 0,
             dataSize: 0);
     }
 }

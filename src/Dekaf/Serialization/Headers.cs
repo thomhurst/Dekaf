@@ -355,9 +355,50 @@ public readonly record struct Header
         return new Header(key, value, isNull: isValueNull);
     }
 
+    /// <summary>
+    /// Encodes the header into a fixed-size destination span at <paramref name="offset"/>,
+    /// advancing it past the bytes written. Must write exactly <see cref="CalculateSize"/>
+    /// bytes — keep the two methods in sync.
+    /// </summary>
+    [SkipLocalsInit]
+    internal void Encode(Span<byte> destination, ref int offset)
+    {
+        var key = Key;
+        if (key.Length <= 128)
+        {
+            // Single-pass encode for short keys (the common case): UTF-8 worst case is
+            // 3 bytes per char, so 128 chars always fit in the 512-byte scratch buffer.
+            Span<byte> buffer = stackalloc byte[512];
+            var keyByteCount = Encoding.UTF8.GetBytes(key, buffer);
+            Record.WriteVarInt(destination, ref offset, keyByteCount);
+            buffer[..keyByteCount].CopyTo(destination[offset..]);
+            offset += keyByteCount;
+        }
+        else
+        {
+            var keyByteCount = Encoding.UTF8.GetByteCount(key);
+            Record.WriteVarInt(destination, ref offset, keyByteCount);
+            Encoding.UTF8.GetBytes(key, destination[offset..]);
+            offset += keyByteCount;
+        }
+
+        if (IsValueNull)
+        {
+            Record.WriteVarInt(destination, ref offset, -1);
+        }
+        else
+        {
+            Record.WriteVarInt(destination, ref offset, Value.Length);
+            Value.Span.CopyTo(destination[offset..]);
+            offset += Value.Length;
+        }
+    }
+
     internal int CalculateSize()
     {
-        var keyBytes = Encoding.UTF8.GetByteCount(Key);
+        // ASCII keys (99%+ of cases): byte count == char count. Ascii.IsValid is
+        // SIMD-optimized and much cheaper than UTF8.GetByteCount for this case.
+        var keyBytes = Ascii.IsValid(Key) ? Key.Length : Encoding.UTF8.GetByteCount(Key);
         var size = Record.VarIntSize(keyBytes) + keyBytes;
 
         if (IsValueNull)

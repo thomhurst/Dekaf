@@ -165,10 +165,11 @@ public class RecordAccumulatorTests
         var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition("test-topic", 0));
         await Assert.That(readyBatch.RecordBatch.HasPreEncodedRecords).IsTrue();
         await Assert.That(readyBatch.RecordBatch.HasPreCompressedRecords).IsFalse();
+
+        // The append-time accounting (DataSize) plus the fixed batch header must equal the
+        // full encoded size RecordBatch reports for MaxRequestSize drain accounting.
         var encodedSize = readyBatch.RecordBatch.GetEncodedSize();
-        readyBatch.SetEncodedSize(encodedSize);
-        await Assert.That(readyBatch.EncodedSize).IsEqualTo(encodedSize);
-        await Assert.That(readyBatch.EncodedSize).IsEqualTo(readyBatch.DataSize + RecordBatch.TotalBatchHeaderSize);
+        await Assert.That(encodedSize).IsEqualTo(readyBatch.DataSize + RecordBatch.TotalBatchHeaderSize);
 
         var record = readyBatch.RecordBatch.Records[0];
         await Assert.That(Encoding.UTF8.GetString(record.Key.Span)).IsEqualTo("key-1");
@@ -398,11 +399,9 @@ public class RecordAccumulatorTests
             await Assert.That(result).IsTrue();
 
             var readyBatch = CompleteCurrentBatch(accumulator, topicPartition);
-            var pooledDataArraysCount = GetPrivateField<int>(readyBatch, "_pooledDataArraysCount");
             var record = readyBatch.RecordBatch.Records[0];
 
             await Assert.That(readyBatch.CompletionSourcesCount).IsEqualTo(1);
-            await Assert.That(pooledDataArraysCount).IsEqualTo(0);
             await Assert.That(record.Key.ToArray()).IsEquivalentTo(key);
             await Assert.That(record.Value.ToArray()).IsEquivalentTo(value);
 
@@ -1053,10 +1052,11 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task TryAppendFireAndForget_WithPooledMemory_ReturnsArraysAfterEncoding()
+    public async Task TryAppendFireAndForget_WithPooledMemory_EncodesDataIntoBatch()
     {
-        // Verify that fire-and-forget releases raw pooled arrays after append-time encoding,
-        // even though it doesn't track completion sources.
+        // Fire-and-forget appends encode the pooled key/value into the batch arena at append
+        // time and return the raw arrays immediately, so the sealed batch must carry copies
+        // of the data (not references to the returned arrays).
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
@@ -1085,24 +1085,18 @@ public class RecordAccumulatorTests
 
             await Assert.That(result).IsTrue();
 
-            // Get the batch and verify raw arrays are not retained after append-time encoding.
-            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var deques = dequesField!.GetValue(accumulator)!;
+            // Clobber the (already returned) source arrays, then verify the sealed batch
+            // still round-trips the original data from its own encoded copy.
+            keyArray.AsSpan().Clear();
+            valueArray.AsSpan().Clear();
 
-            var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
-            var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(deques, parameters);
+            var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition("test-topic", 0));
+            await Assert.That(readyBatch.RecordBatch.HasPreEncodedRecords).IsTrue();
+            var record = readyBatch.RecordBatch.Records[0];
+            await Assert.That(record.Key.ToArray()).IsEquivalentTo(keyData);
+            await Assert.That(record.Value.ToArray()).IsEquivalentTo(valueData);
 
-            var partitionDeque = parameters[1];
-            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
-            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
-
-            var pooledArrayCountField = partitionBatch!.GetType().GetField("_pooledArrayCount",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var pooledArrayCount = (int)pooledArrayCountField!.GetValue(partitionBatch)!;
-            await Assert.That(pooledArrayCount).IsEqualTo(0);
+            readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
         }
         finally
         {
@@ -1278,7 +1272,7 @@ public class RecordAccumulatorTests
 
         // Call TryAppend with null completionSource and null callback (fire-and-forget)
         var tryAppendMethod = partitionBatchType.GetMethods()
-            .Single(m => m.Name == "TryAppend" && m.GetParameters().Length == 8);
+            .Single(m => m.Name == "TryAppend" && m.GetParameters().Length == 7);
         var pooledKey = new PooledMemory(null, 0, isNull: true);
         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -1288,10 +1282,9 @@ public class RecordAccumulatorTests
             pooledKey,
             pooledValue,
             null,   // headers
-            null,   // pooledHeaderArray
+            null,   // headerCount (coerced to 0)
             null,   // completionSource
-            null,   // callback
-            20      // estimatedRecordSize: base overhead for empty record (key=null, value=null, no headers)
+            null    // callback
         });
 
         // Verify append succeeded
@@ -1418,174 +1411,7 @@ public class RecordAccumulatorTests
         await Assert.That(result).IsFalse();
     }
 
-    [Test]
-    public async Task Append_FireAndForget_WithPooledMemory_ReturnsArraysAfterEncoding()
-    {
-        var options = new ProducerOptions
-        {
-            BootstrapServers = new[] { "localhost:9092" },
-            ClientId = "test-producer",
-            BufferMemory = 100000,
-            BatchSize = 100000,
-            LingerMs = 10
-        };
-        var accumulator = new RecordAccumulator(options);
-
-        try
-        {
-            var keyArray = ArrayPool<byte>.Shared.Rent(10);
-            var valueArray = ArrayPool<byte>.Shared.Rent(20);
-
-            var result = await accumulator.AppendAsync(
-                "test-topic", 0,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                new PooledMemory(keyArray, 10),
-                new PooledMemory(valueArray, 20),
-                null, 0, null, null, CancellationToken.None);
-
-            await Assert.That(result).IsTrue();
-
-            // Verify raw arrays are not retained after append-time encoding.
-            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var deques = dequesField!.GetValue(accumulator)!;
-
-            var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
-            var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(deques, parameters);
-
-            var partitionDeque = parameters[1];
-            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
-            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
-            var pooledArrayCountField = partitionBatch!.GetType().GetField("_pooledArrayCount",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var pooledArrayCount = (int)pooledArrayCountField!.GetValue(partitionBatch)!;
-            await Assert.That(pooledArrayCount).IsEqualTo(0);
-        }
-        finally
-        {
-            await accumulator.DisposeAsync();
-        }
-    }
-
     #endregion
-
-    #region RecordListWrapper Tests
-
-    [Test]
-    public async Task RecordListWrapper_Count_ReturnsCorrectValue()
-    {
-        var records = new Record[10];
-        for (var i = 0; i < 10; i++)
-        {
-            records[i] = new Record { OffsetDelta = i };
-        }
-
-        var wrapper = new RecordListWrapper(records, 5); // Only 5 valid elements
-
-        await Assert.That(wrapper.Count).IsEqualTo(5);
-    }
-
-    [Test]
-    public async Task RecordListWrapper_Indexer_ReturnsCorrectElements()
-    {
-        var records = new Record[10];
-        for (var i = 0; i < 10; i++)
-        {
-            records[i] = new Record { OffsetDelta = i * 10 };
-        }
-
-        var wrapper = new RecordListWrapper(records, 5);
-
-        await Assert.That(wrapper[0].OffsetDelta).IsEqualTo(0);
-        await Assert.That(wrapper[2].OffsetDelta).IsEqualTo(20);
-        await Assert.That(wrapper[4].OffsetDelta).IsEqualTo(40);
-    }
-
-    [Test]
-    public async Task RecordListWrapper_Indexer_ThrowsOnOutOfRange()
-    {
-        var records = new Record[10];
-        var wrapper = new RecordListWrapper(records, 5);
-
-        await Assert.That(() => _ = wrapper[5]).Throws<ArgumentOutOfRangeException>();
-        await Assert.That(() => _ = wrapper[-1]).Throws<ArgumentOutOfRangeException>();
-        await Assert.That(() => _ = wrapper[10]).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task RecordListWrapper_Enumerator_IteratesCorrectElements()
-    {
-        var records = new Record[10];
-        for (var i = 0; i < 10; i++)
-        {
-            records[i] = new Record { OffsetDelta = i };
-        }
-
-        var wrapper = new RecordListWrapper(records, 5);
-        var enumerated = new List<int>();
-
-        foreach (var record in wrapper)
-        {
-            enumerated.Add(record.OffsetDelta);
-        }
-
-        await Assert.That(enumerated).Count().IsEqualTo(5);
-        await Assert.That(enumerated[0]).IsEqualTo(0);
-        await Assert.That(enumerated[4]).IsEqualTo(4);
-    }
-
-    [Test]
-    public async Task RecordListWrapper_AsSpan_ExposesValidRecordsOnly()
-    {
-        var records = new Record[4];
-        records[0] = new Record { OffsetDelta = 10 };
-        records[1] = new Record { OffsetDelta = 20 };
-        records[2] = new Record { OffsetDelta = 30 };
-        records[3] = new Record { OffsetDelta = 40 };
-
-        var wrapper = new RecordListWrapper(records, 2);
-        var snapshot = ReadWrapperSpan(wrapper);
-
-        await Assert.That(snapshot.Length).IsEqualTo(2);
-        await Assert.That(snapshot.FirstOffset).IsEqualTo(10);
-        await Assert.That(snapshot.SecondOffset).IsEqualTo(20);
-    }
-
-    [Test]
-    public async Task RecordListWrapper_IndexBasedIteration_MatchesEnumerator()
-    {
-        var records = new Record[10];
-        for (var i = 0; i < 10; i++)
-        {
-            records[i] = new Record { OffsetDelta = i * 2 };
-        }
-
-        var wrapper = new RecordListWrapper(records, 7);
-        var fromEnumerator = new List<int>();
-        var fromIndexer = new List<int>();
-
-        foreach (var record in wrapper)
-        {
-            fromEnumerator.Add(record.OffsetDelta);
-        }
-
-        for (var i = 0; i < wrapper.Count; i++)
-        {
-            fromIndexer.Add(wrapper[i].OffsetDelta);
-        }
-
-        await Assert.That(fromIndexer).IsEquivalentTo(fromEnumerator);
-    }
-
-    #endregion
-
-    private static (int Length, int FirstOffset, int SecondOffset) ReadWrapperSpan(RecordListWrapper wrapper)
-    {
-        var span = wrapper.AsSpan();
-        return (span.Length, span[0].OffsetDelta, span[1].OffsetDelta);
-    }
 
     #region ReadyBatch.Reset Safety Net
 
@@ -1737,10 +1563,6 @@ public class RecordAccumulatorTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
-            pooledDataArrays: null,
-            pooledDataArraysCount: 0,
-            pooledHeaderArrays: null,
-            pooledHeaderArraysCount: 0,
             dataSize: 100);
 
         return batch;
@@ -1878,10 +1700,6 @@ public class RecordAccumulatorTests
                 new RecordBatch { Records = Array.Empty<Record>() },
                 newSources,
                 completionSourcesCount: 1,
-                pooledDataArrays: null,
-                pooledDataArraysCount: 0,
-                pooledHeaderArrays: null,
-                pooledHeaderArraysCount: 0,
                 dataSize: 200);
 
             await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(0);

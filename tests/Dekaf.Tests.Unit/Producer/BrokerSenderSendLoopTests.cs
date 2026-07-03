@@ -86,10 +86,6 @@ public sealed class BrokerSenderSendLoopTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
-            pooledDataArrays: null,
-            pooledDataArraysCount: 0,
-            pooledHeaderArrays: null,
-            pooledHeaderArraysCount: 0,
             dataSize: 100);
 
         // Skip accumulator memory tracking in tests

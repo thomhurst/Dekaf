@@ -77,10 +77,10 @@ public class AccumulatorAppendBenchmarks
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
         {
-            _accumulator.AppendFromSpansAsync(
+            AwaitSync(_accumulator.AppendFromSpansAsync(
                 "bench-topic", 0, ts,
                 _keyBytes, false, _valueBytes, false,
-                null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
+                null, 0, null, CancellationToken.None));
         }
     }
 
@@ -94,11 +94,29 @@ public class AccumulatorAppendBenchmarks
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
         {
-            _accumulator.AppendFromSpansAsync(
+            AwaitSync(_accumulator.AppendFromSpansAsync(
                 "bench-topic", i % 10, ts,
                 _keyBytes, false, _valueBytes, false,
-                null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
+                null, 0, null, CancellationToken.None));
         }
+    }
+
+    /// <summary>
+    /// Blocks on an append ValueTask. On the hot path the task is already completed and this
+    /// is allocation-free. On the cold path (buffer full → pooled PendingAppend source) the
+    /// task is not yet completed — GetAwaiter().GetResult() on an incomplete IValueTaskSource
+    /// throws InvalidOperationException, so convert to a Task and block on that instead.
+    /// The cold path only engages when the drainer falls behind the append thread.
+    /// </summary>
+    private static void AwaitSync(ValueTask<bool> valueTask)
+    {
+        if (valueTask.IsCompleted)
+        {
+            valueTask.GetAwaiter().GetResult();
+            return;
+        }
+
+        valueTask.AsTask().GetAwaiter().GetResult();
     }
 
     private void FillAndDrain(int partition, int batchCount, int msgsPerBatch, long ts)
@@ -106,10 +124,10 @@ public class AccumulatorAppendBenchmarks
         var totalMessages = msgsPerBatch * batchCount;
         for (var i = 0; i < totalMessages; i++)
         {
-            _accumulator.AppendFromSpansAsync(
+            AwaitSync(_accumulator.AppendFromSpansAsync(
                 "bench-topic", partition, ts,
                 _keyBytes, false, _valueBytes, false,
-                null, 0, null, CancellationToken.None).GetAwaiter().GetResult();
+                null, 0, null, CancellationToken.None));
 
             // Drain periodically to release memory and return arenas/arrays to pools
             if (i % msgsPerBatch == msgsPerBatch - 1)

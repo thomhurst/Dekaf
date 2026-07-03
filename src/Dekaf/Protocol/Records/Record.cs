@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 
 namespace Dekaf.Protocol.Records;
@@ -230,6 +232,92 @@ public readonly record struct Record
         }
 
         return size;
+    }
+
+    /// <summary>
+    /// Encodes a record directly into a fixed-size destination span using the Kafka record
+    /// wire format (length varint + body). The destination length must equal
+    /// <c>VarIntSize(bodySize) + bodySize</c> where <paramref name="bodySize"/> was computed by
+    /// <see cref="ComputeBodySize"/> with the same arguments. Every byte written here must be
+    /// counted there — keep the two methods in sync.
+    /// </summary>
+    internal static void Encode(
+        Span<byte> destination,
+        int bodySize,
+        long timestampDelta,
+        int offsetDelta,
+        ReadOnlySpan<byte> keyData,
+        bool isKeyNull,
+        ReadOnlySpan<byte> valueData,
+        bool isValueNull,
+        Header[]? headers,
+        int headerCount)
+    {
+        var offset = 0;
+
+        WriteVarInt(destination, ref offset, bodySize);
+        destination[offset++] = 0; // record attributes
+        WriteVarLong(destination, ref offset, timestampDelta);
+        WriteVarInt(destination, ref offset, offsetDelta);
+
+        if (isKeyNull)
+        {
+            WriteVarInt(destination, ref offset, -1);
+        }
+        else
+        {
+            WriteVarInt(destination, ref offset, keyData.Length);
+            keyData.CopyTo(destination[offset..]);
+            offset += keyData.Length;
+        }
+
+        if (isValueNull)
+        {
+            WriteVarInt(destination, ref offset, -1);
+        }
+        else
+        {
+            WriteVarInt(destination, ref offset, valueData.Length);
+            valueData.CopyTo(destination[offset..]);
+            offset += valueData.Length;
+        }
+
+        WriteVarInt(destination, ref offset, headerCount);
+        if (headers is not null)
+        {
+            for (var i = 0; i < headerCount; i++)
+            {
+                headers[i].Encode(destination, ref offset);
+            }
+        }
+
+        Debug.Assert(offset == destination.Length);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void WriteVarInt(Span<byte> destination, ref int offset, int value)
+    {
+        var zigzag = (uint)((value << 1) ^ (value >> 31));
+        while (zigzag >= 0x80)
+        {
+            destination[offset++] = (byte)(zigzag | 0x80);
+            zigzag >>= 7;
+        }
+
+        destination[offset++] = (byte)zigzag;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void WriteVarLong(Span<byte> destination, ref int offset, long value)
+    {
+        var zigzag = (ulong)((value << 1) ^ (value >> 63));
+        while (zigzag >= 0x80)
+        {
+            destination[offset++] = (byte)(zigzag | 0x80);
+            zigzag >>= 7;
+        }
+
+        destination[offset++] = (byte)zigzag;
     }
 
     internal static int VarIntSize(int value)

@@ -830,9 +830,6 @@ public sealed class RecordBatch : IDisposable
             case Record[] array:
                 WriteRecordSpan(array, ref writer);
                 return;
-            case RecordListWrapper wrapper:
-                WriteRecordSpan(wrapper.AsSpan(), ref writer);
-                return;
             case LazyRecordList lazyRecords:
                 lazyRecords.EnsureAllParsed();
                 var parsedRecords = lazyRecords.GetParsedArray();
@@ -868,7 +865,6 @@ public sealed class RecordBatch : IDisposable
         return records switch
         {
             Record[] array => GetEncodedRecordSpanLength(array),
-            RecordListWrapper wrapper => GetEncodedRecordSpanLength(wrapper.AsSpan()),
             LazyRecordList lazyRecords => GetEncodedLazyRecordListLength(lazyRecords),
             _ => GetEncodedRecordListLength(records)
         };

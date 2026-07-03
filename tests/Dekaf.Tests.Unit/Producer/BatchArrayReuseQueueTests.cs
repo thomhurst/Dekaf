@@ -1,37 +1,25 @@
 using System.Buffers;
 using Dekaf.Producer;
-using Dekaf.Protocol.Records;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Producer;
 
 public class BatchArrayReuseQueueTests
 {
-    private static (Record[] Records, PooledValueTaskSource<RecordMetadata>[] CompletionSources, byte[][] DataArrays, Header[][] HeaderArrays) CreateTestArrays()
-    {
-        return (
-            ArrayPool<Record>.Shared.Rent(16),
-            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(16),
-            ArrayPool<byte[]>.Shared.Rent(16),
-            ArrayPool<Header[]>.Shared.Rent(16)
-        );
-    }
+    private static PooledValueTaskSource<RecordMetadata>[] CreateTestArray()
+        => ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(16);
 
     [Test]
-    public async Task Enqueue_BelowCapacity_ThenDequeue_ReturnsArrays()
+    public async Task Enqueue_BelowCapacity_ThenDequeue_ReturnsArray()
     {
         var queue = new BatchArrayReuseQueue(maxSize: 4);
-        var arrays = CreateTestArrays();
+        var array = CreateTestArray();
 
-        queue.EnqueueOrReturn(arrays.Records, arrays.CompletionSources, arrays.DataArrays, arrays.HeaderArrays);
+        queue.EnqueueOrReturn(array);
 
         var success = queue.TryDequeue(out var reusable);
 
         await Assert.That(success).IsTrue();
-        await Assert.That(reusable!.Records).IsSameReferenceAs(arrays.Records);
-        await Assert.That(reusable.CompletionSources).IsSameReferenceAs(arrays.CompletionSources);
-        await Assert.That(reusable.DataArrays).IsSameReferenceAs(arrays.DataArrays);
-        await Assert.That(reusable.HeaderArrays).IsSameReferenceAs(arrays.HeaderArrays);
+        await Assert.That(reusable).IsSameReferenceAs(array);
     }
 
     [Test]
@@ -40,14 +28,11 @@ public class BatchArrayReuseQueueTests
         var queue = new BatchArrayReuseQueue(maxSize: 2);
 
         // Fill the queue to capacity
-        var arrays1 = CreateTestArrays();
-        var arrays2 = CreateTestArrays();
-        queue.EnqueueOrReturn(arrays1.Records, arrays1.CompletionSources, arrays1.DataArrays, arrays1.HeaderArrays);
-        queue.EnqueueOrReturn(arrays2.Records, arrays2.CompletionSources, arrays2.DataArrays, arrays2.HeaderArrays);
+        queue.EnqueueOrReturn(CreateTestArray());
+        queue.EnqueueOrReturn(CreateTestArray());
 
         // This one should be returned to ArrayPool (queue is full)
-        var overflow = CreateTestArrays();
-        queue.EnqueueOrReturn(overflow.Records, overflow.CompletionSources, overflow.DataArrays, overflow.HeaderArrays);
+        queue.EnqueueOrReturn(CreateTestArray());
 
         // Should only be able to dequeue the 2 that fit
         var success1 = queue.TryDequeue(out _);
@@ -88,8 +73,7 @@ public class BatchArrayReuseQueueTests
             {
                 for (var j = 0; j < operationsPerThread; j++)
                 {
-                    var arrays = CreateTestArrays();
-                    queue.EnqueueOrReturn(arrays.Records, arrays.CompletionSources, arrays.DataArrays, arrays.HeaderArrays);
+                    queue.EnqueueOrReturn(CreateTestArray());
                     Interlocked.Increment(ref enqueueCount);
                 }
             });
@@ -132,19 +116,19 @@ public class BatchArrayReuseQueueTests
         var queue = new BatchArrayReuseQueue(maxSize: 2);
 
         // First cycle
-        var arrays1 = CreateTestArrays();
-        queue.EnqueueOrReturn(arrays1.Records, arrays1.CompletionSources, arrays1.DataArrays, arrays1.HeaderArrays);
+        var array1 = CreateTestArray();
+        queue.EnqueueOrReturn(array1);
         var success1 = queue.TryDequeue(out var reusable1);
 
         await Assert.That(success1).IsTrue();
-        await Assert.That(reusable1!.Records).IsSameReferenceAs(arrays1.Records);
+        await Assert.That(reusable1).IsSameReferenceAs(array1);
 
         // Second cycle - queue should accept new items after draining
-        var arrays2 = CreateTestArrays();
-        queue.EnqueueOrReturn(arrays2.Records, arrays2.CompletionSources, arrays2.DataArrays, arrays2.HeaderArrays);
+        var array2 = CreateTestArray();
+        queue.EnqueueOrReturn(array2);
         var success2 = queue.TryDequeue(out var reusable2);
 
         await Assert.That(success2).IsTrue();
-        await Assert.That(reusable2!.Records).IsSameReferenceAs(arrays2.Records);
+        await Assert.That(reusable2).IsSameReferenceAs(array2);
     }
 }

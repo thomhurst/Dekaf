@@ -317,13 +317,13 @@ public sealed class ProducerOptions
     public int ValueTaskSourcePoolSize { get; init; }
 
     /// <summary>
-    /// Capacity of the arena buffer for zero-copy serialization in bytes.
-    /// Larger arenas reduce fallback allocations when messages are larger than expected.
-    /// Default is 0, which uses BatchSize + 12.5% overflow margin as the arena capacity.
-    /// The margin provides headroom so that messages appended near the end of a batch
-    /// can still be serialized in the arena instead of falling back to ArrayPool.
-    /// For workloads with very large messages (approaching BatchSize), consider setting
-    /// this to BatchSize * 2 to reduce slow-path fallbacks.
+    /// Capacity in bytes of the per-batch arena that records are encoded into at append time.
+    /// Default is 0, which uses BatchSize + 12.5% margin as the arena capacity — the margin
+    /// provides headroom so a record appended near the batch-size boundary still fits.
+    /// Values below the default are ignored (records encode directly into the arena, so a
+    /// smaller arena would silently cap batch fill below BatchSize). Set a larger value for
+    /// workloads where individual records regularly exceed BatchSize, to avoid re-renting a
+    /// larger arena for those batches.
     /// </summary>
     public int ArenaCapacity { get; init; } = 0;
 

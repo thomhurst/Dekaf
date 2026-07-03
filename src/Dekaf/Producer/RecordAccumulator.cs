@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
@@ -236,9 +235,9 @@ internal static class ProducerDataPool
 /// Dedicated <see cref="ArrayPool{T}"/> instances for producer batch container arrays.
 /// <para/>
 /// <b>Why not <see cref="ArrayPool{T}.Shared"/>?</b>
-/// Batch container arrays (<c>Record[]</c>, <c>PooledValueTaskSource[]</c>, <c>byte[][]</c>,
-/// <c>Header[][]</c>, <c>Header[]</c>, <c>Action[]</c>) are rented on the producer/accumulator
-/// thread during batch creation but returned on BrokerSender LongRunning threads during
+/// Batch container arrays (<c>PooledValueTaskSource[]</c>, <c>Header[]</c>, <c>Action[]</c>)
+/// are rented on the producer/accumulator thread during batch creation but returned on
+/// BrokerSender LongRunning threads during
 /// <see cref="ReadyBatch.Cleanup"/>. <c>ArrayPool&lt;T&gt;.Shared</c> uses TLS-based caching
 /// (<c>TlsOverPerCoreLockedStacksArrayPool</c>) that retains returned arrays in per-thread slots
 /// that grow but never shrink. With N brokers, N BrokerSender threads each accumulate returned
@@ -268,22 +267,10 @@ internal static class ProducerContainerPools
         maxArrayLength: 1024,
         initialArraysPerBucket: 16);
 
-    /// <summary>Pool for Record[] container arrays used by PartitionBatch/ReadyBatch.</summary>
-    internal static readonly ArrayPool<Record> Records = ArrayPool<Record>.Create(
-        maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
-
     /// <summary>Pool for PooledValueTaskSource[] container arrays.</summary>
     internal static readonly ArrayPool<PooledValueTaskSource<RecordMetadata>> CompletionSources =
         ArrayPool<PooledValueTaskSource<RecordMetadata>>.Create(
             maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
-
-    /// <summary>Pool for byte[][] container arrays (pooled data array references).</summary>
-    internal static readonly ArrayPool<byte[]> DataArrayRefs = ArrayPool<byte[]>.Create(
-        maxArrayLength: MaxRecordArrayLength * 2, maxArraysPerBucket: 16);
-
-    /// <summary>Pool for Header[][] container arrays (pooled header array references).</summary>
-    internal static readonly ArrayPool<Header[]> HeaderArrayRefs = ArrayPool<Header[]>.Create(
-        maxArrayLength: 1024, maxArraysPerBucket: 16);
 
     /// <summary>Pool for Header[] arrays (per-message headers).</summary>
     internal static ArrayPool<Header> Headers => s_headers.Pool;
@@ -2527,7 +2514,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
-        var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback, estimatedSize);
+        var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {
@@ -2654,7 +2641,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int estimatedSize)
     {
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
-            headers, headerCount, completionSource, callback, estimatedSize);
+            headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {
@@ -4024,26 +4011,18 @@ internal sealed class PartitionBatch
     private ReadyBatchPool? _readyBatchPool; // Pool for renting ReadyBatch objects
     private BatchArrayReuseQueue? _arrayReuseQueue; // Reuse queue for working arrays
 
-    // Arena for zero-copy serialization - all message data in one contiguous buffer
+    // Arena holding the encoded record bytes - all records in one contiguous buffer
     private BatchArena? _arena;
 
-    // Zero-allocation array management: use pooled arrays instead of List<T>
-    private Record[] _records;
     private int _recordCount;
 
+    // Zero-allocation array management: use pooled arrays instead of List<T>
     private PooledValueTaskSource<RecordMetadata>[] _completionSources;
     private int _completionSourceCount;
 
     // Callbacks for Send(message, callback) - stored directly in batch for inline invocation
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
     private int _callbackCount;
-
-    // Legacy: pooled arrays for non-arena path (completion-tracked messages)
-    private byte[][] _pooledArrays;
-    private int _pooledArrayCount;
-
-    private Header[][] _pooledHeaderArrays;
-    private int _pooledHeaderArrayCount;
 
     private long _baseTimestamp;
     private long _maxTimestamp;
@@ -4061,21 +4040,22 @@ internal sealed class PartitionBatch
     private bool _isTransactional;
 
     /// <summary>
-    /// Divisor for computing the arena overflow margin from BatchSize.
-    /// A divisor of 8 gives a 12.5% margin (BatchSize / 8) above BatchSize,
-    /// reducing per-message ArrayPool fallback when batches near capacity.
+    /// Divisor for computing the arena headroom margin from BatchSize.
+    /// A divisor of 8 gives a 12.5% margin (BatchSize / 8) above BatchSize so a record
+    /// that lands near the batch-size boundary still fits in the arena.
     /// </summary>
     private const int ArenaOverflowMarginDivisor = 8;
 
     /// <summary>
-    /// Returns the effective arena capacity: explicit ArenaCapacity if set,
-    /// otherwise BatchSize + 12.5% margin to reduce per-message ArrayPool fallback.
+    /// Returns the effective arena capacity: BatchSize + 12.5% margin, or an explicit
+    /// ArenaCapacity when it is larger. Records encode directly into the arena, so a
+    /// capacity below BatchSize would silently cap batch fill — smaller values are ignored.
     /// Uses long arithmetic to avoid integer overflow when BatchSize is large.
     /// </summary>
     private static int GetEffectiveArenaCapacity(ProducerOptions options) =>
-        options.ArenaCapacity > 0
-            ? options.ArenaCapacity
-            : (int)Math.Min((long)options.BatchSize + options.BatchSize / ArenaOverflowMarginDivisor, int.MaxValue);
+        Math.Max(
+            options.ArenaCapacity,
+            (int)Math.Min((long)options.BatchSize + options.BatchSize / ArenaOverflowMarginDivisor, int.MaxValue));
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
@@ -4087,21 +4067,13 @@ internal sealed class PartitionBatch
             ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
             : ComputeInitialRecordCapacity(options.BatchSize);
 
-        // Create arena for zero-copy serialization
+        // Create arena for append-time record encoding
         _arena = new BatchArena(GetEffectiveArenaCapacity(options));
-
-        // Rent arrays from pool - eliminates List allocations
-        _records = ProducerContainerPools.Records.Rent(_initialRecordCapacity);
         _recordCount = 0;
 
+        // Rent arrays from pool - eliminates List allocations
         _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
         _completionSourceCount = 0;
-
-        _pooledArrays = ProducerContainerPools.DataArrayRefs.Rent(_initialRecordCapacity * 2);
-        _pooledArrayCount = 0;
-
-        _pooledHeaderArrays = ProducerContainerPools.HeaderArrayRefs.Rent(8); // Headers less common
-        _pooledHeaderArrayCount = 0;
     }
 
     private static int ComputeInitialRecordCapacity(int batchSize)
@@ -4159,8 +4131,6 @@ internal sealed class PartitionBatch
         _recordCount = 0;
         _completionSourceCount = 0;
         _callbackCount = 0;
-        _pooledArrayCount = 0;
-        _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
         _maxTimestamp = 0;
         _encodedRecordsStart = 0;
@@ -4187,24 +4157,18 @@ internal sealed class PartitionBatch
         // Rent or create arena for the pooled batch
         _arena = BatchArena.RentOrCreate(GetEffectiveArenaCapacity(options));
 
-        // Arrays were transferred to ReadyBatch by Complete() and are now null.
-        // Try to reclaim arrays from the reuse queue first (returned by ReadyBatch.Cleanup()),
-        // avoiding 4 ArrayPool Rent operations per batch cycle.
+        // The completion sources array was transferred to ReadyBatch by Complete() and is now null.
+        // Try to reclaim one from the reuse queue first (returned by ReadyBatch.Cleanup()),
+        // avoiding an ArrayPool Rent operation per batch cycle.
         if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
         {
-            _records = reusable.Records;
-            _completionSources = reusable.CompletionSources;
-            _pooledArrays = reusable.DataArrays;
-            _pooledHeaderArrays = reusable.HeaderArrays;
+            _completionSources = reusable;
         }
         else
         {
-            // Fallback: rent fresh arrays from dedicated pools (not ArrayPool<T>.Shared)
+            // Fallback: rent a fresh array from the dedicated pool (not ArrayPool<T>.Shared)
             // to prevent TLS accumulation from cross-thread rent/return patterns
-            _records = ProducerContainerPools.Records.Rent(_initialRecordCapacity);
             _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
-            _pooledArrays = ProducerContainerPools.DataArrayRefs.Rent(_initialRecordCapacity * 2);
-            _pooledHeaderArrays = ProducerContainerPools.HeaderArrayRefs.Rent(8);
         }
 
         // Reset counters and state for reuse.
@@ -4215,8 +4179,6 @@ internal sealed class PartitionBatch
         // and those messages would be lost when Reset() is later called.
         _recordCount = 0;
         _completionSourceCount = 0;
-        _pooledArrayCount = 0;
-        _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
         _maxTimestamp = 0;
         _encodedRecordsStart = 0;
@@ -4255,8 +4217,7 @@ internal sealed class PartitionBatch
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback,
-        int estimatedRecordSize)
+        Action<RecordMetadata, Exception?>? callback)
     {
         var result = TryAppendEncoded(
             timestamp,
@@ -4269,8 +4230,7 @@ internal sealed class PartitionBatch
             headers,
             headerCount,
             completionSource,
-            callback,
-            estimatedRecordSize);
+            callback);
 
         if (result.Success)
         {
@@ -4295,8 +4255,7 @@ internal sealed class PartitionBatch
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback,
-        int estimatedRecordSize)
+        Action<RecordMetadata, Exception?>? callback)
     {
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
@@ -4312,8 +4271,7 @@ internal sealed class PartitionBatch
             headers,
             headerCount,
             completionSource,
-            callback,
-            estimatedRecordSize);
+            callback);
 
         if (result.Success)
         {
@@ -4334,19 +4292,16 @@ internal sealed class PartitionBatch
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback,
-        int estimatedRecordSize)
+        Action<RecordMetadata, Exception?>? callback)
     {
-        _ = estimatedRecordSize;
-
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
         {
             return new RecordAppendResult(false);
         }
 
-        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-        if (_records is null || _pooledArrays is null)
+        // Defensive check: if the array is null, batch is in inconsistent state (being pooled)
+        if (_completionSources is null)
         {
             return new RecordAppendResult(false);
         }
@@ -4377,10 +4332,6 @@ internal sealed class PartitionBatch
         }
 
         // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ProducerContainerPools.Records);
-        }
         if (completionSource is not null && _completionSourceCount >= _completionSources.Length)
         {
             GrowArray(ref _completionSources, ref _completionSourceCount, ProducerContainerPools.CompletionSources);
@@ -4401,7 +4352,7 @@ internal sealed class PartitionBatch
 
         try
         {
-            WriteEncodedRecord(
+            Record.Encode(
                 encodedRecord,
                 bodySize,
                 timestampDelta,
@@ -4461,128 +4412,6 @@ internal sealed class PartitionBatch
         }
 
         _arena = BatchArena.RentOrCreate(capacity);
-    }
-
-    [SkipLocalsInit]
-    private static void WriteEncodedRecord(
-        Span<byte> destination,
-        int bodySize,
-        long timestampDelta,
-        int offsetDelta,
-        ReadOnlySpan<byte> keyData,
-        bool keyIsNull,
-        ReadOnlySpan<byte> valueData,
-        bool valueIsNull,
-        Header[]? headers,
-        int headerCount)
-    {
-        var offset = 0;
-
-        WriteVarInt(destination, ref offset, bodySize);
-        destination[offset++] = 0; // record attributes
-        WriteVarLong(destination, ref offset, timestampDelta);
-        WriteVarInt(destination, ref offset, offsetDelta);
-
-        if (keyIsNull)
-        {
-            WriteVarInt(destination, ref offset, -1);
-        }
-        else
-        {
-            WriteVarInt(destination, ref offset, keyData.Length);
-            keyData.CopyTo(destination[offset..]);
-            offset += keyData.Length;
-        }
-
-        if (valueIsNull)
-        {
-            WriteVarInt(destination, ref offset, -1);
-        }
-        else
-        {
-            WriteVarInt(destination, ref offset, valueData.Length);
-            valueData.CopyTo(destination[offset..]);
-            offset += valueData.Length;
-        }
-
-        WriteVarInt(destination, ref offset, headerCount);
-        if (headers is not null)
-        {
-            for (var i = 0; i < headerCount; i++)
-            {
-                WriteHeader(destination, ref offset, in headers[i]);
-            }
-        }
-
-        Debug.Assert(offset == destination.Length);
-    }
-
-    [SkipLocalsInit]
-    private static void WriteHeader(Span<byte> destination, ref int offset, in Header header)
-    {
-        var key = header.Key;
-        if (key.Length <= 128)
-        {
-            Span<byte> buffer = stackalloc byte[512];
-            var keyByteCount = Encoding.UTF8.GetBytes(key, buffer);
-            WriteVarInt(destination, ref offset, keyByteCount);
-            buffer[..keyByteCount].CopyTo(destination[offset..]);
-            offset += keyByteCount;
-        }
-        else
-        {
-            var keyByteCount = Encoding.UTF8.GetByteCount(key);
-            WriteVarInt(destination, ref offset, keyByteCount);
-            Encoding.UTF8.GetBytes(key, destination[offset..]);
-            offset += keyByteCount;
-        }
-
-        if (header.IsValueNull)
-        {
-            WriteVarInt(destination, ref offset, -1);
-        }
-        else
-        {
-            WriteVarInt(destination, ref offset, header.Value.Length);
-            header.Value.Span.CopyTo(destination[offset..]);
-            offset += header.Value.Length;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WriteVarInt(Span<byte> destination, ref int offset, int value)
-    {
-        WriteVarUInt(destination, ref offset, (uint)((value << 1) ^ (value >> 31)));
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WriteVarLong(Span<byte> destination, ref int offset, long value)
-    {
-        WriteVarULong(destination, ref offset, (ulong)((value << 1) ^ (value >> 63)));
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WriteVarUInt(Span<byte> destination, ref int offset, uint value)
-    {
-        while (value >= 0x80)
-        {
-            destination[offset++] = (byte)(value | 0x80);
-            value >>= 7;
-        }
-
-        destination[offset++] = (byte)value;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WriteVarULong(Span<byte> destination, ref int offset, ulong value)
-    {
-        while (value >= 0x80)
-        {
-            destination[offset++] = (byte)(value | 0x80);
-            value >>= 7;
-        }
-
-        destination[offset++] = (byte)value;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4648,9 +4477,6 @@ internal sealed class PartitionBatch
             return null;
         }
 
-        // Keep the working records array with ReadyBatch so it can be recycled after cleanup.
-        // RecordBatch itself reads from the already-encoded arena bytes.
-        var pooledRecordsArray = _records;
         var attributes = RecordBatchAttributes.None;
         if (_isTransactional)
         {
@@ -4679,7 +4505,6 @@ internal sealed class PartitionBatch
         var encodedRecords = _arena!.GetMemory(_encodedRecordsStart, _encodedRecordsLength);
         batch.SetPreEncodedRecords(encodedRecords);
         batch.Records = LazyRecordList.Create(encodedRecords, _recordCount);
-        _records = null!;
 
         // Rent ReadyBatch from pool or create new if no pool available
         // This eliminates per-batch class allocations at high throughput
@@ -4692,12 +4517,7 @@ internal sealed class PartitionBatch
             batch,
             _completionSources,
             _completionSourceCount,
-            _pooledArrays,
-            _pooledArrayCount,
-            _pooledHeaderArrays,
-            _pooledHeaderArrayCount,
             _estimatedSize,
-            pooledRecordsArray,
             _arena,
             _callbacks,
             _callbackCount,
@@ -4707,8 +4527,6 @@ internal sealed class PartitionBatch
 
         // Null out references - ownership transferred to ReadyBatch
         _completionSources = null!;
-        _pooledArrays = null!;
-        _pooledHeaderArrays = null!;
         _arena = null;
         _callbacks = null;
 
@@ -4717,34 +4535,26 @@ internal sealed class PartitionBatch
 
     private void ReturnBatchArraysToPool()
     {
-        // Return all working arrays to dedicated pools (with null checks since they may have been transferred)
+        // Return working arrays to dedicated pools (with null checks since they may have been transferred)
         // clearArray: false for internal tracking arrays - they will be overwritten on next use
-        if (_records is not null)
-            ProducerContainerPools.Records.Return(_records, clearArray: false);
         if (_completionSources is not null)
             ProducerContainerPools.CompletionSources.Return(_completionSources, clearArray: false);
-        if (_pooledArrays is not null)
-            ProducerContainerPools.DataArrayRefs.Return(_pooledArrays, clearArray: false);
-        if (_pooledHeaderArrays is not null)
-            ProducerContainerPools.HeaderArrayRefs.Return(_pooledHeaderArrays, clearArray: false);
 
         // Return arena buffer if present
         _arena?.Return();
 
         // Null out references to prevent accidental reuse
-        _records = null!;
         _completionSources = null!;
-        _pooledArrays = null!;
-        _pooledHeaderArrays = null!;
         _arena = null;
     }
 
     /// <summary>
     /// Estimates the size of a record in the batch for buffer memory accounting.
     /// This is an upper-bound estimate that includes:
-    /// - 20 bytes base overhead (1 byte attributes + varint overhead for timestamp/offset/key-length/value-length/header-count)
+    /// - 36 bytes base overhead (worst-case varints for record length, timestamp delta,
+    ///   offset delta, key/value lengths, and header count, plus 1 byte attributes)
     /// - Key and value payload lengths
-    /// - Header sizes (10 bytes overhead per header + key/value lengths)
+    /// - Exact header sizes via <see cref="Header.CalculateSize"/>
     /// This must be internal so KafkaProducer can calculate size before reserving memory.
     /// </summary>
     /// <param name="keyLength">Length of the serialized key in bytes (0 if null)</param>
@@ -4795,76 +4605,37 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 }
 
 /// <summary>
-/// Reuse queue for the 4 working arrays that PartitionBatch rents from ArrayPool.
-/// When ReadyBatch finishes cleanup, it pushes the container arrays here instead of returning
-/// them to ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
-/// to ArrayPool on miss. This eliminates ~4 ArrayPool Rent/Return pairs per batch cycle.
-/// Uses a single <see cref="LockFreeStack{T}"/> to keep all four arrays atomically together.
-/// One <see cref="ReusableArrays"/> wrapper is allocated per batch cycle (~32 bytes, amortized
-/// over ~1000 messages per batch).
+/// Reuse queue for the completion sources array that PartitionBatch rents from ArrayPool.
+/// When ReadyBatch finishes cleanup, it pushes the array here instead of returning it to
+/// ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
+/// to ArrayPool on miss. This eliminates an ArrayPool Rent/Return pair per batch cycle.
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
-    private readonly LockFreeStack<ReusableArrays> _queue;
+    private readonly LockFreeStack<PooledValueTaskSource<RecordMetadata>[]> _queue;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
-        _queue = new LockFreeStack<ReusableArrays>(maxSize);
+        _queue = new LockFreeStack<PooledValueTaskSource<RecordMetadata>[]>(maxSize);
     }
 
     /// <summary>
-    /// Pushes all four arrays as an atomic unit for reuse. If the queue is full,
-    /// all arrays are returned to the global ArrayPools instead.
+    /// Pushes the array for reuse. If the queue is full, the array is returned
+    /// to the dedicated ArrayPool instead.
     /// </summary>
-    public void EnqueueOrReturn(
-        Record[] records,
-        PooledValueTaskSource<RecordMetadata>[] completionSources,
-        byte[][] pooledDataArrays,
-        Header[][] pooledHeaderArrays)
+    public void EnqueueOrReturn(PooledValueTaskSource<RecordMetadata>[] completionSources)
     {
-        if (_queue.Count >= _queue.Capacity)
+        if (!_queue.TryPush(completionSources))
         {
-            ProducerContainerPools.Records.Return(records, clearArray: false);
             ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
-            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
-            return;
-        }
-
-        var wrapper = new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays);
-
-        if (!_queue.TryPush(wrapper))
-        {
-            ProducerContainerPools.Records.Return(records, clearArray: false);
-            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-            ProducerContainerPools.DataArrayRefs.Return(pooledDataArrays, clearArray: false);
-            ProducerContainerPools.HeaderArrayRefs.Return(pooledHeaderArrays, clearArray: false);
         }
     }
 
     /// <summary>
-    /// Tries to pop a complete set of reusable arrays. All four arrays are always
-    /// returned together (atomic by construction via the wrapper).
+    /// Tries to pop a reusable completion sources array.
     /// </summary>
-    public bool TryDequeue([NotNullWhen(true)] out ReusableArrays? arrays)
-        => _queue.TryPop(out arrays);
-}
-
-/// <summary>
-/// Wrapper that keeps four batch arrays atomically together in
-/// <see cref="BatchArrayReuseQueue"/>. One allocation per batch (~32 bytes)
-/// is acceptable — amortized over ~1000 messages per batch.
-/// </summary>
-internal sealed class ReusableArrays(
-    Record[] records,
-    PooledValueTaskSource<RecordMetadata>[] completionSources,
-    byte[][] dataArrays,
-    Header[][] headerArrays)
-{
-    public Record[] Records { get; } = records;
-    public PooledValueTaskSource<RecordMetadata>[] CompletionSources { get; } = completionSources;
-    public byte[][] DataArrays { get; } = dataArrays;
-    public Header[][] HeaderArrays { get; } = headerArrays;
+    public bool TryDequeue([NotNullWhen(true)] out PooledValueTaskSource<RecordMetadata>[]? completionSources)
+        => _queue.TryPop(out completionSources);
 }
 
 /// <summary>
@@ -4914,15 +4685,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Working arrays from accumulator (pooled) - mutable for pooling
     private PooledValueTaskSource<RecordMetadata>[]? _completionSourcesArray;
     private int _completionSourcesCount;
-    private byte[][]? _pooledDataArrays;
-    private int _pooledDataArraysCount;
-    private Header[][]? _pooledHeaderArrays;
-    private int _pooledHeaderArraysCount;
-    private Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
 
     // Reuse queue for returning working arrays back to PartitionBatch without ArrayPool round-trip
     private BatchArrayReuseQueue? _arrayReuseQueue;
-    private BatchArena? _arena; // Arena for zero-copy serialization data
+    private BatchArena? _arena; // Arena holding the batch's encoded record bytes
 
     // Callbacks for Send(message, callback) - inline invocation without ThreadPool
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
@@ -5098,12 +4864,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         RecordBatch recordBatch,
         PooledValueTaskSource<RecordMetadata>[]? completionSourcesArray,
         int completionSourcesCount,
-        byte[][]? pooledDataArrays,
-        int pooledDataArraysCount,
-        Header[][]? pooledHeaderArrays,
-        int pooledHeaderArraysCount,
         int dataSize,
-        Record[]? pooledRecordsArray = null,
         BatchArena? arena = null,
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0,
@@ -5126,13 +4887,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _recordBatch = recordBatch;
         _completionSourcesArray = completionSourcesArray;
         _completionSourcesCount = completionSourcesCount;
-        _pooledDataArrays = pooledDataArrays;
-        _pooledDataArraysCount = pooledDataArraysCount;
-        _pooledHeaderArrays = pooledHeaderArrays;
-        _pooledHeaderArraysCount = pooledHeaderArraysCount;
         DataSize = dataSize;
         EncodedSize = dataSize;
-        _pooledRecordsArray = pooledRecordsArray;
         _arena = arena;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
@@ -5174,13 +4930,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _recordBatch = null!;
         _completionSourcesArray = null;
         _completionSourcesCount = 0;
-        _pooledDataArrays = null;
-        _pooledDataArraysCount = 0;
-        _pooledHeaderArrays = null;
-        _pooledHeaderArraysCount = 0;
         DataSize = 0;
         EncodedSize = 0;
-        _pooledRecordsArray = null;
         _arena = null;
         _callbacks = null;
         _callbackCount = 0;
@@ -5422,57 +5173,24 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
 
-        // Return pooled byte arrays (key/value data) - only for non-arena path.
-        // Uses ProducerDataPool (not ArrayPool<byte>.Shared) to match the rent path
-        // and prevent cross-thread TLS accumulation in multi-broker scenarios.
-        // Null check defensive against partially constructed batches.
-        if (_pooledDataArrays is not null)
-        {
-            for (var i = 0; i < _pooledDataArraysCount; i++)
-            {
-                ProducerDataPool.BytePool.Return(_pooledDataArrays[i], clearArray: false);
-            }
-        }
-
-        // Return pooled header arrays (large header counts)
-        // Uses dedicated pool to prevent TLS accumulation from cross-thread return.
-        // clearArray: false - header data is not sensitive
-        if (_pooledHeaderArrays is not null)
-        {
-            for (var i = 0; i < _pooledHeaderArraysCount; i++)
-            {
-                ProducerContainerPools.Headers.Return(_pooledHeaderArrays[i], clearArray: false);
-            }
-        }
-
-        // Return the working (container) arrays: either to the reuse queue for fast recycling
+        // Return the working (container) array: either to the reuse queue for fast recycling
         // back to PartitionBatch, or to ArrayPool as fallback.
-        // Note: PooledValueTaskSource instances auto-return to their pool when awaited.
-        if (_arrayReuseQueue is not null
-            && _pooledRecordsArray is not null
-            && _completionSourcesArray is not null
-            && _pooledDataArrays is not null
-            && _pooledHeaderArrays is not null)
+        // Safety: clearArray: false is intentional. Array slots past the used count may contain
+        // stale PooledValueTaskSource references, but these are never accessed because counters
+        // reset to 0 on reuse. PooledValueTaskSource instances auto-return to their pool via
+        // GetResult(), so stale references don't prevent pool recycling.
+        if (_completionSourcesArray is not null)
         {
-            // Enqueue all 4 working arrays for reuse by PartitionBatch.PrepareForPooling().
-            // Safety: clearArray: false is intentional. Array slots past _recordCount may contain stale
-            // PooledValueTaskSource references, but these are never accessed because counters reset to 0
-            // on reuse. PooledValueTaskSource instances auto-return to their pool via GetResult(),
-            // so stale references don't prevent pool recycling. This matches ArrayPool behavior.
-            _arrayReuseQueue.EnqueueOrReturn(_pooledRecordsArray, _completionSourcesArray, _pooledDataArrays, _pooledHeaderArrays);
-        }
-        else
-        {
-            // Fallback: return individually to dedicated pools (not ArrayPool<T>.Shared)
-            // to prevent TLS accumulation from cross-thread return on BrokerSender threads
-            if (_completionSourcesArray is not null)
+            if (_arrayReuseQueue is not null)
+            {
+                _arrayReuseQueue.EnqueueOrReturn(_completionSourcesArray);
+            }
+            else
+            {
+                // Fallback: return to the dedicated pool (not ArrayPool<T>.Shared) to prevent
+                // TLS accumulation from cross-thread return on BrokerSender threads
                 ProducerContainerPools.CompletionSources.Return(_completionSourcesArray, clearArray: false);
-            if (_pooledDataArrays is not null)
-                ProducerContainerPools.DataArrayRefs.Return(_pooledDataArrays, clearArray: false);
-            if (_pooledHeaderArrays is not null)
-                ProducerContainerPools.HeaderArrayRefs.Return(_pooledHeaderArrays, clearArray: false);
-            if (_pooledRecordsArray is not null)
-                ProducerContainerPools.Records.Return(_pooledRecordsArray, clearArray: false);
+            }
         }
 
         // Return arena to pool for reuse (arena-based path)
@@ -5497,66 +5215,5 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             _recordBatch.DisposeRecordList();
             _recordBatch.ReturnToPool();
         }
-    }
-}
-
-/// <summary>
-/// Wrapper around a pooled Record array that implements IReadOnlyList.
-/// Used to present only the valid portion of a pooled array without copying.
-/// </summary>
-internal readonly struct RecordListWrapper : IReadOnlyList<Record>
-{
-    private readonly Record[] _array;
-    private readonly int _count;
-
-    public RecordListWrapper(Record[] array, int count)
-    {
-        _array = array;
-        _count = count;
-    }
-
-    public Record this[int index]
-    {
-        get
-        {
-            if (index < 0 || index >= _count)
-                throw new ArgumentOutOfRangeException(nameof(index));
-            return _array[index];
-        }
-    }
-
-    public int Count => _count;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ReadOnlySpan<Record> AsSpan() => _array.AsSpan(0, _count);
-
-    public Enumerator GetEnumerator() => new(_array, _count);
-
-    IEnumerator<Record> IEnumerable<Record>.GetEnumerator() => GetEnumerator();
-
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
-
-    public struct Enumerator : IEnumerator<Record>
-    {
-        private readonly Record[] _array;
-        private readonly int _count;
-        private int _index;
-
-        public Enumerator(Record[] array, int count)
-        {
-            _array = array;
-            _count = count;
-            _index = -1;
-        }
-
-        public Record Current => _array[_index];
-
-        object System.Collections.IEnumerator.Current => Current;
-
-        public bool MoveNext() => ++_index < _count;
-
-        public void Reset() => _index = -1;
-
-        public void Dispose() { }
     }
 }

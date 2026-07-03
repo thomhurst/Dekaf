@@ -204,10 +204,6 @@ public class MemoryReleasedAtomicityTests
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
-            pooledDataArrays: null,
-            pooledDataArraysCount: 0,
-            pooledHeaderArrays: null,
-            pooledHeaderArraysCount: 0,
             dataSize: 50);
 
         // Second lifecycle — must succeed again
@@ -224,10 +220,6 @@ public class MemoryReleasedAtomicityTests
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
-            pooledDataArrays: null,
-            pooledDataArraysCount: 0,
-            pooledHeaderArrays: null,
-            pooledHeaderArraysCount: 0,
             dataSize: 100);
         return batch;
     }
