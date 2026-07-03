@@ -23,8 +23,8 @@ public sealed class CreateDelegationTokenRequest : IKafkaRequest<CreateDelegatio
 
         if (version >= 3)
         {
-            WriteString(ref writer, Owner?.PrincipalType, flexible);
-            WriteString(ref writer, Owner?.PrincipalName, flexible);
+            DelegationTokenCodec.WriteString(ref writer, Owner?.PrincipalType, flexible);
+            DelegationTokenCodec.WriteString(ref writer, Owner?.PrincipalName, flexible);
         }
 
         WriteArray(ref writer, Renewers ?? [], flexible);
@@ -56,7 +56,10 @@ public sealed class CreateDelegationTokenRequest : IKafkaRequest<CreateDelegatio
                 false);
         }
     }
+}
 
+internal static class DelegationTokenCodec
+{
     internal static void WriteString(ref KafkaProtocolWriter writer, string? value, bool flexible)
     {
         if (flexible)
@@ -113,22 +116,22 @@ public sealed class CreateDelegationTokenResponse : IKafkaResponse
     {
         var flexible = CreateDelegationTokenRequest.IsFlexibleVersion(version);
         var errorCode = (ErrorCode)reader.ReadInt16();
-        var principalType = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-        var principalName = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
+        var principalType = DelegationTokenCodec.ReadString(ref reader, flexible);
+        var principalName = DelegationTokenCodec.ReadString(ref reader, flexible);
         string? tokenRequesterPrincipalType = null;
         string? tokenRequesterPrincipalName = null;
 
         if (version >= 3)
         {
-            tokenRequesterPrincipalType = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-            tokenRequesterPrincipalName = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
+            tokenRequesterPrincipalType = DelegationTokenCodec.ReadString(ref reader, flexible);
+            tokenRequesterPrincipalName = DelegationTokenCodec.ReadString(ref reader, flexible);
         }
 
         var issueTimestampMs = reader.ReadInt64();
         var expiryTimestampMs = reader.ReadInt64();
         var maxTimestampMs = reader.ReadInt64();
-        var tokenId = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-        var hmac = CreateDelegationTokenRequest.ReadBytes(ref reader, flexible);
+        var tokenId = DelegationTokenCodec.ReadString(ref reader, flexible);
+        var hmac = DelegationTokenCodec.ReadBytes(ref reader, flexible);
         var throttleTimeMs = reader.ReadInt32();
 
         if (flexible)
@@ -172,7 +175,7 @@ public sealed class RenewDelegationTokenRequest : IKafkaRequest<RenewDelegationT
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         var flexible = IsFlexibleVersion(version);
-        CreateDelegationTokenRequest.WriteBytes(ref writer, Hmac, flexible);
+        DelegationTokenCodec.WriteBytes(ref writer, Hmac, flexible);
         writer.WriteInt64(RenewPeriodMs);
 
         if (flexible)
@@ -235,7 +238,7 @@ public sealed class ExpireDelegationTokenRequest : IKafkaRequest<ExpireDelegatio
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         var flexible = IsFlexibleVersion(version);
-        CreateDelegationTokenRequest.WriteBytes(ref writer, Hmac, flexible);
+        DelegationTokenCodec.WriteBytes(ref writer, Hmac, flexible);
         writer.WriteInt64(ExpiryTimePeriodMs);
 
         if (flexible)
@@ -366,8 +369,8 @@ public sealed class DelegationTokenPrincipalData
 
     public void Write(ref KafkaProtocolWriter writer, bool flexible)
     {
-        CreateDelegationTokenRequest.WriteString(ref writer, PrincipalType, flexible);
-        CreateDelegationTokenRequest.WriteString(ref writer, PrincipalName, flexible);
+        DelegationTokenCodec.WriteString(ref writer, PrincipalType, flexible);
+        DelegationTokenCodec.WriteString(ref writer, PrincipalName, flexible);
 
         if (flexible)
         {
@@ -377,8 +380,8 @@ public sealed class DelegationTokenPrincipalData
 
     public static DelegationTokenPrincipalData Read(ref KafkaProtocolReader reader, bool flexible)
     {
-        var principalType = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-        var principalName = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
+        var principalType = DelegationTokenCodec.ReadString(ref reader, flexible);
+        var principalName = DelegationTokenCodec.ReadString(ref reader, flexible);
 
         if (flexible)
         {
@@ -412,22 +415,22 @@ public sealed class DescribedDelegationTokenData
     public static DescribedDelegationTokenData Read(ref KafkaProtocolReader reader, short version)
     {
         var flexible = DescribeDelegationTokenRequest.IsFlexibleVersion(version);
-        var principalType = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-        var principalName = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
+        var principalType = DelegationTokenCodec.ReadString(ref reader, flexible);
+        var principalName = DelegationTokenCodec.ReadString(ref reader, flexible);
         string? tokenRequesterPrincipalType = null;
         string? tokenRequesterPrincipalName = null;
 
         if (version >= 3)
         {
-            tokenRequesterPrincipalType = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-            tokenRequesterPrincipalName = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
+            tokenRequesterPrincipalType = DelegationTokenCodec.ReadString(ref reader, flexible);
+            tokenRequesterPrincipalName = DelegationTokenCodec.ReadString(ref reader, flexible);
         }
 
         var issueTimestampMs = reader.ReadInt64();
         var expiryTimestampMs = reader.ReadInt64();
         var maxTimestampMs = reader.ReadInt64();
-        var tokenId = CreateDelegationTokenRequest.ReadString(ref reader, flexible);
-        var hmac = CreateDelegationTokenRequest.ReadBytes(ref reader, flexible);
+        var tokenId = DelegationTokenCodec.ReadString(ref reader, flexible);
+        var hmac = DelegationTokenCodec.ReadBytes(ref reader, flexible);
         var renewers = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, bool f) => DelegationTokenPrincipalData.Read(ref r, f),

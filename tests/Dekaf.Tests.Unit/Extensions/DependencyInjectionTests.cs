@@ -357,6 +357,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:SaslMechanism"] = "ScramSha512",
             ["Kafka:Producers:Orders:SaslUsername"] = "user",
             ["Kafka:Producers:Orders:SaslPassword"] = "password",
+            ["Kafka:Producers:Orders:SaslScramTokenAuth"] = "true",
             ["Kafka:Producers:Orders:SocketSendBufferBytes"] = "1024",
             ["Kafka:Producers:Orders:SocketReceiveBufferBytes"] = "2048",
             ["Kafka:Producers:Orders:ValueTaskSourcePoolSize"] = "128",
@@ -404,6 +405,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(options.SaslUsername).IsEqualTo("user");
         await Assert.That(options.SaslPassword).IsEqualTo("password");
+        await Assert.That(options.SaslScramTokenAuth).IsTrue();
         await Assert.That(options.SocketSendBufferBytes).IsEqualTo(1024);
         await Assert.That(options.SocketReceiveBufferBytes).IsEqualTo(2048);
         await Assert.That(options.ValueTaskSourcePoolSize).IsEqualTo(128);
@@ -504,6 +506,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:SaslMechanism"] = "Plain",
             ["Kafka:Consumers:Orders:SaslUsername"] = "user",
             ["Kafka:Consumers:Orders:SaslPassword"] = "password",
+            ["Kafka:Consumers:Orders:SaslScramTokenAuth"] = "true",
             ["Kafka:Consumers:Orders:EnablePartitionEof"] = "true",
             ["Kafka:Consumers:Orders:SocketSendBufferBytes"] = "4096",
             ["Kafka:Consumers:Orders:SocketReceiveBufferBytes"] = "8192",
@@ -560,6 +563,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
         await Assert.That(options.SaslUsername).IsEqualTo("user");
         await Assert.That(options.SaslPassword).IsEqualTo("password");
+        await Assert.That(options.SaslScramTokenAuth).IsTrue();
         await Assert.That(options.EnablePartitionEof).IsTrue();
         await Assert.That(options.SocketSendBufferBytes).IsEqualTo(4096);
         await Assert.That(options.SocketReceiveBufferBytes).IsEqualTo(8192);
@@ -660,6 +664,7 @@ public class DependencyInjectionTests
             ["Kafka:Admin:SaslMechanism"] = "Plain",
             ["Kafka:Admin:SaslUsername"] = "admin",
             ["Kafka:Admin:SaslPassword"] = "secret",
+            ["Kafka:Admin:SaslScramTokenAuth"] = "true",
             ["Kafka:Admin:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Admin:MetadataRecoveryRebootstrapTriggerMs"] = "120000",
             ["Kafka:Admin:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly"
@@ -684,6 +689,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
         await Assert.That(options.SaslUsername).IsEqualTo("admin");
         await Assert.That(options.SaslPassword).IsEqualTo("secret");
+        await Assert.That(options.SaslScramTokenAuth).IsTrue();
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(120000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);

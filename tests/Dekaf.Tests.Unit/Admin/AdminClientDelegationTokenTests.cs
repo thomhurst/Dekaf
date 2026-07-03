@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -45,6 +46,25 @@ public sealed class AdminClientDelegationTokenTests
     }
 
     [Test]
+    public async Task CreateDelegationTokenAsync_ResponseError_ThrowsKafkaException()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueCreate(new CreateDelegationTokenResponse
+        {
+            ErrorCode = ErrorCode.DelegationTokenAuthDisabled,
+            PrincipalType = "User",
+            PrincipalName = "owner",
+            TokenId = "token-id",
+            Hmac = []
+        });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.CreateDelegationTokenAsync());
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenAuthDisabled);
+    }
+
+    [Test]
     public async Task CreateDelegationTokenAsync_WithOwnerAndV2_ThrowsNotSupported()
     {
         await using var context = new AdminTestContext(createDelegationTokenMaxVersion: 2);
@@ -79,6 +99,21 @@ public sealed class AdminClientDelegationTokenTests
     }
 
     [Test]
+    public async Task RenewDelegationTokenAsync_ResponseError_ThrowsKafkaException()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueRenew(new RenewDelegationTokenResponse
+        {
+            ErrorCode = ErrorCode.DelegationTokenNotFound
+        });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.RenewDelegationTokenAsync([9, 8]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenNotFound);
+    }
+
+    [Test]
     public async Task ExpireDelegationTokenAsync_SendsHmacAndMapsExpiry()
     {
         await using var context = new AdminTestContext();
@@ -95,6 +130,21 @@ public sealed class AdminClientDelegationTokenTests
         await Assert.That(request.Hmac).IsEquivalentTo(new byte[] { 7, 6 });
         await Assert.That(request.ExpiryTimePeriodMs).IsEqualTo(0);
         await Assert.That(expiry).IsEqualTo(DateTimeOffset.FromUnixTimeMilliseconds(6000));
+    }
+
+    [Test]
+    public async Task ExpireDelegationTokenAsync_ResponseError_ThrowsKafkaException()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueExpire(new ExpireDelegationTokenResponse
+        {
+            ErrorCode = ErrorCode.DelegationTokenNotFound
+        });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.ExpireDelegationTokenAsync([7, 6]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenNotFound);
     }
 
     [Test]
@@ -139,6 +189,22 @@ public sealed class AdminClientDelegationTokenTests
         await Assert.That(tokens[0].Owner.PrincipalName).IsEqualTo("owner");
         await Assert.That(tokens[0].TokenRequester!.Value.PrincipalName).IsEqualTo("requester");
         await Assert.That(tokens[0].Renewers[0].PrincipalName).IsEqualTo("renewer");
+    }
+
+    [Test]
+    public async Task DescribeDelegationTokensAsync_ResponseError_ThrowsKafkaException()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDescribe(new DescribeDelegationTokenResponse
+        {
+            ErrorCode = ErrorCode.DelegationTokenAuthorizationFailed,
+            Tokens = []
+        });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.DescribeDelegationTokensAsync());
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenAuthorizationFailed);
     }
 
     private sealed class AdminTestContext : IAsyncDisposable

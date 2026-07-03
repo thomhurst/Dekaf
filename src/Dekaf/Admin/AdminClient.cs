@@ -1919,7 +1919,7 @@ public sealed class AdminClient : IAdminClient
             MaxTimestamp = FromUnixTimeMilliseconds(response.MaxTimestampMs),
             TokenId = response.TokenId,
             Hmac = response.Hmac,
-            Renewers = renewers?.ToList() ?? []
+            Renewers = renewers ?? []
         };
     }
 

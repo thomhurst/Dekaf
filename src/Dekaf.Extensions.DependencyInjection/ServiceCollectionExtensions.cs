@@ -549,8 +549,8 @@ internal static class DekafConfigurationBinding
         if (TryGetValue<PartitionerType>(configuration, nameof(ProducerOptions.Partitioner), out var partitioner))
             builder.WithPartitioner(partitioner);
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
-        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam))
-            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam);
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketSendBufferBytes), out var sendBuffer))
             builder.WithSocketSendBufferBytes(sendBuffer);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
@@ -635,8 +635,8 @@ internal static class DekafConfigurationBinding
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.CheckCrcs), out var checkCrcs))
             builder.WithCheckCrcs(checkCrcs);
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
-        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam))
-            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam);
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnablePartitionEof), out var enablePartitionEof))
             builder.WithPartitionEof(enablePartitionEof);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SocketSendBufferBytes), out var sendBuffer))
@@ -679,8 +679,8 @@ internal static class DekafConfigurationBinding
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
-        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam))
-            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam);
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(AdminClientOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
@@ -751,11 +751,13 @@ internal static class DekafConfigurationBinding
         out string? password,
         out GssapiConfig? gssapiConfig,
         out OAuthBearerConfig? oauthConfig,
-        out AwsMskIamConfig? awsMskIamConfig)
+        out AwsMskIamConfig? awsMskIamConfig,
+        out bool saslScramTokenAuth)
     {
         var hasMechanism = TryGetValue<SaslMechanism>(configuration, nameof(ProducerOptions.SaslMechanism), out mechanism);
         var hasUsername = TryGetValue<string>(configuration, nameof(ProducerOptions.SaslUsername), out username);
         var hasPassword = TryGetValue<string>(configuration, nameof(ProducerOptions.SaslPassword), out password);
+        var hasSaslScramTokenAuth = TryGetValue<bool>(configuration, nameof(ProducerOptions.SaslScramTokenAuth), out saslScramTokenAuth);
         var hasGssapi = TryGetValue<GssapiConfig>(configuration, nameof(ProducerOptions.GssapiConfig), out gssapiConfig);
         var hasOAuth = TryGetValue<OAuthBearerConfig>(configuration, nameof(ProducerOptions.OAuthBearerConfig), out oauthConfig);
         var hasAwsMskIam = TryGetValue<AwsMskIamConfig>(configuration, nameof(ProducerOptions.AwsMskIamConfig), out awsMskIamConfig);
@@ -774,7 +776,7 @@ internal static class DekafConfigurationBinding
                 mechanism = SaslMechanism.None;
         }
 
-        return hasMechanism || hasUsername || hasPassword || hasGssapi || hasOAuth || hasAwsMskIam;
+        return hasMechanism || hasUsername || hasPassword || hasSaslScramTokenAuth || hasGssapi || hasOAuth || hasAwsMskIam;
     }
 
     private static bool TryGetBootstrapServers(IConfiguration configuration, out string[] servers)

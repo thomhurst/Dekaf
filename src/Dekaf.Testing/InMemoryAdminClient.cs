@@ -353,18 +353,7 @@ public sealed class InMemoryAdminClient : IAdminClient
             DefaultDelegationTokenLifetime);
         var key = DelegationTokenKey(hmac);
 
-        lock (_delegationTokenGate)
-        {
-            if (!_delegationTokens.TryGetValue(key, out var token))
-                throw new InvalidOperationException("Delegation token was not found.");
-
-            var expiry = DateTimeOffset.UtcNow + period;
-            if (expiry > token.MaxTimestamp)
-                expiry = token.MaxTimestamp;
-
-            _delegationTokens[key] = CloneDelegationToken(token, expiry);
-            return ValueTask.FromResult(expiry);
-        }
+        return ValueTask.FromResult(UpdateDelegationTokenExpiry(key, period));
     }
 
     public ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
@@ -382,18 +371,7 @@ public sealed class InMemoryAdminClient : IAdminClient
             TimeSpan.Zero);
         var key = DelegationTokenKey(hmac);
 
-        lock (_delegationTokenGate)
-        {
-            if (!_delegationTokens.TryGetValue(key, out var token))
-                throw new InvalidOperationException("Delegation token was not found.");
-
-            var expiry = DateTimeOffset.UtcNow + period;
-            if (expiry > token.MaxTimestamp)
-                expiry = token.MaxTimestamp;
-
-            _delegationTokens[key] = CloneDelegationToken(token, expiry);
-            return ValueTask.FromResult(expiry);
-        }
+        return ValueTask.FromResult(UpdateDelegationTokenExpiry(key, period));
     }
 
     public ValueTask<IReadOnlyList<DelegationToken>> DescribeDelegationTokensAsync(
@@ -823,6 +801,22 @@ public sealed class InMemoryAdminClient : IAdminClient
             throw new ArgumentOutOfRangeException(parameterName, "Duration cannot be negative.");
 
         return value.Value;
+    }
+
+    private DateTimeOffset UpdateDelegationTokenExpiry(string key, TimeSpan period)
+    {
+        lock (_delegationTokenGate)
+        {
+            if (!_delegationTokens.TryGetValue(key, out var token))
+                throw new InvalidOperationException("Delegation token was not found.");
+
+            var expiry = DateTimeOffset.UtcNow + period;
+            if (expiry > token.MaxTimestamp)
+                expiry = token.MaxTimestamp;
+
+            _delegationTokens[key] = CloneDelegationToken(token, expiry);
+            return expiry;
+        }
     }
 
     private static string DelegationTokenKey(byte[] hmac) => Convert.ToBase64String(hmac);
