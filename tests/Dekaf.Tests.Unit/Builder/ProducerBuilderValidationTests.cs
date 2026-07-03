@@ -32,7 +32,9 @@ public class ProducerBuilderValidationTests
 
         var act = () => builder.Build();
 
-        await Assert.That(act).Throws<InvalidOperationException>();
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("key serializer")
+            .And.HasMessageContaining("WithKeySerializer");
     }
 
     [Test]
@@ -43,7 +45,9 @@ public class ProducerBuilderValidationTests
 
         var act = () => builder.Build();
 
-        await Assert.That(act).Throws<InvalidOperationException>();
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("value serializer")
+            .And.HasMessageContaining("WithValueSerializer");
     }
 
     [Test]

@@ -156,7 +156,30 @@ using Dekaf;
 // This throws InvalidOperationException at BuildAsync()
 var producer = await Kafka.CreateProducer<string, MyCustomType>()
     .WithBootstrapServers("localhost:9092")
-    .BuildAsync();  // Error: No default serializer for type MyCustomType
+    .BuildAsync();
+```
+
+The exception names the missing builder call:
+
+```text
+No built-in value serializer exists for type 'MyCustomType'. Configure .WithValueSerializer(...) on the producer builder...
+```
+
+Before:
+
+```csharp
+var producer = await Kafka.CreateProducer<string, MyCustomType>()
+    .WithBootstrapServers("localhost:9092")
+    .BuildAsync();
+```
+
+After:
+
+```csharp
+var producer = await Kafka.CreateProducer<string, MyCustomType>()
+    .WithBootstrapServers("localhost:9092")
+    .WithValueSerializer(new JsonSerializer<MyCustomType>())
+    .BuildAsync();
 ```
 
 For custom types, see [JSON Serialization](./json) or [Custom Serializers](./custom).

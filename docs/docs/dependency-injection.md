@@ -332,6 +332,22 @@ The section keys match `ProducerOptions`, `ConsumerOptions`, and `AdminClientOpt
 
 Both producers and consumers are registered as singletons. This is intentional—they're expensive to create, thread-safe, and meant to be reused. They'll be disposed automatically when your app shuts down.
 
+Hosted consumer services should use the async disposal path provided by the generic host. `KafkaConsumerService<TKey, TValue>` implements `IAsyncDisposable`, so shutdown can flush and dispose its consumer and optional dead-letter producer without blocking a thread.
+
+Before:
+
+```csharp
+service.Dispose(); // synchronous fallback; cancels the BackgroundService only
+```
+
+After:
+
+```csharp
+await service.DisposeAsync(); // awaits consumer and DLQ producer disposal
+```
+
+When the service is registered with `AddHostedService`, the host calls the async path during normal shutdown.
+
 ## Complete Example
 
 ```csharp

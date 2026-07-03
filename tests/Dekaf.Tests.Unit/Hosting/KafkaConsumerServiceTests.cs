@@ -310,6 +310,29 @@ public sealed class KafkaConsumerServiceTests
 
     #endregion
 
+    #region Disposal
+
+    [Test]
+    public async Task DisposeAsync_AwaitsConsumerDisposal()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var disposal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        consumer.DisposeAsync().Returns(_ => new ValueTask(disposal.Task));
+        var service = new TestConsumerService(consumer, ["topic-a"]);
+
+        var disposeTask = service.DisposeAsync().AsTask();
+        await Task.Yield();
+
+        await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+        disposal.SetResult();
+        await disposeTask;
+
+        await consumer.Received(1).DisposeAsync();
+    }
+
+    #endregion
+
     #region Helpers
 
     /// <summary>

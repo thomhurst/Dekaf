@@ -4,21 +4,28 @@ sidebar_position: 3
 
 # Fire-and-Forget Production
 
-For high-throughput scenarios where you don't need to wait for acknowledgment, Dekaf provides fire-and-forget methods that return immediately.
+For high-throughput scenarios where you don't need to wait for acknowledgment, Dekaf provides `FireAsync` methods. `FireAsync` means "enqueue this record and return once local backpressure has accepted it"; it does not wait for broker acknowledgment.
 
-## The Produce() Method
+## FireAsync vs ProduceAsync
 
-`Produce()` queues a message for delivery and returns immediately without waiting:
+Before:
 
 ```csharp
-// Returns immediately - doesn't wait for broker acknowledgment
+// Old fire-and-forget syntax
 producer.Produce("my-topic", "key", "value");
 ```
 
-Compare this to `ProduceAsync()`:
+After:
 
 ```csharp
-// Waits for broker acknowledgment
+// Enqueues locally; does not wait for broker acknowledgment
+await producer.FireAsync("my-topic", "key", "value");
+```
+
+Use `ProduceAsync` when the caller needs the delivery result:
+
+```csharp
+// Waits for broker acknowledgment and returns metadata
 await producer.ProduceAsync("my-topic", "key", "value");
 ```
 
@@ -37,13 +44,13 @@ Fire-and-forget means you won't know if a message fails to deliver. Use it only 
 
 ## Ensuring Delivery
 
-Messages sent via `Produce()` are buffered internally. To ensure all buffered messages are delivered:
+Messages sent via `FireAsync` are buffered internally. To ensure all buffered messages are delivered:
 
 ```csharp
 // Send many messages quickly
 for (int i = 0; i < 10000; i++)
 {
-    producer.Produce("events", $"event-{i}", eventData);
+    await producer.FireAsync("events", $"event-{i}", eventData);
 }
 
 // Wait for all to be delivered
@@ -59,7 +66,7 @@ Always call `FlushAsync()` before disposing the producer, or use `await using` w
 If you need to know about delivery success/failure without blocking, use the callback overload:
 
 ```csharp
-producer.Produce(
+await producer.FireAsync(
     new ProducerMessage<string, string> { Topic = "orders", Key = orderId, Value = orderJson },
     (metadata, error) =>
     {
@@ -94,18 +101,18 @@ var headers = Headers.Create()
     .Add("trace-id", traceId)
     .Add("source", "event-generator");
 
-producer.Produce("events", eventKey, eventValue, headers);
+await producer.FireAsync("events", eventKey, eventValue, headers);
 ```
 
 ## Performance Comparison
 
 Here's how the different methods compare:
 
-| Method | Blocks? | Knows Result? | Throughput |
-|--------|---------|---------------|------------|
-| `await ProduceAsync()` | Yes | Immediately | Lower |
-| `Produce()` | No | Never | Highest |
-| `Produce(..., callback)` | No | Via callback | High |
+| Method | Waits for broker ack? | Knows delivery result? | Throughput |
+|--------|-----------------------|------------------------|------------|
+| `await ProduceAsync(...)` | Yes | Immediately | Lower |
+| `await FireAsync(...)` | No | Not directly | Highest |
+| `await FireAsync(..., callback)` | No | Via callback | High |
 
 ## Real-World Example: Event Streaming
 
@@ -125,7 +132,7 @@ public class EventPublisher : IAsyncDisposable
         _logger = logger;
     }
 
-    public void Publish(string eventType, byte[] payload)
+    public async ValueTask PublishAsync(string eventType, byte[] payload)
     {
         var message = new ProducerMessage<string, byte[]>
         {
@@ -137,7 +144,7 @@ public class EventPublisher : IAsyncDisposable
                 .Add("timestamp", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString())
         };
 
-        _producer.Produce(message, (metadata, error) =>
+        await _producer.FireAsync(message, (metadata, error) =>
         {
             if (error != null)
             {
@@ -171,7 +178,7 @@ var publisher = new EventPublisher(producer, logger);
 // Publish many events quickly
 foreach (var evt in events)
 {
-    publisher.Publish(evt.Type, evt.Serialize());
+    await publisher.PublishAsync(evt.Type, evt.Serialize());
 }
 
 // When shutting down

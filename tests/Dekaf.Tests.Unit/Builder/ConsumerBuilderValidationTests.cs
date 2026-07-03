@@ -34,7 +34,9 @@ public class ConsumerBuilderValidationTests
 
         var act = () => builder.Build();
 
-        await Assert.That(act).Throws<InvalidOperationException>();
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("key deserializer")
+            .And.HasMessageContaining("WithKeyDeserializer");
     }
 
     [Test]
@@ -45,7 +47,9 @@ public class ConsumerBuilderValidationTests
 
         var act = () => builder.Build();
 
-        await Assert.That(act).Throws<InvalidOperationException>();
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("value deserializer")
+            .And.HasMessageContaining("WithValueDeserializer");
     }
 
     #endregion

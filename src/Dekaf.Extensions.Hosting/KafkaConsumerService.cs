@@ -14,7 +14,7 @@ namespace Dekaf.Extensions.Hosting;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundService
+public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundService, IAsyncDisposable
 {
     private readonly IKafkaConsumer<TKey, TValue> _consumer;
     private readonly ILogger _logger;
@@ -23,6 +23,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly IRetryPolicy? _retryPolicy;
     private readonly KafkaConsumerServiceOptions _serviceOptions;
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
+    private int _disposeStarted;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="KafkaConsumerService{TKey, TValue}"/> class.
@@ -188,16 +189,41 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     public override void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) == 0)
+        {
+            base.Dispose();
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await DisposeAsyncCore().ConfigureAwait(false);
+        }
+        finally
+        {
+            base.Dispose();
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    private async ValueTask DisposeAsyncCore()
+    {
         // Flush and dispose DLQ producer
         if (_dlqProducer is not null)
         {
             try
             {
-                _dlqProducer.FlushAsync().AsTask()
+                await _dlqProducer.FlushAsync().AsTask()
                     .WaitAsync(TimeSpan.FromSeconds(5))
-                    .ConfigureAwait(false)
-                    .GetAwaiter()
-                    .GetResult();
+                    .ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -206,11 +232,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
             try
             {
-                _dlqProducer.DisposeAsync().AsTask()
+                await _dlqProducer.DisposeAsync().AsTask()
                     .WaitAsync(TimeSpan.FromSeconds(5))
-                    .ConfigureAwait(false)
-                    .GetAwaiter()
-                    .GetResult();
+                    .ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -218,16 +242,11 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             }
         }
 
-        // Add timeout to prevent indefinite hang during disposal
-        // This is necessary because BackgroundService.Dispose is synchronous
-        // but consumer disposal may involve network operations
         try
         {
-            _consumer.DisposeAsync().AsTask()
+            await _consumer.DisposeAsync().AsTask()
                 .WaitAsync(_serviceOptions.ShutdownTimeout)
-                .ConfigureAwait(false)
-                .GetAwaiter()
-                .GetResult();
+                .ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
@@ -237,9 +256,6 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             LogConsumerDisposalError(ex);
         }
-
-        base.Dispose();
-        GC.SuppressFinalize(this);
     }
 
     private async ValueTask ProcessWithRetriesAsync(

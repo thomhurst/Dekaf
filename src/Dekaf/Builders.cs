@@ -874,8 +874,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             _acks = Acks.All;
         }
 
-        var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
-        var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();
+        var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>("key", "WithKeySerializer");
+        var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>("value", "WithValueSerializer");
 
         var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
 
@@ -978,7 +978,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         return new TopicProducer<TKey, TValue>(producer, topic, ownsProducer: true);
     }
 
-    private static ISerializer<T> GetDefaultSerializer<T>()
+    private static ISerializer<T> GetDefaultSerializer<T>(string componentName, string configureMethod)
     {
         if (typeof(T) == typeof(string))
             return (ISerializer<T>)(object)Serializers.String;
@@ -995,7 +995,10 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (typeof(T) == typeof(Ignore))
             return (ISerializer<T>)(object)Serializers.Ignore;
 
-        throw new InvalidOperationException($"No default serializer for type {typeof(T)}. Please specify a serializer.");
+        throw new InvalidOperationException(
+            $"No built-in {componentName} serializer exists for type '{typeof(T).FullName}'. " +
+            $"Configure .{configureMethod}(...) on the producer builder, or use a supported built-in type: " +
+            "string, byte[], ReadOnlyMemory<byte>, int, long, Guid, or Ignore.");
     }
 
     private void ThrowIfClientOwnedBootstrap()
@@ -1893,8 +1896,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
 
-        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
-        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
+        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
+        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
 
         // Wrap the built-in string key deserializer with caching to avoid per-message string
         // allocation for repeated keys. Kafka workloads typically reuse a bounded set of key
@@ -2002,7 +2005,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return consumer;
     }
 
-    private static IDeserializer<T> GetDefaultDeserializer<T>()
+    private static IDeserializer<T> GetDefaultDeserializer<T>(string componentName, string configureMethod)
     {
         if (typeof(T) == typeof(string))
             return (IDeserializer<T>)(object)Serializers.String;
@@ -2019,7 +2022,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (typeof(T) == typeof(Ignore))
             return (IDeserializer<T>)(object)Serializers.Ignore;
 
-        throw new InvalidOperationException($"No default deserializer for type {typeof(T)}. Please specify a deserializer.");
+        throw new InvalidOperationException(
+            $"No built-in {componentName} deserializer exists for type '{typeof(T).FullName}'. " +
+            $"Configure .{configureMethod}(...) on the consumer builder, or use a supported built-in type: " +
+            "string, byte[], ReadOnlyMemory<byte>, int, long, Guid, or Ignore.");
     }
 
     private void ThrowIfClientOwnedBootstrap()
@@ -2332,8 +2338,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
         ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
 
-        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
-        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
+        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
+        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
 
         var options = new ShareConsumerOptions
         {
@@ -2381,7 +2387,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return consumer;
     }
 
-    private static IDeserializer<T> GetDefaultDeserializer<T>()
+    private static IDeserializer<T> GetDefaultDeserializer<T>(string componentName, string configureMethod)
     {
         if (typeof(T) == typeof(string))
             return (IDeserializer<T>)(object)Serializers.String;
@@ -2398,7 +2404,10 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         if (typeof(T) == typeof(Ignore))
             return (IDeserializer<T>)(object)Serializers.Ignore;
 
-        throw new InvalidOperationException($"No default deserializer for type {typeof(T)}. Please specify a deserializer.");
+        throw new InvalidOperationException(
+            $"No built-in {componentName} deserializer exists for type '{typeof(T).FullName}'. " +
+            $"Configure .{configureMethod}(...) on the share consumer builder, or use a supported built-in type: " +
+            "string, byte[], ReadOnlyMemory<byte>, int, long, Guid, or Ignore.");
     }
 
     private void ThrowIfClientOwnedBootstrap()
