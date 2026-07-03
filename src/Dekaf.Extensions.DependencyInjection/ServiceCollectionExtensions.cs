@@ -7,6 +7,7 @@ using Dekaf.Protocol.Records;
 using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -455,6 +456,18 @@ public sealed class AdminClientServiceBuilder
     public AdminClientServiceBuilder UseTls()
     {
         _builder.UseTls();
+        return this;
+    }
+
+    public AdminClientServiceBuilder RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        _builder.RegisterMetricForSubscription(metric);
+        return this;
+    }
+
+    public AdminClientServiceBuilder UnregisterMetricFromSubscription(string name)
+    {
+        _builder.UnregisterMetricFromSubscription(name);
         return this;
     }
 

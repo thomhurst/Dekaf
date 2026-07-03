@@ -245,23 +245,24 @@ The zero-allocation design pays off here. Once warmed up, Dekaf doesn't trigger 
 
 ## Keeping an Eye on Things
 
-### Built-in Metrics
+### Broker Telemetry Application Metrics
 
-Hook into Dekaf's metrics to see what's happening:
+Register application metrics when you want the broker client telemetry subscription to request
+and receive your own measurements alongside Dekaf client metrics:
 
 ```csharp
 using Dekaf;
+using Dekaf.Telemetry;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .WithMetrics(metrics =>
-    {
-        metrics.OnMessageProduced += (topic, partition, latency) =>
-        {
-            // Record metrics
-        };
-    })
+    .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+        "com.example.queue.depth",
+        ApplicationTelemetryMetricKind.Gauge,
+        () => queueDepth))
     .BuildAsync();
+
+producer.UnregisterMetricFromSubscription("com.example.queue.depth");
 ```
 
 ### Logging

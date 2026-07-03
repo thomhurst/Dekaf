@@ -556,6 +556,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly IDekafMemoryBudget _memoryBudget;
     private readonly bool _ownsInfrastructure;
@@ -649,6 +650,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Cached metric tags per topic to avoid per-message TagList allocation
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
     private readonly Dictionary<string, System.Diagnostics.TagList> _metricTagsCache = [];
+    private readonly ConcurrentDictionary<int, TagList> _fetchDurationMetricTagsCache = new();
 
     private const long EarliestOffsetTimestamp = -2;
     private const long LatestOffsetTimestamp = -1;
@@ -805,11 +807,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _metadataManager = infrastructure.Metadata;
         _ownsInfrastructure = ownsInfrastructure;
         _memoryBudget = memoryBudget;
+        _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>(),
-            infrastructure.TelemetryMetricCollector);
+            _telemetryMetricCollector);
 
         _compressionCodecs = CompressionCodecRegistry.Default;
 
@@ -871,6 +875,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
     public IConsumerOffsets Offsets => this;
+
+    /// <inheritdoc />
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+    }
+
+    /// <inheritdoc />
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
+    }
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.
@@ -1959,10 +1981,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 ConsumerFetchPools.ReturnFetchRequestTopics(topicData);
             }
 
-            // Record fetch round-trip duration (~3ns no-op when no listener)
-            Diagnostics.DekafMetrics.FetchDuration.Record(
-                System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
-                new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
+            RecordFetchDuration(fetchStarted, brokerId);
 
             // Take ownership of pooled memory from the response (if zero-copy was used)
             var memoryOwner = response.PooledMemoryOwner;
@@ -2429,6 +2448,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Diagnostics.DekafMetrics.BytesReceived.Add(fetch.TotalBytesConsumed, metricTags);
     }
 
+    private void RecordFetchDuration(long fetchStarted, int brokerId)
+    {
+        if (!Diagnostics.DekafMetrics.FetchDuration.Enabled)
+            return;
+
+        Diagnostics.DekafMetrics.FetchDuration.Record(
+            Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+            GetFetchDurationMetricTags(brokerId));
+    }
+
+    private TagList GetFetchDurationMetricTags(int brokerId) =>
+        _fetchDurationMetricTagsCache.GetOrAdd(
+            brokerId,
+            static id => new TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, id } });
+
     public void Seek(TopicPartitionOffset offset)
     {
         LogSeek(offset.Topic, offset.Partition, offset.Offset);
@@ -2690,19 +2724,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         ThrowIfNotInitialized();
 
-        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ListOffsets,
-            ListOffsetsRequest.LowestSupportedVersion,
-            ListOffsetsRequest.HighestSupportedVersion);
-
-        var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
-        var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
-
-        for (var attempt = 0; ; attempt++)
+        return await RetryHelper.WithRetryAsync(async () =>
         {
             var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
             if (connection is null)
-                throw new InvalidOperationException($"No leader found for partition {topicPartition}");
+                throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+
+            var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.ListOffsets,
+                ListOffsetsRequest.LowestSupportedVersion,
+                ListOffsetsRequest.HighestSupportedVersion);
+
+            var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
+            var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
 
             var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
                 earliestRequest,
@@ -2718,64 +2752,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
-            if (await ShouldRetryWatermarkQueryAsync(
-                    "earliest",
-                    topicPartition,
-                    earliestPartitionResponse,
-                    attempt,
-                    cancellationToken).ConfigureAwait(false))
+            if (earliestPartitionResponse is null)
+                throw new KafkaException(ErrorCode.UnknownServerError,
+                    $"Failed to query earliest offset for {topicPartition}: missing partition response");
+
+            if (earliestPartitionResponse.ErrorCode != ErrorCode.None)
             {
-                continue;
+                throw KafkaException.FromErrorCode(earliestPartitionResponse.ErrorCode,
+                    $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse.ErrorCode}");
             }
+
+            var lowWatermark = earliestPartitionResponse.Offset;
 
             var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
 
-            if (await ShouldRetryWatermarkQueryAsync(
-                    "latest",
-                    topicPartition,
-                    latestPartitionResponse,
-                    attempt,
-                    cancellationToken).ConfigureAwait(false))
+            if (latestPartitionResponse is null)
+                throw new KafkaException(ErrorCode.UnknownServerError,
+                    $"Failed to query latest offset for {topicPartition}: missing partition response");
+
+            if (latestPartitionResponse.ErrorCode != ErrorCode.None)
             {
-                continue;
+                throw KafkaException.FromErrorCode(latestPartitionResponse.ErrorCode,
+                    $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse.ErrorCode}");
             }
 
-            var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
-            var highWatermark = latestPartitionResponse?.Offset ?? 0;
+            var highWatermark = latestPartitionResponse.Offset;
+
             var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
 
             // Cache the result
             _watermarks[topicPartition] = watermarks;
 
             return watermarks;
-        }
-    }
-
-    private async ValueTask<bool> ShouldRetryWatermarkQueryAsync(
-        string offsetName,
-        TopicPartition topicPartition,
-        ListOffsetsResponsePartition? partitionResponse,
-        int attempt,
-        CancellationToken cancellationToken)
-    {
-        if (partitionResponse?.ErrorCode == ErrorCode.None)
-        {
-            return false;
-        }
-
-        var errorCode = partitionResponse?.ErrorCode;
-        if (errorCode is not null &&
-            errorCode.Value.IsRetriable() &&
-            attempt < RetryHelper.MaxRetries)
-        {
-            await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-            var jitter = Random.Shared.Next(0, 100);
-            await Task.Delay(RetryHelper.RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        throw new InvalidOperationException(
-            $"Failed to query {offsetName} offset for {topicPartition}: {errorCode}");
+        }, _metadataManager, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -3486,10 +3495,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ConsumerFetchPools.ReturnFetchRequestTopics(topicData);
         }
 
-        // Record fetch round-trip duration (~3ns no-op when no listener)
-        Diagnostics.DekafMetrics.FetchDuration.Record(
-            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
-            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
+        RecordFetchDuration(fetchStarted, brokerId);
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
