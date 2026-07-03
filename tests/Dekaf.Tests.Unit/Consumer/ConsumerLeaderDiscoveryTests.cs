@@ -16,7 +16,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     private const string Topic = "test-topic";
 
     [Test]
-    public async Task HandleNotLeaderOrFollower_WithInlineLeader_UpdatesMetadataWithoutRefresh()
+    public async Task HandleLeaderEpochRefresh_WithInlineLeader_UpdatesMetadataWithoutRefresh()
     {
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
@@ -35,7 +35,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             }
         };
 
-        await InvokeHandleNotLeaderOrFollowerAsync(
+        await InvokeHandleLeaderEpochRefreshAsync(
             consumer,
             partitionResponse,
             [new NodeEndpoint { NodeId = 2, Host = "broker-2", Port = 9094 }]);
@@ -49,7 +49,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task HandleNotLeaderOrFollower_WithoutInlineLeader_DeduplicatesRefreshPerTopic()
+    public async Task HandleLeaderEpochRefresh_WithoutInlineLeader_DeduplicatesRefreshPerTopic()
     {
         var pool = Substitute.For<IConnectionPool>();
         var connectionRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -71,12 +71,12 @@ public sealed class ConsumerLeaderDiscoveryTests
             ErrorCode = ErrorCode.NotLeaderOrFollower
         };
 
-        await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
+        await InvokeHandleLeaderEpochRefreshAsync(consumer, partitionResponse, []);
         // The background refresh signals connectionRequested when it calls GetConnectionAsync.
         // Await it directly: a 5s cap raced that continuation under CI thread-pool starvation.
         await connectionRequested.Task;
 
-        await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
+        await InvokeHandleLeaderEpochRefreshAsync(consumer, partitionResponse, []);
 
         _ = pool.Received(1).GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>());
 
@@ -85,7 +85,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task HandleNotLeaderOrFollower_WithoutInlineLeader_UsesDedicatedRefreshToken()
+    public async Task HandleLeaderEpochRefresh_WithoutInlineLeader_UsesDedicatedRefreshToken()
     {
         var pool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -114,7 +114,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             ErrorCode = ErrorCode.NotLeaderOrFollower
         };
 
-        await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
+        await InvokeHandleLeaderEpochRefreshAsync(consumer, partitionResponse, []);
 
         // The background refresh signals refreshTokenCaptured when it calls SendAsync.
         // Await directly: a 5s cap raced that continuation under CI thread-pool starvation.
@@ -126,7 +126,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task HandleNotLeaderOrFollower_WithoutInlineLeader_SchedulesRefreshWithoutFetchCycleToken()
+    public async Task HandleLeaderEpochRefresh_WithoutInlineLeader_SchedulesRefreshWithoutFetchCycleToken()
     {
         var pool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -155,7 +155,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             ErrorCode = ErrorCode.NotLeaderOrFollower
         };
 
-        await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
+        await InvokeHandleLeaderEpochRefreshAsync(consumer, partitionResponse, []);
 
         // The background refresh signals refreshTokenCaptured when it calls SendAsync.
         // Await directly: a 5s cap raced that continuation under CI thread-pool starvation.
@@ -189,7 +189,9 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(42);
         var exception = DrainPendingFetchException(consumer);
         await Assert.That(exception).IsTypeOf<ConsumeException>();
-        await Assert.That(((ConsumeException)exception!).ErrorCode).IsEqualTo(ErrorCode.OffsetOutOfRange);
+        var consumeException = (ConsumeException)exception!;
+        await Assert.That(consumeException.ErrorCode).IsEqualTo(ErrorCode.OffsetOutOfRange);
+        await Assert.That(consumeException.IsRetriable).IsTrue();
     }
 
     [Test]
@@ -239,7 +241,7 @@ public sealed class ConsumerLeaderDiscoveryTests
                 ErrorCode = ErrorCode.NotLeaderOrFollower
             };
 
-            await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
+            await InvokeHandleLeaderEpochRefreshAsync(consumer, partitionResponse, []);
             // Each step below is gated by a deterministic signal (the mock's SendAsync, the
             // refresh cancellation callback, and the dispose completing after the refresh
             // response is set). The previous 5s caps raced those continuations under CI
@@ -346,18 +348,18 @@ public sealed class ConsumerLeaderDiscoveryTests
         }
     }
 
-    private static async ValueTask InvokeHandleNotLeaderOrFollowerAsync(
+    private static async ValueTask InvokeHandleLeaderEpochRefreshAsync(
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition partitionResponse,
         IReadOnlyList<NodeEndpoint> nodeEndpoints)
     {
         var method = typeof(KafkaConsumer<string, string>)
-            .GetMethod("HandleNotLeaderOrFollowerAsync", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("HandleNotLeaderOrFollowerAsync method not found");
+            .GetMethod("HandleLeaderEpochRefreshAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("HandleLeaderEpochRefreshAsync method not found");
 
         var result = method.Invoke(consumer, [Topic, partitionResponse, nodeEndpoints]);
         if (result is not ValueTask valueTask)
-            throw new InvalidOperationException("HandleNotLeaderOrFollowerAsync did not return ValueTask");
+            throw new InvalidOperationException("HandleLeaderEpochRefreshAsync did not return ValueTask");
 
         await valueTask.ConfigureAwait(false);
     }

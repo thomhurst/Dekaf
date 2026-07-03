@@ -2124,24 +2124,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         {
                             if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                             {
-                                // CRITICAL: Reset fetch position based on auto.offset.reset policy
-                                // Without this, we would retry with the same invalid offset forever
-                                var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, tp);
-                                if (resetTimestamp == -1 || resetTimestamp == -2)
-                                {
-                                    _fetchPositions[tp] = resetTimestamp;
-                                    SetPosition(tp, resetTimestamp, dirty: false);
-                                    ClearLastConsumedLeaderEpoch(tp);
-                                }
-                                else
-                                {
-                                    var resetOffset = await ResolveAutoResetOffsetAsync(tp, resetTimestamp, cancellationToken).ConfigureAwait(false);
-                                    _fetchPositions[tp] = resetOffset;
-                                    SetPosition(tp, resetOffset, dirty: false);
-                                    ClearLastConsumedLeaderEpoch(tp);
-                                }
-
-                                LogOffsetOutOfRangeReset(topic, partitionResponse.PartitionIndex, GetAutoOffsetResetName());
+                                await ResetOffsetOutOfRangeAsync(tp, cancellationToken).ConfigureAwait(false);
                             }
                             else if (IsLeaderEpochRefreshError(partitionResponse.ErrorCode))
                             {
@@ -4030,7 +4013,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (partitionResponse.ErrorCode != ErrorCode.None)
                     {
-                        if (IsLeaderEpochRefreshError(partitionResponse.ErrorCode))
+                        if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
+                        {
+                            await ResetOffsetOutOfRangeAsync(tp, cancellationToken).ConfigureAwait(false);
+                        }
+                        else if (IsLeaderEpochRefreshError(partitionResponse.ErrorCode))
                         {
                             await HandleLeaderEpochRefreshAsync(
                                 topic,
@@ -4267,7 +4254,32 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         SetLastConsumedLeaderEpoch(partition, divergingEpoch.Epoch);
         QueueFetchException(new Errors.ConsumeException(
             ErrorCode.OffsetOutOfRange,
-            $"Log truncation detected for {topic}-{partitionResponse.PartitionIndex}; reset fetch position to offset {divergingEpoch.EndOffset} at leader epoch {divergingEpoch.Epoch}."));
+            $"Log truncation detected for {topic}-{partitionResponse.PartitionIndex}; reset fetch position to offset {divergingEpoch.EndOffset} at leader epoch {divergingEpoch.Epoch}.",
+            isRetriable: true));
+    }
+
+    private async ValueTask ResetOffsetOutOfRangeAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
+    {
+        // Reset fetch position based on auto.offset.reset policy. Without this, the
+        // consumer would retry the same invalid offset forever.
+        var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
+        if (resetTimestamp == LatestOffsetTimestamp || resetTimestamp == EarliestOffsetTimestamp)
+        {
+            _fetchPositions[partition] = resetTimestamp;
+            SetPosition(partition, resetTimestamp, dirty: false);
+            ClearLastConsumedLeaderEpoch(partition);
+        }
+        else
+        {
+            var resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
+            _fetchPositions[partition] = resetOffset;
+            SetPosition(partition, resetOffset, dirty: false);
+            ClearLastConsumedLeaderEpoch(partition);
+        }
+
+        LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
     }
 
     private static bool IsLeaderEpochRefreshError(ErrorCode errorCode) =>
@@ -4300,14 +4312,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ScheduleLeaderRefresh(topic);
 
         return ValueTask.CompletedTask;
-    }
-
-    private ValueTask HandleNotLeaderOrFollowerAsync(
-        string topic,
-        FetchResponsePartition partitionResponse,
-        IReadOnlyList<NodeEndpoint> nodeEndpoints)
-    {
-        return HandleLeaderEpochRefreshAsync(topic, partitionResponse, nodeEndpoints);
     }
 
     private void UpdatePreferredReadReplica(string topic, FetchResponsePartition partitionResponse)
