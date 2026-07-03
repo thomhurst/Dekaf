@@ -385,6 +385,9 @@ public class RecordAccumulatorTests
             while (accumulator.BufferPressureEvents == 0 && !appendTask.IsCompleted)
                 await Task.Yield();
 
+            while (accumulator.PendingAppendCountForTest == 0 && !appendTask.IsCompleted)
+                await Task.Yield();
+
             await Assert.That(appendTask.IsCompleted).IsFalse();
 
             var purged = accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
