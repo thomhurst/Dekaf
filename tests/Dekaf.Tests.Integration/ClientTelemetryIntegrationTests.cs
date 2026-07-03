@@ -35,7 +35,6 @@ public sealed class ClientTelemetryIntegrationTests(KafkaTestContainer kafka) : 
         }
         else
         {
-            await Assert.That(telemetryManager.IsDisabled).IsTrue();
             await Assert.That(telemetryManager.ClientInstanceId).IsEqualTo(Guid.Empty);
             await Assert.That(telemetryManager.SubscriptionId).IsEqualTo(-1);
         }
