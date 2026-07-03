@@ -7,6 +7,67 @@ namespace Dekaf.StressTests.Scenarios;
 internal static class ConfluentStressTestHelpers
 {
     /// <summary>
+    /// librdkafka local queue byte bound, derived from Dekaf's
+    /// <see cref="StressTestHelpers.ProducerBufferMemoryBytes"/> so both clients absorb
+    /// the same backlog before backpressure kicks in.
+    /// </summary>
+    internal const int QueueBufferingMaxKbytes = (int)(StressTestHelpers.ProducerBufferMemoryBytes / 1024);
+
+    /// <summary>
+    /// librdkafka's maximum, so the byte bound above is always the binding limit —
+    /// matching Dekaf's bytes-only BufferMemory regardless of --message-size (the
+    /// default 100k count cap would bind first for messages under ~10 KB).
+    /// </summary>
+    internal const int QueueBufferingMaxMessages = 10_000_000;
+
+    /// <summary>
+    /// Queries the high watermark of each partition, mirroring
+    /// <see cref="StressTestHelpers.QueryEndOffsetsAsync"/> for Confluent scenarios
+    /// (which stay Dekaf-free end to end).
+    /// </summary>
+    internal static long[] QueryEndOffsets<TKey, TValue>(
+        ConfluentKafka.IConsumer<TKey, TValue> consumer,
+        string topic,
+        int partitionCount,
+        TimeSpan timeout)
+    {
+        var endOffsets = new long[partitionCount];
+        for (var p = 0; p < partitionCount; p++)
+        {
+            var watermarks = consumer.QueryWatermarkOffsets(new ConfluentKafka.TopicPartition(topic, p), timeout);
+            endOffsets[p] = watermarks.High.Value;
+        }
+        return endOffsets;
+    }
+
+    /// <summary>
+    /// Sums the high watermarks across all partitions of <paramref name="topic"/> via a
+    /// short-lived Confluent consumer. See
+    /// <see cref="StressTestHelpers.QueryTotalEndOffsetAsync"/> for why producer
+    /// scenarios snapshot this before and after the run.
+    /// </summary>
+    internal static long? QueryTotalEndOffset(string bootstrapServers, string topic, int partitionCount)
+    {
+        try
+        {
+            var config = new ConfluentKafka.ConsumerConfig
+            {
+                BootstrapServers = bootstrapServers,
+                ClientId = "stress-watermark-query",
+                GroupId = $"stress-watermark-{Guid.NewGuid():N}"
+            };
+
+            using var consumer = new ConfluentKafka.ConsumerBuilder<ConfluentKafka.Ignore, ConfluentKafka.Ignore>(config).Build();
+            return QueryEndOffsets(consumer, topic, partitionCount, TimeSpan.FromSeconds(10)).Sum();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Warning: end offset query failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Produces one message, blocking briefly and retrying while librdkafka's local
     /// queue is full. This mirrors Dekaf's BufferMemory backpressure: without it,
     /// queue-full messages are silently dropped and counted as errors, which makes

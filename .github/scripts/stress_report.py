@@ -55,14 +55,32 @@ def format_cpu_columns(result):
     )
 
 
+def effective_rate(result):
+    """Headline throughput. The selection policy (broker-confirmed delivered rate when
+    measured, else the client-side tracker average) lives in StressTestResult and is
+    serialized as effectiveMessagesPerSecond; the throughput fallback here only covers
+    result files written before that field existed."""
+    rate = result.get('effectiveMessagesPerSecond')
+    if rate is not None:
+        return rate
+    return result.get('throughput', {}).get('averageMessagesPerSecond', 0)
+
+
+def effective_mb_rate(result):
+    rate = result.get('effectiveMegabytesPerSecond')
+    if rate is not None:
+        return rate
+    return result.get('throughput', {}).get('averageMegabytesPerSecond', 0)
+
+
 def find_confluent_baseline(results):
     """Find Confluent throughput as a baseline for ratio calculations."""
     for r in results:
         if r.get('client', '').lower() == 'confluent':
-            rate = r.get('throughput', {}).get('averageMessagesPerSecond', 0)
+            rate = effective_rate(r)
             if rate > 0:
                 return rate
-    return min((r.get('throughput', {}).get('averageMessagesPerSecond', 1) for r in results), default=1)
+    return min((effective_rate(r) or 1 for r in results), default=1)
 
 
 def format_throughput_table(results, title, include_ratio=False):
@@ -78,31 +96,39 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append("")
 
     if include_ratio:
-        lines.append("| Client | Messages/sec | MB/sec | Total Messages | Errors | CPU μs/msg | Cores Used | Ratio |")
+        lines.append("| Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used | Ratio |")
         lines.append("|--------|--------------|--------|----------------|--------|------------|------------|-------|")
     else:
-        lines.append("| Client | Messages/sec | MB/sec | Total | Errors | CPU μs/msg | Cores Used |")
-        lines.append("|--------|--------------|--------|-------|--------|------------|------------|")
+        lines.append("| Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |")
+        lines.append("|--------|--------------|--------|----------------|--------|------------|------------|")
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
-    sorted_results = sorted(results, key=lambda r: r.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True)
+    sorted_results = sorted(results, key=effective_rate, reverse=True)
 
     for r in sorted_results:
         client = r.get('client', 'Unknown')
         throughput = r.get('throughput', {})
-        msg_sec = throughput.get('averageMessagesPerSecond', 0)
-        mb_sec = throughput.get('averageMegabytesPerSecond', 0)
-        total = throughput.get('totalMessages', 0)
+        msg_sec = effective_rate(r)
+        mb_sec = effective_mb_rate(r)
+        accepted_rate = r.get('acceptedMessagesPerSecond')
+        accepted = f"{accepted_rate:,.0f}" if accepted_rate is not None else '-'
         errors = throughput.get('totalErrors', 0)
         cpu_us_per_msg, cores_used = format_cpu_columns(r)
 
         if include_ratio:
             ratio = msg_sec / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {cpu_us_per_msg} | {cores_used} | {ratio:.2f}x |")
+            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {accepted} | {errors} | {cpu_us_per_msg} | {cores_used} | {ratio:.2f}x |")
         else:
-            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {cpu_us_per_msg} | {cores_used} |")
+            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {accepted} | {errors} | {cpu_us_per_msg} | {cores_used} |")
 
     lines.append("")
+
+    if any(r.get('deliveredMessages') is not None for r in results):
+        lines.append("*Messages/sec counts broker-confirmed deliveries (end-offset delta). "
+                     "Accepted msg/s is the client-side append rate — a large gap means messages "
+                     "were buffered or dropped without ever reaching the broker.*")
+        lines.append("")
+
     return lines
 
 
@@ -114,8 +140,8 @@ def format_comparison_callout(results, title):
     if not (dekaf and confluent):
         return []
 
-    dekaf_rate = dekaf.get('throughput', {}).get('averageMessagesPerSecond', 0)
-    confluent_rate = confluent.get('throughput', {}).get('averageMessagesPerSecond', 0)
+    dekaf_rate = effective_rate(dekaf)
+    confluent_rate = effective_rate(confluent)
     if confluent_rate <= 0:
         return []
 

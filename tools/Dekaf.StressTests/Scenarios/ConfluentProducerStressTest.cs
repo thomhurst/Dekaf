@@ -24,6 +24,8 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             Acks = ConfluentKafka.Acks.Leader,
             LingerMs = options.LingerMs,
             BatchSize = options.BatchSize,
+            QueueBufferingMaxKbytes = ConfluentStressTestHelpers.QueueBufferingMaxKbytes,
+            QueueBufferingMaxMessages = ConfluentStressTestHelpers.QueueBufferingMaxMessages,
             CompressionType = options.Compression switch
             {
                 "lz4" => ConfluentKafka.CompressionType.Lz4,
@@ -41,6 +43,8 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             producer.Produce(options.Topic, new ConfluentKafka.Message<string, string> { Key = "warmup", Value = "warmup" });
         }
         producer.Flush(TimeSpan.FromSeconds(30));
+
+        var startOffset = ConfluentStressTestHelpers.QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -113,12 +117,20 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         throughput.Stop();
         gcStats.Capture();
 
+        // Queried after the final flush — and outside the measurement window, so a slow
+        // query against a degraded broker can't skew elapsed/CPU stats — so the delta
+        // reflects what the broker actually accepted rather than what librdkafka's local
+        // queue absorbed.
+        var endOffset = ConfluentStressTestHelpers.QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
+
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
         LogResourceUsage("Final");
+
+        var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
 
         return new StressTestResult
         {
@@ -130,6 +142,7 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
+            DeliveredMessages = delivered,
             Latency = latency.GetSnapshot(),
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds

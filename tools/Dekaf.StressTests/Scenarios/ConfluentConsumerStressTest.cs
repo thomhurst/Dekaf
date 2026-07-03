@@ -34,12 +34,7 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             .Select(p => new ConfluentKafka.TopicPartition(options.Topic, p))
             .ToArray();
 
-        var endOffsets = new long[partitions.Length];
-        for (var p = 0; p < partitions.Length; p++)
-        {
-            var watermarks = consumer.QueryWatermarkOffsets(partitions[p], TimeSpan.FromSeconds(30));
-            endOffsets[p] = watermarks.High.Value;
-        }
+        var endOffsets = ConfluentStressTestHelpers.QueryEndOffsets(consumer, options.Topic, options.Partitions, TimeSpan.FromSeconds(30));
 
         var replay = new PartitionReplayTracker(endOffsets);
 

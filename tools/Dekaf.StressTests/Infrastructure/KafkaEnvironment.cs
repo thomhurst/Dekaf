@@ -21,15 +21,28 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     // Solution: byte-based retention (128 MB/partition × 6 partitions ≈ 768 MB max disk) is
     // the primary bound. Time-based retention (5 min) is a secondary backstop. Small 16 MB
     // segments let Kafka reclaim space incrementally as the consumer keeps up.
+    //
+    // The 1s check interval is load-bearing: producers push ~1 GB/s, so disk usage can
+    // overshoot the retention caps by roughly (produce rate × check interval) between
+    // sweeps. A 10s interval meant ~10 GB overshoot windows — more than the broker tmpfs —
+    // which filled the log dir and halted ingestion seconds into producer runs.
     private static readonly Dictionary<string, string> RetentionConfig = new()
     {
         ["KAFKA_LOG_RETENTION_MS"] = "300000",
         ["KAFKA_LOG_RETENTION_BYTES"] = "134217728",
         ["KAFKA_LOG_SEGMENT_BYTES"] = "16777216",
         ["KAFKA_LOG_SEGMENT_DELETE_DELAY_MS"] = "1000",
-        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "10000",
+        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "1000",
         ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
     };
+
+    // The image default (1 GB) is undersized for sustained ~1 GB/s ingestion; give the
+    // broker JVM headroom so heap pressure doesn't masquerade as a client bottleneck.
+    // Overridable via STRESS_BROKER_HEAP — the same channel as STRESS_BROKER_CPUSET /
+    // STRESS_BROKER_TMPFS — so CI keeps this and its workflow-managed single broker in
+    // sync from one place.
+    private static readonly string BrokerHeapOpts =
+        Environment.GetEnvironmentVariable("STRESS_BROKER_HEAP") ?? "-Xmx2g -Xms2g";
 
     // Optional broker resource constraints, primarily for CI. STRESS_BROKER_CPUSET pins
     // broker containers to specific cores so the client under test keeps dedicated cores
@@ -102,7 +115,8 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         var builder = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
             .WithPortBinding(9092, true)
             // Explicit log dir so the optional tmpfs mount target always matches
-            .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir);
+            .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
+            .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
 
         foreach (var (key, value) in RetentionConfig)
         {
@@ -172,7 +186,8 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
                 .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", Math.Min(brokerCount, 3).ToString())
                 // Explicit log dir so the optional tmpfs mount target always matches
-                .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir);
+                .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
+                .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
 
             foreach (var (key, value) in RetentionConfig)
             {
@@ -339,10 +354,83 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
     }
 
+    /// <summary>
+    /// Dumps broker log-dir usage and error/storage log lines before a container is
+    /// stopped. Broker-side failures (e.g. a full tmpfs halting ingestion mid-run) are
+    /// otherwise invisible: Testcontainers removes the container and its logs with it.
+    /// </summary>
+    private static async Task DumpBrokerDiagnosticsAsync(IContainer container, string name)
+    {
+        try
+        {
+            var df = await container.ExecAsync(["df", "-h", KafkaLogDir]).ConfigureAwait(false);
+            Console.WriteLine($"[{name}] log-dir usage:");
+            Console.WriteLine(df.Stdout.TrimEnd());
+
+            var (stdout, stderr) = await container.GetLogsAsync(timestampsEnabled: false).ConfigureAwait(false);
+
+            // Bounded scan instead of concat+Split: broker logs can be tens of MB after
+            // a 15-minute run and several containers dispose concurrently.
+            const int maxLines = 30;
+            var interesting = new Queue<string>(maxLines);
+            foreach (var line in EnumerateLines(stdout).Concat(EnumerateLines(stderr)))
+            {
+                if (!IsInterestingLogLine(line))
+                {
+                    continue;
+                }
+
+                if (interesting.Count == maxLines)
+                {
+                    interesting.Dequeue();
+                }
+
+                interesting.Enqueue(line);
+            }
+
+            if (interesting.Count > 0)
+            {
+                Console.WriteLine($"[{name}] broker errors/storage events (last {interesting.Count}):");
+                foreach (var line in interesting)
+                {
+                    Console.WriteLine($"  {line}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[{name}] no broker errors/storage events logged");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{name}] broker diagnostics failed: {ex.Message}");
+        }
+
+        // Keep in sync with the triage grep in .github/workflows/stress-tests.yml
+        // (Broker Diagnostics step), which covers the workflow-managed single broker.
+        static bool IsInterestingLogLine(string line) =>
+            line.Contains("ERROR", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("FATAL", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("No space", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("IOException", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("offline", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("shutdown", StringComparison.OrdinalIgnoreCase);
+
+        static IEnumerable<string> EnumerateLines(string text)
+        {
+            using var reader = new StringReader(text);
+            while (reader.ReadLine() is { } line)
+            {
+                yield return line;
+            }
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_container is not null)
         {
+            await DumpBrokerDiagnosticsAsync(_container, "kafka").ConfigureAwait(false);
             Console.WriteLine("Stopping Kafka container...");
             await _container.DisposeAsync().ConfigureAwait(false);
         }
@@ -354,6 +442,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             {
                 try
                 {
+                    await DumpBrokerDiagnosticsAsync(c, c.Name).ConfigureAwait(false);
                     await c.DisposeAsync().ConfigureAwait(false);
                     return (Exception?)null;
                 }
