@@ -283,6 +283,28 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes log directories on the specified brokers.
+    /// </summary>
+    /// <param name="brokerIds">The broker IDs to query.</param>
+    /// <param name="partitions">Optional partition filter, or null to describe all replicas on each broker.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A dictionary mapping broker ID to log directory path to directory description.</returns>
+    ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
+        IEnumerable<int> brokerIds,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alters replica log directories on their assigned brokers.
+    /// </summary>
+    /// <param name="replicaAssignments">Replica-to-log-directory assignments.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Results for each requested replica.</returns>
+    ValueTask<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>> AlterReplicaLogDirsAsync(
+        IReadOnlyDictionary<TopicPartitionReplica, string> replicaAssignments,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes share groups.
     /// </summary>
     ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
@@ -656,4 +678,83 @@ public sealed class ElectLeadersResultInfo
     /// Error message, if any.
     /// </summary>
     public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Identifies a replica of a topic partition on a specific broker.
+/// </summary>
+public readonly record struct TopicPartitionReplica(string Topic, int Partition, int BrokerId)
+{
+    /// <summary>
+    /// The topic partition for this replica.
+    /// </summary>
+    public TopicPartition TopicPartition => new(Topic, Partition);
+}
+
+/// <summary>
+/// Description of a broker log directory.
+/// </summary>
+public sealed class LogDirDescription
+{
+    /// <summary>
+    /// Directory-level error code, or None if the directory was described successfully.
+    /// </summary>
+    public Protocol.ErrorCode ErrorCode { get; init; }
+
+    /// <summary>
+    /// Replica information keyed by topic partition.
+    /// </summary>
+    public required IReadOnlyDictionary<TopicPartition, ReplicaLogDirInfo> ReplicaInfos { get; init; }
+
+    /// <summary>
+    /// Total size in bytes of the volume containing the log directory, when returned by the broker.
+    /// </summary>
+    public long? TotalBytes { get; init; }
+
+    /// <summary>
+    /// Usable size in bytes of the volume containing the log directory, when returned by the broker.
+    /// </summary>
+    public long? UsableBytes { get; init; }
+
+    /// <summary>
+    /// True when the broker reports the log directory is cordoned.
+    /// </summary>
+    public bool? IsCordoned { get; init; }
+}
+
+/// <summary>
+/// Replica placement and size information inside a log directory.
+/// </summary>
+public sealed class ReplicaLogDirInfo
+{
+    /// <summary>
+    /// Size of the log segments for this replica in bytes.
+    /// </summary>
+    public required long Size { get; init; }
+
+    /// <summary>
+    /// Offset lag of this log relative to the current replica high watermark or log end offset.
+    /// </summary>
+    public required long OffsetLag { get; init; }
+
+    /// <summary>
+    /// True when this is a future log created by AlterReplicaLogDirs.
+    /// </summary>
+    public required bool IsFuture { get; init; }
+}
+
+/// <summary>
+/// Result of altering a replica log directory.
+/// </summary>
+public sealed class AlterReplicaLogDirResultInfo
+{
+    /// <summary>
+    /// The replica the result applies to.
+    /// </summary>
+    public required TopicPartitionReplica TopicPartitionReplica { get; init; }
+
+    /// <summary>
+    /// Per-replica error code, or None if the assignment succeeded.
+    /// </summary>
+    public Protocol.ErrorCode ErrorCode { get; init; }
 }

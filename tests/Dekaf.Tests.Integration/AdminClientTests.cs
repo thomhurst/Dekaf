@@ -107,6 +107,49 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
     #endregion
 
+    #region LogDir Tests
+
+    [Test]
+    public async Task DescribeLogDirsAsync_ReturnsReplicaInfoForTopicPartition()
+    {
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+        var topicPartition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-log-dirs-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }).ConfigureAwait(false);
+
+        await using var admin = CreateAdminClient();
+        var cluster = await admin.DescribeClusterAsync().ConfigureAwait(false);
+        var brokerIds = cluster.Nodes.Select(static n => n.NodeId).ToArray();
+
+        // Act
+        var logDirs = await WaitForConditionAsync(
+            async () => await admin.DescribeLogDirsAsync(brokerIds, [topicPartition]).ConfigureAwait(false),
+            result => FindReplicaInfo(result, topicPartition) is not null,
+            maxRetries: 8).ConfigureAwait(false);
+
+        // Assert
+        await Assert.That(brokerIds.Length).IsGreaterThan(0);
+        var replicaInfo = FindReplicaInfo(logDirs, topicPartition);
+        await Assert.That(replicaInfo).IsNotNull();
+        await Assert.That(replicaInfo!.Size).IsGreaterThanOrEqualTo(0);
+        await Assert.That(replicaInfo.OffsetLag).IsGreaterThanOrEqualTo(0);
+        await Assert.That(replicaInfo.IsFuture).IsFalse();
+    }
+
+    #endregion
+
     #region AlterConfigs Tests
 
     [Test]
@@ -874,4 +917,22 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     }
 
     #endregion
+
+    private static ReplicaLogDirInfo? FindReplicaInfo(
+        IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>> logDirs,
+        TopicPartition topicPartition)
+    {
+        foreach (var brokerDirs in logDirs.Values)
+        {
+            foreach (var dir in brokerDirs.Values)
+            {
+                if (dir.ReplicaInfos.TryGetValue(topicPartition, out var info))
+                {
+                    return info;
+                }
+            }
+        }
+
+        return null;
+    }
 }

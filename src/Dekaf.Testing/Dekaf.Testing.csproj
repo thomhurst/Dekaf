@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Testing</PackageId>
+    <Description>First-party in-memory test doubles for Dekaf Kafka clients</Description>
+    <PackageTags>kafka;testing;in-memory;test-doubles;unit-testing</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.9" />
+  </ItemGroup>
+
+</Project>

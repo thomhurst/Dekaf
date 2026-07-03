@@ -52,6 +52,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
@@ -522,6 +523,18 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public ProducerBuilder<TKey, TValue> WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        return this;
+    }
+
     public ProducerBuilder<TKey, TValue> WithKeySerializer(ISerializer<TKey> serializer)
     {
         _keySerializer = serializer;
@@ -868,6 +881,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         string? password,
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig = null,
         bool saslScramTokenAuth = false)
     {
         ThrowIfClientOwnedConnectionSettings();
@@ -877,6 +891,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;
+        _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
     }
@@ -1009,6 +1024,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
@@ -1151,6 +1167,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
@@ -1637,6 +1654,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public ConsumerBuilder<TKey, TValue> WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
     {
         _keyDeserializer = deserializer;
@@ -2051,6 +2080,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         string? password,
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig = null,
         bool saslScramTokenAuth = false)
     {
         ThrowIfClientOwnedConnectionSettings();
@@ -2060,6 +2090,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;
+        _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
     }
@@ -2150,6 +2181,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
             SocketSendBufferBytes = _socketSendBufferBytes,
@@ -2274,6 +2306,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
     private ILoggerFactory? _loggerFactory;
@@ -2527,8 +2560,21 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerTokenProvider(Func<CancellationToken, ValueTask<OAuthBearerToken>> provider)
     {
         ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthTokenProvider = provider;
         _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
         return this;
     }
 
@@ -2659,6 +2705,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             ConnectionsPerBroker = _connectionsPerBroker,

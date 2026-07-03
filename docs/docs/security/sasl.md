@@ -72,6 +72,63 @@ var producer = await Kafka.CreateProducer<string, string>()
     .BuildAsync();
 ```
 
+## AWS_MSK_IAM (Amazon MSK IAM)
+
+Use the native AWS_MSK_IAM mechanism for Amazon MSK clusters with IAM access control:
+
+```csharp
+using Dekaf;
+
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("b-1.example.c2.kafka.us-east-1.amazonaws.com:9098")
+    .UseTls()
+    .WithAwsMskIam()
+    .BuildAsync();
+```
+
+Dekaf signs the SASL payload with SigV4 using the default AWS credential chain:
+environment variables, web identity, shared AWS profiles, ECS credentials, then EC2 instance metadata.
+The AWS region is inferred from standard MSK broker hostnames; set it explicitly when using a custom DNS name:
+
+```csharp
+using Dekaf;
+using Dekaf.Security.Sasl;
+
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("kafka.internal.example.com:9098")
+    .UseTls()
+    .WithAwsMskIam(new AwsMskIamConfig
+    {
+        Region = "us-east-1",
+        ProfileName = "msk-prod"
+    })
+    .BuildAsync();
+```
+
+For non-standard credential sources, provide a custom credentials provider without adding the AWS SDK to Dekaf:
+
+```csharp
+using Dekaf;
+using Dekaf.Security.Sasl;
+
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("b-1.example.c2.kafka.us-east-1.amazonaws.com:9098")
+    .UseTls()
+    .WithAwsMskIam(new AwsMskIamConfig
+    {
+        CredentialsProviderFunc = async ct =>
+        {
+            var credentials = await LoadCredentialsAsync(ct);
+            return new AwsCredentials(
+                credentials.AccessKeyId,
+                credentials.SecretAccessKey,
+                credentials.SessionToken,
+                credentials.ExpiresAt);
+        }
+    })
+    .BuildAsync();
+```
+
 ## Consumer Configuration
 
 Same methods work for consumers:

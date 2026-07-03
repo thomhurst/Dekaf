@@ -60,6 +60,16 @@ public class ProducerErrorTests
         await Assert.That(ex.IsRetriable).IsFalse();
     }
 
+    [Test]
+    public async Task ProduceException_PurgedKind_IsNonRetriableWithoutErrorCode()
+    {
+        var ex = new ProduceException(ProduceErrorKind.Purged, "purged");
+
+        await Assert.That(ex.Kind).IsEqualTo(ProduceErrorKind.Purged);
+        await Assert.That(ex.ErrorCode).IsNull();
+        await Assert.That(ex.IsRetriable).IsFalse();
+    }
+
     public static IEnumerable<ErrorCode> RetriableProducerErrorCodes()
     {
         yield return ErrorCode.NotLeaderOrFollower;

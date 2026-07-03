@@ -137,6 +137,11 @@ public sealed class ShareConsumerOptions
     public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
 
     /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+
+    /// <summary>
     /// TCP socket send buffer size in bytes. 0 uses the system default.
     /// </summary>
     public int SocketSendBufferBytes { get; init; }

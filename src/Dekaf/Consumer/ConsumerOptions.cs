@@ -218,6 +218,11 @@ public sealed class ConsumerOptions
     public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
 
     /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+
+    /// <summary>
     /// Rebalance listener.
     /// </summary>
     public IRebalanceListener? RebalanceListener { get; init; }

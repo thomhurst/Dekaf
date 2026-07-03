@@ -91,6 +91,7 @@ public sealed class KafkaClientBuilder
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private int _socketSendBufferBytes;
     private int _socketReceiveBufferBytes;
     private int _connectionsPerBroker = 1;
@@ -263,6 +264,17 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public KafkaClientBuilder WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        return this;
+    }
+
     public KafkaClientBuilder WithSocketSendBufferBytes(int bytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
@@ -382,6 +394,7 @@ public sealed class KafkaClientBuilder
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             ConnectionsPerBroker = _connectionsPerBroker,
@@ -415,6 +428,7 @@ internal sealed class KafkaClientOptions
     public GssapiConfig? GssapiConfig { get; init; }
     public OAuthBearerConfig? OAuthBearerConfig { get; init; }
     public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
     public int SocketSendBufferBytes { get; init; }
     public int SocketReceiveBufferBytes { get; init; }
     public int ConnectionsPerBroker { get; init; }
@@ -487,6 +501,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
+                AwsMskIamConfig = options.AwsMskIamConfig,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes,
                 MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,

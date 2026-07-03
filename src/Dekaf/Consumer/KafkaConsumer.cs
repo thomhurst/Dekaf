@@ -805,6 +805,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
+                AwsMskIamConfig = options.AwsMskIamConfig,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes,
                 ClientDnsLookup = options.ClientDnsLookup
