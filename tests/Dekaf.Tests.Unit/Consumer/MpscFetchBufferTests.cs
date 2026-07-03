@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
@@ -161,8 +160,10 @@ public class MpscFetchBufferTests
         await Assert.That(buffer.TryWrite(first)).IsTrue();
         await Assert.That(buffer.TryWrite(second)).IsTrue();
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await buffer.WaitToWriteAsync(cts.Token).AsTask().WaitAsync(cts.Token);
+        // No wall-clock deadline: the read callback above frees slots and releases the
+        // waiter deterministically. A short cts previously flaked under CI thread-pool
+        // starvation delaying the release continuation; the suite hang dump is the backstop.
+        await buffer.WaitToWriteAsync(CancellationToken.None).AsTask();
 
         await Assert.That(callbackCount).IsEqualTo(1);
         await Assert.That(GetSpaceAvailableSignalCount(buffer)).IsEqualTo(0);
@@ -255,13 +256,12 @@ public class MpscFetchBufferTests
     public async Task WaitToReadAsync_EmptyBuffer_ReturnsWithoutBlockingCaller()
     {
         var buffer = new MpscFetchBuffer(4);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource();
 
-        var elapsed = Stopwatch.StartNew();
+        // The synchronous call returns a pending wait without blocking the caller;
+        // IsCompleted == false proves that without a flaky wall-clock measurement.
         var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
-        elapsed.Stop();
 
-        await Assert.That(elapsed.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
         await Assert.That(waitTask.IsCompleted).IsFalse();
 
         await cts.CancelAsync();
@@ -272,20 +272,22 @@ public class MpscFetchBufferTests
     public async Task WaitToReadAsync_Timeout_ReturnsFalseAndClearsWaiterState()
     {
         var buffer = new MpscFetchBuffer(4);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        var timedOut = await buffer.WaitToReadAsync(25, cts.Token).AsTask().WaitAsync(cts.Token);
+        // The 25ms argument is the buffer's own timeout under test; it completes the wait
+        // deterministically. The previous outer .WaitAsync(cts) cap raced that release
+        // continuation under CI thread-pool starvation. The suite hang dump is the backstop.
+        var timedOut = await buffer.WaitToReadAsync(25, CancellationToken.None).AsTask();
 
         await Assert.That(timedOut).IsFalse();
         await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
         await Assert.That(GetDataAvailableWaiter(buffer)).IsNull();
 
-        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        var waitTask = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask();
         await Assert.That(waitTask.IsCompleted).IsFalse();
 
         buffer.Complete();
 
-        await Assert.That(await waitTask.WaitAsync(cts.Token)).IsFalse();
+        await Assert.That(await waitTask).IsFalse();
         await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
         await Assert.That(GetDataAvailableWaiter(buffer)).IsNull();
     }
@@ -307,14 +309,15 @@ public class MpscFetchBufferTests
     {
         var buffer = new MpscFetchBuffer(4);
         var expectedException = new InvalidOperationException("test error");
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        // Complete(error) releases the waiter deterministically; the previous 10s cts cap
+        // raced the completion continuation under CI thread-pool starvation.
+        var waitTask = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask();
         await Assert.That(waitTask.IsCompleted).IsFalse();
 
         buffer.Complete(expectedException);
 
-        await Assert.That(async () => await waitTask.WaitAsync(cts.Token))
+        await Assert.That(async () => await waitTask)
             .Throws<InvalidOperationException>()
             .WithMessage("test error");
         await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
@@ -351,15 +354,15 @@ public class MpscFetchBufferTests
         var buffers = Enumerable.Range(0, BufferCount)
             .Select(_ => new MpscFetchBuffer(4))
             .ToArray();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        var elapsed = Stopwatch.StartNew();
+        // No wall-clock caps: Complete() below releases every waiter deterministically.
+        // The previous 10s cts + elapsed<1s assertions raced the RunContinuationsAsynchronously
+        // waiter continuations under CI thread-pool starvation (this test still flaked after
+        // #1113 deflaked its siblings). The suite hang dump is the backstop for a real hang.
         var waitTasks = buffers
-            .Select(buffer => buffer.WaitToReadAsync(30_000, cts.Token).AsTask())
+            .Select(buffer => buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask())
             .ToArray();
-        elapsed.Stop();
 
-        await Assert.That(elapsed.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
         await Assert.That(waitTasks.All(task => !task.IsCompleted)).IsTrue();
 
         foreach (var buffer in buffers)
@@ -367,7 +370,7 @@ public class MpscFetchBufferTests
             buffer.Complete();
         }
 
-        var results = await Task.WhenAll(waitTasks).WaitAsync(cts.Token);
+        var results = await Task.WhenAll(waitTasks);
 
         await Assert.That(results.All(result => !result)).IsTrue();
     }

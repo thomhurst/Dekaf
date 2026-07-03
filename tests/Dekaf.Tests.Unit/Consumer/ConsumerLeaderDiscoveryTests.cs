@@ -71,7 +71,9 @@ public sealed class ConsumerLeaderDiscoveryTests
         };
 
         await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
-        await connectionRequested.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // The background refresh signals connectionRequested when it calls GetConnectionAsync.
+        // Await it directly: a 5s cap raced that continuation under CI thread-pool starvation.
+        await connectionRequested.Task;
 
         await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
 
@@ -113,7 +115,9 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
 
-        var refreshToken = await refreshTokenCaptured.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // The background refresh signals refreshTokenCaptured when it calls SendAsync.
+        // Await directly: a 5s cap raced that continuation under CI thread-pool starvation.
+        var refreshToken = await refreshTokenCaptured.Task;
         await Assert.That(refreshToken.IsCancellationRequested).IsFalse();
 
         refreshResponse.SetResult(CreateMetadataResponse());
@@ -152,7 +156,9 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
 
-        var refreshToken = await refreshTokenCaptured.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // The background refresh signals refreshTokenCaptured when it calls SendAsync.
+        // Await directly: a 5s cap raced that continuation under CI thread-pool starvation.
+        var refreshToken = await refreshTokenCaptured.Task;
 
         await Assert.That(refreshToken.IsCancellationRequested).IsFalse();
 
@@ -208,15 +214,19 @@ public sealed class ConsumerLeaderDiscoveryTests
             };
 
             await InvokeHandleNotLeaderOrFollowerAsync(consumer, partitionResponse, []);
-            await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // Each step below is gated by a deterministic signal (the mock's SendAsync, the
+            // refresh cancellation callback, and the dispose completing after the refresh
+            // response is set). The previous 5s caps raced those continuations under CI
+            // thread-pool starvation; TUnit's test-level timeout is the backstop for a real hang.
+            await refreshStarted.Task;
 
             disposeTask = consumer.DisposeAsync().AsTask();
-            await refreshCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await refreshCancellationObserved.Task;
 
             await Assert.That(poolDisposeStarted.Task.IsCompleted).IsFalse();
 
             refreshResponse.SetResult(CreateMetadataResponse());
-            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await disposeTask;
 
             await Assert.That(poolDisposeStarted.Task.IsCompleted).IsTrue();
         }
@@ -225,7 +235,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             refreshResponse.TrySetCanceled();
 
             if (disposeTask is not null)
-                await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+                await disposeTask;
             else
                 await consumer.DisposeAsync();
         }

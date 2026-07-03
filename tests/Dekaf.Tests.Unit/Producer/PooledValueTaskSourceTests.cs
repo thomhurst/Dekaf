@@ -655,13 +655,10 @@ public class PooledValueTaskSourceTests
         // Complete after observing - should trigger continuation
         source.SetResult(42);
 
-        // Spin-wait with timeout for the continuation to execute,
-        // as Task.Delay(1) is too short under thread pool starvation on CI
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (pool.ApproximateCount == 0 && sw.Elapsed < TimeSpan.FromSeconds(10))
-        {
-            await Task.Yield();
-        }
+        // The completion continuation returns the source to the pool. Poll for it with no
+        // wall-clock deadline: a fixed cap flaked when CI thread-pool starvation delayed the
+        // continuation past it. TUnit's test-level timeout is the backstop for a real hang.
+        await TestWait.UntilAsync(() => pool.ApproximateCount == 1, CancellationToken.None);
 
         // Source should have been returned to pool
         await Assert.That(pool.ApproximateCount).IsEqualTo(1);
