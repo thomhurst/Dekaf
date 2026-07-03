@@ -110,7 +110,19 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 ## AWS MSK IAM
 
-For AWS MSK with IAM authentication:
+For Amazon MSK IAM access control, prefer the native AWS_MSK_IAM mechanism:
+
+```csharp
+using Dekaf;
+
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("b-1.example.c2.kafka.us-east-1.amazonaws.com:9098")
+    .UseTls()
+    .WithAwsMskIam()
+    .BuildAsync();
+```
+
+You can still use OAUTHBEARER for MSK clusters configured for that mechanism:
 
 ```csharp
 using Dekaf;

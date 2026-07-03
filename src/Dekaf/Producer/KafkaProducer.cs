@@ -230,6 +230,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
+                AwsMskIamConfig = options.AwsMskIamConfig,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes,
                 MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,

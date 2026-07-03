@@ -1901,11 +1901,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             LogSaslHandshakeSuccessful();
 
             // Step 2: Perform authentication exchanges
-            // For OAUTHBEARER, ensure token is fetched before getting initial response
-            if (authenticator is OAuthBearerAuthenticator oauthAuthenticator)
-            {
-                await oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
-            }
+            await PrepareSaslAuthenticatorAsync(authenticator, cancellationToken).ConfigureAwait(false);
 
             var authBytes = authenticator.GetInitialResponse();
 
@@ -1977,6 +1973,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
             _resolvedTargetHost ?? _host),
         SaslMechanism.OAuthBearer => CreateOAuthBearerAuthenticator(),
+        SaslMechanism.AwsMskIam => new AwsMskIamAuthenticator(_options.AwsMskIamConfig, _host),
         _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
     };
 
@@ -2124,11 +2121,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                     $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
             }
 
-            // Step 2: For OAUTHBEARER, fetch fresh token
-            if (authenticator is OAuthBearerAuthenticator oauthAuthenticator)
-            {
-                await oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
-            }
+            // Step 2: Fetch any credentials needed before creating the synchronous initial response.
+            await PrepareSaslAuthenticatorAsync(authenticator, cancellationToken).ConfigureAwait(false);
 
             var authBytes = authenticator.GetInitialResponse();
 
@@ -2201,6 +2195,21 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         throw new InvalidOperationException(
             "OAUTHBEARER authentication requires either OAuthBearerToken, OAuthBearerTokenProvider, or OAuthBearerConfig to be configured");
+    }
+
+    private static async ValueTask PrepareSaslAuthenticatorAsync(
+        ISaslAuthenticator authenticator,
+        CancellationToken cancellationToken)
+    {
+        switch (authenticator)
+        {
+            case OAuthBearerAuthenticator oauthAuthenticator:
+                await oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            case AwsMskIamAuthenticator awsMskIamAuthenticator:
+                await awsMskIamAuthenticator.GetCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                break;
+        }
     }
 
     private async ValueTask<TResponse> SendSaslMessageAsync<TRequest, TResponse>(
@@ -2685,6 +2694,11 @@ public sealed class ConnectionOptions
     /// Use this for pre-obtained tokens; for dynamic token retrieval, use OAuthBearerTokenProvider instead.
     /// </summary>
     public OAuthBearerToken? OAuthBearerToken { get; init; }
+
+    /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
 
     /// <summary>
     /// SASL re-authentication configuration (KIP-368).

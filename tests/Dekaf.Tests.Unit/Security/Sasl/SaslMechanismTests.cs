@@ -29,6 +29,12 @@ public class SaslMechanismTests
     }
 
     [Test]
+    public async Task ToProtocolName_AwsMskIam_ReturnsAWSMSKIAM()
+    {
+        await Assert.That(SaslMechanism.AwsMskIam.ToProtocolName()).IsEqualTo("AWS_MSK_IAM");
+    }
+
+    [Test]
     public async Task ToProtocolName_None_ThrowsArgumentOutOfRangeException()
     {
         await Assert.That(() => SaslMechanism.None.ToProtocolName())
