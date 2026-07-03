@@ -52,8 +52,9 @@ await producer.FlushAsync();
 When you're always producing to the same topic, use a topic producer for a cleaner API:
 
 ```csharp
-await using var producer = Kafka.CreateTopicProducer<string, string>(
-    "localhost:9092", "orders");
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .BuildForTopicAsync("orders");
 
 // No topic parameter needed
 await producer.ProduceAsync("order-123", orderJson);
@@ -63,7 +64,9 @@ producer.Produce("order-456", orderJson);
 You can also create multiple topic producers that share the same connection:
 
 ```csharp
-await using var baseProducer = Kafka.CreateProducer<string, string>("localhost:9092");
+await using var baseProducer = Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .Build();
 
 var orders = baseProducer.ForTopic("orders");
 var events = baseProducer.ForTopic("events");
