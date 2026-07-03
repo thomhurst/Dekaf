@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
@@ -248,6 +249,70 @@ public class MpscFetchBufferTests
 
         var act = () => buffer.WaitToRead(5000, cts.Token);
         await Assert.That(act).Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task WaitToReadAsync_EmptyBuffer_ReturnsWithoutBlockingCaller()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var elapsed = Stopwatch.StartNew();
+        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        elapsed.Stop();
+
+        await Assert.That(elapsed.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        await cts.CancelAsync();
+        await Assert.That(async () => await waitTask).Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task WaitToReadAsync_DataArrivesAfterWait_ReturnsTrue()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var item = CreateDummy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        await Assert.That(buffer.TryWrite(item)).IsTrue();
+
+        await Assert.That(await waitTask).IsTrue();
+        await Assert.That(buffer.TryRead(out var result)).IsTrue();
+        await Assert.That(result).IsEqualTo(item);
+
+        item.Dispose();
+    }
+
+    [Test]
+    public async Task WaitToReadAsync_ManyIdleBuffers_CompleteUnblocksAll()
+    {
+        const int BufferCount = 32;
+        var buffers = Enumerable.Range(0, BufferCount)
+            .Select(_ => new MpscFetchBuffer(4))
+            .ToArray();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var elapsed = Stopwatch.StartNew();
+        var waitTasks = buffers
+            .Select(buffer => buffer.WaitToReadAsync(30_000, cts.Token).AsTask())
+            .ToArray();
+        elapsed.Stop();
+
+        await Assert.That(elapsed.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
+        await Assert.That(waitTasks.All(task => !task.IsCompleted)).IsTrue();
+
+        foreach (var buffer in buffers)
+        {
+            buffer.Complete();
+        }
+
+        var results = await Task.WhenAll(waitTasks).WaitAsync(cts.Token);
+
+        await Assert.That(results.All(result => !result)).IsTrue();
     }
 
     #endregion

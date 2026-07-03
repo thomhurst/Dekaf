@@ -24,7 +24,9 @@ internal sealed class MpscFetchBuffer
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
+    private readonly object _dataAvailableWaiterLock = new();
     private readonly Action? _afterProducerWaiterCountIncrementedForTesting;
+    private TaskCompletionSource<bool>? _dataAvailableWaiter;
     private int _producerWaiterCount;
     private int _consumerWaiting;
     private volatile bool _completed;
@@ -86,7 +88,7 @@ internal sealed class MpscFetchBuffer
             Interlocked.MemoryBarrier();
 
             if (Volatile.Read(ref _consumerWaiting) != 0)
-                _dataAvailable.Set();
+                SignalConsumerWaitingForData();
 
             return true;
         }
@@ -161,14 +163,14 @@ internal sealed class MpscFetchBuffer
     public bool WaitToRead(int timeoutMs, CancellationToken cancellationToken)
     {
         // Fast check: data already available?
-        if (Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value))
+        if (HasDataAvailable())
             return true;
 
         if (_completed)
         {
             if (_completionError is not null)
                 throw _completionError;
-            return Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value);
+            return HasDataAvailable();
         }
 
         // Slow path: wait for signal
@@ -180,14 +182,14 @@ internal sealed class MpscFetchBuffer
             Interlocked.MemoryBarrier();
 
             // Re-check after reset to avoid missed signal
-            if (Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value))
+            if (HasDataAvailable())
                 return true;
 
             if (_completed)
             {
                 if (_completionError is not null)
                     throw _completionError;
-                return Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value);
+                return HasDataAvailable();
             }
 
             _dataAvailable.Wait(timeoutMs, cancellationToken);
@@ -195,10 +197,105 @@ internal sealed class MpscFetchBuffer
             if (_completionError is not null)
                 throw _completionError;
 
-            return Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value);
+            return HasDataAvailable();
         }
         finally
         {
+            Volatile.Write(ref _consumerWaiting, 0);
+        }
+    }
+
+    /// <summary>
+    /// Waits asynchronously until data is available or the buffer is completed.
+    /// Returns false if the wait times out or the buffer is completed and empty.
+    /// </summary>
+    public async ValueTask<bool> WaitToReadAsync(int timeoutMs, CancellationToken cancellationToken)
+    {
+        if (timeoutMs < Timeout.Infinite)
+            throw new ArgumentOutOfRangeException(nameof(timeoutMs), "Timeout must be non-negative or Timeout.Infinite.");
+
+        // Fast check: data already available?
+        if (HasDataAvailable())
+            return true;
+
+        if (_completed)
+        {
+            if (_completionError is not null)
+                throw _completionError;
+            return HasDataAvailable();
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (timeoutMs == 0)
+        {
+            if (_completionError is not null)
+                throw _completionError;
+            return HasDataAvailable();
+        }
+
+        TaskCompletionSource<bool>? waiter = null;
+        Volatile.Write(ref _consumerWaiting, 1);
+
+        try
+        {
+            Interlocked.MemoryBarrier();
+
+            lock (_dataAvailableWaiterLock)
+            {
+                // Re-check after publishing the waiter flag to avoid missed signals.
+                if (HasDataAvailable())
+                    return true;
+
+                if (_completed)
+                {
+                    if (_completionError is not null)
+                        throw _completionError;
+                    return HasDataAvailable();
+                }
+
+                if (_dataAvailableWaiter is null || _dataAvailableWaiter.Task.IsCompleted)
+                {
+                    _dataAvailableWaiter =
+                        new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+
+                waiter = _dataAvailableWaiter;
+            }
+
+            try
+            {
+                if (timeoutMs == Timeout.Infinite)
+                {
+                    await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await waiter.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+
+            if (_completionError is not null)
+                throw _completionError;
+
+            return HasDataAvailable();
+        }
+        finally
+        {
+            if (waiter is not null)
+            {
+                lock (_dataAvailableWaiterLock)
+                {
+                    if (ReferenceEquals(_dataAvailableWaiter, waiter))
+                        _dataAvailableWaiter = null;
+                }
+            }
+
             Volatile.Write(ref _consumerWaiting, 0);
         }
     }
@@ -216,14 +313,31 @@ internal sealed class MpscFetchBuffer
 
         _completionError = error;
         _completed = true;
-        _dataAvailable.Set();
+        SignalConsumerWaitingForData();
     }
 
     public bool IsCompleted => _completed;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasDataAvailable() =>
+        Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasSpaceAvailable() =>
         Volatile.Read(ref _headReserved.Value) - Volatile.Read(ref _tail.Value) < _buffer.Length;
+
+    private void SignalConsumerWaitingForData()
+    {
+        _dataAvailable.Set();
+
+        TaskCompletionSource<bool>? waiter;
+        lock (_dataAvailableWaiterLock)
+        {
+            waiter = _dataAvailableWaiter;
+        }
+
+        waiter?.TrySetResult(true);
+    }
 
     private void DrainAvailableSpaceSignals()
     {

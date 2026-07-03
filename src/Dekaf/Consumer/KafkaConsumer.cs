@@ -1150,14 +1150,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     else
                     {
-                        // Wait for prefetch with timeout using synchronous WaitToRead —
-                        // the consumer thread has nothing else to do while waiting.
+                        // Use a synchronous zero-timeout recheck before async wait so the
+                        // idle path does not hold a thread-pool thread indefinitely.
                         cancellationToken.ThrowIfCancellationRequested();
 
                         try
                         {
                             // WaitToRead throws stored completion errors directly.
-                            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
+                            if (await WaitForPrefetchDataAsync(cancellationToken).ConfigureAwait(false))
                             {
                                 if (_prefetchBuffer.TryRead(out var fetched))
                                 {
@@ -1421,12 +1421,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     else
                     {
-                        // Wait for prefetch with timeout using synchronous WaitToRead
+                        // Use a synchronous zero-timeout recheck before async wait so the
+                        // idle path does not hold a thread-pool thread indefinitely.
                         cancellationToken.ThrowIfCancellationRequested();
 
                         try
                         {
-                            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
+                            if (await WaitForPrefetchDataAsync(cancellationToken).ConfigureAwait(false))
                             {
                                 if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
                                 {
@@ -1555,12 +1556,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     else
                     {
-                        // Wait for prefetch with timeout using synchronous WaitToRead
+                        // Use a synchronous zero-timeout recheck before async wait so the
+                        // idle path does not hold a thread-pool thread indefinitely.
                         cancellationToken.ThrowIfCancellationRequested();
 
                         try
                         {
-                            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
+                            if (await WaitForPrefetchDataAsync(cancellationToken).ConfigureAwait(false))
                             {
                                 if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
                                 {
@@ -2217,6 +2219,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _pendingFetches.Enqueue(additional);
             TrackPrefetchedBytes(additional, release: true);
         }
+    }
+
+    private async ValueTask<bool> WaitForPrefetchDataAsync(CancellationToken cancellationToken)
+    {
+        if (_prefetchBuffer.WaitToRead(0, cancellationToken))
+            return true;
+
+        if (_prefetchBuffer.IsCompleted)
+            return false;
+
+        return await _prefetchBuffer.WaitToReadAsync(_options.FetchMaxWaitMs, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private void TrackPrefetchedBytes(PendingFetchData pending, bool release)
