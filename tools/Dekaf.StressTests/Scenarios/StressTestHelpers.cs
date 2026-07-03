@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
@@ -15,6 +16,16 @@ internal static class StressTestHelpers
     /// stalling the produce loop.
     /// </summary>
     internal const int LatencySampleInterval = 1000;
+
+    /// <summary>
+    /// Explicit producer buffer bound, mirrored on the Confluent side
+    /// (<see cref="ConfluentStressTestHelpers.QueueBufferingMaxKbytes"/>). Without an
+    /// explicit value, Dekaf auto-tunes BufferMemory to a share of total system RAM
+    /// (multi-GB on CI runners), which lets fire-and-forget appends run far ahead of
+    /// what the broker ever accepts and makes accepted-message counts meaningless as
+    /// a throughput proxy.
+    /// </summary>
+    internal const ulong ProducerBufferMemoryBytes = 512UL * 1024 * 1024;
 
     private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
 
@@ -58,6 +69,62 @@ internal static class StressTestHelpers
             endOffsets[p] = watermarks.High;
         }
         return endOffsets;
+    }
+
+    /// <summary>
+    /// Sums the end offsets across all partitions of <paramref name="topic"/> via a
+    /// short-lived Dekaf admin client (one batched ListOffsets request, no consumer
+    /// group). Producer scenarios snapshot this before and after the run: the delta is
+    /// the broker-confirmed delivered count, independent of how many appends the client
+    /// accepted into its local buffer. Returns null on failure (e.g. broker unresponsive
+    /// after the run) so delivered stats are omitted rather than failing the scenario.
+    /// </summary>
+    internal static async Task<long?> QueryTotalEndOffsetAsync(string bootstrapServers, string topic, int partitionCount)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await using var adminClient = Kafka.CreateAdminClient()
+                .WithBootstrapServers(bootstrapServers)
+                .WithClientId("stress-watermark-query")
+                .Build();
+
+            var specs = Enumerable.Range(0, partitionCount)
+                .Select(p => new TopicPartitionOffsetSpec
+                {
+                    TopicPartition = new TopicPartition(topic, p),
+                    Spec = OffsetSpec.Latest
+                });
+
+            var offsets = await adminClient.ListOffsetsAsync(specs, cancellationToken: cts.Token).ConfigureAwait(false);
+            return offsets.Values.Sum(static info => info.Offset);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Warning: end offset query failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Computes the delivered-message count from before/after end-offset snapshots and
+    /// logs it against the client-accepted count so the gap (buffered-but-never-delivered
+    /// messages) is visible in run output.
+    /// </summary>
+    internal static long? ComputeDelivered(long? startOffset, long? endOffset, ThroughputTracker throughput)
+    {
+        if (startOffset is not { } start || endOffset is not { } end)
+        {
+            return null;
+        }
+
+        var delivered = end - start;
+        var elapsedSeconds = throughput.Elapsed.TotalSeconds;
+        var accepted = throughput.MessageCount;
+        var rate = elapsedSeconds > 0 ? delivered / elapsedSeconds : 0;
+        Console.WriteLine($"  Delivered (broker-confirmed): {delivered:N0} messages, {rate:N0} msg/sec " +
+            $"({(accepted > 0 ? delivered * 100.0 / accepted : 0):F1}% of {accepted:N0} accepted)");
+        return delivered;
     }
 
     /// <summary>

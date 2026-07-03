@@ -115,11 +115,13 @@ jobs:
     env:
       BROKER_CPUS: 0-5
       CLIENT_CPUS: 6,7
-      # Broker log dirs live on tmpfs so disk I/O never caps ingestion. Sized well
-      # above the ~1.5 GB worst case (768 MB byte-retention cap plus produce-rate
-      # overshoot between retention checks, or the 2 GB seeded consumer topic):
-      # running out of log-dir space shuts the broker down.
+      # Broker log dirs live on tmpfs so disk I/O never caps ingestion. Sized above the
+      # worst-case retention overshoot (see KafkaEnvironment.RetentionConfig for the
+      # math); a fill halts the broker, so the disk monitor below samples usage during
+      # the run to make one visible in the job output.
       BROKER_TMPFS: 6g
+      # Broker JVM heap: the image default (1 GB) is undersized for ~1 GB/s ingestion.
+      BROKER_HEAP: -Xmx2g -Xms2g
 
     steps:
       - name: Checkout
@@ -144,6 +146,7 @@ jobs:
             --cpuset-cpus="${BROKER_CPUS}" \
             --tmpfs /var/lib/kafka/data:rw,size=${BROKER_TMPFS},mode=1777 \
             -p 9092:9092 \
+            -e KAFKA_HEAP_OPTS="${BROKER_HEAP}" \
             -e KAFKA_NODE_ID=1 \
             -e KAFKA_PROCESS_ROLES=broker,controller \
             -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
@@ -174,6 +177,11 @@ jobs:
             sleep 2
           done
 
+          # The retention settings above are what keeps the tmpfs from filling; verify
+          # the image actually applied them rather than assuming the env mapping worked.
+          echo "=== Effective broker retention/segment config ==="
+          docker logs kafka 2>&1 | grep -E 'log\.retention\.|log\.segment\.|log\.cleanup' | head -15 || true
+
       - name: Run ${{ matrix.name }} Stress Test
         env:
           KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && 'localhost:9092' || '' }}
@@ -181,7 +189,25 @@ jobs:
           # process; these apply the same core pinning and tmpfs as the docker run above.
           STRESS_BROKER_CPUSET: ${{ env.BROKER_CPUS }}
           STRESS_BROKER_TMPFS: ${{ env.BROKER_TMPFS }}
+          STRESS_BROKER_HEAP: ${{ env.BROKER_HEAP }}
         run: |
+          # Background disk monitor: samples every broker's log-dir usage so a tmpfs
+          # fill (ingestion outpacing retention — the known broker-halt failure mode)
+          # is visible in the uploaded artifacts. Iterates docker ps each tick because
+          # multi-broker containers are started later by the test process itself.
+          # Pinned to the broker cores: the docker exec round trips must not steal
+          # cycles from the client cores whose isolation this job exists to provide.
+          taskset -c "${BROKER_CPUS}" bash -c '
+            while true; do
+              for c in $(docker ps --format "{{.Names}}"); do
+                line=$(docker exec "$c" df -h /var/lib/kafka/data 2>/dev/null | tail -n 1) \
+                  && echo "[$(date -u "+%H:%M:%S")] $c: $line"
+              done
+              sleep 15
+            done
+          ' > "$GITHUB_WORKSPACE/broker-disk.log" 2>&1 &
+          DISK_MONITOR_PID=$!
+
           cd tools/Dekaf.StressTests
           # Client pinned to its own cores: whichever client pushes more through the
           # same cores is genuinely faster, instead of both saturating the broker.
@@ -194,11 +220,31 @@ jobs:
             --connections-per-broker ${{ matrix.connections_per_broker || '1' }} \
             --output ./results
 
+          kill $DISK_MONITOR_PID 2>/dev/null || true
+
+      - name: Broker Diagnostics
+        if: always()
+        run: |
+          echo "=== Broker log-dir usage over time ==="
+          cat "$GITHUB_WORKSPACE/broker-disk.log" 2>/dev/null || echo "(no disk log captured)"
+          # Multi-broker containers are owned by the test process, which dumps their
+          # diagnostics before disposing them; only the workflow-managed single broker
+          # is still around to inspect here.
+          if [ "${{ matrix.brokers }}" = "1" ]; then
+            echo "=== Broker errors/storage events ==="
+            docker logs kafka 2>&1 | grep -iE 'ERROR|FATAL|No space|IOException|offline|shutdown' | tail -40 || true
+            echo "=== Broker last 60 log lines ==="
+            docker logs --tail 60 kafka 2>&1 || true
+          fi
+
       - name: Upload Results
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: results-${{ matrix.client }}-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.connections_per_broker && format('-{0}conn', matrix.connections_per_broker) || '' }}
-          path: tools/Dekaf.StressTests/results/
+          path: |
+            tools/Dekaf.StressTests/results/
+            broker-disk.log
           retention-days: 90
 
       - name: Stop Kafka
@@ -417,7 +463,8 @@ jobs:
           output.append("- **Real Kafka**: Tests run against actual Apache Kafka instances")
           output.append("- **CPU Isolation**: Brokers are pinned to dedicated cores and the client under test to its own cores, so the client — not the broker — is the measured bottleneck")
           output.append("- **RAM-backed Broker Logs**: Kafka log dirs are mounted on tmpfs so disk I/O never caps broker ingestion")
-          output.append("- **Backpressure Parity**: Confluent producers block and retry on a full local queue, mirroring Dekaf's BufferMemory backpressure, so throughput is delivered goodput for both clients")
+          output.append("- **Delivered Throughput**: producer tables report broker-confirmed throughput, measured as the end-offset delta across all partitions — not the client-side append rate, which can run far ahead of what the broker ever accepts")
+          output.append("- **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM")
           output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured")
           output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
           output.append("- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput")

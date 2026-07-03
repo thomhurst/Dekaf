@@ -27,6 +27,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
+            .WithBufferMemory(StressTestHelpers.ProducerBufferMemoryBytes)
             .WithConnectionsPerBroker(options.ConnectionsPerBroker)
             .WithSocketSendBufferBytes(options.BatchSize);
 
@@ -47,6 +48,8 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             await producer.FireAsync(options.Topic, "warmup", "warmup");
         }
         await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var startOffset = await StressTestHelpers.QueryTotalEndOffsetAsync(options.BootstrapServers, options.Topic, options.Partitions);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -130,6 +133,11 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             Console.WriteLine($"  Warning: Dispose timed out after 30 seconds");
         }
 
+        // Queried after dispose so all delivery attempts (including the final flush)
+        // have finished — the delta is what the broker actually accepted.
+        var endOffset = await StressTestHelpers.QueryTotalEndOffsetAsync(options.BootstrapServers, options.Topic, options.Partitions);
+        var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
+
         return new StressTestResult
         {
             Scenario = Name,
@@ -140,6 +148,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
+            DeliveredMessages = delivered,
             Latency = latency.GetSnapshot(),
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds
