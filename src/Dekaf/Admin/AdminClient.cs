@@ -1932,6 +1932,246 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
+        IEnumerable<int> brokerIds,
+        IEnumerable<TopicPartition>? partitions = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(brokerIds);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var brokerIdList = brokerIds.Distinct().ToArray();
+        foreach (var brokerId in brokerIdList)
+        {
+            if (brokerId < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(brokerIds), brokerId, "Broker ID must be non-negative.");
+            }
+        }
+
+        var topicFilters = BuildDescribeLogDirsTopics(partitions);
+        if (brokerIdList.Length == 0)
+        {
+            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+        }
+
+        return await WithRetryAsync<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>>(async () =>
+        {
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeLogDirs,
+                DescribeLogDirsRequest.LowestSupportedVersion,
+                DescribeLogDirsRequest.HighestSupportedVersion);
+
+            var results = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+            foreach (var brokerId in brokerIdList)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
+                    new DescribeLogDirsRequest { Topics = topicFilters },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"DescribeLogDirs failed for broker {brokerId}: {response.ErrorCode}");
+                }
+
+                var brokerResult = new Dictionary<string, LogDirDescription>();
+                foreach (var dir in response.Results)
+                {
+                    var replicas = new Dictionary<TopicPartition, ReplicaLogDirInfo>();
+                    foreach (var topic in dir.Topics)
+                    {
+                        foreach (var partition in topic.Partitions)
+                        {
+                            var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                            replicas[topicPartition] = new ReplicaLogDirInfo
+                            {
+                                Size = partition.PartitionSize,
+                                OffsetLag = partition.OffsetLag,
+                                IsFuture = partition.IsFutureKey
+                            };
+                        }
+                    }
+
+                    brokerResult[dir.LogDir] = new LogDirDescription
+                    {
+                        ErrorCode = dir.ErrorCode,
+                        ReplicaInfos = replicas,
+                        TotalBytes = dir.TotalBytes,
+                        UsableBytes = dir.UsableBytes,
+                        IsCordoned = dir.IsCordoned
+                    };
+                }
+
+                results[brokerId] = brokerResult;
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>> AlterReplicaLogDirsAsync(
+        IReadOnlyDictionary<TopicPartitionReplica, string> replicaAssignments,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicaAssignments);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var assignments = new List<ReplicaLogDirAssignment>(replicaAssignments.Count);
+        foreach (var (replica, logDir) in replicaAssignments)
+        {
+            ValidateTopicPartitionReplica(replica, nameof(replicaAssignments));
+            if (string.IsNullOrWhiteSpace(logDir))
+            {
+                throw new ArgumentException("Log directory path must be specified.", nameof(replicaAssignments));
+            }
+
+            assignments.Add(new ReplicaLogDirAssignment(replica, logDir));
+        }
+
+        if (assignments.Count == 0)
+        {
+            return new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>();
+        }
+
+        var assignmentsByBroker = assignments.GroupBy(static a => a.Replica.BrokerId).ToArray();
+
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(async () =>
+        {
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterReplicaLogDirs,
+                AlterReplicaLogDirsRequest.LowestSupportedVersion,
+                AlterReplicaLogDirsRequest.HighestSupportedVersion);
+
+            var results = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>();
+            foreach (var brokerAssignments in assignmentsByBroker)
+            {
+                var brokerId = brokerAssignments.Key;
+                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var request = new AlterReplicaLogDirsRequest
+                {
+                    Dirs = BuildAlterReplicaLogDirsRequestDirs(brokerAssignments)
+                };
+
+                var response = await connection.SendAsync<AlterReplicaLogDirsRequest, AlterReplicaLogDirsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var topic in response.Results)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        var replica = new TopicPartitionReplica(topic.TopicName, partition.PartitionIndex, brokerId);
+                        results[replica] = new AlterReplicaLogDirResultInfo
+                        {
+                            TopicPartitionReplica = replica,
+                            ErrorCode = partition.ErrorCode
+                        };
+                    }
+                }
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<DescribeLogDirsRequestTopic>? BuildDescribeLogDirsTopics(IEnumerable<TopicPartition>? partitions)
+    {
+        if (partitions is null)
+        {
+            return null;
+        }
+
+        var topics = new Dictionary<string, List<int>>();
+        foreach (var topicPartition in partitions)
+        {
+            ValidateTopicPartition(topicPartition, nameof(partitions));
+            if (!topics.TryGetValue(topicPartition.Topic, out var topicPartitions))
+            {
+                topicPartitions = [];
+                topics[topicPartition.Topic] = topicPartitions;
+            }
+
+            if (!topicPartitions.Contains(topicPartition.Partition))
+            {
+                topicPartitions.Add(topicPartition.Partition);
+            }
+        }
+
+        return topics
+            .Select(static kvp => new DescribeLogDirsRequestTopic
+            {
+                Topic = kvp.Key,
+                Partitions = kvp.Value
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<AlterReplicaLogDirsRequestDir> BuildAlterReplicaLogDirsRequestDirs(
+        IEnumerable<ReplicaLogDirAssignment> assignments)
+    {
+        var dirs = new Dictionary<string, Dictionary<string, List<int>>>();
+        foreach (var assignment in assignments)
+        {
+            if (!dirs.TryGetValue(assignment.LogDir, out var topics))
+            {
+                topics = [];
+                dirs[assignment.LogDir] = topics;
+            }
+
+            if (!topics.TryGetValue(assignment.Replica.Topic, out var partitions))
+            {
+                partitions = [];
+                topics[assignment.Replica.Topic] = partitions;
+            }
+
+            partitions.Add(assignment.Replica.Partition);
+        }
+
+        return dirs
+            .Select(static dir => new AlterReplicaLogDirsRequestDir
+            {
+                Path = dir.Key,
+                Topics = dir.Value
+                    .Select(static topic => new AlterReplicaLogDirsRequestTopic
+                    {
+                        Name = topic.Key,
+                        Partitions = topic.Value
+                    })
+                    .ToList()
+            })
+            .ToList();
+    }
+
+    private static void ValidateTopicPartition(TopicPartition topicPartition, string paramName)
+    {
+        if (string.IsNullOrWhiteSpace(topicPartition.Topic))
+        {
+            throw new ArgumentException("Topic name must be specified.", paramName);
+        }
+
+        if (topicPartition.Partition < 0)
+        {
+            throw new ArgumentOutOfRangeException(paramName, topicPartition.Partition, "Partition must be non-negative.");
+        }
+    }
+
+    private static void ValidateTopicPartitionReplica(TopicPartitionReplica replica, string paramName)
+    {
+        ValidateTopicPartition(replica.TopicPartition, paramName);
+        if (replica.BrokerId < 0)
+        {
+            throw new ArgumentOutOfRangeException(paramName, replica.BrokerId, "Broker ID must be non-negative.");
+        }
+    }
+
+    private readonly record struct ReplicaLogDirAssignment(TopicPartitionReplica Replica, string LogDir);
+
     public async ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
