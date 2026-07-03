@@ -153,8 +153,12 @@ jobs:
           # Force clients (Confluent + Dekaf) to reconnect to localhost after bootstrap.
           Add-Content "$kafka\config\server.properties" "`nadvertised.listeners=PLAINTEXT://localhost:9092`n"
 
-          # Kafka 4.0's kafka-storage only accepts long-form flags (no -t/-c).
-          $clusterId = (& "$kafka\bin\windows\kafka-storage.bat" random-uuid).Trim()
+          # kafka-storage prints a spurious log4j2 status line alongside the UUID, so
+          # capture only the line that looks like a Kafka cluster id (22 url-safe chars).
+          $clusterId = & "$kafka\bin\windows\kafka-storage.bat" random-uuid 2>&1 |
+            Where-Object { $_ -match '^[A-Za-z0-9_-]{22}$' } | Select-Object -First 1
+          if (-not $clusterId) { throw 'Could not obtain a Kafka cluster id' }
+          Write-Host "Cluster id: $clusterId"
           & "$kafka\bin\windows\kafka-storage.bat" format --standalone --cluster-id $clusterId --config "$kafka\config\server.properties"
           if ($LASTEXITCODE -ne 0) { throw "kafka-storage format failed (exit $LASTEXITCODE)" }
 
