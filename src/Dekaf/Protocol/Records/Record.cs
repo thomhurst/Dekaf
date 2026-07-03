@@ -291,7 +291,16 @@ public readonly record struct Record
             }
         }
 
-        Debug.Assert(offset == destination.Length);
+        if (offset != destination.Length)
+            ThrowEncodedSizeMismatch(offset, destination.Length);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowEncodedSizeMismatch(int bytesWritten, int expectedBytes)
+    {
+        throw new InvalidOperationException(
+            $"Record.Encode wrote {bytesWritten} bytes but destination length is {expectedBytes}. " +
+            "Record.ComputeBodySize and Record.Encode are out of sync.");
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

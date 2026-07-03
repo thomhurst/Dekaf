@@ -320,12 +320,37 @@ public sealed class ProducerOptions
     /// Capacity in bytes of the per-batch arena that records are encoded into at append time.
     /// Default is 0, which uses BatchSize + 12.5% margin as the arena capacity — the margin
     /// provides headroom so a record appended near the batch-size boundary still fits.
-    /// Values below the default are ignored (records encode directly into the arena, so a
+    /// Values below the default are rejected (records encode directly into the arena, so a
     /// smaller arena would silently cap batch fill below BatchSize). Set a larger value for
     /// workloads where individual records regularly exceed BatchSize, to avoid re-renting a
     /// larger arena for those batches.
     /// </summary>
     public int ArenaCapacity { get; init; } = 0;
+
+    internal const int ArenaOverflowMarginDivisor = 8;
+
+    internal static int GetMinimumArenaCapacity(int batchSize) =>
+        (int)Math.Min((long)batchSize + batchSize / ArenaOverflowMarginDivisor, int.MaxValue);
+
+    internal static int GetEffectiveArenaCapacity(int batchSize, int arenaCapacity)
+    {
+        var minimum = GetMinimumArenaCapacity(batchSize);
+        return arenaCapacity > 0 ? arenaCapacity : minimum;
+    }
+
+    internal static void ValidateArenaCapacity(int batchSize, int arenaCapacity)
+    {
+        if (arenaCapacity == 0)
+            return;
+
+        var minimum = GetMinimumArenaCapacity(batchSize);
+        if (arenaCapacity < minimum)
+        {
+            throw new InvalidOperationException(
+                $"ArenaCapacity ({arenaCapacity}) must be 0 or at least {minimum} bytes for BatchSize {batchSize}. " +
+                "Records are encoded directly into the arena, so smaller arenas can cap batch fill below BatchSize.");
+        }
+    }
 
     /// <summary>
     /// Initial capacity for record arrays in partition batches.

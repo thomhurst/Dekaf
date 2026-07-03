@@ -861,6 +861,8 @@ public sealed class ProducerBuilder<TKey, TValue>
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
 
+        ProducerOptions.ValidateArenaCapacity(_batchSize, _arenaCapacity);
+
         // Java Kafka client enforces acks=all when enable.idempotence=true.
         // With acks=leader, the leader acknowledges before ISR replication completes,
         // which can cause OutOfOrderSequenceNumber on leader failover and makes the

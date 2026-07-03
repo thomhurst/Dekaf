@@ -532,6 +532,7 @@ internal sealed class BatchArena
 
     private byte[] _buffer;
     private int _position;
+    private int _maxPooledCapacity;
 
     /// <summary>
     /// Creates a new arena with the specified capacity.
@@ -539,9 +540,15 @@ internal sealed class BatchArena
     /// </summary>
     /// <param name="capacity">Buffer size. Pinned on the POH permanently (not from ArrayPool) to avoid LOH fragmentation and Gen2 GC pressure.</param>
     public BatchArena(int capacity)
+        : this(capacity, capacity)
+    {
+    }
+
+    internal BatchArena(int capacity, int maxPooledCapacity)
     {
         _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
         _position = 0;
+        _maxPooledCapacity = maxPooledCapacity;
     }
 
     /// <summary>
@@ -549,25 +556,34 @@ internal sealed class BatchArena
     /// Pooled arenas retain their POH buffers for the pool's lifetime - no ArrayPool rent/return overhead.
     /// </summary>
     public static BatchArena RentOrCreate(int capacity)
+        => RentOrCreate(capacity, capacity);
+
+    public static BatchArena RentOrCreate(int capacity, int maxPooledCapacity)
     {
         var pool = Volatile.Read(ref s_pool);
         if (pool.TryPop(out var arena))
         {
-            arena.Reset(capacity);
+            arena.Reset(capacity, maxPooledCapacity);
             return arena;
         }
 
         Interlocked.Increment(ref s_misses);
-        return new BatchArena(capacity);
+        return new BatchArena(capacity, maxPooledCapacity);
     }
 
     /// <summary>
     /// Returns an arena to the pool for reuse, or drops the reference for GC collection if the pool is full.
     /// The POH buffer is never returned to ArrayPool.
     /// </summary>
-    public static void ReturnToPool(BatchArena arena)
+    public static bool ReturnToPool(BatchArena arena)
     {
         arena._position = 0;
+
+        if (arena._buffer.Length > arena._maxPooledCapacity)
+        {
+            arena._buffer = null!;
+            return false;
+        }
 
         var pool = Volatile.Read(ref s_pool);
         if (!pool.TryPush(arena))
@@ -575,15 +591,19 @@ internal sealed class BatchArena
             // Pool full — drop the reference so the GC can reclaim the POH segment
             // once all objects on it are dead. No ArrayPool return needed.
             arena._buffer = null!;
+            return false;
         }
+
+        return true;
     }
 
     /// <summary>
     /// Resets the arena for reuse. Keeps the existing buffer if it's large enough,
     /// otherwise allocates a new permanent buffer.
     /// </summary>
-    private void Reset(int capacity)
+    private void Reset(int capacity, int maxPooledCapacity)
     {
+        _maxPooledCapacity = maxPooledCapacity;
         if (_buffer is not null && _buffer.Length >= capacity)
         {
             // Skip clearing — _position reset to 0 means stale bytes are never read,
@@ -597,6 +617,8 @@ internal sealed class BatchArena
         _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
         _position = 0;
     }
+
+    internal int Capacity => _buffer.Length;
 
     /// <summary>
     /// Gets the current position in the arena (total bytes used).
@@ -1618,6 +1640,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _compressionCodecs = compressionCodecs;
         _onBatchComplete = onBatchComplete;
 
+        ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
+
         // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
         // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
         // and need larger pools than the default 256 designed for 1MB batches.
@@ -1645,7 +1669,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var preWarmCount = Math.Min(poolSize / 8, 16);
         _readyBatchPool.PreWarm(Math.Min(poolSize, 32));
         _batchPool.PreWarm(preWarmCount);
-        BatchArena.PreWarm(preWarmCount, options.BatchSize);
+        BatchArena.PreWarm(preWarmCount,
+            ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity));
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -1783,18 +1808,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
-                if (!await AppendAsync(
-                    workItem.Topic,
-                    workItem.Partition,
-                    workItem.Timestamp,
-                    workItem.Key,
-                    workItem.Value,
-                    workItem.Headers,
-                    workItem.HeaderCount,
-                    workItem.Completion,
-                    null,
-                    workItem.CancellationToken,
-                    partitionCount: workItem.PartitionCount).ConfigureAwait(false))
+                ValueTask<bool> appendTask;
+                try
+                {
+                    appendTask = AppendAsync(
+                        workItem.Topic,
+                        workItem.Partition,
+                        workItem.Timestamp,
+                        workItem.Key,
+                        workItem.Value,
+                        workItem.Headers,
+                        workItem.HeaderCount,
+                        workItem.Completion,
+                        null,
+                        workItem.CancellationToken,
+                        partitionCount: workItem.PartitionCount);
+                }
+                catch
+                {
+                    CleanupWorkItemResources(in workItem);
+                    throw;
+                }
+
+                if (!await appendTask.ConfigureAwait(false))
                 {
                     CleanupWorkItemResources(in workItem);
                     workItem.Completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
@@ -1807,7 +1843,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                CleanupWorkItemResources(in workItem);
                 workItem.Completion.TrySetException(ex);
             }
         }
@@ -2389,7 +2424,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (pd.CurrentBatch is { } currentBatch)
                     {
                         if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                            headers, headerCount, completionSource, callback, recordSize))
+                            headers, headerCount, completionSource, callback, recordSize, returnHeadersOnFailure))
                         {
                             if (completionSource is not null)
                                 QueueLingerPartition(pd, topicPartition);
@@ -2417,7 +2452,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                         if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                            headers, headerCount, completionSource, callback, recordSize))
+                            headers, headerCount, completionSource, callback, recordSize, returnHeadersOnFailure))
                         {
                             ClearRotationInProgressUnderLock(pd);
                             ownsRotation = false;
@@ -2514,7 +2549,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
-        var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
+        RecordAppendResult result;
+        try
+        {
+            result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
+        }
+        catch
+        {
+            if (completionSource is not null)
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+            ReleaseMemory(estimatedSize);
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            throw;
+        }
 
         if (result.Success)
         {
@@ -2638,10 +2687,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedSize)
+        int estimatedSize,
+        bool returnHeadersOnFailure)
     {
-        var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
-            headers, headerCount, completionSource, callback);
+        RecordAppendResult result;
+        try
+        {
+            result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                headers, headerCount, completionSource, callback);
+        }
+        catch
+        {
+            if (completionSource is not null)
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+            ReleaseMemory(estimatedSize);
+            if (returnHeadersOnFailure)
+                ReturnPooledHeaders(headers);
+            throw;
+        }
 
         if (result.Success)
         {
@@ -4040,22 +4103,12 @@ internal sealed class PartitionBatch
     private bool _isTransactional;
 
     /// <summary>
-    /// Divisor for computing the arena headroom margin from BatchSize.
-    /// A divisor of 8 gives a 12.5% margin (BatchSize / 8) above BatchSize so a record
-    /// that lands near the batch-size boundary still fits in the arena.
-    /// </summary>
-    private const int ArenaOverflowMarginDivisor = 8;
-
-    /// <summary>
     /// Returns the effective arena capacity: BatchSize + 12.5% margin, or an explicit
-    /// ArenaCapacity when it is larger. Records encode directly into the arena, so a
-    /// capacity below BatchSize would silently cap batch fill — smaller values are ignored.
-    /// Uses long arithmetic to avoid integer overflow when BatchSize is large.
+    /// ArenaCapacity. Records encode directly into the arena, so explicit values below
+    /// the BatchSize-derived minimum are rejected during producer construction.
     /// </summary>
     private static int GetEffectiveArenaCapacity(ProducerOptions options) =>
-        Math.Max(
-            options.ArenaCapacity,
-            (int)Math.Min((long)options.BatchSize + options.BatchSize / ArenaOverflowMarginDivisor, int.MaxValue));
+        ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity);
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
@@ -4405,13 +4458,14 @@ internal sealed class PartitionBatch
             return;
         }
 
-        var capacity = Math.Max(GetEffectiveArenaCapacity(_options), encodedRecordSize);
+        var normalCapacity = GetEffectiveArenaCapacity(_options);
+        var capacity = Math.Max(normalCapacity, encodedRecordSize);
         if (arena is not null)
         {
             BatchArena.ReturnToPool(arena);
         }
 
-        _arena = BatchArena.RentOrCreate(capacity);
+        _arena = BatchArena.RentOrCreate(capacity, normalCapacity);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

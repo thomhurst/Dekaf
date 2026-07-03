@@ -149,4 +149,16 @@ public class BatchArenaConcurrencyTests
         await Assert.That(success).IsTrue();
         BatchArena.ReturnToPool(finalArena);
     }
+
+    [Test]
+    public async Task ReturnToPool_OversizedArenaAbovePoolLimit_DropsBuffer()
+    {
+        var arena = new BatchArena(capacity: 4096, maxPooledCapacity: 1024);
+
+        await Assert.That(arena.Capacity).IsEqualTo(4096);
+
+        var pooled = BatchArena.ReturnToPool(arena);
+
+        await Assert.That(pooled).IsFalse();
+    }
 }

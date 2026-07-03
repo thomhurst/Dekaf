@@ -64,6 +64,21 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task Build_WithArenaCapacityBelowBatchMinimum_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithBatchSize(1024)
+            .WithArenaCapacity(1024);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("ArenaCapacity")
+            .And.HasMessageContaining("BatchSize");
+    }
+
+    [Test]
     public async Task BuildForTopic_WithNullTopic_ThrowsArgumentNullException()
     {
         var builder = Kafka.CreateProducer<string, string>()
