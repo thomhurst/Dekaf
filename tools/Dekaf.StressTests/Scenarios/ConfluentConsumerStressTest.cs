@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 using ConfluentKafka = Confluent.Kafka;
@@ -7,8 +6,6 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ConfluentConsumerStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public string Name => "consumer";
     public string Client => "Confluent";
 
@@ -16,40 +13,6 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
     {
         var throughput = new ThroughputTracker();
         var startedAt = DateTime.UtcNow;
-        var messageValue = new string('x', options.MessageSizeBytes);
-
-        // Create producer to feed messages to the consumer
-        var producerConfig = new ConfluentKafka.ProducerConfig
-        {
-            BootstrapServers = options.BootstrapServers,
-            ClientId = "stress-consumer-feeder-confluent",
-            Acks = ConfluentKafka.Acks.Leader,
-            LingerMs = options.LingerMs,
-            BatchSize = options.BatchSize
-        };
-
-        using var producer = new ConfluentKafka.ProducerBuilder<string, string>(producerConfig).Build();
-
-        // Pre-seed messages before starting consumer measurement.
-        // Confluent.Kafka's ProduceAsync() throws Queue full without backpressure,
-        // so flush in batches to avoid exceeding the internal queue.
-        Console.WriteLine($"  Pre-seeding messages for consumer test...");
-        const int preseedCount = 500_000;
-        const int flushInterval = 50_000;
-        for (var i = 0; i < preseedCount; i++)
-        {
-            producer.Produce(options.Topic, new ConfluentKafka.Message<string, string>
-            {
-                Key = GetKey(i),
-                Value = messageValue
-            });
-            if ((i + 1) % flushInterval == 0)
-            {
-                producer.Flush(TimeSpan.FromSeconds(60));
-            }
-        }
-        producer.Flush(TimeSpan.FromSeconds(60));
-        Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
 
         var consumerConfig = new ConfluentKafka.ConsumerConfig
         {
@@ -60,14 +23,29 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             EnableAutoCommit = true
         };
 
+        // The topic is pre-seeded by Program.SeedConsumerTopicAsync. The consumer re-reads
+        // that fixed data set in a loop (seek to beginning when all partitions are drained).
+        // A live feeder would compete with the consumer for CPU and cap throughput at the
+        // feeder's rate, measuring the feeder instead of the consumer.
         using var consumer = new ConfluentKafka.ConsumerBuilder<string, string>(consumerConfig).Build();
         consumer.Subscribe(options.Topic);
 
-        // Start background producer to continuously feed the consumer
-        var producerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var producerTask = RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
+        var partitions = Enumerable.Range(0, options.Partitions)
+            .Select(p => new ConfluentKafka.TopicPartition(options.Topic, p))
+            .ToArray();
 
-        // GC baseline after producer warmup but before consumer measurement
+        var endOffsets = new long[partitions.Length];
+        for (var p = 0; p < partitions.Length; p++)
+        {
+            var watermarks = consumer.QueryWatermarkOffsets(partitions[p], TimeSpan.FromSeconds(30));
+            endOffsets[p] = watermarks.High.Value;
+        }
+
+        var replay = new PartitionReplayTracker(endOffsets);
+
+        Console.WriteLine($"  Consuming pre-seeded topic in a loop ({endOffsets.Sum():N0} messages per pass)");
+
+        // GC baseline before consumer measurement
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
@@ -83,7 +61,7 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
         throughput.Start();
         var progress = new PeriodicProgressReporter(throughput);
 
-        var samplerTask = RunSamplerAsync(throughput, cts.Token);
+        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
         var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(cts.Token);
 
         try
@@ -93,10 +71,20 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
                 try
                 {
                     var result = consumer.Consume(TimeSpan.FromMilliseconds(100));
-                    if (result is not null)
+                    if (result is null)
                     {
-                        throughput.RecordMessage(result.Message.Value?.Length ?? 0);
-                        progress.RecordMessage();
+                        continue;
+                    }
+
+                    throughput.RecordMessage(result.Message.Value?.Length ?? 0);
+                    progress.RecordMessage();
+
+                    if (replay.RecordConsumed(result.Partition.Value, result.Offset.Value))
+                    {
+                        foreach (var tp in partitions)
+                        {
+                            consumer.Seek(new ConfluentKafka.TopicPartitionOffset(tp, ConfluentKafka.Offset.Beginning));
+                        }
                     }
                 }
                 catch (ConfluentKafka.ConsumeException)
@@ -112,10 +100,6 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
 
         throughput.Stop();
         gcStats.Capture();
-
-        // Stop background producer
-        await producerCts.CancelAsync().ConfigureAwait(false);
-        try { await producerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
@@ -135,74 +119,8 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             Latency = null,
-            GcStats = gcStats.ToSnapshot()
+            GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = throughput.CpuTimeSeconds
         };
     }
-
-    private static async Task RunBackgroundProducerAsync(
-        ConfluentKafka.IProducer<string, string> producer,
-        string topic,
-        string messageValue,
-        CancellationToken cancellationToken)
-    {
-        var messageIndex = 0L;
-
-        await Task.Yield(); // Ensure we're on a background thread
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                producer.Produce(topic, new ConfluentKafka.Message<string, string>
-                {
-                    Key = GetKey(messageIndex),
-                    Value = messageValue
-                });
-                messageIndex++;
-
-                // Yield periodically to avoid starving other tasks
-                if (messageIndex % 10_000 == 0)
-                {
-                    await Task.Yield();
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch
-            {
-                // Ignore producer errors in the feeder
-            }
-        }
-    }
-
-    private static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-                throughput.TakeSample();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 }

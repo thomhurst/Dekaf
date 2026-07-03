@@ -1,3 +1,4 @@
+using Docker.DotNet.Models;
 using Dekaf.Admin;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -30,10 +31,40 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
     };
 
+    // Optional broker resource constraints, primarily for CI. STRESS_BROKER_CPUSET pins
+    // broker containers to specific cores so the client under test keeps dedicated cores
+    // (making the client, not the broker, the measured bottleneck); STRESS_BROKER_TMPFS
+    // mounts the Kafka log dir on a tmpfs of the given size (e.g. "4g") so disk I/O
+    // never caps broker ingestion.
+    private static readonly string? BrokerCpuset = Environment.GetEnvironmentVariable("STRESS_BROKER_CPUSET");
+    private static readonly string? BrokerTmpfsSize = Environment.GetEnvironmentVariable("STRESS_BROKER_TMPFS");
+    private const string KafkaLogDir = "/var/lib/kafka/data";
+
     public string BootstrapServers { get; }
     private readonly KafkaContainer? _container;
     private readonly List<IContainer>? _clusterContainers;
     private readonly INetwork? _network;
+
+    private static readonly Action<CreateContainerParameters>? BrokerResourceModifier =
+        string.IsNullOrEmpty(BrokerCpuset) && string.IsNullOrEmpty(BrokerTmpfsSize)
+            ? null
+            : parameters =>
+            {
+                parameters.HostConfig ??= new HostConfig();
+                if (!string.IsNullOrEmpty(BrokerCpuset))
+                {
+                    parameters.HostConfig.CpusetCpus = BrokerCpuset;
+                }
+                if (!string.IsNullOrEmpty(BrokerTmpfsSize))
+                {
+                    // mode=1777: Kafka images run as a non-root user, which cannot
+                    // write to a default root-owned tmpfs mount.
+                    parameters.HostConfig.Tmpfs = new Dictionary<string, string>
+                    {
+                        [KafkaLogDir] = $"rw,size={BrokerTmpfsSize},mode=1777"
+                    };
+                }
+            };
 
     private KafkaEnvironment(string bootstrapServers, KafkaContainer? container)
     {
@@ -69,11 +100,18 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     {
         Console.WriteLine("Starting Kafka container via Testcontainers...");
         var builder = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
-            .WithPortBinding(9092, true);
+            .WithPortBinding(9092, true)
+            // Explicit log dir so the optional tmpfs mount target always matches
+            .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir);
 
         foreach (var (key, value) in RetentionConfig)
         {
             builder = builder.WithEnvironment(key, value);
+        }
+
+        if (BrokerResourceModifier is { } modifier)
+        {
+            builder = builder.WithCreateParameterModifier(modifier);
         }
 
         var container = builder.Build();
@@ -132,11 +170,18 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT")
                 .WithEnvironment("KAFKA_INTER_BROKER_LISTENER_NAME", "PLAINTEXT")
                 .WithEnvironment("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
-                .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", Math.Min(brokerCount, 3).ToString());
+                .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", Math.Min(brokerCount, 3).ToString())
+                // Explicit log dir so the optional tmpfs mount target always matches
+                .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir);
 
             foreach (var (key, value) in RetentionConfig)
             {
                 containerBuilder = containerBuilder.WithEnvironment(key, value);
+            }
+
+            if (BrokerResourceModifier is { } modifier)
+            {
+                containerBuilder = containerBuilder.WithCreateParameterModifier(modifier);
             }
 
             var container = containerBuilder.Build();
@@ -205,7 +250,8 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         throw new InvalidOperationException($"Kafka not ready after {maxAttempts} attempts");
     }
 
-    public async Task CreateTopicAsync(string topic, int partitions, int replicationFactor = 1)
+    public async Task CreateTopicAsync(string topic, int partitions, int replicationFactor = 1,
+        IReadOnlyDictionary<string, string>? configs = null)
     {
         if (_container is not null)
         {
@@ -213,7 +259,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             // container. The cp-kafka broker advertises its external host port in metadata,
             // which the CLI inside the container can't reach — causing a 60-second timeout.
             // The admin client runs on the host and connects via the external bootstrap address.
-            await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor)
+            await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor, configs)
                 .ConfigureAwait(false);
             return;
         }
@@ -221,15 +267,16 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         if (_clusterContainers is { Count: > 0 })
         {
             await ExecCreateTopicAsync(_clusterContainers[0], "/opt/kafka/bin/kafka-topics.sh", "kafka-1:9092",
-                topic, partitions, replicationFactor).ConfigureAwait(false);
+                topic, partitions, replicationFactor, configs).ConfigureAwait(false);
             return;
         }
 
-        await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor).ConfigureAwait(false);
+        await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor, configs).ConfigureAwait(false);
     }
 
     private static async Task AdminCreateTopicAsync(
-        string bootstrapServers, string topic, int partitions, int replicationFactor)
+        string bootstrapServers, string topic, int partitions, int replicationFactor,
+        IReadOnlyDictionary<string, string>? configs)
     {
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(bootstrapServers)
@@ -243,7 +290,8 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 {
                     Name = topic,
                     NumPartitions = partitions,
-                    ReplicationFactor = (short)replicationFactor
+                    ReplicationFactor = (short)replicationFactor,
+                    Configs = configs
                 }
             ]).ConfigureAwait(false);
 
@@ -257,9 +305,11 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
     private static async Task ExecCreateTopicAsync(
         IContainer container, string executablePath, string bootstrapServer,
-        string topic, int partitions, int replicationFactor)
+        string topic, int partitions, int replicationFactor,
+        IReadOnlyDictionary<string, string>? configs)
     {
-        var result = await container.ExecAsync([
+        var command = new List<string>
+        {
             executablePath,
             "--bootstrap-server", bootstrapServer,
             "--create",
@@ -267,7 +317,18 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             "--partitions", partitions.ToString(),
             "--replication-factor", replicationFactor.ToString(),
             "--if-not-exists"
-        ]).ConfigureAwait(false);
+        };
+
+        if (configs is not null)
+        {
+            foreach (var (key, value) in configs)
+            {
+                command.Add("--config");
+                command.Add($"{key}={value}");
+            }
+        }
+
+        var result = await container.ExecAsync(command).ConfigureAwait(false);
 
         if (result.ExitCode != 0)
         {

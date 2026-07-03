@@ -45,6 +45,16 @@ def format_bytes(num_bytes):
         return f"{num_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
+def format_cpu_columns(result):
+    """Format the serialized CPU-per-message / cores-used values, or '-' when not recorded."""
+    cpu_us_per_msg = result.get('cpuMicrosPerMessage')
+    cores_used = result.get('averageCoresUsed')
+    return (
+        f"{cpu_us_per_msg:.2f}" if cpu_us_per_msg is not None else '-',
+        f"{cores_used:.2f}" if cores_used is not None else '-',
+    )
+
+
 def find_confluent_baseline(results):
     """Find Confluent throughput as a baseline for ratio calculations."""
     for r in results:
@@ -68,11 +78,11 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append("")
 
     if include_ratio:
-        lines.append("| Client | Messages/sec | MB/sec | Total Messages | Errors | Ratio |")
-        lines.append("|--------|--------------|--------|----------------|--------|-------|")
+        lines.append("| Client | Messages/sec | MB/sec | Total Messages | Errors | CPU μs/msg | Cores Used | Ratio |")
+        lines.append("|--------|--------------|--------|----------------|--------|------------|------------|-------|")
     else:
-        lines.append("| Client | Messages/sec | MB/sec | Total | Errors |")
-        lines.append("|--------|--------------|--------|-------|--------|")
+        lines.append("| Client | Messages/sec | MB/sec | Total | Errors | CPU μs/msg | Cores Used |")
+        lines.append("|--------|--------------|--------|-------|--------|------------|------------|")
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
     sorted_results = sorted(results, key=lambda r: r.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True)
@@ -84,12 +94,13 @@ def format_throughput_table(results, title, include_ratio=False):
         mb_sec = throughput.get('averageMegabytesPerSecond', 0)
         total = throughput.get('totalMessages', 0)
         errors = throughput.get('totalErrors', 0)
+        cpu_us_per_msg, cores_used = format_cpu_columns(r)
 
         if include_ratio:
             ratio = msg_sec / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {ratio:.2f}x |")
+            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {cpu_us_per_msg} | {cores_used} | {ratio:.2f}x |")
         else:
-            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} |")
+            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {cpu_us_per_msg} | {cores_used} |")
 
     lines.append("")
     return lines

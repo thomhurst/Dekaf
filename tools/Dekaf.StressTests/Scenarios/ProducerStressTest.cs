@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
@@ -11,8 +9,6 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ProducerStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public string Name => "producer";
     public string Client => "Dekaf";
 
@@ -20,7 +16,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
     {
         var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
-        var latency = new LatencyTracker();
+        var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
 
         var builder = Kafka.CreateProducer<string, string>()
@@ -78,9 +74,14 @@ internal sealed class ProducerStressTest : IStressTestScenario
         {
             try
             {
-                var start = Stopwatch.GetTimestamp();
-                await producer.FireAsync(options.Topic, GetKey(messageIndex), messageValue);
-                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
+                if (messageIndex % StressTestHelpers.LatencySampleInterval == 0)
+                {
+                    StressTestHelpers.SampleDeliveryLatency(producer, options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue, latency, throughput);
+                }
+                else
+                {
+                    await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue);
+                }
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
@@ -143,20 +144,8 @@ internal sealed class ProducerStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             Latency = latency.GetSnapshot(),
-            GcStats = gcStats.ToSnapshot()
+            GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = throughput.CpuTimeSeconds
         };
     }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 }

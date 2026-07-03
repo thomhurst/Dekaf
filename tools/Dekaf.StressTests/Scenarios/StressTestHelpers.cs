@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 
@@ -7,6 +8,14 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal static class StressTestHelpers
 {
+    /// <summary>
+    /// Producer scenarios sample true end-to-end delivery latency on 1 in N messages.
+    /// Fire-and-forget latency only measures buffer-append time, which says nothing
+    /// about broker round-trips; sampling keeps the measurement honest without
+    /// stalling the produce loop.
+    /// </summary>
+    internal const int LatencySampleInterval = 1000;
+
     private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
 
     private static string[] CreatePreAllocatedKeys(int count)
@@ -23,64 +32,62 @@ internal static class StressTestHelpers
     internal static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 
     /// <summary>
-    /// Yield frequency for the background producer. On low-CPU machines (4 or fewer processors),
-    /// yield more frequently to avoid starving the consumer and heartbeat threads.
-    /// This prevents the Dekaf background producer from dominating CPU and GC pressure,
-    /// which unfairly penalizes consumer throughput measurements vs Confluent (whose native
-    /// librdkafka producer has no .NET GC impact).
-    ///
-    /// The threshold of 4 CPUs was chosen because the stress test runs a producer, consumer,
-    /// heartbeat timer, and Kafka broker concurrently - at least 4 active threads. With 4 or
-    /// fewer processors there is no spare capacity, so the producer must yield aggressively.
-    /// GitHub Actions runners typically have 2-4 vCPUs, making this the common CI case.
+    /// Histogram for sampled delivery latency. The sample includes time queued in the
+    /// client's send buffer, which under saturation is seconds deep — so the range must
+    /// be much wider than the LatencyTracker default (coarser buckets keep it at ~2.4 MB).
     /// </summary>
-    private static readonly int BackgroundProducerYieldInterval =
-        Environment.ProcessorCount <= 4 ? 1_000 : 10_000;
+    internal static LatencyTracker CreateDeliveryLatencyTracker() =>
+        new(maxValueMs: 30_000, bucketWidthUs: 100);
 
     /// <summary>
-    /// Brief pause between yield batches on CPU-constrained machines to let the consumer
-    /// and heartbeat threads make progress. On well-provisioned machines, no delay is added.
+    /// Queries the high watermark of each partition, giving the fixed end offsets that
+    /// consumer scenarios replay against.
     /// </summary>
-    private static readonly int BackgroundProducerThrottleMs =
-        Environment.ProcessorCount <= 4 ? 10 : 0;
-
-    internal static async Task RunBackgroundProducerAsync(
-        IKafkaProducer<string, string> producer,
+    internal static async Task<long[]> QueryEndOffsetsAsync<TKey, TValue>(
+        IKafkaConsumer<TKey, TValue> consumer,
         string topic,
-        string messageValue,
+        int partitionCount,
         CancellationToken cancellationToken)
     {
-        var messageIndex = 0L;
-        var yieldInterval = BackgroundProducerYieldInterval;
-        var throttleMs = BackgroundProducerThrottleMs;
-
-        await Task.Yield();
-
-        while (!cancellationToken.IsCancellationRequested)
+        var endOffsets = new long[partitionCount];
+        for (var p = 0; p < partitionCount; p++)
         {
+            var watermarks = await consumer
+                .QueryWatermarkOffsetsAsync(new TopicPartition(topic, p), cancellationToken)
+                .ConfigureAwait(false);
+            endOffsets[p] = watermarks.High;
+        }
+        return endOffsets;
+    }
+
+    /// <summary>
+    /// Produces one message via ProduceAsync and records the full delivery round-trip
+    /// into <paramref name="latency"/> when it completes. The append (including
+    /// BufferMemory backpressure) runs synchronously like FireAsync; only the wait
+    /// for the broker acknowledgment is fire-and-forget, so the produce loop is not
+    /// stalled by the delivery round-trip.
+    /// </summary>
+    internal static void SampleDeliveryLatency(
+        IKafkaProducer<string, string> producer,
+        string topic,
+        string key,
+        string value,
+        LatencyTracker latency,
+        ThroughputTracker throughput)
+    {
+        _ = SampleAsync();
+
+        async Task SampleAsync()
+        {
+            var start = Stopwatch.GetTimestamp();
             try
             {
-                await producer.FireAsync(topic, GetKey(messageIndex), messageValue).ConfigureAwait(false);
-                messageIndex++;
-
-                // Yield periodically to avoid starving other tasks.
-                // On low-CPU machines, yield more frequently and add a brief pause
-                // to reduce GC pressure from the .NET producer competing with the consumer.
-                if (messageIndex % yieldInterval == 0)
-                {
-                    if (throttleMs > 0)
-                        await Task.Delay(throttleMs, cancellationToken).ConfigureAwait(false);
-                    else
-                        await Task.Yield();
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
+                await producer.ProduceAsync(topic, key, value).ConfigureAwait(false);
+                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
             }
             catch
             {
-                // Ignore producer errors in the feeder
+                throughput.RecordError();
             }
         }
     }

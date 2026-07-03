@@ -107,8 +107,19 @@ jobs:
             name: Dekaf Producer Idempotent (3conn, 3 Brokers)
 
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    # 8 vCPUs, split so the client under test is the measured bottleneck:
+    # brokers are pinned to BROKER_CPUS, the client to CLIENT_CPUS. On a shared-core
+    # runner both clients just saturate the broker and report identical numbers.
+    runs-on: ubicloud-standard-8
     timeout-minutes: ${{ matrix.brokers > 1 && 75 || 60 }}
+    env:
+      BROKER_CPUS: 0-5
+      CLIENT_CPUS: 6,7
+      # Broker log dirs live on tmpfs so disk I/O never caps ingestion. Sized well
+      # above the ~1.5 GB worst case (768 MB byte-retention cap plus produce-rate
+      # overshoot between retention checks, or the 2 GB seeded consumer topic):
+      # running out of log-dir space shuts the broker down.
+      BROKER_TMPFS: 6g
 
     steps:
       - name: Checkout
@@ -125,7 +136,13 @@ jobs:
       - name: Start Kafka
         if: matrix.brokers == 1
         run: |
+          # Broker pinned to its own cores (client under test gets the rest) and log
+          # dir on tmpfs so neither broker CPU starvation nor disk I/O caps ingestion.
+          # mode=1777: the Kafka image runs as a non-root user, which cannot write to
+          # a default root-owned tmpfs mount.
           docker run -d --name kafka \
+            --cpuset-cpus="${BROKER_CPUS}" \
+            --tmpfs /var/lib/kafka/data:rw,size=${BROKER_TMPFS},mode=1777 \
             -p 9092:9092 \
             -e KAFKA_NODE_ID=1 \
             -e KAFKA_PROCESS_ROLES=broker,controller \
@@ -160,9 +177,15 @@ jobs:
       - name: Run ${{ matrix.name }} Stress Test
         env:
           KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && 'localhost:9092' || '' }}
+          # Multi-broker runs start brokers via Testcontainers from inside the client
+          # process; these apply the same core pinning and tmpfs as the docker run above.
+          STRESS_BROKER_CPUSET: ${{ env.BROKER_CPUS }}
+          STRESS_BROKER_TMPFS: ${{ env.BROKER_TMPFS }}
         run: |
           cd tools/Dekaf.StressTests
-          dotnet run --configuration Release --no-build -- \
+          # Client pinned to its own cores: whichever client pushes more through the
+          # same cores is genuinely faster, instead of both saturating the broker.
+          taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
             --duration ${{ github.event.inputs.duration_minutes || '15' }} \
             --message-size ${{ github.event.inputs.message_size || '1000' }} \
             --scenario ${{ matrix.scenario }} \
@@ -392,6 +415,12 @@ jobs:
           output.append("Stress tests measure sustained performance over extended periods:")
           output.append("")
           output.append("- **Real Kafka**: Tests run against actual Apache Kafka instances")
+          output.append("- **CPU Isolation**: Brokers are pinned to dedicated cores and the client under test to its own cores, so the client — not the broker — is the measured bottleneck")
+          output.append("- **RAM-backed Broker Logs**: Kafka log dirs are mounted on tmpfs so disk I/O never caps broker ingestion")
+          output.append("- **Backpressure Parity**: Confluent producers block and retry on a full local queue, mirroring Dekaf's BufferMemory backpressure, so throughput is delivered goodput for both clients")
+          output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured")
+          output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
+          output.append("- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput")
           output.append("- **Parallel Execution**: Each test runs in its own isolated environment")
           output.append("- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka")
           output.append("- **Memory Monitoring**: Tracks GC behavior and memory usage over time")

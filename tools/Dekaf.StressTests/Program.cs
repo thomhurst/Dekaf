@@ -87,7 +87,14 @@ public static class Program
 
         var replicationFactor = Math.Min(options.Brokers, 3);
         await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
-        await kafka.CreateTopicAsync(consumerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
+        // Consumer scenarios re-read the seeded data set in a loop for the full duration.
+        // Broker-level retention (tuned to bound producer-topic disk usage) must not
+        // delete it mid-run, so retention is disabled at the topic level.
+        await kafka.CreateTopicAsync(consumerTopic, options.Partitions, replicationFactor, new Dictionary<string, string>
+        {
+            ["retention.ms"] = "-1",
+            ["retention.bytes"] = "-1"
+        }).ConfigureAwait(false);
 
         if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "all")
         {
@@ -192,8 +199,9 @@ public static class Program
         Console.WriteLine($"Seeding consumer topic with messages...");
 
         var messageValue = new string('x', options.MessageSizeBytes);
-        // Seed 500K messages - enough to test consumer throughput without excessive disk/time
-        var totalMessages = 500_000;
+        // Consumer scenarios loop over this data set (seek to beginning when drained),
+        // so it only needs to be large enough that rewind overhead is negligible.
+        var totalMessages = options.SeedMessages;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
@@ -341,6 +349,13 @@ public static class Program
                         throw new ArgumentException("--connections-per-broker must be at least 1");
                     }
                     break;
+                case "--seed-messages":
+                    options.SeedMessages = int.Parse(args[++i]);
+                    if (options.SeedMessages < 1)
+                    {
+                        throw new ArgumentException("--seed-messages must be at least 1");
+                    }
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -372,10 +387,13 @@ public static class Program
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
+              --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
               KAFKA_BOOTSTRAP_SERVERS - Use external Kafka instead of Testcontainers
+              STRESS_BROKER_CPUSET    - Pin Testcontainers brokers to CPU cores (e.g. "0-5") so the client keeps dedicated cores
+              STRESS_BROKER_TMPFS     - Mount broker log dirs on tmpfs of this size (e.g. "6g") so disk I/O never caps ingestion
 
             Examples:
               dotnet run -c Release -- --duration 15 --message-size 1000
@@ -399,5 +417,6 @@ public static class Program
         public string Compression { get; set; } = "none";
         public int Brokers { get; set; } = 1;
         public int ConnectionsPerBroker { get; set; } = 1;
+        public int SeedMessages { get; set; } = 2_000_000;
     }
 }

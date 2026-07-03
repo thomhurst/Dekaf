@@ -17,6 +17,24 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
 
+    /// <summary>
+    /// Process CPU time consumed during the measurement window. CPU cost per message
+    /// differentiates client efficiency even when the broker caps throughput.
+    /// The derived values below are serialized so downstream reports (including the
+    /// Python CI summary) format them without re-deriving the math.
+    /// </summary>
+    public double? CpuTimeSeconds { get; init; }
+
+    public double? CpuMicrosPerMessage =>
+        CpuTimeSeconds is { } cpu && Throughput.TotalMessages > 0
+            ? cpu * 1_000_000.0 / Throughput.TotalMessages
+            : null;
+
+    public double? AverageCoresUsed =>
+        CpuTimeSeconds is { } cpu && Throughput.ElapsedSeconds > 0
+            ? cpu / Throughput.ElapsedSeconds
+            : null;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,

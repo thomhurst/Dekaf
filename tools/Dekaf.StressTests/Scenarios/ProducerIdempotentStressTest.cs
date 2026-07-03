@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
@@ -17,7 +16,7 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
     {
         var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
-        var latency = new LatencyTracker();
+        var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
 
         var builder = Kafka.CreateProducer<string, string>()
@@ -71,9 +70,14 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
         {
             try
             {
-                var start = Stopwatch.GetTimestamp();
-                await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue);
-                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
+                if (messageIndex % StressTestHelpers.LatencySampleInterval == 0)
+                {
+                    StressTestHelpers.SampleDeliveryLatency(producer, options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue, latency, throughput);
+                }
+                else
+                {
+                    await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue);
+                }
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
@@ -136,7 +140,8 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             Latency = latency.GetSnapshot(),
-            GcStats = gcStats.ToSnapshot()
+            GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = throughput.CpuTimeSeconds
         };
     }
 }

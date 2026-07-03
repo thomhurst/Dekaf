@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
@@ -21,29 +20,11 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
     {
         var throughput = new ThroughputTracker();
         var startedAt = DateTime.UtcNow;
-        var messageValue = new string('x', options.MessageSizeBytes);
 
-        // Create producer to feed messages to the consumer (uses string serialization for production)
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-consumer-raw-feeder-dekaf")
-            .WithAcks(Acks.Leader)
-            .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
-            .WithBatchSize(options.BatchSize)
-            .BuildAsync(cancellationToken);
-
-        // Pre-seed messages before starting consumer measurement.
-        // Note: Program.cs also seeds via SeedConsumerTopicAsync when running --scenario all.
-        // Both seeds are intentional — this ensures enough backlog regardless of invocation path.
-        Console.WriteLine("  Pre-seeding messages for consumer-raw test...");
-        const int preseedCount = 500_000;
-        for (var i = 0; i < preseedCount; i++)
-        {
-            await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(i), messageValue).ConfigureAwait(false);
-        }
-        await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
-        Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
-
+        // The topic is pre-seeded by Program.SeedConsumerTopicAsync. The consumer re-reads
+        // that fixed data set in a loop (seek to beginning when all partitions are drained).
+        // A live feeder would compete with the consumer for CPU and cap throughput at the
+        // feeder's rate, measuring the feeder instead of the consumer.
         // Consumer uses Ignore for key (don't care) and ReadOnlyMemory<byte> for zero-copy value access
         await using var consumer = await Kafka.CreateConsumer<Ignore, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(options.BootstrapServers)
@@ -55,11 +36,16 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
 
         consumer.Subscribe(options.Topic);
 
-        // Start background producer to continuously feed the consumer
-        var producerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var producerTask = StressTestHelpers.RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
+        var partitions = Enumerable.Range(0, options.Partitions)
+            .Select(p => new TopicPartition(options.Topic, p))
+            .ToArray();
 
-        // GC baseline after producer warmup but before consumer measurement
+        var endOffsets = await StressTestHelpers.QueryEndOffsetsAsync(consumer, options.Topic, options.Partitions, cancellationToken);
+        var replay = new PartitionReplayTracker(endOffsets);
+
+        Console.WriteLine($"  Consuming pre-seeded topic in a loop ({endOffsets.Sum():N0} messages per pass)");
+
+        // GC baseline before consumer measurement
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
@@ -84,6 +70,11 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
             {
                 throughput.RecordMessage(record.Value.Length);
                 progress.RecordMessage();
+
+                if (replay.RecordConsumed(record.Partition, record.Offset))
+                {
+                    consumer.Positions.SeekToBeginning(partitions);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -92,16 +83,12 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"  Consumer error: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine($"  Consumer error: {ex}");
             throughput.RecordError();
         }
 
         throughput.Stop();
         gcStats.Capture();
-
-        // Stop background producer
-        await producerCts.CancelAsync().ConfigureAwait(false);
-        try { await producerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
@@ -121,7 +108,8 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             Latency = null,
-            GcStats = gcStats.ToSnapshot()
+            GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = throughput.CpuTimeSeconds
         };
     }
 }

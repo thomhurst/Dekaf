@@ -67,8 +67,8 @@ internal static class MarkdownReporter
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
             sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
             sb.AppendLine();
-            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Messages/sec | MB/sec | Errors | Ratio |");
-            sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------------|--------|--------|-------|");
+            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Messages/sec | MB/sec | Errors | CPU μs/msg | Cores Used | Ratio |");
+            sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------------|--------|--------|------------|------------|-------|");
 
             var baseline = sizeResults
                 .Where(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
@@ -83,7 +83,9 @@ internal static class MarkdownReporter
             foreach (var result in sizeResults.OrderByDescending(r => r.Throughput.AverageMessagesPerSecond))
             {
                 var ratio = baseline > 0 ? result.Throughput.AverageMessagesPerSecond / baseline : 1.0;
-                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {result.Throughput.AverageMessagesPerSecond,12:N0} | {result.Throughput.AverageMegabytesPerSecond,6:F2} | {result.Throughput.TotalErrors,6} | {ratio:F2}x |");
+                var cpuPerMessage = result.CpuMicrosPerMessage is { } cpu ? $"{cpu:F2}" : "-";
+                var coresUsed = result.AverageCoresUsed is { } cores ? $"{cores:F2}" : "-";
+                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {result.Throughput.AverageMessagesPerSecond,12:N0} | {result.Throughput.AverageMegabytesPerSecond,6:F2} | {result.Throughput.TotalErrors,6} | {cpuPerMessage,10} | {coresUsed,10} | {ratio:F2}x |");
             }
 
             sb.AppendLine();

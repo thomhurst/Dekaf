@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 using ConfluentKafka = Confluent.Kafka;
@@ -8,8 +7,6 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public string Name => "producer-idempotent";
     public string Client => "Confluent";
 
@@ -17,7 +14,7 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
     {
         var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
-        var latency = new LatencyTracker();
+        var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
 
         var config = new ConfluentKafka.ProducerConfig
@@ -70,13 +67,20 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
         {
             try
             {
-                var start = Stopwatch.GetTimestamp();
-                producer.Produce(options.Topic, new ConfluentKafka.Message<string, string>
+                var message = new ConfluentKafka.Message<string, string>
                 {
-                    Key = GetKey(messageIndex),
+                    Key = StressTestHelpers.GetKey(messageIndex),
                     Value = messageValue
-                });
-                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
+                };
+
+                if (messageIndex % StressTestHelpers.LatencySampleInterval == 0)
+                {
+                    ConfluentStressTestHelpers.SampleDeliveryLatency(producer, options.Topic, message, latency, throughput, cts.Token);
+                }
+                else
+                {
+                    ConfluentStressTestHelpers.ProduceWithBackpressure(producer, options.Topic, message, null, cts.Token);
+                }
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
@@ -128,7 +132,8 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             Latency = latency.GetSnapshot(),
-            GcStats = gcStats.ToSnapshot()
+            GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = throughput.CpuTimeSeconds
         };
     }
 
@@ -147,19 +152,6 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
             }
         }
     }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 
     private static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
     {

@@ -16,15 +16,25 @@ internal sealed class ThroughputTracker
     private readonly object _samplesLock = new();
     private long _lastSampleMessageCount;
     private DateTime _lastSampleTime;
+    private TimeSpan _cpuTimeStart;
+    private double _cpuTimeSeconds;
 
     public long MessageCount => Interlocked.Read(ref _messageCount);
     public long ByteCount => Interlocked.Read(ref _byteCount);
     public long ErrorCount => Interlocked.Read(ref _errorCount);
     public TimeSpan Elapsed => _stopwatch.Elapsed;
 
+    /// <summary>
+    /// Process CPU time consumed over the Start/Stop window (valid after Stop).
+    /// CPU cost per message differentiates client efficiency even when the broker
+    /// caps throughput.
+    /// </summary>
+    public double CpuTimeSeconds => _cpuTimeSeconds;
+
     public void Start()
     {
         _stopwatch.Start();
+        _cpuTimeStart = Environment.CpuUsage.TotalTime;
         _lastSampleTime = DateTime.UtcNow;
         _lastSampleMessageCount = 0;
     }
@@ -32,6 +42,7 @@ internal sealed class ThroughputTracker
     public void Stop()
     {
         _stopwatch.Stop();
+        _cpuTimeSeconds = (Environment.CpuUsage.TotalTime - _cpuTimeStart).TotalSeconds;
     }
 
     public void RecordMessage(int bytes)
