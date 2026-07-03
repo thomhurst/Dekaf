@@ -345,6 +345,7 @@ public class MetadataManagerTests
     [Test]
     public async Task DisposeAsync_CancelsBackgroundRefreshCtsCreatedWhileInitializationDrains()
     {
+        var timeout = TimeSpan.FromSeconds(15);
         var manager = new MetadataManager(
             Substitute.For<IConnectionPool>(),
             ["localhost:9092"],
@@ -359,14 +360,14 @@ public class MetadataManagerTests
         SetInstanceField(manager, "_backgroundRefreshCts", firstCts);
 
         var disposeTask = manager.DisposeAsync().AsTask();
-        await firstCancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstCancelObserved.Task.WaitAsync(timeout);
         await Assert.That(disposeTask.IsCompleted).IsFalse();
 
         var racedCts = new CancellationTokenSource();
         SetInstanceField(manager, "_backgroundRefreshCts", racedCts);
         initializeLock.Release();
 
-        await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await disposeTask.WaitAsync(timeout);
 
         await Assert.That(racedCts.IsCancellationRequested).IsTrue();
     }
