@@ -133,8 +133,14 @@ jobs:
       # Kafka image, so Testcontainers fails. Instead run a native single-node KRaft broker
       # (Java is preinstalled on the runner) and point the benchmarks at it via
       # KAFKA_BOOTSTRAP_SERVERS, which KafkaTestEnvironment uses as an external broker.
-      - name: Start Kafka (KRaft, native)
+      #
+      # The broker MUST be started in the same step as the benchmark run: a background
+      # process started in an earlier step is killed when that step's shell exits, so a
+      # separate "Start Kafka" step leaves the benchmarks with no broker to connect to.
+      - name: Run Client Benchmarks with Native Memory Profiler
         shell: pwsh
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           $ErrorActionPreference = 'Stop'
           $env:JAVA_HOME = $env:JAVA_HOME_17_X64
@@ -182,14 +188,18 @@ jobs:
           }
           Write-Host 'Kafka is ready on localhost:9092'
 
-      - name: Run Client Benchmarks with Native Memory Profiler
-        shell: pwsh
-        env:
-          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
-        run: |
-          cd tools/Dekaf.Benchmarks
-          dotnet run -c Release --no-build -- --filter "*Client*" --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
-        continue-on-error: true
+          # Broker is up in this same step; run the benchmarks against it, then stop it.
+          # A benchmark-level failure should not fail the pipeline (results are uploaded
+          # as artifacts regardless), but a Kafka *setup* failure above already threw.
+          try {
+            Push-Location tools/Dekaf.Benchmarks
+            dotnet run -c Release --no-build -- --filter "*Client*" --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
+            Write-Host "Benchmark run exited with $LASTEXITCODE"
+          } finally {
+            Pop-Location
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+          exit 0
 
       - name: Upload Results
         uses: actions/upload-artifact@v7
