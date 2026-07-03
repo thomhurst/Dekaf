@@ -6,6 +6,7 @@ using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Retry;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
@@ -55,7 +56,8 @@ public sealed class AdminClient : IAdminClient
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 OAuthBearerToken = options.OAuthBearerToken,
-                ClientDnsLookup = options.ClientDnsLookup
+                ClientDnsLookup = options.ClientDnsLookup,
+                AwsMskIamConfig = options.AwsMskIamConfig
             },
             loggerFactory);
 
@@ -812,6 +814,290 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<ListTransactionsResult> ListTransactionsAsync(
+        ListTransactionsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ListTransactions))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support ListTransactions (API key 66).");
+        }
+
+        var opts = options ?? new ListTransactionsOptions();
+
+        return await WithRetryAsync(async () =>
+        {
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new InvalidOperationException("No brokers available");
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListTransactions,
+                ListTransactionsRequest.LowestSupportedVersion,
+                ListTransactionsRequest.HighestSupportedVersion);
+
+            if (opts.DurationFilterMs >= 0 && apiVersion < 1)
+            {
+                throw new Errors.BrokerVersionException("Broker does not support ListTransactions duration filters (API key 66 v1).");
+            }
+
+            if (!string.IsNullOrEmpty(opts.TransactionalIdPattern) && apiVersion < 2)
+            {
+                throw new Errors.BrokerVersionException("Broker does not support ListTransactions transactional ID pattern filters (API key 66 v2).");
+            }
+
+            var request = new ListTransactionsRequest
+            {
+                StateFilters = opts.StateFilters,
+                ProducerIdFilters = opts.ProducerIdFilters,
+                DurationFilterMs = opts.DurationFilterMs,
+                TransactionalIdPattern = opts.TransactionalIdPattern
+            };
+
+            var responses = await Task.WhenAll(brokers.Select(async broker =>
+            {
+                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                var response = await connection.SendAsync<ListTransactionsRequest, ListTransactionsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"ListTransactions failed on broker {broker.NodeId}: {response.ErrorCode}");
+                }
+
+                return (CoordinatorId: broker.NodeId, Response: response);
+            })).ConfigureAwait(false);
+
+            var unknownStateFilters = new HashSet<string>(StringComparer.Ordinal);
+            var seenTransactionalIds = new HashSet<string>(StringComparer.Ordinal);
+            var transactions = new List<TransactionListing>();
+
+            foreach (var (coordinatorId, response) in responses)
+            {
+                foreach (var unknownStateFilter in response.UnknownStateFilters)
+                {
+                    unknownStateFilters.Add(unknownStateFilter);
+                }
+
+                foreach (var state in response.TransactionStates)
+                {
+                    if (!seenTransactionalIds.Add(state.TransactionalId))
+                        continue;
+
+                    transactions.Add(new TransactionListing
+                    {
+                        TransactionalId = state.TransactionalId,
+                        ProducerId = state.ProducerId,
+                        TransactionState = state.TransactionState,
+                        CoordinatorId = coordinatorId
+                    });
+                }
+            }
+
+            return new ListTransactionsResult
+            {
+                UnknownStateFilters = unknownStateFilters.ToList(),
+                Transactions = transactions
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<string, TransactionDescription>> DescribeTransactionsAsync(
+        IEnumerable<string> transactionalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionalIds);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeTransactions))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support DescribeTransactions (API key 65).");
+        }
+
+        var transactionalIdList = transactionalIds.ToList();
+        if (transactionalIdList.Count == 0)
+        {
+            return new Dictionary<string, TransactionDescription>();
+        }
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, TransactionDescription>>(async () =>
+        {
+            var idsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var transactionalId in transactionalIdList)
+            {
+                var coordinatorId = await FindTransactionCoordinatorAsync(transactionalId, cancellationToken).ConfigureAwait(false);
+                if (!idsByCoordinator.TryGetValue(coordinatorId, out var ids))
+                {
+                    ids = [];
+                    idsByCoordinator[coordinatorId] = ids;
+                }
+
+                ids.Add(transactionalId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeTransactions,
+                DescribeTransactionsRequest.LowestSupportedVersion,
+                DescribeTransactionsRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<string, TransactionDescription>(StringComparer.Ordinal);
+
+            foreach (var (coordinatorId, ids) in idsByCoordinator)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var request = new DescribeTransactionsRequest
+                {
+                    TransactionalIds = ids
+                };
+
+                var response = await connection.SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var state in response.TransactionStates)
+                {
+                    if (state.ErrorCode.IsRetriable() || state.ErrorCode.RequiresMetadataRefresh())
+                    {
+                        throw new KafkaException(state.ErrorCode,
+                            $"DescribeTransactions failed for transactional ID '{state.TransactionalId}': {state.ErrorCode}");
+                    }
+
+                    result[state.TransactionalId] = new TransactionDescription
+                    {
+                        TransactionalId = state.TransactionalId,
+                        ErrorCode = state.ErrorCode,
+                        TransactionState = state.TransactionState,
+                        TransactionTimeoutMs = state.TransactionTimeoutMs,
+                        TransactionStartTimeMs = state.TransactionStartTimeMs,
+                        ProducerId = state.ProducerId,
+                        ProducerEpoch = state.ProducerEpoch,
+                        CoordinatorId = coordinatorId,
+                        TopicPartitions = state.Topics
+                            .SelectMany(static topic => topic.Partitions.Select(partition => new TopicPartition(topic.Topic, partition)))
+                            .ToList()
+                    };
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>> DescribeProducersAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeProducers))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support DescribeProducers (API key 61).");
+        }
+
+        var partitionList = partitions.ToList();
+        if (partitionList.Count == 0)
+        {
+            return new Dictionary<TopicPartition, DescribeProducersResultInfo>();
+        }
+
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>>(async () =>
+        {
+            var partitionsByLeader = new Dictionary<int, List<DescribeProducersRequestTopic>>();
+
+            foreach (var topicPartition in partitionList)
+            {
+                var leaderNode = _metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition);
+                if (leaderNode is null)
+                {
+                    throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
+                        $"No leader available for {topicPartition.Topic}-{topicPartition.Partition}");
+                }
+
+                if (!partitionsByLeader.TryGetValue(leaderNode.NodeId, out var leaderTopics))
+                {
+                    leaderTopics = [];
+                    partitionsByLeader[leaderNode.NodeId] = leaderTopics;
+                }
+
+                var topicEntry = leaderTopics.FirstOrDefault(t => t.Name == topicPartition.Topic);
+                if (topicEntry is null)
+                {
+                    topicEntry = new DescribeProducersRequestTopic
+                    {
+                        Name = topicPartition.Topic,
+                        PartitionIndexes = new List<int>()
+                    };
+                    leaderTopics.Add(topicEntry);
+                }
+
+                ((List<int>)topicEntry.PartitionIndexes).Add(topicPartition.Partition);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeProducers,
+                DescribeProducersRequest.LowestSupportedVersion,
+                DescribeProducersRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<TopicPartition, DescribeProducersResultInfo>();
+
+            foreach (var (leaderId, topics) in partitionsByLeader)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                var request = new DescribeProducersRequest
+                {
+                    Topics = topics
+                };
+
+                var response = await connection.SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var topic in response.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
+                        {
+                            throw new KafkaException(partition.ErrorCode,
+                                $"DescribeProducers failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}");
+                        }
+
+                        var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                        result[topicPartition] = new DescribeProducersResultInfo
+                        {
+                            TopicPartition = topicPartition,
+                            ErrorCode = partition.ErrorCode,
+                            ErrorMessage = partition.ErrorMessage,
+                            ActiveProducers = partition.ActiveProducers.Select(static producer => new ActiveProducerDescription
+                            {
+                                ProducerId = producer.ProducerId,
+                                ProducerEpoch = producer.ProducerEpoch,
+                                LastSequence = producer.LastSequence,
+                                LastTimestamp = producer.LastTimestamp,
+                                CoordinatorEpoch = producer.CoordinatorEpoch,
+                                CurrentTransactionStartOffset = producer.CurrentTxnStartOffset
+                            }).ToList()
+                        };
+                    }
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask DeleteConsumerGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
@@ -1115,6 +1401,191 @@ public sealed class AdminClient : IAdminClient
             }
         }, cancellationToken).ConfigureAwait(false);
     }
+
+    public async ValueTask AlterPartitionReassignmentsAsync(
+        IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments,
+        AlterPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reassignments);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new AlterPartitionReassignmentsOptions();
+        var topics = BuildAlterPartitionReassignmentTopics(reassignments);
+        if (topics.Count == 0)
+        {
+            return;
+        }
+
+        // Materialize before retry so an ambiguous retriable failure resends the exact
+        // same target/cancel operations. Some already-applied retries surface as
+        // ReassignmentInProgress or NoReassignmentInProgress; those are tolerated only
+        // after a previous attempt may have reached the controller.
+        var alterMayHaveApplied = false;
+
+        await WithRetryAsync(async () =>
+        {
+            var isRetryAttempt = alterMayHaveApplied;
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+            var request = new AlterPartitionReassignmentsRequest
+            {
+                TimeoutMs = opts.TimeoutMs,
+                AllowReplicationFactorChange = opts.AllowReplicationFactorChange,
+                Topics = topics
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterPartitionReassignments,
+                AlterPartitionReassignmentsRequest.LowestSupportedVersion,
+                AlterPartitionReassignmentsRequest.HighestSupportedVersion);
+
+            alterMayHaveApplied = true;
+            var response = await controller.SendAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                if (IsToleratedReassignmentRetry(isRetryAttempt, response.ErrorCode))
+                {
+                    return;
+                }
+
+                throw new KafkaException(response.ErrorCode,
+                    $"AlterPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+            }
+
+            foreach (var topic in response.Responses)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.ErrorCode == Protocol.ErrorCode.None ||
+                        IsToleratedReassignmentRetry(isRetryAttempt, partition.ErrorCode))
+                    {
+                        continue;
+                    }
+
+                    throw new KafkaException(partition.ErrorCode,
+                        $"AlterPartitionReassignments failed for {topic.Name}-{partition.PartitionIndex}: " +
+                        $"{partition.ErrorMessage ?? partition.ErrorCode.ToString()}");
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
+        IEnumerable<TopicPartition>? partitions = null,
+        ListPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new ListPartitionReassignmentsOptions();
+        var topics = partitions is null ? null : BuildListPartitionReassignmentTopics(partitions);
+
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+            var request = new ListPartitionReassignmentsRequest
+            {
+                TimeoutMs = opts.TimeoutMs,
+                Topics = topics
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListPartitionReassignments,
+                ListPartitionReassignmentsRequest.LowestSupportedVersion,
+                ListPartitionReassignmentsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<ListPartitionReassignmentsRequest, ListPartitionReassignmentsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode,
+                    $"ListPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+            }
+
+            var result = new Dictionary<TopicPartition, PartitionReassignment>();
+            foreach (var topic in response.Topics)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    result[new TopicPartition(topic.Name, partition.PartitionIndex)] = new PartitionReassignment
+                    {
+                        Replicas = partition.Replicas,
+                        AddingReplicas = partition.AddingReplicas,
+                        RemovingReplicas = partition.RemovingReplicas
+                    };
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static List<AlterPartitionReassignmentsRequestTopic> BuildAlterPartitionReassignmentTopics(
+        IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments) =>
+        reassignments
+            .Select(kvp =>
+            {
+                ValidateTopicPartition(kvp.Key);
+                var targetReplicas = kvp.Value.HasValue ? kvp.Value.Value.TargetReplicas : null;
+                return new
+                {
+                    TopicPartition = kvp.Key,
+                    Replicas = targetReplicas is { Count: > 0 } ? targetReplicas.ToList() : null
+                };
+            })
+            .GroupBy(item => item.TopicPartition.Topic)
+            .Select(group => new AlterPartitionReassignmentsRequestTopic
+            {
+                Name = group.Key,
+                Partitions = group
+                    .OrderBy(item => item.TopicPartition.Partition)
+                    .Select(item => new AlterPartitionReassignmentsRequestPartition
+                    {
+                        PartitionIndex = item.TopicPartition.Partition,
+                        Replicas = item.Replicas
+                    })
+                    .ToList()
+            })
+            .ToList();
+
+    private static List<ListPartitionReassignmentsRequestTopic> BuildListPartitionReassignmentTopics(
+        IEnumerable<TopicPartition> partitions) =>
+        partitions
+            .Select(partition =>
+            {
+                ValidateTopicPartition(partition);
+                return partition;
+            })
+            .GroupBy(partition => partition.Topic)
+            .Select(group => new ListPartitionReassignmentsRequestTopic
+            {
+                Name = group.Key,
+                PartitionIndexes = group.Select(partition => partition.Partition).Order().ToList()
+            })
+            .ToList();
+
+    private static void ValidateTopicPartition(TopicPartition topicPartition)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(topicPartition.Topic);
+        if (topicPartition.Partition < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(topicPartition), topicPartition.Partition, "Partition index must not be negative.");
+        }
+    }
+
+    private static bool IsToleratedReassignmentRetry(bool isRetryAttempt, Protocol.ErrorCode errorCode) =>
+        isRetryAttempt &&
+        (errorCode == Protocol.ErrorCode.ReassignmentInProgress ||
+         errorCode == Protocol.ErrorCode.NoReassignmentInProgress);
 
     public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
         IEnumerable<string>? users = null,
@@ -2663,6 +3134,49 @@ public sealed class AdminClient : IAdminClient
         return coordinator.NodeId;
     }
 
+    private async ValueTask<int> FindTransactionCoordinatorAsync(string transactionalId, CancellationToken cancellationToken)
+    {
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var request = new FindCoordinatorRequest
+        {
+            Key = transactionalId,
+            KeyType = CoordinatorType.Transaction
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion,
+            FindCoordinatorRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        if (response.Coordinators.Count == 0)
+        {
+            throw new KafkaException(Protocol.ErrorCode.CoordinatorNotAvailable,
+                "FindCoordinator returned an empty Coordinators array");
+        }
+
+        var coordinator = response.Coordinators[0];
+        if (coordinator.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw new KafkaException(coordinator.ErrorCode,
+                $"FindCoordinator failed for transactional ID '{transactionalId}': {coordinator.ErrorCode}");
+        }
+
+        _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
+        return coordinator.NodeId;
+    }
+
     private static IReadOnlyList<TopicPartition>? ParseMemberAssignment(byte[]? assignmentBytes)
     {
         if (assignmentBytes is null || assignmentBytes.Length == 0)
@@ -2777,6 +3291,11 @@ public sealed class AdminClientOptions
     public OAuthBearerToken? OAuthBearerToken { get; init; }
 
     /// <summary>
+    /// AWS_MSK_IAM configuration.
+    /// </summary>
+    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+
+    /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
@@ -2821,6 +3340,7 @@ public sealed class AdminClientBuilder
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private AwsMskIamConfig? _awsMskIamConfig;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -3004,6 +3524,18 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Configures Amazon MSK IAM authentication using the AWS_MSK_IAM SASL mechanism.
+    /// </summary>
+    /// <param name="config">Optional AWS_MSK_IAM configuration. Defaults to the AWS credential chain and broker-derived region.</param>
+    public AdminClientBuilder WithAwsMskIam(AwsMskIamConfig? config = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.AwsMskIam;
+        _awsMskIamConfig = config ?? new AwsMskIamConfig();
+        return this;
+    }
+
     public AdminClientBuilder WithLoggerFactory(ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -3142,7 +3674,8 @@ public sealed class AdminClientBuilder
         string? username,
         string? password,
         GssapiConfig? gssapiConfig,
-        OAuthBearerConfig? oauthConfig)
+        OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
@@ -3150,6 +3683,7 @@ public sealed class AdminClientBuilder
         _saslPassword = password;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
+        _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
         _oauthTokenProvider = null;
         return this;
     }
@@ -3178,6 +3712,7 @@ public sealed class AdminClientBuilder
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
+            AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
