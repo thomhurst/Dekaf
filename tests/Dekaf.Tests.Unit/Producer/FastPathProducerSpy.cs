@@ -1,5 +1,6 @@
 using Dekaf.Producer;
 using Dekaf.Serialization;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -89,6 +90,14 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
         => Task.FromResult(Array.Empty<RecordMetadata>());
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+    }
+
+    public void UnregisterMetricFromSubscription(string name)
+    {
+    }
 
     public ITransaction<TKey, TValue> BeginTransaction() => throw new NotSupportedException();
 

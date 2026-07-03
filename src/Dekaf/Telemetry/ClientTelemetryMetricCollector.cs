@@ -7,7 +7,8 @@ namespace Dekaf.Telemetry;
 internal enum ClientTelemetryClientRole
 {
     Producer,
-    Consumer
+    Consumer,
+    Admin
 }
 
 internal enum ClientTelemetryMetricKind
@@ -50,9 +51,13 @@ internal sealed class ClientTelemetryMetricCollector
     private static readonly IReadOnlyList<ClientTelemetryMetricAttribute> EmptyAttributes = [];
 
     private readonly ConcurrentDictionary<int, NodeRequestLatency> _nodeRequestLatencies = new();
-    private readonly string _connectionCreationTotalName;
-    private readonly string _nodeRequestLatencyAvgName;
-    private readonly string _nodeRequestLatencyMaxName;
+    private readonly ConcurrentDictionary<string, ApplicationTelemetryMetric> _applicationMetrics =
+        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, double> _applicationCounterPreviousValues =
+        new(StringComparer.Ordinal);
+    private readonly string? _connectionCreationTotalName;
+    private readonly string? _nodeRequestLatencyAvgName;
+    private readonly string? _nodeRequestLatencyMaxName;
 
     private long _connectionCreationTotal;
     private long _connectionCreationDelta;
@@ -69,8 +74,33 @@ internal sealed class ClientTelemetryMetricCollector
                 ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
                 ClientTelemetryMetricNames.ConsumerNodeRequestLatencyAvg,
                 ClientTelemetryMetricNames.ConsumerNodeRequestLatencyMax),
+            ClientTelemetryClientRole.Admin => (null, null, null),
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported telemetry client role")
         };
+    }
+
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        _applicationMetrics[metric.Name] = metric;
+        _applicationCounterPreviousValues.TryRemove(metric.Name, out _);
+    }
+
+    public void RegisterMetricsForSubscription(IEnumerable<ApplicationTelemetryMetric> metrics)
+    {
+        ArgumentNullException.ThrowIfNull(metrics);
+
+        foreach (var metric in metrics)
+        {
+            RegisterMetricForSubscription(metric);
+        }
+    }
+
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        _applicationMetrics.TryRemove(name, out _);
+        _applicationCounterPreviousValues.TryRemove(name, out _);
     }
 
     public void RecordConnectionCreated()
@@ -109,20 +139,17 @@ internal sealed class ClientTelemetryMetricCollector
             return ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality);
         }
 
-        var includeConnectionCreationTotal = IsRequested(_connectionCreationTotalName, requestedMetrics);
-        var includeRequestLatencyAvg = IsRequested(_nodeRequestLatencyAvgName, requestedMetrics);
-        var includeRequestLatencyMax = IsRequested(_nodeRequestLatencyMaxName, requestedMetrics);
-
-        if (!includeConnectionCreationTotal &&
-            !includeRequestLatencyAvg &&
-            !includeRequestLatencyMax)
-        {
-            return ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality);
-        }
+        var includeConnectionCreationTotal = _connectionCreationTotalName is not null &&
+            IsRequested(_connectionCreationTotalName, requestedMetrics);
+        var includeRequestLatencyAvg = _nodeRequestLatencyAvgName is not null &&
+            IsRequested(_nodeRequestLatencyAvgName, requestedMetrics);
+        var includeRequestLatencyMax = _nodeRequestLatencyMaxName is not null &&
+            IsRequested(_nodeRequestLatencyMaxName, requestedMetrics);
 
         var capacity = (includeConnectionCreationTotal ? 1 : 0) +
             ((includeRequestLatencyAvg ? 1 : 0) + (includeRequestLatencyMax ? 1 : 0)) *
-            Math.Max(1, _nodeRequestLatencies.Count);
+            Math.Max(1, _nodeRequestLatencies.Count) +
+            _applicationMetrics.Count;
         var metrics = new List<ClientTelemetryMetric>(capacity);
 
         if (includeConnectionCreationTotal)
@@ -134,7 +161,7 @@ internal sealed class ClientTelemetryMetricCollector
             if (value != 0)
             {
                 metrics.Add(new ClientTelemetryMetric(
-                    _connectionCreationTotalName,
+                    _connectionCreationTotalName!,
                     ClientTelemetryMetricKind.Counter,
                     value,
                     EmptyAttributes));
@@ -162,7 +189,7 @@ internal sealed class ClientTelemetryMetricCollector
                 if (includeRequestLatencyAvg)
                 {
                     metrics.Add(new ClientTelemetryMetric(
-                        _nodeRequestLatencyAvgName,
+                        _nodeRequestLatencyAvgName!,
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.TotalTimestampTicks) / snapshot.Count,
                         attributes));
@@ -171,13 +198,15 @@ internal sealed class ClientTelemetryMetricCollector
                 if (includeRequestLatencyMax)
                 {
                     metrics.Add(new ClientTelemetryMetric(
-                        _nodeRequestLatencyMaxName,
+                        _nodeRequestLatencyMaxName!,
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.MaxTimestampTicks),
                         attributes));
                 }
             }
         }
+
+        AddApplicationMetrics(subscription, requestedMetrics, metrics);
 
         return metrics.Count == 0
             ? ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality)
@@ -210,6 +239,96 @@ internal sealed class ClientTelemetryMetricCollector
 
     private static double StopwatchTicksToMilliseconds(long stopwatchTicks) =>
         stopwatchTicks * 1000.0 / Stopwatch.Frequency;
+
+    private void AddApplicationMetrics(
+        ClientTelemetrySubscription subscription,
+        IReadOnlyList<string> requestedMetrics,
+        List<ClientTelemetryMetric> metrics)
+    {
+        foreach (var (_, metric) in _applicationMetrics)
+        {
+            if (!IsRequested(metric.Name, requestedMetrics))
+            {
+                continue;
+            }
+
+            double value;
+            try
+            {
+                value = metric.Observe();
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!double.IsFinite(value))
+            {
+                continue;
+            }
+
+            metrics.Add(new ClientTelemetryMetric(
+                metric.Name,
+                ToClientMetricKind(metric.Kind),
+                ToClientMetricValue(metric, value, subscription.DeltaTemporality),
+                ToClientMetricAttributes(metric.Attributes)));
+        }
+    }
+
+    private double ToClientMetricValue(
+        ApplicationTelemetryMetric metric,
+        double value,
+        bool deltaTemporality) =>
+        metric.Kind == ApplicationTelemetryMetricKind.Counter && deltaTemporality
+            ? GetApplicationCounterDelta(metric.Name, value)
+            : value;
+
+    private double GetApplicationCounterDelta(string name, double value)
+    {
+        while (true)
+        {
+            if (!_applicationCounterPreviousValues.TryGetValue(name, out var previous))
+            {
+                if (_applicationCounterPreviousValues.TryAdd(name, value))
+                {
+                    return value;
+                }
+
+                continue;
+            }
+
+            if (_applicationCounterPreviousValues.TryUpdate(name, value, previous))
+            {
+                return value >= previous ? value - previous : value;
+            }
+        }
+    }
+
+    private static ClientTelemetryMetricKind ToClientMetricKind(ApplicationTelemetryMetricKind kind) =>
+        kind switch
+        {
+            ApplicationTelemetryMetricKind.Counter => ClientTelemetryMetricKind.Counter,
+            ApplicationTelemetryMetricKind.Gauge => ClientTelemetryMetricKind.Gauge,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported application metric kind")
+        };
+
+    private static IReadOnlyList<ClientTelemetryMetricAttribute> ToClientMetricAttributes(
+        IReadOnlyDictionary<string, string> attributes)
+    {
+        if (attributes.Count == 0)
+        {
+            return EmptyAttributes;
+        }
+
+        var result = new ClientTelemetryMetricAttribute[attributes.Count];
+        var i = 0;
+        foreach (var (name, value) in attributes)
+        {
+            result[i++] = new ClientTelemetryMetricAttribute(name, value);
+        }
+
+        return result;
+    }
 
     private readonly record struct LatencySnapshot(
         long Count,

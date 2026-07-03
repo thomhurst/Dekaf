@@ -22,6 +22,7 @@ public sealed class AdminClient : IAdminClient
     private readonly AdminClientOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly ILogger<AdminClient>? _logger;
     private readonly bool _ownsResources;
@@ -33,6 +34,8 @@ public sealed class AdminClient : IAdminClient
         _options = options;
         _logger = loggerFactory?.CreateLogger<AdminClient>();
         _ownsResources = true;
+        _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
 
         _connectionPool = new ConnectionPool(
             options.ClientId,
@@ -60,7 +63,8 @@ public sealed class AdminClient : IAdminClient
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
-            loggerFactory?.CreateLogger<ClientTelemetryManager>());
+            loggerFactory?.CreateLogger<ClientTelemetryManager>(),
+            _telemetryMetricCollector);
         _ownsResources = true;
     }
 
@@ -75,14 +79,25 @@ public sealed class AdminClient : IAdminClient
         _logger = loggerFactory?.CreateLogger<AdminClient>();
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
+        _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
-            loggerFactory?.CreateLogger<ClientTelemetryManager>());
+            loggerFactory?.CreateLogger<ClientTelemetryManager>(),
+            _telemetryMetricCollector);
         _ownsResources = ownsResources;
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
+
+    /// <inheritdoc />
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric) =>
+        _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+
+    /// <inheritdoc />
+    public void UnregisterMetricFromSubscription(string name) =>
+        _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
 
     public async ValueTask CreateTopicsAsync(
         IEnumerable<NewTopic> topics,
@@ -2479,6 +2494,11 @@ public sealed class AdminClientOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Application metrics registered for broker telemetry subscriptions.
+    /// </summary>
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
 }
 
 /// <summary>
@@ -2502,6 +2522,7 @@ public sealed class AdminClientBuilder
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private TimeSpan? _metadataMaxAge;
+    private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
     public AdminClientBuilder()
     {
@@ -2659,6 +2680,30 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Registers an application metric for broker telemetry subscriptions on built admin clients.
+    /// Duplicate names replace the previous metric.
+    /// </summary>
+    /// <param name="metric">The application metric to register.</param>
+    public AdminClientBuilder RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        _applicationMetrics[metric.Name] = metric;
+        return this;
+    }
+
+    /// <summary>
+    /// Removes an application metric registration from this builder.
+    /// Missing names are ignored.
+    /// </summary>
+    /// <param name="name">The application metric name.</param>
+    public AdminClientBuilder UnregisterMetricFromSubscription(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        _applicationMetrics.Remove(name);
+        return this;
+    }
+
+    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -2742,7 +2787,8 @@ public sealed class AdminClientBuilder
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
