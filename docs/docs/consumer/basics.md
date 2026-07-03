@@ -50,7 +50,7 @@ consumer.Subscribe("my-topic").Pause(new TopicPartition("my-topic", 0));
 
 // After
 consumer.Subscribe("my-topic");
-consumer.Pause(new TopicPartition("my-topic", 0));
+consumer.Partitions.Pause(new TopicPartition("my-topic", 0));
 ```
 
 ## Consuming Messages
@@ -207,13 +207,13 @@ Temporarily stop consuming from specific partitions:
 
 ```csharp
 // Pause consumption from a partition
-consumer.Pause(new TopicPartition("my-topic", 0));
+consumer.Partitions.Pause(new TopicPartition("my-topic", 0));
 
 // Check what's paused
-var paused = consumer.Paused;
+var paused = consumer.Partitions.Paused;
 
 // Resume
-consumer.Resume(new TopicPartition("my-topic", 0));
+consumer.Partitions.Resume(new TopicPartition("my-topic", 0));
 ```
 
 This is useful for backpressure - if your processing can't keep up, pause some partitions.
@@ -225,7 +225,7 @@ This is useful for backpressure - if your processing can't keep up, pause some p
 IReadOnlySet<string> topics = consumer.Subscription;
 
 // Current assignment (partitions being consumed)
-IReadOnlySet<TopicPartition> partitions = consumer.Assignment;
+IReadOnlySet<TopicPartition> partitions = consumer.Partitions.Assignment;
 
 // Consumer's member ID in the group
 string? memberId = consumer.MemberId;

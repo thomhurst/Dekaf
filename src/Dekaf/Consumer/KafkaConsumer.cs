@@ -463,7 +463,13 @@ internal sealed class PendingFetchData : IDisposable
 /// </remarks>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>, DeadLetter.IRawRecordAccessor, IBudgetedInstance
+public sealed partial class KafkaConsumer<TKey, TValue> :
+    IKafkaConsumer<TKey, TValue>,
+    IConsumerPositions,
+    IConsumerPartitions,
+    IConsumerOffsets,
+    DeadLetter.IRawRecordAccessor,
+    IBudgetedInstance
 {
     /// <summary>
     /// Delay in milliseconds when all assigned partitions are paused, to prevent
@@ -771,6 +777,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
+    public IConsumerPositions Positions => this;
+    public IConsumerPartitions Partitions => this;
+    public IConsumerOffsets Offsets => this;
+
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.
     /// No-op when the consumer has no group coordinator (manual assignment mode).

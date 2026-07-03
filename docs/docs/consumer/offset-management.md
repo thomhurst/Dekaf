@@ -153,12 +153,12 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 
 ```csharp
 // Get committed offset for a partition
-long? committed = await consumer.GetCommittedOffsetAsync(
+long? committed = await consumer.Positions.GetCommittedOffsetAsync(
     new TopicPartition("my-topic", 0)
 );
 
 // Get current position (next offset to be consumed)
-long? position = consumer.GetPosition(new TopicPartition("my-topic", 0));
+long? position = consumer.Positions.GetPosition(new TopicPartition("my-topic", 0));
 ```
 
 ## Seeking to Offsets
@@ -167,13 +167,13 @@ Jump to a specific position:
 
 ```csharp
 // Seek to specific offset
-consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100));
+consumer.Positions.Seek(new TopicPartitionOffset("my-topic", 0, 100));
 
 // Seek to beginning
-consumer.SeekToBeginning(new TopicPartition("my-topic", 0));
+consumer.Positions.SeekToBeginning(new TopicPartition("my-topic", 0));
 
 // Seek to end
-consumer.SeekToEnd(new TopicPartition("my-topic", 0));
+consumer.Positions.SeekToEnd(new TopicPartition("my-topic", 0));
 ```
 
 Seek and pause/resume operations mutate current consumer state and return `void`. Keep them as separate statements:
@@ -184,8 +184,8 @@ consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100))
     .Pause(new TopicPartition("my-topic", 0));
 
 // After
-consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100));
-consumer.Pause(new TopicPartition("my-topic", 0));
+consumer.Positions.Seek(new TopicPartitionOffset("my-topic", 0, 100));
+consumer.Partitions.Pause(new TopicPartition("my-topic", 0));
 ```
 
 ### Seek by Timestamp
@@ -195,14 +195,14 @@ Find offsets for a specific time:
 ```csharp
 var targetTime = DateTimeOffset.UtcNow.AddHours(-1);
 
-var offsets = await consumer.GetOffsetsForTimesAsync(new[]
+var offsets = await consumer.Offsets.GetOffsetsForTimesAsync(new[]
 {
     new TopicPartitionTimestamp("my-topic", 0, targetTime)
 });
 
 foreach (var (tp, offset) in offsets)
 {
-    consumer.Seek(new TopicPartitionOffset(tp, offset));
+    consumer.Positions.Seek(new TopicPartitionOffset(tp.Topic, tp.Partition, offset));
 }
 ```
 

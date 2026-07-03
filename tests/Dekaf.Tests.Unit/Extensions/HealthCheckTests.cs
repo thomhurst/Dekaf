@@ -17,8 +17,8 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_NoAssignment_ReturnsUnhealthy()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
-        consumer.Assignment.Returns(new HashSet<TopicPartition>());
+        var consumer = CreateConsumerSubstitute(out var partitions, out _, out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -32,11 +32,11 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_LowLag_ReturnsHealthy()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp = new TopicPartition("test-topic", 0);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
-        consumer.GetPosition(tp).Returns(90L);
-        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        positions.GetPosition(tp).Returns(90L);
+        offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -50,11 +50,11 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_ModerateLag_ReturnsDegraded()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp = new TopicPartition("test-topic", 0);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
-        consumer.GetPosition(tp).Returns(0L);
-        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 5000));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        positions.GetPosition(tp).Returns(0L);
+        offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 5000));
 
         var options = new DekafConsumerHealthCheckOptions
         {
@@ -73,11 +73,11 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_HighLag_ReturnsUnhealthy()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp = new TopicPartition("test-topic", 0);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
-        consumer.GetPosition(tp).Returns(0L);
-        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 50000));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        positions.GetPosition(tp).Returns(0L);
+        offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 50000));
 
         var options = new DekafConsumerHealthCheckOptions
         {
@@ -96,14 +96,14 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_MultiplePartitions_ReportsMaxLag()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp0 = new TopicPartition("test-topic", 0);
         var tp1 = new TopicPartition("test-topic", 1);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
-        consumer.GetPosition(tp0).Returns(90L);
-        consumer.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
-        consumer.GetPosition(tp1).Returns(0L);
-        consumer.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 2000));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
+        positions.GetPosition(tp0).Returns(90L);
+        offsets.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        positions.GetPosition(tp1).Returns(0L);
+        offsets.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 2000));
 
         var options = new DekafConsumerHealthCheckOptions
         {
@@ -122,13 +122,13 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_NullPosition_SkipsPartition()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp0 = new TopicPartition("test-topic", 0);
         var tp1 = new TopicPartition("test-topic", 1);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
-        consumer.GetPosition(tp0).Returns((long?)null);
-        consumer.GetPosition(tp1).Returns(95L);
-        consumer.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
+        positions.GetPosition(tp0).Returns((long?)null);
+        positions.GetPosition(tp1).Returns(95L);
+        offsets.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -142,12 +142,12 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_AllNullPositions_ReturnsDegraded()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out _);
         var tp0 = new TopicPartition("test-topic", 0);
         var tp1 = new TopicPartition("test-topic", 1);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
-        consumer.GetPosition(tp0).Returns((long?)null);
-        consumer.GetPosition(tp1).Returns((long?)null);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
+        positions.GetPosition(tp0).Returns((long?)null);
+        positions.GetPosition(tp1).Returns((long?)null);
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -163,11 +163,11 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_TimesOut_ReturnsUnhealthy()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp = new TopicPartition("test-topic", 0);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
-        consumer.GetPosition(tp).Returns(90L);
-        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>())
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        positions.GetPosition(tp).Returns(90L);
+        offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
                 var token = callInfo.Arg<CancellationToken>();
@@ -192,8 +192,8 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_ExceptionThrown_ReturnsUnhealthy()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
-        consumer.Assignment.Throws(new InvalidOperationException("Consumer disposed"));
+        var consumer = CreateConsumerSubstitute(out var partitions, out _, out _);
+        partitions.Assignment.Throws(new InvalidOperationException("Consumer disposed"));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -207,11 +207,11 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_NegativeLag_ClampsToZero()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp = new TopicPartition("test-topic", 0);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
-        consumer.GetPosition(tp).Returns(200L);
-        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        positions.GetPosition(tp).Returns(200L);
+        offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -271,16 +271,16 @@ public class HealthCheckTests
     [Test]
     public async Task ConsumerHealthCheck_PartialNullPositions_ReportsBothPartitionCounts()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
         var tp0 = new TopicPartition("test-topic", 0);
         var tp1 = new TopicPartition("test-topic", 1);
         var tp2 = new TopicPartition("test-topic", 2);
-        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1, tp2 });
-        consumer.GetPosition(tp0).Returns(90L);
-        consumer.GetPosition(tp1).Returns((long?)null);
-        consumer.GetPosition(tp2).Returns(95L);
-        consumer.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
-        consumer.QueryWatermarkOffsetsAsync(tp2, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1, tp2 });
+        positions.GetPosition(tp0).Returns(90L);
+        positions.GetPosition(tp1).Returns((long?)null);
+        positions.GetPosition(tp2).Returns(95L);
+        offsets.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        offsets.QueryWatermarkOffsetsAsync(tp2, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -624,6 +624,23 @@ public class HealthCheckTests
     #endregion
 
     #region Helpers
+
+    private static IKafkaConsumer<string, string> CreateConsumerSubstitute(
+        out IConsumerPartitions partitions,
+        out IConsumerPositions positions,
+        out IConsumerOffsets offsets)
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        partitions = Substitute.For<IConsumerPartitions>();
+        positions = Substitute.For<IConsumerPositions>();
+        offsets = Substitute.For<IConsumerOffsets>();
+
+        consumer.Partitions.Returns(partitions);
+        consumer.Positions.Returns(positions);
+        consumer.Offsets.Returns(offsets);
+
+        return consumer;
+    }
 
     private static HealthCheckContext CreateContext()
     {
