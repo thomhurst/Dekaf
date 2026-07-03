@@ -446,6 +446,17 @@ public sealed class RecordBatch : IDisposable
 
     internal bool HasPreCompressedRecords => PreCompressedRecords is not null;
 
+    private ReadOnlyMemory<byte> _preEncodedRecords;
+    private bool _hasPreEncodedRecords;
+
+    internal bool HasPreEncodedRecords => _hasPreEncodedRecords;
+
+    internal void SetPreEncodedRecords(ReadOnlyMemory<byte> records)
+    {
+        _preEncodedRecords = records;
+        _hasPreEncodedRecords = true;
+    }
+
     /// <summary>
     /// Pre-serializes the records in this batch, compressing when a codec is configured.
     /// Producer send paths call this before request serialization so <see cref="Write"/>
@@ -453,13 +464,17 @@ public sealed class RecordBatch : IDisposable
     /// on the send-loop thread. The data is stored in a pooled array (a per-batch
     /// allocation, acceptable).
     /// </summary>
-    /// <param name="compression">The compression type to apply. <see cref="CompressionType.None"/>
-    /// stores the plain encoded records.</param>
+    /// <param name="compression">The compression type to apply.</param>
     /// <param name="codecs">The codec registry to use.</param>
     internal void PreCompress(CompressionType compression, CompressionCodecRegistry? codecs)
     {
         if (compression == CompressionType.None)
         {
+            if (_hasPreEncodedRecords)
+            {
+                return;
+            }
+
             var uncompressedRecords = Records;
             using var encodedBuffer = new DetachableBufferWriter(
                 ProducerDataPool.BytePool, GetEncodedRecordsLength(uncompressedRecords));
@@ -472,24 +487,31 @@ public sealed class RecordBatch : IDisposable
             return;
         }
 
+        var registry = codecs ?? CompressionCodecRegistry.Default;
+        var codec = registry.GetCodec(compression);
+        if (_hasPreEncodedRecords)
+        {
+            using var compressedBuffer = new DetachableBufferWriter(ProducerDataPool.BytePool, _preEncodedRecords.Length);
+            codec.Compress(new ReadOnlySequence<byte>(_preEncodedRecords), compressedBuffer);
+            PreCompressedRecords = compressedBuffer.DetachBuffer(out var compressedLength);
+            PreCompressedLength = compressedLength;
+            PreCompressedType = compression;
+            return;
+        }
+
         var cache = RentSerializationCache();
         try
         {
-            // Serialize records to pooled scratch buffer
+            // Compress directly into a detachable producer-pool buffer.
             var recordsBuffer = GetRecordsBuffer(cache);
             var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
             var records = Records;
 
             WriteRecords(records, ref recordsWriter);
-
-            // Compress directly into a detachable producer-pool buffer.
-            var registry = codecs ?? CompressionCodecRegistry.Default;
-            var codec = registry.GetCodec(compression);
-            using var compressedBuffer = new DetachableBufferWriter(ProducerDataPool.BytePool, recordsBuffer.WrittenCount);
-            codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
-
-            PreCompressedRecords = compressedBuffer.DetachBuffer(out var compressedLength);
-            PreCompressedLength = compressedLength;
+            using var serializedCompressedBuffer = new DetachableBufferWriter(ProducerDataPool.BytePool, recordsBuffer.WrittenCount);
+            codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), serializedCompressedBuffer);
+            PreCompressedRecords = serializedCompressedBuffer.DetachBuffer(out var serializedCompressedLength);
+            PreCompressedLength = serializedCompressedLength;
             PreCompressedType = compression;
         }
         finally
@@ -509,8 +531,19 @@ public sealed class RecordBatch : IDisposable
         {
             PreCompressedRecords = null;
             PreCompressedLength = 0;
+            PreCompressedType = CompressionType.None;
             Producer.ProducerDataPool.BytePool.Return(array, clearArray: false);
         }
+    }
+
+    internal void DisposeRecordList()
+    {
+        if (_records is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        _records = null!;
     }
 
     /// <summary>
@@ -525,10 +558,7 @@ public sealed class RecordBatch : IDisposable
 
         ReturnPreCompressedBuffer();
 
-        if (_records is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
+        DisposeRecordList();
 
         ReturnToPool();
     }
@@ -550,6 +580,8 @@ public sealed class RecordBatch : IDisposable
             item.PreCompressedRecords = null;
             item.PreCompressedLength = 0;
             item.PreCompressedType = CompressionType.None;
+            item._preEncodedRecords = default;
+            item._hasPreEncodedRecords = false;
 
             // Reset mutable state to defaults
             item.BaseOffset = 0;
@@ -622,6 +654,8 @@ public sealed class RecordBatch : IDisposable
         batch.ProducerEpoch = producerEpoch;
         batch.BaseSequence = baseSequence;
         batch.Records = Records;
+        batch._preEncodedRecords = _preEncodedRecords;
+        batch._hasPreEncodedRecords = _hasPreEncodedRecords;
 
         // Transfer pre-compressed data — records content is unchanged,
         // only header fields differ (CRC is recomputed in Write()).
@@ -671,6 +705,11 @@ public sealed class RecordBatch : IDisposable
                 // Pre-compressed at seal time — use the stored data directly
                 compressedRecords = PreCompressedRecords.AsSpan(0, PreCompressedLength);
                 effectiveCompression = PreCompressedType;
+            }
+            else if (_hasPreEncodedRecords)
+            {
+                compressedRecords = _preEncodedRecords.Span;
+                effectiveCompression = CompressionType.None;
             }
             else
             {
@@ -777,6 +816,9 @@ public sealed class RecordBatch : IDisposable
 
         if (compression != CompressionType.None)
             throw new InvalidOperationException("Compressed RecordBatch size requires pre-compressed records.");
+
+        if (_hasPreEncodedRecords)
+            return _preEncodedRecords.Length;
 
         return GetEncodedRecordsLength(Records);
     }

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
@@ -666,6 +667,25 @@ internal sealed class BatchArena
     public ReadOnlySpan<byte> GetSpan(int offset, int length)
     {
         return _buffer.AsSpan(offset, length);
+    }
+
+    /// <summary>
+    /// Gets read-only memory for data at the specified offset and length.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ReadOnlyMemory<byte> GetMemory(int offset, int length)
+    {
+        return _buffer.AsMemory(offset, length);
+    }
+
+    /// <summary>
+    /// Rewinds the last allocation if no later allocation has occurred.
+    /// Used only while the owning partition lock is held to abandon a failed record encode.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryRewindLastAllocation(int offset, int length)
+    {
+        return Interlocked.CompareExchange(ref _position, offset, offset + length) == offset + length;
     }
 
     /// <summary>
@@ -1346,7 +1366,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     && now < batch.RetryNotBefore)
                     continue;
 
-                if (ready.Count > 0 && size + batch.DataSize > maxRequestSize)
+                var batchRequestSize = batch.EncodedSize;
+                if (ready.Count > 0 && size + batchRequestSize > maxRequestSize)
                 {
                     // Ready() already consumed notifications for all partitions on this node.
                     // Re-enqueue this and remaining partitions so they aren't orphaned.
@@ -1370,7 +1391,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (batch is not null)
             {
                 batch.AppendDiag('D');
-                size += batch.DataSize;
+                size += batch.EncodedSize;
                 ready.Add(batch);
             }
         }
@@ -2717,11 +2738,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Pre-serializes a sealed batch's records (compressing when configured). Called by the
+    /// Prepares a sealed batch's records for send, compressing when configured. Called by the
     /// sender thread from <see cref="Ready"/>, outside the partition SpinLock, before the
-    /// batch can drain. Doing this here keeps the per-record wire encoding off the per-broker
-    /// send-loop thread, which only has to copy + CRC the pre-serialized payload — the
-    /// coordinator encodes the next batch while the send loop writes the previous one.
+    /// batch can drain. Record bytes are already encoded at append time, so this step either
+    /// leaves the arena-backed records in place or compresses those encoded bytes.
     ///
     /// Thread safety: the batch is already sealed and in the deque; no other thread can
     /// modify it. The drain loop skips batches where <see cref="ReadyBatch.IsPreSerialized"/>
@@ -2732,6 +2752,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         try
         {
             readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            readyBatch.SetEncodedSize(readyBatch.RecordBatch.GetEncodedSize(_options.CompressionType));
         }
         catch (Exception ex)
         {
@@ -4025,6 +4046,9 @@ internal sealed class PartitionBatch
     private int _pooledHeaderArrayCount;
 
     private long _baseTimestamp;
+    private long _maxTimestamp;
+    private int _encodedRecordsStart;
+    private int _encodedRecordsLength;
     private int _estimatedSize;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
     private long _createdStopwatchTimestamp;
@@ -4138,6 +4162,9 @@ internal sealed class PartitionBatch
         _pooledArrayCount = 0;
         _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
+        _maxTimestamp = 0;
+        _encodedRecordsStart = 0;
+        _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
@@ -4191,6 +4218,9 @@ internal sealed class PartitionBatch
         _pooledArrayCount = 0;
         _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
+        _maxTimestamp = 0;
+        _encodedRecordsStart = 0;
+        _encodedRecordsLength = 0;
         _estimatedSize = 0;
         // _isCompleted stays at 1 - batch is "completed" while in pool
         _completedBatch = null;
@@ -4228,103 +4258,32 @@ internal sealed class PartitionBatch
         Action<RecordMetadata, Exception?>? callback,
         int estimatedRecordSize)
     {
-        // Check if batch was completed
-        if (Volatile.Read(ref _isCompleted) != 0)
+        var result = TryAppendEncoded(
+            timestamp,
+            key.Span,
+            key.IsNull,
+            key.Length,
+            value.Span,
+            value.IsNull,
+            value.Length,
+            headers,
+            headerCount,
+            completionSource,
+            callback,
+            estimatedRecordSize);
+
+        if (result.Success)
         {
-            return new RecordAppendResult(false);
+            key.Return();
+            value.Return();
+            RecordAccumulator.ReturnPooledHeaders(headers);
         }
 
-        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-        if (_records is null || _pooledArrays is null)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + estimatedRecordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ProducerContainerPools.Records);
-        }
-        if (completionSource is not null && _completionSourceCount >= _completionSources.Length)
-        {
-            GrowArray(ref _completionSources, ref _completionSourceCount, ProducerContainerPools.CompletionSources);
-        }
-        if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
-        {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ProducerContainerPools.DataArrayRefs);
-        }
-        if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ProducerContainerPools.HeaderArrayRefs);
-        }
-        if (callback is not null)
-        {
-            _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
-            if (_callbackCount >= _callbacks.Length)
-            {
-                GrowArray(ref _callbacks!, ref _callbackCount, ProducerContainerPools.Callbacks);
-            }
-        }
-
-        // Track pooled arrays for returning to pool later
-        if (key.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = key.Array;
-        }
-        if (value.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = value.Array;
-        }
-        if (headers is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = headers;
-        }
-
-        var timestampDelta = timestamp - _baseTimestamp;
-        _records[_recordCount] = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = key.Memory,
-            IsKeyNull = key.IsNull,
-            Value = value.Memory,
-            IsValueNull = value.IsNull,
-            Headers = headers,
-            HeaderCount = headerCount,
-            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, key.IsNull, key.Length, value.IsNull, value.Length, headers, headerCount)
-        };
-
-        if (completionSource is not null)
-        {
-            _completionSources[_completionSourceCount++] = completionSource;
-            ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
-        }
-
-        if (callback is not null)
-        {
-            _callbacks![_callbackCount++] = callback;
-        }
-
-        _recordCount++;
-        _estimatedSize += estimatedRecordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: estimatedRecordSize);
+        return result;
     }
 
     /// <summary>
-    /// Appends a record from raw span data, using the arena for zero-copy when possible.
-    /// Falls back to ArrayPool rental when the arena is full.
+    /// Appends a record from raw span data, encoding directly into the batch arena.
     /// Caller must hold the per-partition deque lock.
     /// </summary>
     public RecordAppendResult TryAppendFromSpans(
@@ -4342,6 +4301,44 @@ internal sealed class PartitionBatch
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
 
+        var result = TryAppendEncoded(
+            timestamp,
+            keyData,
+            keyIsNull,
+            keyLength,
+            valueData,
+            valueIsNull,
+            valueLength,
+            headers,
+            headerCount,
+            completionSource,
+            callback,
+            estimatedRecordSize);
+
+        if (result.Success)
+        {
+            RecordAccumulator.ReturnPooledHeaders(headers);
+        }
+
+        return result;
+    }
+
+    private RecordAppendResult TryAppendEncoded(
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        int keyLength,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        int valueLength,
+        Header[]? headers,
+        int headerCount,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback,
+        int estimatedRecordSize)
+    {
+        _ = estimatedRecordSize;
+
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
         {
@@ -4354,13 +4351,22 @@ internal sealed class PartitionBatch
             return new RecordAppendResult(false);
         }
 
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
+        var recordIndex = _recordCount;
+        var baseTimestamp = recordIndex == 0 ? timestamp : _baseTimestamp;
+        var timestampDelta = timestamp - baseTimestamp;
+        var bodySize = Record.ComputeBodySize(
+            timestampDelta,
+            recordIndex,
+            keyIsNull,
+            keyLength,
+            valueIsNull,
+            valueLength,
+            headers,
+            headerCount);
+        var encodedRecordSize = checked(Record.VarIntSize(bodySize) + bodySize);
 
         // Check size limit
-        if (_estimatedSize + estimatedRecordSize > _options.BatchSize && _recordCount > 0)
+        if ((long)_estimatedSize + encodedRecordSize > _options.BatchSize && recordIndex > 0)
         {
             return new RecordAppendResult(false);
         }
@@ -4374,10 +4380,6 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _completionSources, ref _completionSourceCount, ProducerContainerPools.CompletionSources);
         }
-        if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ProducerContainerPools.HeaderArrayRefs);
-        }
         if (callback is not null)
         {
             _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
@@ -4387,75 +4389,40 @@ internal sealed class PartitionBatch
             }
         }
 
-        // Pre-grow _pooledArrays for worst case (key + value fallback to ArrayPool)
-        if (_pooledArrayCount + 2 >= _pooledArrays.Length)
+        if (_arena is null || !_arena.TryAllocate(encodedRecordSize, out var encodedRecord, out var encodedOffset))
         {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ProducerContainerPools.DataArrayRefs);
+            return new RecordAppendResult(false);
         }
 
-        // Try to use arena for zero-copy serialization
-        ReadOnlyMemory<byte> keyMemory = ReadOnlyMemory<byte>.Empty;
-        ReadOnlyMemory<byte> valueMemory = ReadOnlyMemory<byte>.Empty;
-        bool usedArenaForKey = false;
-        bool usedArenaForValue = false;
-
-        if (!keyIsNull && keyLength > 0 && _arena is not null)
+        try
         {
-            if (_arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
-            {
-                keyData.CopyTo(keySpan);
-                keyMemory = _arena.Buffer.AsMemory(keyOffset, keyLength);
-                usedArenaForKey = true;
-            }
+            WriteEncodedRecord(
+                encodedRecord,
+                bodySize,
+                timestampDelta,
+                recordIndex,
+                keyData,
+                keyIsNull,
+                valueData,
+                valueIsNull,
+                headers,
+                headerCount);
+        }
+        catch
+        {
+            _arena.TryRewindLastAllocation(encodedOffset, encodedRecordSize);
+            throw;
         }
 
-        if (!valueIsNull && valueLength > 0 && _arena is not null)
+        if (recordIndex == 0)
         {
-            if (_arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
-            {
-                valueData.CopyTo(valueSpan);
-                valueMemory = _arena.Buffer.AsMemory(valueOffset, valueLength);
-                usedArenaForValue = true;
-            }
+            _baseTimestamp = baseTimestamp;
+            _encodedRecordsStart = encodedOffset;
         }
 
-        // Fall back to ProducerDataPool for data that didn't fit in the arena.
-        // Uses dedicated pool instead of ArrayPool<byte>.Shared to prevent TLS-based
-        // working set growth from cross-thread rent/return (see ProducerDataPool docs).
-        if (!keyIsNull && keyLength > 0 && !usedArenaForKey)
-        {
-            var keyArray = ProducerDataPool.BytePool.Rent(keyLength);
-            keyData.CopyTo(keyArray);
-            keyMemory = keyArray.AsMemory(0, keyLength);
-            _pooledArrays[_pooledArrayCount++] = keyArray;
-        }
-
-        if (!valueIsNull && valueLength > 0 && !usedArenaForValue)
-        {
-            var valueArray = ProducerDataPool.BytePool.Rent(valueLength);
-            valueData.CopyTo(valueArray);
-            valueMemory = valueArray.AsMemory(0, valueLength);
-            _pooledArrays[_pooledArrayCount++] = valueArray;
-        }
-
-        if (headers is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = headers;
-        }
-
-        var timestampDelta = timestamp - _baseTimestamp;
-        _records[_recordCount] = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = keyMemory,
-            IsKeyNull = keyIsNull,
-            Value = valueMemory,
-            IsValueNull = valueIsNull,
-            Headers = headers,
-            HeaderCount = headerCount,
-            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, keyIsNull, keyLength, valueIsNull, valueLength, headers, headerCount)
-        };
+        Debug.Assert(encodedOffset == _encodedRecordsStart + _encodedRecordsLength);
+        _encodedRecordsLength += encodedRecordSize;
+        _maxTimestamp = recordIndex == 0 ? timestamp : Math.Max(_maxTimestamp, timestamp);
 
         if (completionSource is not null)
         {
@@ -4468,10 +4435,132 @@ internal sealed class PartitionBatch
             _callbacks![_callbackCount++] = callback;
         }
 
-        _recordCount++;
-        _estimatedSize += estimatedRecordSize;
+        _recordCount = recordIndex + 1;
+        _estimatedSize += encodedRecordSize;
 
-        return new RecordAppendResult(Success: true, ActualSizeAdded: estimatedRecordSize);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: encodedRecordSize);
+    }
+
+    [SkipLocalsInit]
+    private static void WriteEncodedRecord(
+        Span<byte> destination,
+        int bodySize,
+        long timestampDelta,
+        int offsetDelta,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        Header[]? headers,
+        int headerCount)
+    {
+        var offset = 0;
+
+        WriteVarInt(destination, ref offset, bodySize);
+        destination[offset++] = 0; // record attributes
+        WriteVarLong(destination, ref offset, timestampDelta);
+        WriteVarInt(destination, ref offset, offsetDelta);
+
+        if (keyIsNull)
+        {
+            WriteVarInt(destination, ref offset, -1);
+        }
+        else
+        {
+            WriteVarInt(destination, ref offset, keyData.Length);
+            keyData.CopyTo(destination[offset..]);
+            offset += keyData.Length;
+        }
+
+        if (valueIsNull)
+        {
+            WriteVarInt(destination, ref offset, -1);
+        }
+        else
+        {
+            WriteVarInt(destination, ref offset, valueData.Length);
+            valueData.CopyTo(destination[offset..]);
+            offset += valueData.Length;
+        }
+
+        WriteVarInt(destination, ref offset, headerCount);
+        if (headers is not null)
+        {
+            for (var i = 0; i < headerCount; i++)
+            {
+                WriteHeader(destination, ref offset, in headers[i]);
+            }
+        }
+
+        Debug.Assert(offset == destination.Length);
+    }
+
+    [SkipLocalsInit]
+    private static void WriteHeader(Span<byte> destination, ref int offset, in Header header)
+    {
+        var key = header.Key;
+        if (key.Length <= 128)
+        {
+            Span<byte> buffer = stackalloc byte[512];
+            var keyByteCount = Encoding.UTF8.GetBytes(key, buffer);
+            WriteVarInt(destination, ref offset, keyByteCount);
+            buffer[..keyByteCount].CopyTo(destination[offset..]);
+            offset += keyByteCount;
+        }
+        else
+        {
+            var keyByteCount = Encoding.UTF8.GetByteCount(key);
+            WriteVarInt(destination, ref offset, keyByteCount);
+            Encoding.UTF8.GetBytes(key, destination[offset..]);
+            offset += keyByteCount;
+        }
+
+        if (header.IsValueNull)
+        {
+            WriteVarInt(destination, ref offset, -1);
+        }
+        else
+        {
+            WriteVarInt(destination, ref offset, header.Value.Length);
+            header.Value.Span.CopyTo(destination[offset..]);
+            offset += header.Value.Length;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteVarInt(Span<byte> destination, ref int offset, int value)
+    {
+        WriteVarUInt(destination, ref offset, (uint)((value << 1) ^ (value >> 31)));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteVarLong(Span<byte> destination, ref int offset, long value)
+    {
+        WriteVarULong(destination, ref offset, (ulong)((value << 1) ^ (value >> 63)));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteVarUInt(Span<byte> destination, ref int offset, uint value)
+    {
+        while (value >= 0x80)
+        {
+            destination[offset++] = (byte)(value | 0x80);
+            value >>= 7;
+        }
+
+        destination[offset++] = (byte)value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WriteVarULong(Span<byte> destination, ref int offset, ulong value)
+    {
+        while (value >= 0x80)
+        {
+            destination[offset++] = (byte)(value | 0x80);
+            value >>= 7;
+        }
+
+        destination[offset++] = (byte)value;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4537,8 +4626,8 @@ internal sealed class PartitionBatch
             return null;
         }
 
-        // Use pooled records array directly with wrapper to avoid allocation
-        // ReadyBatch will return the array to pool in Cleanup()
+        // Keep the working records array with ReadyBatch so it can be recycled after cleanup.
+        // RecordBatch itself reads from the already-encoded arena bytes.
         var pooledRecordsArray = _records;
         var attributes = RecordBatchAttributes.None;
         if (_isTransactional)
@@ -4559,13 +4648,15 @@ internal sealed class PartitionBatch
         var batch = RecordBatch.RentFromPool();
         batch.BaseOffset = 0;
         batch.BaseTimestamp = _baseTimestamp;
-        batch.MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0);
+        batch.MaxTimestamp = _maxTimestamp;
         batch.LastOffsetDelta = _recordCount - 1;
         batch.ProducerId = _producerId;
         batch.ProducerEpoch = _producerEpoch;
         batch.BaseSequence = baseSequence;
         batch.Attributes = attributes;
-        batch.Records = new RecordListWrapper(pooledRecordsArray, _recordCount);
+        var encodedRecords = _arena!.GetMemory(_encodedRecordsStart, _encodedRecordsLength);
+        batch.SetPreEncodedRecords(encodedRecords);
+        batch.Records = LazyRecordList.Create(encodedRecords, _recordCount);
         _records = null!;
 
         // Rent ReadyBatch from pool or create new if no pool available
@@ -4644,7 +4735,10 @@ internal sealed class PartitionBatch
     /// </remarks>
     internal static int EstimateRecordSize(int keyLength, int valueLength, Header[]? headers, int headerCount)
     {
-        var size = 20; // Base overhead for varint lengths, timestamp delta, offset delta, etc.
+        // Upper bound for record wrapper/body metadata:
+        // record length (5) + attributes (1) + timestamp delta (10) + offset delta (5) +
+        // key length (5) + value length (5) + header count (5).
+        var size = 36;
         size += keyLength;
         size += valueLength;
 
@@ -4652,29 +4746,11 @@ internal sealed class PartitionBatch
         {
             for (var i = 0; i < headerCount; i++)
             {
-                var header = headers[i];
-                // OPTIMIZATION: For ASCII-only keys (99%+ of cases), string.Length == byte count.
-                // Only fall back to expensive UTF8.GetByteCount for non-ASCII keys.
-                var headerKeyByteCount = GetHeaderKeyByteCount(header.Key);
-                size += headerKeyByteCount + (header.IsValueNull ? 0 : header.Value.Length) + 10;
+                size += headers[i].CalculateSize();
             }
         }
 
         return size;
-    }
-
-    /// <summary>
-    /// Fast path for header key byte count. ASCII keys (the common case) use string length directly.
-    /// Uses SIMD-optimized Ascii.IsValid for efficient detection.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int GetHeaderKeyByteCount(string key)
-    {
-        // SIMD-optimized ASCII check: if all chars are ASCII, byte count == char count
-        // This is much faster than UTF8.GetByteCount for the common ASCII case
-        return System.Text.Ascii.IsValid(key)
-            ? key.Length
-            : System.Text.Encoding.UTF8.GetByteCount(key);
     }
 }
 
@@ -4795,9 +4871,14 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     public int CompletionSourcesCount => _completionSourcesCount;
 
     /// <summary>
-    /// Estimated size of all data in this batch (for buffer memory tracking).
+    /// Uncompressed encoded record bytes reserved against BufferMemory.
     /// </summary>
     public int DataSize { get; private set; }
+
+    /// <summary>
+    /// Full encoded record batch size used for MaxRequestSize drain accounting.
+    /// </summary>
+    public int EncodedSize { get; private set; }
 
     /// <summary>
     /// Gets a ValueTask that completes when this batch is done (either sent successfully or failed).
@@ -4870,6 +4951,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// Only called during epoch bump recovery — not in the hot path.
     /// </summary>
     internal void RewriteRecordBatch(RecordBatch newRecordBatch) => _recordBatch = newRecordBatch;
+
+    internal void SetEncodedSize(int encodedSize) => EncodedSize = encodedSize;
 
     /// <summary>
     /// Whether the batch's records have been pre-serialized (and compressed, when
@@ -5026,6 +5109,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _pooledHeaderArrays = pooledHeaderArrays;
         _pooledHeaderArraysCount = pooledHeaderArraysCount;
         DataSize = dataSize;
+        EncodedSize = dataSize;
         _pooledRecordsArray = pooledRecordsArray;
         _arena = arena;
         _callbacks = callbacks;
@@ -5073,6 +5157,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _pooledHeaderArrays = null;
         _pooledHeaderArraysCount = 0;
         DataSize = 0;
+        EncodedSize = 0;
         _pooledRecordsArray = null;
         _arena = null;
         _callbacks = null;
@@ -5387,6 +5472,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         if (_recordBatch is not null)
         {
             _recordBatch.ReturnPreCompressedBuffer();
+            _recordBatch.DisposeRecordList();
             _recordBatch.ReturnToPool();
         }
     }
