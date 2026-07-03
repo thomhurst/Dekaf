@@ -1617,9 +1617,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // across connections to issue concurrent fetches to the same broker.
 
             // Lazily prune stale entries from scaled-down connections.
-            // O(k) over a small dictionary (brokers × connections), once per fetch cycle — not hot path.
-            foreach (var key in _prefetchPendingItemsByBroker.Keys)
+            // Enumerate entries directly to avoid the allocating .Keys snapshot.
+            foreach (var entry in _prefetchPendingItemsByBroker)
             {
+                var key = entry.Key;
                 if (key.ConnectionIndex >= fetchConnectionCount)
                     _prefetchPendingItemsByBroker.TryRemove(key, out _);
             }
