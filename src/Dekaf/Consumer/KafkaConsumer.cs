@@ -605,6 +605,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Pattern subscription support
     private volatile Func<string, bool>? _topicFilter;
+    private volatile string? _topicPattern;
     private long _lastFilterRefreshTicks;
 
     // Thread-safety notes:
@@ -929,6 +930,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     public IReadOnlySet<string> Subscription => _subscriptionSnapshot;
+    public string? SubscriptionPattern => _topicPattern;
     public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
@@ -993,11 +995,57 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void Subscribe(params string[] topics)
     {
         _topicFilter = null;
+        _topicPattern = null;
         _subscription.Clear();
         foreach (var topic in topics)
         {
             _subscription.TryAdd(topic, 0);
         }
+
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: false);
+    }
+
+    public void Subscribe(Func<string, bool> topicFilter)
+    {
+        ArgumentNullException.ThrowIfNull(topicFilter);
+
+        _topicFilter = topicFilter;
+        _topicPattern = null;
+        _subscription.Clear();
+        _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    public void SubscribePattern(string pattern)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
+        }
+
+        if (string.IsNullOrWhiteSpace(_options.GroupId))
+        {
+            throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
+        }
+
+        _topicFilter = null;
+        _topicPattern = pattern;
+        _subscription.Clear();
+
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    public void Unsubscribe()
+    {
+        _topicFilter = null;
+        _topicPattern = null;
+        _subscription.Clear();
+        PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
+    {
         PublishSubscriptionSnapshot();
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
@@ -1018,60 +1066,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // one-time latency cost for the discarded prefetch.
         ClearFetchBuffer();
 
-        InvalidateFetchRequestCache();
-    }
+        if (invalidatePartitionCache)
+            InvalidatePartitionCache();
 
-    public void Subscribe(Func<string, bool> topicFilter)
-    {
-        ArgumentNullException.ThrowIfNull(topicFilter);
-
-        _topicFilter = topicFilter;
-        _subscription.Clear();
-        PublishSubscriptionSnapshot();
-        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
-        try
-        {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
-        }
-        finally
-        {
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
-        }
-
-        // Clear stale fetched data (same rationale as Assign).
-        ClearFetchBuffer();
-
-        _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
-        InvalidatePartitionCache();
-        InvalidateFetchRequestCache();
-    }
-
-    public void Unsubscribe()
-    {
-        _topicFilter = null;
-        _subscription.Clear();
-        PublishSubscriptionSnapshot();
-        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
-        try
-        {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
-        }
-        finally
-        {
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
-        }
-
-        // Clear stale fetched data (same rationale as Assign).
-        ClearFetchBuffer();
-
-        InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
 
     public void Assign(params TopicPartition[] partitions)
     {
+        _topicFilter = null;
+        _topicPattern = null;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
@@ -1123,6 +1127,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
     {
         // Clear subscription since we're doing manual assignment
+        _topicFilter = null;
+        _topicPattern = null;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
 
@@ -3305,10 +3311,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var subscriptionSnapshot = _subscriptionSnapshot;
+        var topicPattern = _topicPattern;
         var coordinator = _coordinator;
-        if (subscriptionSnapshot.Count != 0 && coordinator is not null)
+        if ((subscriptionSnapshot.Count != 0 || topicPattern is not null) && coordinator is not null)
         {
-            await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, cancellationToken).ConfigureAwait(false);
+            await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken).ConfigureAwait(false);
 
             var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
             if (Volatile.Read(ref _lastCoordinatorAssignmentVersion) == coordinatorAssignmentVersion)
@@ -3327,7 +3334,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             coordinator = _coordinator;
-            if (!_subscription.IsEmpty && coordinator is not null)
+            if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
             {
                 var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
                 var coordinatorAssignment = coordinator.Assignment;
@@ -3429,7 +3436,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsManualAssignmentEnsureCurrent()
     {
-        if (_topicFilter is not null || !_subscription.IsEmpty)
+        if (_topicFilter is not null || _topicPattern is not null || !_subscription.IsEmpty)
             return false;
 
         var assignmentEnsureVersion = Volatile.Read(ref _assignmentEnsureVersion);

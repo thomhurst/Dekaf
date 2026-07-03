@@ -50,6 +50,22 @@ var consumer2 = await Kafka.CreateConsumer<string, string>()
     .BuildAsync();
 ```
 
+## Server-side Pattern Subscriptions
+
+Kafka 4.1+ brokers can evaluate topic name patterns during group coordination:
+
+```csharp
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-processors")
+    .SubscribeToPattern("orders-.*")
+    .BuildAsync();
+```
+
+The pattern is sent through `ConsumerGroupHeartbeat` v1 as `SubscribedTopicRegex`. Kafka evaluates it with RE2/J-compatible syntax, and Dekaf does not translate .NET regex syntax.
+
+For arbitrary .NET predicates, use `consumer.Subscribe(Func<string, bool>)` after building the consumer. That mode is client-side and polls metadata for matching topics, so it works with older brokers but does not use broker-side regex subscription.
+
 ## Rebalancing
 
 When the group membership changes, Kafka rebalances partitions:

@@ -147,6 +147,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     public bool HasApiKey(ApiKey apiKey) => _brokerApiVersions.ContainsKey(apiKey);
 
+    internal bool SupportsApiVersion(ApiKey apiKey, short version) =>
+        _brokerApiVersions.TryGetValue(apiKey, out var versions) &&
+        versions.MinVersion <= version &&
+        versions.MaxVersion >= version;
+
     /// <summary>
     /// Seeds a broker API version entry. Internal — used by unit tests to bypass negotiation.
     /// </summary>

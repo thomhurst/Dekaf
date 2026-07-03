@@ -82,4 +82,35 @@ public class KafkaConsumerBudgetTests
 
         DekafMemoryBudget.ResetForTesting();
     }
+
+    [Test]
+    public async Task SubscribeToPatternWithoutGroupId_DoesNotRegisterLeakedConsumer()
+    {
+        DekafMemoryBudget.ResetForTesting();
+        DekafMemoryBudget.SetBudget(TestBudget);
+
+        try
+        {
+            var act = () => Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .SubscribeToPattern("orders-.*")
+                .Build();
+
+            await Assert.That(act)
+                .Throws<InvalidOperationException>()
+                .WithMessageContaining("WithGroupId");
+
+            await using var consumer = Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("test")
+                .Build();
+
+            var limit = ((KafkaConsumer<string, string>)consumer).CurrentQueuedMaxBytes;
+            await Assert.That(limit).IsEqualTo(TestBudget);
+        }
+        finally
+        {
+            DekafMemoryBudget.ResetForTesting();
+        }
+    }
 }

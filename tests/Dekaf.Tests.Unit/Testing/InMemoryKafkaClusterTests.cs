@@ -125,13 +125,30 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
+    public async Task Consumer_SubscribePattern_AssignsMatchingInMemoryTopics()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders-created");
+        cluster.CreateTopic("payments-created");
         var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "orders-service",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
 
-        await producer.PurgeAsync(PurgeOptions.None);
-        await producer.PurgeAsync(PurgeOptions.All);
+        await producer.ProduceAsync("orders-created", "order-1", "created");
+        await producer.ProduceAsync("payments-created", "payment-1", "created");
+        consumer.SubscribePattern("orders-.*");
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(consumer.Subscription).IsEmpty();
+        await Assert.That(consumer.SubscriptionPattern).IsEqualTo("orders-.*");
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Topic).IsEqualTo("orders-created");
     }
 
     [Test]
@@ -192,6 +209,16 @@ public sealed class InMemoryKafkaClusterTests
 
         await Assert.That(result[replica].TopicPartitionReplica).IsEqualTo(replica);
         await Assert.That(result[replica].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await producer.PurgeAsync(PurgeOptions.None);
+        await producer.PurgeAsync(PurgeOptions.All);
     }
 
     [Test]

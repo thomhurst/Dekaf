@@ -139,6 +139,33 @@ public sealed class ConsumerBuilderTests
     }
 
     [Test]
+    public async Task SubscribeToPattern_BuildsWithSubscriptionPattern()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .SubscribeToPattern("orders-.*")
+            .Build();
+
+        await Assert.That(consumer.Subscription).IsEmpty();
+        await Assert.That(consumer.SubscriptionPattern).IsEqualTo("orders-.*");
+    }
+
+    [Test]
+    public async Task SubscribeToPattern_ClearsConfiguredTopics()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .SubscribeTo("topic-a")
+            .SubscribeToPattern("orders-.*")
+            .Build();
+
+        await Assert.That(consumer.Subscription).IsEmpty();
+        await Assert.That(consumer.SubscriptionPattern).IsEqualTo("orders-.*");
+    }
+
+    [Test]
     public async Task WithConnectionsPerBroker_ValidValues_ReturnsBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>()

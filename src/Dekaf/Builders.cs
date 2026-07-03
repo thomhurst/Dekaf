@@ -1181,6 +1181,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private readonly List<string> _topicsToSubscribe = [];
+    private string? _topicPatternToSubscribe;
     private TimeSpan? _metadataMaxAge;
     private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
     private IRetryPolicy? _retryPolicy;
@@ -1272,6 +1273,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="topic">The topic to subscribe to.</param>
     public ConsumerBuilder<TKey, TValue> SubscribeTo(string topic)
     {
+        _topicPatternToSubscribe = null;
         _topicsToSubscribe.Add(topic);
         return this;
     }
@@ -1283,7 +1285,29 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="topics">The topics to subscribe to.</param>
     public ConsumerBuilder<TKey, TValue> SubscribeTo(params string[] topics)
     {
+        _topicPatternToSubscribe = null;
         _topicsToSubscribe.AddRange(topics);
+        return this;
+    }
+
+    /// <summary>
+    /// Subscribes the consumer to topics matching a broker-side RE2/J regular expression when built.
+    /// </summary>
+    /// <remarks>
+    /// The pattern is sent to Kafka as-is. .NET regular expression syntax is not translated to RE2/J.
+    /// Requires ConsumerGroupHeartbeat v1, available on Kafka 4.1+ brokers.
+    /// </remarks>
+    /// <param name="pattern">The RE2/J topic regex pattern.</param>
+    public ConsumerBuilder<TKey, TValue> SubscribeToPattern(string pattern)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
+        }
+
+        _topicsToSubscribe.Clear();
+        _topicPatternToSubscribe = pattern;
         return this;
     }
 
@@ -2122,6 +2146,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
 
+        if (_topicPatternToSubscribe is not null && string.IsNullOrWhiteSpace(_groupId))
+            throw new InvalidOperationException("SubscribeToPattern requires WithGroupId(...) to be called before Build().");
+
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
 
@@ -2234,7 +2261,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
         else
             memoryBudget.ReserveExplicit((ulong)_queuedMaxMessagesKbytes!.Value * 1024);
 
-        if (_topicsToSubscribe.Count > 0)
+        if (_topicPatternToSubscribe is not null)
+        {
+            consumer.SubscribePattern(_topicPatternToSubscribe);
+        }
+        else if (_topicsToSubscribe.Count > 0)
         {
             consumer.Subscribe(_topicsToSubscribe.ToArray());
         }
