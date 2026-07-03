@@ -199,12 +199,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
 
-    // Thread-local reusable buffer used ONLY for the SASL handshake cold path
-    // (SendSaslMessageAsync). Normal request serialization uses RentedBufferWriter via
-    // PreSerializeRequest, which rents from ArrayPool per request.
-    [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_requestBuffer;
-
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
@@ -810,26 +804,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
         new($"Request {apiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
 
     /// <summary>
-    /// Returns the thread-local request buffer for SASL handshake serialization only.
-    /// Normal (post-handshake) requests use <see cref="RentedBufferWriter"/> via PreSerializeRequest.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ArrayBufferWriter<byte> GetRequestBuffer()
-    {
-        var buffer = t_requestBuffer;
-        if (buffer is null)
-        {
-            buffer = new ArrayBufferWriter<byte>(4096);
-            t_requestBuffer = buffer;
-        }
-        else
-        {
-            buffer.Clear();
-        }
-        return buffer;
-    }
-
-    /// <summary>
     /// Serializes a request (size prefix + header + body) directly into a pooled buffer,
     /// outside the write lock. Returns the rented array and the number of valid bytes.
     /// The caller must return the array to <see cref="ArrayPool{T}.Shared"/> after use.
@@ -891,6 +865,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TResponse : IKafkaResponse
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
+        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
         byte[]? arrayToReturn = serializedArray;
         try
         {
@@ -914,7 +889,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         finally
         {
             if (arrayToReturn is not null)
-                DekafPools.SerializationBuffers.Return(arrayToReturn);
+                DekafPools.SerializationBuffers.Return(arrayToReturn, clearArray: clearSerializedArray);
         }
     }
 
@@ -1815,10 +1790,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // the send on !IsComplete would skip transmitting credentials entirely.
             do
             {
-                var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
-                    new SaslAuthenticateRequest { AuthBytes = authBytes },
-                    2, // Use v2 for SaslAuthenticate (flexible version)
-                    cancellationToken).ConfigureAwait(false);
+                var sentAuthBytes = authBytes;
+                SaslAuthenticateResponse authResponse;
+                try
+                {
+                    authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                        new SaslAuthenticateRequest { AuthBytes = sentAuthBytes },
+                        2, // Use v2 for SaslAuthenticate (flexible version)
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    SaslCredentialBuffers.Clear(sentAuthBytes);
+                }
 
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
@@ -2027,10 +2011,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Always send the initial client response at least once (see PerformSaslExchangeAsync).
             do
             {
-                var authResponse = await SendAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
-                    new SaslAuthenticateRequest { AuthBytes = authBytes },
-                    2,
-                    cancellationToken).ConfigureAwait(false);
+                var sentAuthBytes = authBytes;
+                SaslAuthenticateResponse authResponse;
+                try
+                {
+                    authResponse = await SendAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                        new SaslAuthenticateRequest { AuthBytes = sentAuthBytes },
+                        2,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    SaslCredentialBuffers.Clear(sentAuthBytes);
+                }
 
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
@@ -2099,36 +2092,22 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
 
-        // Build the request
-        var bodyBuffer = GetRequestBuffer();
-        var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
-
-        var header = new RequestHeader
-        {
-            ApiKey = TRequest.ApiKey,
-            ApiVersion = apiVersion,
-            CorrelationId = correlationId,
-            ClientId = _clientId,
-            HeaderVersion = headerVersion
-        };
-        header.Write(ref bodyWriter);
-        request.Write(ref bodyWriter, apiVersion);
-
-        // Write to stream directly (no pipe yet)
-        var totalSize = bodyBuffer.WrittenCount;
-        var buffer = ArrayPool<byte>.Shared.Rent(4 + totalSize);
+        // Write to stream directly (no pipe yet). Use the pooled serializer path instead
+        // of the thread-local SASL buffer so credential-bearing requests can be cleared.
+        var (buffer, totalSize) = PreSerializeRequest<TRequest, TResponse>(
+            request,
+            correlationId,
+            apiVersion,
+            headerVersion);
+        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
         try
         {
-            BinaryPrimitives.WriteInt32BigEndian(buffer, totalSize);
-            bodyBuffer.WrittenSpan.CopyTo(buffer.AsSpan(4));
-
-            await _stream.WriteAsync(buffer.AsMemory(0, 4 + totalSize), cancellationToken).ConfigureAwait(false);
+            await _stream.WriteAsync(buffer.AsMemory(0, totalSize), cancellationToken).ConfigureAwait(false);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            // Clear buffer to prevent SASL credential leakage (contains passwords, tokens, secrets)
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+            DekafPools.SerializationBuffers.Return(buffer, clearArray: clearSerializedArray);
         }
 
         // Read response
