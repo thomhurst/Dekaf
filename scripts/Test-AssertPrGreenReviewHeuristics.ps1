@@ -35,6 +35,24 @@ Two things worth addressing before merge:
         Blocks = $true
     },
     @{
+        Name = 'blocks before-merging action'
+        Body = @'
+## Review
+
+This should be addressed before merging.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks prior-to-merge action'
+        Body = @'
+## Review
+
+This must be fixed prior to merge.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows no-issue review'
         Body = @'
 ## Review
@@ -54,6 +72,16 @@ No issues found.
 
 Minor/optional, not blocking:
 - Worth a follow-up later, but not required for this PR.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows numbered non-blocking heading'
+        Body = @'
+## Review
+
+### 1. Non-blocking: rename variable
+This is optional.
 '@
         Blocks = $false
     }
