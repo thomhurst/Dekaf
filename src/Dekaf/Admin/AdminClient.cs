@@ -47,6 +47,7 @@ public sealed class AdminClient : IAdminClient
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
                 ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+                ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
@@ -2478,6 +2479,14 @@ public sealed class AdminClientOptions
     public int RequestTimeoutMs { get; init; } = 30000;
     public int ReconnectBackoffMs { get; init; } = 50;
     public int ReconnectBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
+    /// Maximum idle time in milliseconds before unused broker connections are closed.
+    /// Default is 9 minutes, below Kafka's default broker-side 10 minute idle timeout.
+    /// Set to -1 to disable client-side idle connection reaping.
+    /// </summary>
+    public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+
     public bool UseTls { get; init; }
     public TlsConfig? TlsConfig { get; init; }
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
@@ -2547,6 +2556,7 @@ public sealed class AdminClientBuilder
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -2840,6 +2850,18 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum idle time before unused broker connections are closed.
+    /// Equivalent to Kafka's <c>connections.max.idle.ms</c>. Use <see cref="Timeout.InfiniteTimeSpan"/> to disable.
+    /// </summary>
+    /// <param name="idle">The maximum idle time. Must be non-negative, or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
+    public AdminClientBuilder WithConnectionsMaxIdle(TimeSpan idle)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionsMaxIdleMs = ConnectionOptions.ToConnectionsMaxIdleMs(idle, nameof(idle));
+        return this;
+    }
+
     internal AdminClientBuilder WithSaslOptions(
         SaslMechanism mechanism,
         string? username,
@@ -2872,6 +2894,7 @@ public sealed class AdminClientBuilder
             RequestTimeoutMs = _requestTimeoutMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
+            ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,

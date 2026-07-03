@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Networking;
+using Dekaf.Protocol;
 using Dekaf.Security.Sasl;
 using NSubstitute;
 
@@ -14,6 +15,8 @@ namespace Dekaf.Tests.Unit.Networking;
 /// </summary>
 public sealed class ConnectionPoolTests
 {
+    private const int IdleThresholdMs = 60000;
+
     [Test]
     public async Task GetConnectionAsync_DisposedPool_ThrowsObjectDisposedException()
     {
@@ -360,6 +363,146 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionOptions_ConnectionsMaxIdleMs_DefaultsToNineMinutes()
+    {
+        var options = new ConnectionOptions();
+
+        await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
+    }
+
+    [Test]
+    public async Task ConnectionOptions_ConnectionsMaxIdleMs_RejectsValuesBelowDisabled()
+    {
+        await Assert.That(() => new ConnectionOptions { ConnectionsMaxIdleMs = -2 })
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task ConnectionOptions_ToConnectionsMaxIdleMs_MapsInfiniteTimeSpanToDisabled()
+    {
+        var value = ConnectionOptions.ToConnectionsMaxIdleMs(Timeout.InfiniteTimeSpan, "idle");
+
+        await Assert.That(value).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_Disabled_DoesNotDisposeIdleConnection()
+    {
+        var connection = new TestIdleConnection(1, "localhost", 9092);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection));
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            await pool.GetConnectionAsync(1);
+            connection.LastUsedTimestampMs = StaleIdleTimestamp();
+            var reaped = await pool.ReapIdleConnectionsAsync();
+
+            await Assert.That(reaped).IsEqualTo(0);
+            await Assert.That(connection.DisposeCount).IsEqualTo(0);
+            await Assert.That(connection.IsConnected).IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_IdleSingleConnection_DisposesAndRecreates()
+    {
+        var created = new List<TestIdleConnection>();
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = new TestIdleConnection(brokerId, host, port);
+                created.Add(connection);
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            var first = await pool.GetConnectionAsync(1);
+            created[0].LastUsedTimestampMs = StaleIdleTimestamp();
+            var reaped = await pool.ReapIdleConnectionsAsync();
+            var second = await pool.GetConnectionAsync(1);
+
+            await Assert.That(reaped).IsEqualTo(1);
+            await Assert.That(created.Count).IsEqualTo(2);
+            await Assert.That(created[0].DisposeCount).IsEqualTo(1);
+            await Assert.That(first).IsNotSameReferenceAs(second);
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_PendingRequest_DoesNotDisposeConnection()
+    {
+        var connection = new TestIdleConnection(1, "localhost", 9092)
+        {
+            PendingRequestCount = 1
+        };
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection));
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            await pool.GetConnectionAsync(1);
+            connection.LastUsedTimestampMs = StaleIdleTimestamp();
+            var reapedWithPendingRequest = await pool.ReapIdleConnectionsAsync();
+            connection.PendingRequestCount = 0;
+            var reapedAfterRequestCompletes = await pool.ReapIdleConnectionsAsync();
+
+            await Assert.That(reapedWithPendingRequest).IsEqualTo(0);
+            await Assert.That(reapedAfterRequestCompletes).IsEqualTo(1);
+            await Assert.That(connection.DisposeCount).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_Group_ReapsOnlyConnectionsWithoutPendingRequests()
+    {
+        var created = new TestIdleConnection[2];
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                var connection = new TestIdleConnection(brokerId, host, port)
+                {
+                    PendingRequestCount = index == 0 ? 1 : 0
+                };
+                created[index] = connection;
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            await pool.GetConnectionAsync(1);
+            created[0].LastUsedTimestampMs = StaleIdleTimestamp();
+            created[1].LastUsedTimestampMs = StaleIdleTimestamp();
+            var reaped = await pool.ReapIdleConnectionsAsync();
+
+            await Assert.That(reaped).IsEqualTo(1);
+            await Assert.That(created[0].DisposeCount).IsEqualTo(0);
+            await Assert.That(created[1].DisposeCount).IsEqualTo(1);
+        }
+    }
+
+    [Test]
     [NotInParallel]
     public async Task CreateConnectionGroup_AfterConnectionFailure_WaitsForReconnectBackoff()
     {
@@ -474,6 +617,8 @@ public sealed class ConnectionPoolTests
         return (MemoryPool<byte>)field!.GetValue(pool)!;
     }
 
+    private static long StaleIdleTimestamp() => Environment.TickCount64 - IdleThresholdMs - 1;
+
     private static IKafkaConnection CreateConnectedConnection(int brokerId, string host, int port)
     {
         var connection = Substitute.For<IKafkaConnection>();
@@ -482,5 +627,86 @@ public sealed class ConnectionPoolTests
         connection.Host.Returns(host);
         connection.Port.Returns(port);
         return connection;
+    }
+
+    private sealed class TestIdleConnection(int brokerId, string host, int port) : IKafkaConnection, IIdleTrackedKafkaConnection
+    {
+        private int _connected = 1;
+        private long _lastUsedTimestampMs = Environment.TickCount64;
+        private int _pendingRequestCount;
+        private int _disposeCount;
+
+        public int BrokerId { get; } = brokerId;
+        public string Host { get; } = host;
+        public int Port { get; } = port;
+        public bool IsConnected => Volatile.Read(ref _connected) != 0;
+        public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+        public long LastUsedTimestampMs
+        {
+            get => Volatile.Read(ref _lastUsedTimestampMs);
+            set => Volatile.Write(ref _lastUsedTimestampMs, value);
+        }
+
+        public int PendingRequestCount
+        {
+            get => Volatile.Read(ref _pendingRequestCount);
+            set => Volatile.Write(ref _pendingRequestCount, value);
+        }
+
+        long IIdleTrackedKafkaConnection.LastUsedTimestampMs => LastUsedTimestampMs;
+
+        int IIdleTrackedKafkaConnection.PendingRequestCount => PendingRequestCount;
+
+        void IIdleTrackedKafkaConnection.Touch() => LastUsedTimestampMs = Environment.TickCount64;
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => ValueTask.FromException<TResponse>(new NotSupportedException());
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => ValueTask.FromException(new NotSupportedException());
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => Task.FromException<TResponse>(new NotSupportedException());
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => ValueTask.FromException(new NotSupportedException());
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => Task.FromException<TResponse>(new NotSupportedException());
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposeCount);
+            Volatile.Write(ref _connected, 0);
+            return ValueTask.CompletedTask;
+        }
     }
 }

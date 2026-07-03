@@ -1,4 +1,5 @@
 using Dekaf.Producer;
+using Dekaf.Networking;
 using Dekaf.Protocol.Records;
 using Dekaf.Security.Sasl;
 
@@ -44,6 +45,13 @@ public class ProducerOptionsDefaultsTests
     {
         var options = CreateOptions();
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
+    public async Task ConnectionsMaxIdleMs_DefaultsTo_540000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
     }
 
     [Test]

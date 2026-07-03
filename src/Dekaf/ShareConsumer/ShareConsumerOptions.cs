@@ -1,3 +1,4 @@
+using Dekaf.Networking;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -82,6 +83,13 @@ public sealed class ShareConsumerOptions
     /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
     /// </summary>
     public int ReconnectBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
+    /// Maximum idle time in milliseconds before unused broker connections are closed.
+    /// Default is 9 minutes, below Kafka's default broker-side 10 minute idle timeout.
+    /// Set to -1 to disable client-side idle connection reaping.
+    /// </summary>
+    public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
     /// <summary>
     /// Whether to use TLS for broker connections.

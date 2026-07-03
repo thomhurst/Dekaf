@@ -95,6 +95,7 @@ public sealed class KafkaClientBuilder
     private int _connectionsPerBroker = 1;
     private int _maxInFlightRequestsPerConnection = 5;
     private int _maxConnectionsPerBroker = 10;
+    private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan? _metadataMaxAge;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -272,6 +273,17 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum idle time before unused broker connections are closed.
+    /// Equivalent to Kafka's <c>connections.max.idle.ms</c>. Use <see cref="Timeout.InfiniteTimeSpan"/> to disable.
+    /// </summary>
+    /// <param name="idle">The maximum idle time. Must be non-negative, or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
+    public KafkaClientBuilder WithConnectionsMaxIdle(TimeSpan idle)
+    {
+        _connectionsMaxIdleMs = ConnectionOptions.ToConnectionsMaxIdleMs(idle, nameof(idle));
+        return this;
+    }
+
     public KafkaClientBuilder WithMetadataMaxAge(TimeSpan interval)
     {
         if (interval <= TimeSpan.Zero)
@@ -338,6 +350,7 @@ public sealed class KafkaClientBuilder
             ConnectionsPerBroker = _connectionsPerBroker,
             MaxInFlightRequestsPerConnection = _maxInFlightRequestsPerConnection,
             MaxConnectionsPerBroker = _maxConnectionsPerBroker,
+            ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             MetadataMaxAge = _metadataMaxAge,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
@@ -368,6 +381,7 @@ internal sealed class KafkaClientOptions
     public int ConnectionsPerBroker { get; init; }
     public int MaxInFlightRequestsPerConnection { get; init; }
     public int MaxConnectionsPerBroker { get; init; }
+    public int ConnectionsMaxIdleMs { get; init; }
     public TimeSpan? MetadataMaxAge { get; init; }
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; }
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; }
@@ -425,6 +439,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
                 ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+                ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
