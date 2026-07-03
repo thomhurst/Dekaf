@@ -11,6 +11,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
 using Dekaf.Internal;
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
@@ -2695,7 +2696,7 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// </summary>
     public PooledResponseMemory TransferOwnership()
     {
-        return new PooledResponseMemory(_buffer, Length, IsPooled, _offset, _pool);
+        return PooledResponseMemory.Create(_buffer, Length, IsPooled, _offset, _pool);
     }
 
     public void Dispose()
@@ -2715,19 +2716,39 @@ internal readonly struct PooledResponseBuffer : IDisposable
 /// </summary>
 internal sealed class PooledResponseMemory : IPooledMemory
 {
+    private static readonly PooledResponseMemoryPool s_pool = new();
+
     private byte[]? _buffer;
-    private readonly int _length;
-    private readonly bool _isPooled;
-    private readonly int _offset;
-    private readonly ResponseBufferPool? _pool;
+    private int _length;
+    private bool _isPooled;
+    private int _offset;
+    private ResponseBufferPool? _pool;
+    private int _pooled;
+    private int _disposed = 1;
+
+    private PooledResponseMemory() { }
 
     public PooledResponseMemory(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
+    {
+        Initialize(buffer, length, isPooled, offset, pool, pooled: false);
+    }
+
+    internal static PooledResponseMemory Create(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
+    {
+        var memory = s_pool.Rent();
+        memory.Initialize(buffer, length, isPooled, offset, pool, pooled: true);
+        return memory;
+    }
+
+    private void Initialize(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool, bool pooled)
     {
         _buffer = buffer;
         _length = length;
         _isPooled = isPooled;
         _offset = offset;
         _pool = pool;
+        _pooled = pooled ? 1 : 0;
+        Volatile.Write(ref _disposed, 0);
     }
 
     public ReadOnlyMemory<byte> Memory => _buffer is not null
@@ -2736,11 +2757,33 @@ internal sealed class PooledResponseMemory : IPooledMemory
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         var buffer = Interlocked.Exchange(ref _buffer, null);
         if (_isPooled && buffer is not null)
         {
             Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
             _pool!.Pool.Return(buffer);
+        }
+
+        if (Volatile.Read(ref _pooled) != 0)
+            s_pool.Return(this);
+    }
+
+    private sealed class PooledResponseMemoryPool() : ObjectPool<PooledResponseMemory>(maxPoolSize: 256)
+    {
+        protected override PooledResponseMemory Create() => new();
+
+        protected override void Reset(PooledResponseMemory item)
+        {
+            item._buffer = null;
+            item._length = 0;
+            item._isPooled = false;
+            item._offset = 0;
+            item._pool = null;
+            item._pooled = 0;
+            Volatile.Write(ref item._disposed, 1);
         }
     }
 }
