@@ -8,6 +8,8 @@ namespace Dekaf.Errors;
 /// </summary>
 public class KafkaException : Exception
 {
+    private readonly bool? _isRetriableOverride;
+
     /// <summary>
     /// Creates a new KafkaException.
     /// </summary>
@@ -28,6 +30,12 @@ public class KafkaException : Exception
     public KafkaException(ErrorCode errorCode, string message) : base(message)
     {
         ErrorCode = errorCode;
+    }
+
+    internal KafkaException(ErrorCode errorCode, string message, bool isRetriable) : base(message)
+    {
+        ErrorCode = errorCode;
+        _isRetriableOverride = isRetriable;
     }
 
     /// <summary>
@@ -54,7 +62,7 @@ public class KafkaException : Exception
     /// <summary>
     /// Whether this exception is retriable.
     /// </summary>
-    public bool IsRetriable => ErrorCode?.IsRetriable() ?? false;
+    public bool IsRetriable => _isRetriableOverride ?? ErrorCode?.IsRetriable() ?? false;
 
     /// <summary>
     /// Creates the most specific exception type for a Kafka error code:
@@ -253,6 +261,10 @@ public sealed class ConsumeException : KafkaException
     }
 
     public ConsumeException(ErrorCode errorCode, string message) : base(errorCode, message)
+    {
+    }
+
+    internal ConsumeException(ErrorCode errorCode, string message, bool isRetriable) : base(errorCode, message, isRetriable)
     {
     }
 

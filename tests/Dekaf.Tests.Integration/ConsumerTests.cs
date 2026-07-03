@@ -1201,6 +1201,51 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Consumer_StaleLeaderEpochOffsetOutOfRange_ConsumeAsyncResetsToBeginning()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key-0",
+            Value = "value-0"
+        }, CancellationToken.None);
+        await producer.FlushAsync(CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 999999, leaderEpoch: int.MaxValue));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        ConsumeResult<string, string>? recovered = null;
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            recovered = msg;
+            break;
+        }
+
+        await Assert.That(recovered).IsNotNull();
+        await Assert.That(recovered!.Value.Offset).IsEqualTo(0);
+        await Assert.That(recovered.Value.Value).IsEqualTo("value-0");
+    }
+
+    [Test]
     public async Task Consumer_OffsetOutOfRange_WithLatest_ResetsToEnd()
     {
         // This tests that when AutoOffsetReset.Latest is configured and OffsetOutOfRange occurs,
