@@ -125,6 +125,34 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await producer.PurgeAsync(PurgeOptions.None);
+        await producer.PurgeAsync(PurgeOptions.All);
+    }
+
+    [Test]
+    public async Task Admin_TransactionIntrospection_ReturnsEmptyInMemoryState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var topicPartition = new TopicPartition("events", 0);
+
+        var listings = await admin.ListTransactionsAsync();
+        var descriptions = await admin.DescribeTransactionsAsync(["tx-1"]);
+        var producers = await admin.DescribeProducersAsync([topicPartition]);
+
+        await Assert.That(listings.Transactions).IsEmpty();
+        await Assert.That(listings.UnknownStateFilters).IsEmpty();
+        await Assert.That(descriptions["tx-1"].ErrorCode).IsEqualTo(ErrorCode.TransactionalIdNotFound);
+        await Assert.That(producers[topicPartition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(producers[topicPartition].ActiveProducers).IsEmpty();
+    }
+
+    [Test]
     public async Task Admin_DescribeLogDirs_ReturnsInMemoryReplicaInfo()
     {
         var cluster = new InMemoryKafkaCluster();

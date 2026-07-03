@@ -40,6 +40,20 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     // reclaim); a client-side throughput gain of ~15% was enough to fill two of three
     // 6 GB tmpfs mounts in ~40s under the previous 128 MB / 1s / 1s settings, so the
     // margins here are deliberately generous.
+    //
+    // The 5s replica lag window bounds a stall none of the above can fix: retention
+    // only deletes segments below the high watermark, and the high watermark cannot
+    // advance past a lagging in-sync follower. On CPU-starved CI brokers (three
+    // brokers sharing six cores, each moving the full client byte rate) a follower
+    // can lag for the whole replica.lag.time.max.ms window (default 30s) before the
+    // ISR sheds it, freezing the deletable set while the leader ingests at full
+    // rate — observed as a broker going from 60% to a full 6 GB tmpfs within one
+    // 15s disk sample despite 500ms retention sweeps. 5s caps the frozen window at
+    // ~1 GB of overshoot. The ISR churn this invites is acceptable: producer
+    // scenarios measure client throughput at acks=Leader, not replication durability.
+    //
+    // Not only log.* retention keys: any broker knob whose job is keeping the log-dir
+    // tmpfs bounded belongs here, so both container paths pick it up uniformly.
     private static readonly Dictionary<string, string> RetentionConfig = new()
     {
         ["KAFKA_LOG_RETENTION_MS"] = "300000",
@@ -49,6 +63,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "500",
         ["KAFKA_LOG_INITIAL_TASK_DELAY_MS"] = "1000",
         ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
+        ["KAFKA_REPLICA_LAG_TIME_MAX_MS"] = "5000",
     };
 
     // The image default (1 GB) is undersized for sustained ~1 GB/s ingestion; give the
@@ -378,12 +393,23 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     /// </summary>
     private static async Task DumpBrokerDiagnosticsAsync(IContainer container, string name)
     {
+        // df exec requires a running container and throws for one that died mid-run —
+        // exactly the case these diagnostics exist for. Non-fatal so the log fetch
+        // below (which works on stopped containers) still captures the broker's
+        // dying words, e.g. "No space left on device".
         try
         {
             var df = await container.ExecAsync(["df", "-h", KafkaLogDir]).ConfigureAwait(false);
             Console.WriteLine($"[{name}] log-dir usage:");
             Console.WriteLine(df.Stdout.TrimEnd());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{name}] log-dir usage unavailable (container dead?): {ex.Message}");
+        }
 
+        try
+        {
             var (stdout, stderr) = await container.GetLogsAsync(timestampsEnabled: false).ConfigureAwait(false);
 
             // Bounded scan instead of concat+Split: broker logs can be tens of MB after

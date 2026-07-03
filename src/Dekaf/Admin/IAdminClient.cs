@@ -75,6 +75,27 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(ListConsumerGroupsOptions? options = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists transactional IDs known by the cluster transaction coordinators.
+    /// </summary>
+    ValueTask<ListTransactionsResult> ListTransactionsAsync(
+        ListTransactionsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes transaction coordinator state for transactional IDs.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, TransactionDescription>> DescribeTransactionsAsync(
+        IEnumerable<string> transactionalIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes active producer state for topic partitions.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>> DescribeProducersAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Deletes consumer groups.
     /// </summary>
     ValueTask DeleteConsumerGroupsAsync(IEnumerable<string> groupIds, CancellationToken cancellationToken = default);
@@ -518,6 +539,101 @@ public sealed class GroupListing
     public required string GroupId { get; init; }
     public string? ProtocolType { get; init; }
     public string? State { get; init; }
+}
+
+/// <summary>
+/// Options for listing transactions.
+/// </summary>
+public sealed class ListTransactionsOptions
+{
+    /// <summary>
+    /// Transaction states to include. Null or empty means all states.
+    /// </summary>
+    public IReadOnlyList<string>? StateFilters { get; init; }
+
+    /// <summary>
+    /// Producer IDs to include. Null or empty means all producer IDs.
+    /// </summary>
+    public IReadOnlyList<long>? ProducerIdFilters { get; init; }
+
+    /// <summary>
+    /// Minimum transaction duration in milliseconds. Negative means all durations.
+    /// Requires broker support for ListTransactions v1+.
+    /// </summary>
+    public long DurationFilterMs { get; init; } = -1;
+
+    /// <summary>
+    /// Transactional ID regular expression filter. Null or empty means all IDs.
+    /// Requires broker support for ListTransactions v2+.
+    /// </summary>
+    public string? TransactionalIdPattern { get; init; }
+}
+
+/// <summary>
+/// Result of listing transactions across broker transaction coordinators.
+/// </summary>
+public sealed class ListTransactionsResult
+{
+    /// <summary>
+    /// State filters that were not recognized by brokers.
+    /// </summary>
+    public required IReadOnlyList<string> UnknownStateFilters { get; init; }
+
+    /// <summary>
+    /// Matching transactions.
+    /// </summary>
+    public required IReadOnlyList<TransactionListing> Transactions { get; init; }
+}
+
+/// <summary>
+/// A transaction listing returned by ListTransactions.
+/// </summary>
+public sealed class TransactionListing
+{
+    public required string TransactionalId { get; init; }
+    public long ProducerId { get; init; }
+    public required string TransactionState { get; init; }
+    public int CoordinatorId { get; init; }
+}
+
+/// <summary>
+/// Transaction state returned by DescribeTransactions.
+/// </summary>
+public sealed class TransactionDescription
+{
+    public required string TransactionalId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required string TransactionState { get; init; }
+    public int TransactionTimeoutMs { get; init; }
+    public long TransactionStartTimeMs { get; init; }
+    public long ProducerId { get; init; }
+    public short ProducerEpoch { get; init; }
+    public int CoordinatorId { get; init; }
+    public required IReadOnlyList<TopicPartition> TopicPartitions { get; init; }
+}
+
+/// <summary>
+/// Active producer state for a topic partition.
+/// </summary>
+public sealed class DescribeProducersResultInfo
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+    public required IReadOnlyList<ActiveProducerDescription> ActiveProducers { get; init; }
+}
+
+/// <summary>
+/// Active producer details returned by DescribeProducers.
+/// </summary>
+public sealed class ActiveProducerDescription
+{
+    public long ProducerId { get; init; }
+    public int ProducerEpoch { get; init; }
+    public int LastSequence { get; init; }
+    public long LastTimestamp { get; init; }
+    public int CoordinatorEpoch { get; init; }
+    public long CurrentTransactionStartOffset { get; init; }
 }
 
 /// <summary>

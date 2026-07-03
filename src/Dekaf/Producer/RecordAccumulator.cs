@@ -2915,6 +2915,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal long BufferPressureEvents => Volatile.Read(ref _bufferPressureEvents);
 
+    internal int PendingAppendCountForTest => _pendingAppends.Count;
+
     /// <summary>
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
     /// Used by adaptive connection scaling to confirm buffer is actually full.
