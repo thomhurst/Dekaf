@@ -125,7 +125,7 @@ namespace Dekaf.Consumer
                     headerOwner: pending,
                     timestampMs: timestampMs,
                     timestampType: timestampType,
-                    leaderEpoch: null,
+                    leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
                     keyDeserializer: _batch._keyDeserializer,
                     valueDeserializer: _batch._valueDeserializer);
 

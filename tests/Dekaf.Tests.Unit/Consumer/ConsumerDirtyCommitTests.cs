@@ -95,6 +95,20 @@ public sealed class ConsumerDirtyCommitTests
         await Assert.That(requests).IsEmpty();
     }
 
+    [Test]
+    public async Task CommitAsync_ExplicitLeaderEpoch_SendsCommittedLeaderEpoch()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        await consumer.CommitAsync(
+            [new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7)],
+            CancellationToken.None);
+
+        var partition = requests.Single().Topics.Single().Partitions.Single();
+        await Assert.That(partition.CommittedLeaderEpoch).IsEqualTo(7);
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         ErrorCode responseError)
@@ -171,7 +185,8 @@ public sealed class ConsumerDirtyCommitTests
                         .Select(static partition => new OffsetCommitRequestPartition
                         {
                             PartitionIndex = partition.PartitionIndex,
-                            CommittedOffset = partition.CommittedOffset
+                            CommittedOffset = partition.CommittedOffset,
+                            CommittedLeaderEpoch = partition.CommittedLeaderEpoch
                         })
                         .ToArray()
                 })
@@ -203,7 +218,11 @@ public sealed class ConsumerDirtyCommitTests
     {
         return request.Topics
             .SelectMany(static topic => topic.Partitions.Select(partition =>
-                new TopicPartitionOffset(topic.Name, partition.PartitionIndex, partition.CommittedOffset)))
+                new TopicPartitionOffset(
+                    topic.Name,
+                    partition.PartitionIndex,
+                    partition.CommittedOffset,
+                    partition.CommittedLeaderEpoch)))
             .OrderBy(static offset => offset.Topic, StringComparer.Ordinal)
             .ThenBy(static offset => offset.Partition)
             .ThenBy(static offset => offset.Offset)

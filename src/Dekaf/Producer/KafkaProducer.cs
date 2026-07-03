@@ -2016,7 +2016,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 list.Add(new TxnOffsetCommitRequestPartition
                 {
                     PartitionIndex = offset.Partition,
-                    CommittedOffset = offset.Offset
+                    CommittedOffset = offset.Offset,
+                    CommittedLeaderEpoch = offset.LeaderEpoch
                 });
             }
 

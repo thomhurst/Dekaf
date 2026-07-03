@@ -133,6 +133,28 @@ public class ConsumeResultTests
     }
 
     [Test]
+    public async Task TopicPartitionOffset_IncludesLeaderEpoch()
+    {
+        var result = new ConsumeResult<string, string>(
+            topic: "test-topic",
+            partition: 0,
+            offset: 42,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            timestampMs: 0,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: 7,
+            keyDeserializer: null,
+            valueDeserializer: null);
+
+        await Assert.That(result.TopicPartitionOffset)
+            .IsEqualTo(new TopicPartitionOffset("test-topic", 0, 42, 7));
+    }
+
+    [Test]
     public async Task LazyConsumeHeaders_CountDoesNotMaterialize()
     {
         var pooledHeaders = new[]

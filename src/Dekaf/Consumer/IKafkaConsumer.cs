@@ -549,7 +549,7 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// <summary>
     /// Gets the topic-partition-offset.
     /// </summary>
-    public TopicPartitionOffset TopicPartitionOffset => new(Topic, Partition, Offset);
+    public TopicPartitionOffset TopicPartitionOffset => new(Topic, Partition, Offset, LeaderEpoch ?? -1);
 
 }
 

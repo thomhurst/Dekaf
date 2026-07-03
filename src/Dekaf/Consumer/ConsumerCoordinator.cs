@@ -328,7 +328,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     partitions.Add(new OffsetCommitRequestPartition
                     {
                         PartitionIndex = offset.Partition,
-                        CommittedOffset = offset.Offset
+                        CommittedOffset = offset.Offset,
+                        CommittedLeaderEpoch = offset.LeaderEpoch
                     });
                 }
 
@@ -390,16 +391,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Fetches committed offsets for the group.
     /// </summary>
-    public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> FetchOffsetsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
-            return new Dictionary<TopicPartition, long>();
+            return new Dictionary<TopicPartition, TopicPartitionOffset>();
 
         // If coordinator hasn't been discovered yet, return empty (no committed offsets known)
         if (_coordinatorId < 0)
-            return new Dictionary<TopicPartition, long>();
+            return new Dictionary<TopicPartition, TopicPartitionOffset>();
 
         // Lock is intentionally held across retries to protect the shared _fetchTopicGroups dictionary,
         // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
@@ -468,7 +469,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     };
                 }
 
-                var result = new Dictionary<TopicPartition, long>();
+                var result = new Dictionary<TopicPartition, TopicPartitionOffset>();
 
                 // v6-v7: Topics field
                 if (response.Topics is not null)
@@ -492,7 +493,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                             if (partition.CommittedOffset >= 0)
                             {
-                                result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                                result[new TopicPartition(topic.Name, partition.PartitionIndex)] =
+                                    new TopicPartitionOffset(
+                                        topic.Name,
+                                        partition.PartitionIndex,
+                                        partition.CommittedOffset,
+                                        partition.CommittedLeaderEpoch);
                             }
                         }
                     }
@@ -535,7 +541,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                                 if (partition.CommittedOffset >= 0)
                                 {
-                                    result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                                    result[new TopicPartition(topic.Name, partition.PartitionIndex)] =
+                                        new TopicPartitionOffset(
+                                            topic.Name,
+                                            partition.PartitionIndex,
+                                            partition.CommittedOffset,
+                                            partition.CommittedLeaderEpoch);
                                 }
                             }
                         }
