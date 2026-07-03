@@ -3298,6 +3298,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Publishes an immutable snapshot of <see cref="_assignment"/> for lock-free reads.
     /// Must be called after every mutation to <see cref="_assignment"/>.
+    /// Also marks manual assignment state dirty and invalidates the coordinator assignment
+    /// fast path, so all assignment mutation paths must use this method.
     /// </summary>
     private void PublishAssignmentSnapshot()
     {

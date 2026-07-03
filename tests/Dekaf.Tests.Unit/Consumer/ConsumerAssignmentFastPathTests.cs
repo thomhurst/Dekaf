@@ -88,6 +88,44 @@ public sealed class ConsumerAssignmentFastPathTests
         }
     }
 
+    [Test]
+    public async Task EnsureAssignmentAsync_ChangedCoordinatorAssignment_RequiresAssignmentLock()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupChangingConsumerGroupHeartbeat(connection);
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        GetCoordinator(consumer).RequestRejoin();
+
+        var assignmentLock = GetAssignmentLock(consumer);
+        await assignmentLock.WaitAsync(CancellationToken.None);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+            await Assert.That(async () => await consumer.EnsureAssignmentAsync(cts.Token))
+                .Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            assignmentLock.Release();
+        }
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(consumer.Assignment).Contains(new TopicPartition("test-topic", 0));
+        await Assert.That(consumer.Assignment).Contains(new TopicPartition("test-topic", 1));
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer()
     {
         return new KafkaConsumer<string, string>(
@@ -143,6 +181,14 @@ public sealed class ConsumerAssignmentFastPathTests
                         new PartitionMetadata
                         {
                             PartitionIndex = 0,
+                            LeaderId = 0,
+                            ErrorCode = ErrorCode.None,
+                            ReplicaNodes = [0],
+                            IsrNodes = [0]
+                        },
+                        new PartitionMetadata
+                        {
+                            PartitionIndex = 1,
                             LeaderId = 0,
                             ErrorCode = ErrorCode.None,
                             ReplicaNodes = [0],
@@ -204,6 +250,27 @@ public sealed class ConsumerAssignmentFastPathTests
             }));
     }
 
+    private static void SetupChangingConsumerGroupHeartbeat(IKafkaConnection connection)
+    {
+        var callCount = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60000,
+                    Assignment = count == 1 ? CreateAssignment(0) : CreateAssignment(0, 1)
+                });
+            });
+    }
+
     private static void SetupOffsetFetch(IKafkaConnection connection)
     {
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
@@ -224,6 +291,12 @@ public sealed class ConsumerAssignmentFastPathTests
                             {
                                 PartitionIndex = 0,
                                 CommittedOffset = 10,
+                                ErrorCode = ErrorCode.None
+                            },
+                            new OffsetFetchResponsePartition
+                            {
+                                PartitionIndex = 1,
+                                CommittedOffset = 20,
                                 ErrorCode = ErrorCode.None
                             }
                         ]
@@ -256,5 +329,15 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_assignmentLock field not found.");
 
         return (SemaphoreSlim)field.GetValue(consumer)!;
+    }
+
+    private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinator",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinator field not found.");
+
+        return (ConsumerCoordinator)field.GetValue(consumer)!;
     }
 }
