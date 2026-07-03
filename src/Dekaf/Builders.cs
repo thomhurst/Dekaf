@@ -873,9 +873,12 @@ public sealed class ProducerBuilder<TKey, TValue>
             MaxConnectionsPerBroker = _maxConnectionsPerBroker
         };
 
-        var metadataOptions = _metadataMaxAge.HasValue
-            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
-            : null;
+        var metadataOptions = new MetadataOptions
+        {
+            MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+        };
 
         var producer = _clientInfrastructure is null
             ? new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions)
@@ -1856,9 +1859,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AdaptiveFetchSizingOptions = _adaptiveFetchSizingOptions
         };
 
-        var metadataOptions = _metadataMaxAge.HasValue
-            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
-            : null;
+        var metadataOptions = new MetadataOptions
+        {
+            MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+        };
 
         var consumer = _clientInfrastructure is null
             ? new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions)

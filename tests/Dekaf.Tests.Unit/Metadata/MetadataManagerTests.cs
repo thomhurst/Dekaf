@@ -298,7 +298,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task InitializeAsync_DisposeDuringRefresh_DoesNotThrowFromDisposedLocks()
+    public async Task InitializeAsync_DisposeDuringRefresh_DoesNotStartBackgroundRefresh()
     {
         var pool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -321,7 +321,11 @@ public class MetadataManagerTests
         var manager = new MetadataManager(
             pool,
             ["localhost:9092"],
-            new MetadataOptions { EnableBackgroundRefresh = false });
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = true,
+                MetadataRefreshInterval = TimeSpan.FromHours(1)
+            });
         SetMetadataApiVersion(manager);
 
         var initializeTask = manager.InitializeAsync().AsTask();
@@ -330,18 +334,55 @@ public class MetadataManagerTests
         var disposeTask = manager.DisposeAsync().AsTask();
         releaseRefresh.SetResult(CreateMetadataResponse((1, "broker1", 9092)));
 
-        Exception? initializeException = null;
-        try
-        {
-            await initializeTask.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch (Exception ex)
-        {
-            initializeException = ex;
-        }
+        var act = () => initializeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(act).Throws<ObjectDisposedException>();
 
         await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
-        await Assert.That(initializeException).IsNull();
+        object? backgroundRefreshTask = GetInstanceField<Task?>(manager, "_backgroundRefreshTask");
+        await Assert.That(backgroundRefreshTask).IsNull();
+    }
+
+    [Test]
+    public async Task ObjectDisposedException_IsFatalMetadataError()
+    {
+        await Assert.That(IsFatalMetadataError(new ObjectDisposedException(nameof(MetadataManager)))).IsTrue();
+    }
+
+    [Test]
+    public async Task BackgroundRefreshLoop_FatalError_ResetsInitialized()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromException<IKafkaConnection>(new AuthenticationException("auth failed")));
+
+        var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { MetadataRefreshInterval = TimeSpan.Zero });
+        SetInstanceField(manager, "_initialized", true);
+
+        var loop = InvokeBackgroundRefreshLoop(manager, CancellationToken.None);
+        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(GetInstanceField<bool>(manager, "_initialized")).IsFalse();
+        await manager.DisposeAsync();
+    }
+
+    [Test]
+    public async Task StartBackgroundRefresh_CompletedTask_AllowsRestart()
+    {
+        var manager = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["localhost:9092"],
+            new MetadataOptions { MetadataRefreshInterval = TimeSpan.FromHours(1) });
+        SetInstanceField<Task?>(manager, "_backgroundRefreshTask", Task.CompletedTask);
+
+        InvokeStartBackgroundRefresh(manager);
+
+        var backgroundTask = GetInstanceField<Task?>(manager, "_backgroundRefreshTask");
+        await Assert.That(backgroundTask).IsNotNull();
+        await Assert.That(backgroundTask!.IsCompleted).IsFalse();
+        await manager.DisposeAsync();
     }
 
     private static void SetMetadataApiVersion(MetadataManager metadataManager)
@@ -351,5 +392,50 @@ public class MetadataManagerTests
             ?? throw new InvalidOperationException("_metadataApiVersion field not found");
 
         field.SetValue(metadataManager, MetadataRequest.HighestSupportedVersion);
+    }
+
+    private static bool IsFatalMetadataError(Exception exception)
+    {
+        var method = typeof(MetadataManager)
+            .GetMethod("IsFatalMetadataError", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("IsFatalMetadataError method not found");
+
+        return (bool)method.Invoke(null, [exception])!;
+    }
+
+    private static Task InvokeBackgroundRefreshLoop(MetadataManager metadataManager, CancellationToken cancellationToken)
+    {
+        var method = typeof(MetadataManager)
+            .GetMethod("BackgroundRefreshLoopAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("BackgroundRefreshLoopAsync method not found");
+
+        return (Task)method.Invoke(metadataManager, [cancellationToken])!;
+    }
+
+    private static void InvokeStartBackgroundRefresh(MetadataManager metadataManager)
+    {
+        var method = typeof(MetadataManager)
+            .GetMethod("StartBackgroundRefresh", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("StartBackgroundRefresh method not found");
+
+        method.Invoke(metadataManager, null);
+    }
+
+    private static T GetInstanceField<T>(object instance, string name)
+    {
+        var field = instance.GetType()
+            .GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{name} field not found");
+
+        return (T)field.GetValue(instance)!;
+    }
+
+    private static void SetInstanceField<T>(object instance, string name, T value)
+    {
+        var field = instance.GetType()
+            .GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{name} field not found");
+
+        field.SetValue(instance, value);
     }
 }

@@ -2748,9 +2748,12 @@ public sealed class AdminClientBuilder
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
         };
 
-        var metadataOptions = _metadataMaxAge.HasValue
-            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
-            : null;
+        var metadataOptions = new MetadataOptions
+        {
+            MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+        };
 
         return _clientInfrastructure is null
             ? new AdminClient(options, _loggerFactory, metadataOptions)
