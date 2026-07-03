@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Dekaf.Internal;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -192,22 +193,16 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     private static void ValidateReconnectBackoff(ConnectionOptions options)
     {
-        if (options.ReconnectBackoff < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(options), "Reconnect backoff cannot be negative");
-        if (options.ReconnectBackoffMax < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(options), "Maximum reconnect backoff cannot be negative");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(
-            options.ReconnectBackoff.TotalMilliseconds,
-            int.MaxValue,
-            nameof(options));
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(
-            options.ReconnectBackoffMax.TotalMilliseconds,
-            int.MaxValue,
-            nameof(options));
-        if (options.ReconnectBackoffMax < options.ReconnectBackoff)
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "Maximum reconnect backoff must be greater than or equal to reconnect backoff");
+        var reconnectBackoffMs = ReconnectBackoffValidation.ToMilliseconds(
+            options.ReconnectBackoff,
+            nameof(options),
+            "Reconnect backoff cannot be negative");
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ToMilliseconds(
+            options.ReconnectBackoffMax,
+            nameof(options),
+            "Maximum reconnect backoff cannot be negative");
+
+        ReconnectBackoffValidation.ValidateMilliseconds(reconnectBackoffMs, reconnectBackoffMaxMs);
     }
 
     /// <summary>
@@ -889,17 +884,22 @@ public sealed partial class ConnectionPool : IConnectionPool
         Func<ValueTask<IKafkaConnection>> createConnection,
         CancellationToken cancellationToken)
     {
-        if (_reconnectBackoffs.TryGetValue(endpoint, out var state))
+        if (_reconnectBackoffs.TryGetValue(endpoint, out var state) && state.TryAddUser())
         {
-            await state.AttemptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var gateAcquired = false;
             try
             {
+                await state.AttemptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                gateAcquired = true;
+
                 await WaitForReconnectBackoffAsync(endpoint, state, brokerId, host, port, cancellationToken).ConfigureAwait(false);
                 return await createConnection().ConfigureAwait(false);
             }
             finally
             {
-                state.AttemptGate.Release();
+                if (gateAcquired)
+                    state.AttemptGate.Release();
+                state.ReleaseUser();
             }
         }
 
@@ -961,6 +961,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             state.FailureCount = 0;
             state.NextAttemptTimestamp = 0;
         }
+        state.RequestDispose();
 
         LogReconnectBackoffReset(brokerId, host, port);
     }
@@ -1087,7 +1088,6 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionsByEndpoint.Clear();
             _connectionsById.Clear();
             _connectionGroupsById.Clear();
-            _reconnectBackoffs.Clear();
 
             if (Volatile.Read(ref _disposed) != 0)
             {
@@ -1095,10 +1095,12 @@ public sealed partial class ConnectionPool : IConnectionPool
                 foreach (var sem in _connectionCreationLocks.Values) sem.Dispose();
                 foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
                 foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
+                foreach (var state in _reconnectBackoffs.Values) state.RequestDispose();
             }
             _connectionCreationLocks.Clear();
             _connectionReplacementLocks.Clear();
             _groupCreationLocks.Clear();
+            _reconnectBackoffs.Clear();
 
             LogAllConnectionsClosed();
         }
@@ -1192,6 +1194,60 @@ public sealed partial class ConnectionPool : IConnectionPool
         public readonly SemaphoreSlim AttemptGate = new(1, 1);
         public int FailureCount;
         public long NextAttemptTimestamp;
+        private int _activeUsers;
+        private bool _disposeRequested;
+        private bool _disposed;
+
+        public bool TryAddUser()
+        {
+            lock (Sync)
+            {
+                if (_disposeRequested || _disposed)
+                    return false;
+
+                _activeUsers++;
+                return true;
+            }
+        }
+
+        public void ReleaseUser()
+        {
+            var shouldDispose = false;
+            lock (Sync)
+            {
+                _activeUsers--;
+                shouldDispose = _disposeRequested && _activeUsers == 0;
+            }
+
+            if (shouldDispose)
+                Dispose();
+        }
+
+        public void RequestDispose()
+        {
+            var shouldDispose = false;
+            lock (Sync)
+            {
+                _disposeRequested = true;
+                shouldDispose = _activeUsers == 0;
+            }
+
+            if (shouldDispose)
+                Dispose();
+        }
+
+        private void Dispose()
+        {
+            lock (Sync)
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+            }
+
+            AttemptGate.Dispose();
+        }
     }
 
     private readonly record struct EndpointKey(string Host, int Port);
