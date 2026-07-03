@@ -49,6 +49,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile int _heartbeatIntervalMs;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile IReadOnlySet<string>? _subscribedTopics;
+    private volatile string? _subscribedTopicRegex;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
@@ -112,8 +113,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Ensures the consumer has joined the group.
     /// </summary>
+    public ValueTask EnsureActiveGroupAsync(
+        IReadOnlySet<string> topics,
+        CancellationToken cancellationToken)
+        => EnsureActiveGroupAsync(topics, null, cancellationToken);
+
     public async ValueTask EnsureActiveGroupAsync(
         IReadOnlySet<string> topics,
+        string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -122,10 +129,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
-        if (_state == CoordinatorState.Stable)
-            return;
-
-        await EnsureActiveGroupConsumerProtocolAsync(topics, cancellationToken).ConfigureAwait(false);
+        await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -144,6 +148,33 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         errorCode is ErrorCode.NotCoordinator
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
+
+    private static bool SetEquals(IReadOnlySet<string>? current, IReadOnlySet<string> next)
+    {
+        if (current is null || current.Count != next.Count)
+            return false;
+
+        foreach (var topic in next)
+        {
+            if (!current.Contains(topic))
+                return false;
+        }
+
+        return true;
+    }
+
+    private void UpdateSubscription(IReadOnlySet<string> topics, string? subscribedTopicRegex)
+    {
+        if (string.Equals(_subscribedTopicRegex, subscribedTopicRegex, StringComparison.Ordinal) &&
+            SetEquals(_subscribedTopics, topics))
+        {
+            return;
+        }
+
+        _subscribedTopics = topics;
+        _subscribedTopicRegex = subscribedTopicRegex;
+        Interlocked.Exchange(ref _subscriptionChanged, 1);
+    }
 
     private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
     {
@@ -649,7 +680,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
         // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
         var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
-        var subscribedTopics = (isInitial || subscriptionChanged) ? _subscribedTopics?.ToList() : null;
+        var subscribedTopicRegex = (isInitial || subscriptionChanged) ? _subscribedTopicRegex : null;
+        var subscribedTopics = (isInitial || subscriptionChanged) && subscribedTopicRegex is null
+            ? _subscribedTopics?.ToList()
+            : null;
 
         var request = new ConsumerGroupHeartbeatRequest
         {
@@ -660,6 +694,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
             RackId = isInitial ? _options.ClientRack : null,
             SubscribedTopicNames = subscribedTopics,
+            SubscribedTopicRegex = subscribedTopicRegex,
             ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
             TopicPartitions = ownedTopicPartitions
         };
@@ -714,6 +749,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             ErrorCode.UnsupportedAssignor => new GroupException(response.ErrorCode,
                 $"ConsumerGroupHeartbeat: unsupported assignor '{_options.GroupRemoteAssignor}': {response.ErrorMessage}")
+            { GroupId = _options.GroupId },
+
+            ErrorCode.InvalidRegularExpression => new GroupException(response.ErrorCode,
+                $"ConsumerGroupHeartbeat: invalid subscription regex '{_subscribedTopicRegex}': {response.ErrorMessage}")
             { GroupId = _options.GroupId },
 
             _ => new GroupException(response.ErrorCode,
@@ -824,6 +863,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async ValueTask EnsureActiveGroupConsumerProtocolAsync(
         IReadOnlySet<string> topics,
+        string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
         if (!_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
@@ -833,8 +873,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
         }
 
-        _subscribedTopics = topics;
-        Interlocked.Exchange(ref _subscriptionChanged, 1);
+        if (subscribedTopicRegex is not null &&
+            !_metadataManager.SupportsApiVersion(ApiKey.ConsumerGroupHeartbeat, 1))
+        {
+            throw new BrokerVersionException(
+                "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
+                "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
+        }
+
+        UpdateSubscription(topics, subscribedTopicRegex);
 
         ConsumerHeartbeatResult heartbeatResult = default;
 
@@ -995,6 +1042,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                         case ErrorCode.UnreleasedInstanceId:
                         case ErrorCode.UnsupportedAssignor:
+                        case ErrorCode.InvalidRegularExpression:
                             _state = CoordinatorState.Unjoined;
                             break;
 

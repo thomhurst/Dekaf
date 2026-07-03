@@ -944,6 +944,82 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
     #endregion
 
+    #region Server-side Regex Subscription Tests
+
+    [Test]
+    public async Task ConsumerProtocol_ServerSideRegex_SendsRegexInsteadOfTopicNames()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+
+        ConsumerGroupHeartbeatRequest? capturedRequest = null;
+        short capturedVersion = -1;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                capturedVersion = ci.ArgAt<short>(1);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = capturedRequest.MemberId,
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 5000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string>(), "orders-.*", CancellationToken.None);
+
+        await Assert.That(capturedVersion).IsEqualTo((short)1);
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.SubscribedTopicNames).IsNull();
+        await Assert.That(capturedRequest.SubscribedTopicRegex).IsEqualTo("orders-.*");
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_ServerSideRegex_BrokerWithoutV1_ThrowsBrokerVersionException()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string>(), "orders-.*", CancellationToken.None))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.1");
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_InvalidRegularExpression_ThrowsGroupException()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(errorCode: ErrorCode.InvalidRegularExpression);
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        GroupException? caught = null;
+        try
+        {
+            await coordinator.EnsureActiveGroupAsync(new HashSet<string>(), "orders-(", CancellationToken.None);
+        }
+        catch (GroupException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ErrorCode).IsEqualTo(ErrorCode.InvalidRegularExpression);
+    }
+
+    #endregion
+
     #region KIP-1082 Client-Generated Member ID Tests
 
     [Test]

@@ -82,7 +82,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
                 w.WriteCompactString(topic);
             });
 
-        // v1+ adds SubscribedTopicRegex as a positional field (KIP-1082).
+        // v1+ adds SubscribedTopicRegex as a positional field.
         if (version >= 1)
         {
             writer.WriteCompactNullableString(SubscribedTopicRegex);
