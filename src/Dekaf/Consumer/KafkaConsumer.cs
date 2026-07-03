@@ -435,6 +435,68 @@ internal sealed class PendingFetchData : IDisposable
     }
 }
 
+internal static class ConsumerFetchPools
+{
+    private static readonly PendingFetchDataListPool s_pendingFetchDataLists = new();
+    private static readonly FetchRequestTopicListPool s_fetchRequestTopicLists = new();
+    private static readonly FetchRequestPartitionListPool s_fetchRequestPartitionLists = new();
+
+    internal static List<PendingFetchData> RentPendingFetchDataList()
+    {
+        var list = s_pendingFetchDataLists.Rent();
+        return list;
+    }
+
+    internal static void ReturnPendingFetchDataList(List<PendingFetchData> list)
+        => s_pendingFetchDataLists.Return(list);
+
+    internal static List<FetchRequestTopic> RentFetchRequestTopicList(int capacity)
+    {
+        var list = s_fetchRequestTopicLists.Rent();
+        list.EnsureCapacity(capacity);
+        return list;
+    }
+
+    internal static List<FetchRequestPartition> RentFetchRequestPartitionList(int capacity)
+    {
+        var list = s_fetchRequestPartitionLists.Rent();
+        list.EnsureCapacity(capacity);
+        return list;
+    }
+
+    internal static void ReturnFetchRequestTopics(List<FetchRequestTopic> topics)
+    {
+        for (var i = 0; i < topics.Count; i++)
+        {
+            if (topics[i].Partitions is List<FetchRequestPartition> partitions)
+                s_fetchRequestPartitionLists.Return(partitions);
+        }
+
+        s_fetchRequestTopicLists.Return(topics);
+    }
+
+    private sealed class PendingFetchDataListPool() : ObjectPool<List<PendingFetchData>>(maxPoolSize: 64)
+    {
+        protected override List<PendingFetchData> Create() => [];
+
+        protected override void Reset(List<PendingFetchData> item) => item.Clear();
+    }
+
+    private sealed class FetchRequestTopicListPool() : ObjectPool<List<FetchRequestTopic>>(maxPoolSize: 64)
+    {
+        protected override List<FetchRequestTopic> Create() => [];
+
+        protected override void Reset(List<FetchRequestTopic> item) => item.Clear();
+    }
+
+    private sealed class FetchRequestPartitionListPool() : ObjectPool<List<FetchRequestPartition>>(maxPoolSize: 128)
+    {
+        protected override List<FetchRequestPartition> Create() => [];
+
+        protected override void Reset(List<FetchRequestPartition> item) => item.Clear();
+    }
+}
+
 /// <summary>
 /// Kafka consumer implementation.
 /// </summary>
@@ -1890,6 +1952,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             finally
             {
                 request.ReturnToPool();
+                ConsumerFetchPools.ReturnFetchRequestTopics(topicData);
             }
 
             // Record fetch round-trip duration (~3ns no-op when no listener)
@@ -3167,9 +3230,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     var pendingItems = fetchTasks[j].Result;
                     if (pendingItems is not null)
                     {
-                        foreach (var pending in pendingItems)
+                        try
                         {
-                            _pendingFetches.Enqueue(pending);
+                            foreach (var pending in pendingItems)
+                            {
+                                _pendingFetches.Enqueue(pending);
+                            }
+                        }
+                        finally
+                        {
+                            ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
                         }
                     }
                 }
@@ -3398,6 +3468,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             request.ReturnToPool();
+            ConsumerFetchPools.ReturnFetchRequestTopics(topicData);
         }
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
@@ -3466,7 +3537,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _eofEmitted.TryRemove(tp, out _);
 
                         // Collect pending fetch data for lazy record iteration
-                        pendingItems ??= [];
+                        pendingItems ??= ConsumerFetchPools.RentPendingFetchDataList();
                         pendingItems.Add(PendingFetchData.Create(
                             topic,
                             partitionResponse.PartitionIndex,
@@ -3514,7 +3585,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private static void AssignSharedMemoryOwner(List<PendingFetchData> pendingItems, IPooledMemory memoryOwner)
     {
-        var shared = new RefCountedMemoryOwner(memoryOwner, pendingItems.Count);
+        var shared = RefCountedMemoryOwner.Create(memoryOwner, pendingItems.Count);
         for (var i = 0; i < pendingItems.Count; i++)
         {
             pendingItems[i].SetMemoryOwner(shared);
@@ -3766,7 +3837,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         List<TopicPartition> partitions, int startIndex, int count)
     {
         if (count == 0)
-            return [];
+            return ConsumerFetchPools.RentFetchRequestTopicList(0);
 
         var isFullList = startIndex == 0 && count == partitions.Count;
 
@@ -3870,12 +3941,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int? adaptivePartitionMaxBytes = null,
         ClusterMetadata? clusterMetadata = null)
     {
-        var result = new List<FetchRequestTopic>(templateDict.Count);
+        var result = ConsumerFetchPools.RentFetchRequestTopicList(templateDict.Count);
 
         foreach (var kvp in templateDict)
         {
             var cachedPartitions = kvp.Value;
-            var partitionList = new List<FetchRequestPartition>(cachedPartitions.Count);
+            var partitionList = ConsumerFetchPools.RentFetchRequestPartitionList(cachedPartitions.Count);
 
             foreach (var (template, tp) in cachedPartitions)
             {

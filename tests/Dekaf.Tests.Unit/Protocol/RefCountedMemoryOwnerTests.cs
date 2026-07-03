@@ -144,4 +144,23 @@ public class RefCountedMemoryOwnerTests
         // Act & Assert
         await Assert.That(owner.Memory.ToArray()).IsEquivalentTo(inner.Memory.ToArray());
     }
+
+    [Test]
+    public async Task Create_FromPool_CanBeReusedAfterDispose()
+    {
+        var firstInner = new TrackingPooledMemory();
+        var first = RefCountedMemoryOwner.Create(firstInner, initialRefCount: 1);
+
+        first.Dispose();
+        first.Dispose();
+        await Assert.That(firstInner.DisposeCount).IsEqualTo(1);
+
+        var secondInner = new TrackingPooledMemory();
+        var second = RefCountedMemoryOwner.Create(secondInner, initialRefCount: 1);
+
+        await Assert.That(second.Memory.ToArray()).IsEquivalentTo(secondInner.Memory.ToArray());
+
+        second.Dispose();
+        await Assert.That(secondInner.DisposeCount).IsEqualTo(1);
+    }
 }

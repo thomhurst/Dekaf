@@ -169,6 +169,27 @@ public class ResponseBufferPoolTests
     }
 
     [Test]
+    public async Task PooledResponseBuffer_TransferOwnershipReusesMemoryWrapper()
+    {
+        var pool = ResponseBufferPool.Create(20 * 1024 * 1024);
+        var firstArray = pool.Pool.Rent(1024);
+        var firstBuffer = new PooledResponseBuffer(firstArray, 1024, isPooled: true, pool: pool);
+        var firstMemory = firstBuffer.TransferOwnership();
+
+        firstMemory.Dispose();
+        firstMemory.Dispose();
+
+        var secondArray = pool.Pool.Rent(1024);
+        secondArray[0] = 123;
+        var secondBuffer = new PooledResponseBuffer(secondArray, 1024, isPooled: true, pool: pool);
+        var secondMemory = secondBuffer.TransferOwnership();
+
+        await Assert.That(secondMemory.Memory.Span[0]).IsEqualTo((byte)123);
+
+        secondMemory.Dispose();
+    }
+
+    [Test]
     public async Task PooledResponseBuffer_UnpooledBuffer_DoesNotReturnToPool()
     {
         var array = new byte[100];
