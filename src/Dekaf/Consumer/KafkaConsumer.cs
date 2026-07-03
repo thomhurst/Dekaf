@@ -556,6 +556,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly IDekafMemoryBudget _memoryBudget;
     private readonly bool _ownsInfrastructure;
@@ -806,11 +807,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _metadataManager = infrastructure.Metadata;
         _ownsInfrastructure = ownsInfrastructure;
         _memoryBudget = memoryBudget;
+        _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>(),
-            infrastructure.TelemetryMetricCollector);
+            _telemetryMetricCollector);
 
         _compressionCodecs = CompressionCodecRegistry.Default;
 
@@ -872,6 +875,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
     public IConsumerOffsets Offsets => this;
+
+    /// <inheritdoc />
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+    }
+
+    /// <inheritdoc />
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
+    }
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next <see cref="EnsureAssignmentAsync"/> call.
@@ -2703,56 +2724,67 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         ThrowIfNotInitialized();
 
-        var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
-        if (connection is null)
-            throw new InvalidOperationException($"No leader found for partition {topicPartition}");
-
-        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ListOffsets,
-            ListOffsetsRequest.LowestSupportedVersion,
-            ListOffsetsRequest.HighestSupportedVersion);
-
-        var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
-        var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
-
-        var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            earliestRequest,
-            listOffsetsVersion,
-            cancellationToken).AsTask();
-
-        var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            latestRequest,
-            listOffsetsVersion,
-            cancellationToken).AsTask();
-
-        await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
-
-        var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
-
-        if (earliestPartitionResponse?.ErrorCode != ErrorCode.None)
+        return await RetryHelper.WithRetryAsync(async () =>
         {
-            throw new InvalidOperationException(
-                $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse?.ErrorCode}");
-        }
+            var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+            if (connection is null)
+                throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
 
-        var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
+            var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.ListOffsets,
+                ListOffsetsRequest.LowestSupportedVersion,
+                ListOffsetsRequest.HighestSupportedVersion);
 
-        var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
+            var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
+            var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
 
-        if (latestPartitionResponse?.ErrorCode != ErrorCode.None)
-        {
-            throw new InvalidOperationException(
-                $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse?.ErrorCode}");
-        }
+            var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                earliestRequest,
+                listOffsetsVersion,
+                cancellationToken).AsTask();
 
-        var highWatermark = latestPartitionResponse?.Offset ?? 0;
+            var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                latestRequest,
+                listOffsetsVersion,
+                cancellationToken).AsTask();
 
-        var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
+            await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
 
-        // Cache the result
-        _watermarks[topicPartition] = watermarks;
+            var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
-        return watermarks;
+            if (earliestPartitionResponse is null)
+                throw new KafkaException(ErrorCode.UnknownServerError,
+                    $"Failed to query earliest offset for {topicPartition}: missing partition response");
+
+            if (earliestPartitionResponse.ErrorCode != ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(earliestPartitionResponse.ErrorCode,
+                    $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse.ErrorCode}");
+            }
+
+            var lowWatermark = earliestPartitionResponse.Offset;
+
+            var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
+
+            if (latestPartitionResponse is null)
+                throw new KafkaException(ErrorCode.UnknownServerError,
+                    $"Failed to query latest offset for {topicPartition}: missing partition response");
+
+            if (latestPartitionResponse.ErrorCode != ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(latestPartitionResponse.ErrorCode,
+                    $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse.ErrorCode}");
+            }
+
+            var highWatermark = latestPartitionResponse.Offset;
+
+            var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
+
+            // Cache the result
+            _watermarks[topicPartition] = watermarks;
+
+            return watermarks;
+        }, _metadataManager, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />

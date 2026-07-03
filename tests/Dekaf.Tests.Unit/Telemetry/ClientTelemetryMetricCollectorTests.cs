@@ -86,6 +86,124 @@ public sealed class ClientTelemetryMetricCollectorTests
             .IsEqualTo(25.0);
     }
 
+    [Test]
+    public async Task Collect_ApplicationMetric_ReturnsOnlyWhenRequested()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.queue.depth",
+            ApplicationTelemetryMetricKind.Gauge,
+            () => 42.5,
+            new Dictionary<string, string> { ["queue"] = "orders" }));
+
+        var included = collector.Collect(Subscription(deltaTemporality: false, "com.example."));
+        var excluded = collector.Collect(Subscription(deltaTemporality: false, "org.apache.kafka."));
+
+        await Assert.That(included.Metrics.Count).IsEqualTo(1);
+        await Assert.That(excluded.Metrics.Count).IsEqualTo(0);
+
+        var metric = included.Metrics[0];
+        await Assert.That(metric.Name).IsEqualTo("com.example.queue.depth");
+        await Assert.That(metric.Kind).IsEqualTo(ClientTelemetryMetricKind.Gauge);
+        await Assert.That(metric.Value).IsEqualTo(42.5);
+        await Assert.That(metric.Attributes.Single(a => a.Name == "queue").Value).IsEqualTo("orders");
+    }
+
+    [Test]
+    public async Task RegisterMetricForSubscription_DuplicateName_ReplacesMetric()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.total",
+            ApplicationTelemetryMetricKind.Gauge,
+            () => 1));
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.total",
+            ApplicationTelemetryMetricKind.Counter,
+            () => 2));
+
+        var snapshot = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+
+        await Assert.That(snapshot.Metrics.Count).IsEqualTo(1);
+        await Assert.That(snapshot.Metrics[0].Name).IsEqualTo("com.example.total");
+        await Assert.That(snapshot.Metrics[0].Kind).IsEqualTo(ClientTelemetryMetricKind.Counter);
+        await Assert.That(snapshot.Metrics[0].Value).IsEqualTo(2.0);
+    }
+
+    [Test]
+    public async Task RegisterMetricForSubscription_CounterReplacement_ResetsDeltaBaseline()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.total",
+            ApplicationTelemetryMetricKind.Counter,
+            () => 100));
+        var first = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.total",
+            ApplicationTelemetryMetricKind.Counter,
+            () => 150));
+        var second = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+
+        await Assert.That(first.Metrics[0].Value).IsEqualTo(100.0);
+        await Assert.That(second.Metrics[0].Value).IsEqualTo(150.0);
+    }
+
+    [Test]
+    public async Task Collect_ApplicationCounterDeltaTemporality_ReturnsDelta()
+    {
+        double total = 5;
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.processed.total",
+            ApplicationTelemetryMetricKind.Counter,
+            () => total));
+
+        var first = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+        total = 8;
+        var second = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+
+        await Assert.That(first.Metrics[0].Value).IsEqualTo(5.0);
+        await Assert.That(second.Metrics[0].Value).IsEqualTo(3.0);
+    }
+
+    [Test]
+    public async Task UnregisterMetricFromSubscription_RemovesMetricAndIgnoresMissingName()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.depth",
+            ApplicationTelemetryMetricKind.Gauge,
+            () => 3));
+
+        await Assert.That(() => collector.UnregisterMetricFromSubscription("com.example.missing"))
+            .ThrowsNothing();
+        collector.UnregisterMetricFromSubscription("com.example.depth");
+
+        var snapshot = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+
+        await Assert.That(snapshot.Metrics.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Collect_ApplicationMetricObserverFails_SkipsMetric()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.bad",
+            ApplicationTelemetryMetricKind.Gauge,
+            () => throw new InvalidOperationException("boom")));
+        collector.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+            "com.example.nan",
+            ApplicationTelemetryMetricKind.Gauge,
+            () => double.NaN));
+
+        var snapshot = collector.Collect(Subscription(deltaTemporality: true, "com.example."));
+
+        await Assert.That(snapshot.Metrics.Count).IsEqualTo(0);
+    }
+
     private static ClientTelemetrySubscription Subscription(
         bool deltaTemporality,
         params string[] requestedMetrics) =>

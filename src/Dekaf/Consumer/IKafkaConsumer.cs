@@ -1,5 +1,6 @@
 using Dekaf.Producer;
 using Dekaf.Serialization;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Consumer;
 
@@ -92,6 +93,19 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
     /// </summary>
     IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Registers or replaces an application metric for broker telemetry subscriptions.
+    /// </summary>
+    /// <param name="metric">The application metric to register.</param>
+    void RegisterMetricForSubscription(ApplicationTelemetryMetric metric);
+
+    /// <summary>
+    /// Unregisters an application metric from broker telemetry subscriptions.
+    /// Missing names are ignored.
+    /// </summary>
+    /// <param name="name">The application metric name.</param>
+    void UnregisterMetricFromSubscription(string name);
 
     /// <summary>
     /// Commits the offsets of all consumed messages.

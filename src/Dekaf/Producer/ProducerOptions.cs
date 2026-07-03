@@ -4,6 +4,7 @@ using Dekaf.Protocol.Records;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Producer;
 
@@ -357,6 +358,11 @@ public sealed class ProducerOptions
     /// retried according to this policy. When <c>null</c>, no application-level retries occur.
     /// </summary>
     public IRetryPolicy? RetryPolicy { get; init; }
+
+    /// <summary>
+    /// Application metrics registered for broker telemetry subscriptions.
+    /// </summary>
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
 
     /// <summary>
     /// Enable adaptive connection scaling based on buffer pressure.

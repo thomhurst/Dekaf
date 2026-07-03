@@ -45,6 +45,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly ConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IDisposable _brokerCountDiscoveredRegistration;
+    private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly RecordAccumulator _accumulator;
     internal RecordAccumulator RecordAccumulator => _accumulator;
@@ -312,12 +313,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         _connectionPool = infrastructure.Pool;
         _metadataManager = infrastructure.Metadata;
+        _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
 
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>(),
-            infrastructure.TelemetryMetricCollector);
+            _telemetryMetricCollector);
 
         // Re-ratchet shared pool sizes after metadata refresh discovers the real broker count.
         // Bootstrap servers are seed nodes — the actual cluster may have more brokers.
@@ -1419,6 +1422,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // No channel to drain — all produce paths append directly to the accumulator.
         return _accumulator.FlushAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        _telemetryMetricCollector.RegisterMetricForSubscription(metric);
+    }
+
+    /// <inheritdoc />
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
     }
 
     public ITransaction<TKey, TValue> BeginTransaction()
