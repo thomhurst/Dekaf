@@ -6,7 +6,7 @@ sidebar_position: 14
 
 Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.
 
-**Last Updated:** 2026-07-03 20:58 UTC
+**Last Updated:** 2026-07-03 21:26 UTC
 
 :::info
 These tests run weekly (Sunday 2 AM UTC) and can be manually triggered. 
@@ -17,117 +17,117 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf (3conn) | 1,527,361 | 1456.60 | 1,527,361 | 0 | 0.92 | 1.40 |
-| Dekaf | 1,373,405 | 1309.78 | 1,373,405 | 0 | 0.91 | 1.25 |
-| Confluent | 1,148,284 | 1095.09 | 1,148,284 | 0 | 1.46 | 1.67 |
+| Dekaf (3conn) | 1,835,895 | 1750.85 | 1,835,895 | 0 | 0.79 | 1.44 |
+| Dekaf | 1,514,385 | 1444.23 | 1,514,385 | 0 | 0.84 | 1.28 |
+| Confluent | 1,450,376 | 1383.19 | 1,450,376 | 0 | 1.21 | 1.75 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
-:::tip
-**Dekaf is 1.20x faster** than Confluent.Kafka for producer (fire-and-forget) throughput!
+:::note
+Dekaf and Confluent.Kafka have similar producer (fire-and-forget) performance.
 :::
 
 ## Producer (Fire-and-Forget), 3 Brokers Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf (3conn) | 1,428,449 | 1362.28 | 1,428,747 | 0 | 1.13 | 1.62 |
-| Dekaf | 1,287,347 | 1227.71 | 1,287,347 | 0 | 1.20 | 1.54 |
-| Confluent | 852,417 | 812.93 | 852,417 | 0 | 1.79 | 1.52 |
+| Dekaf (3conn) | 1,386,626 | 1322.39 | 1,387,498 | 0 | 1.19 | 1.65 |
+| Dekaf | 1,334,390 | 1272.57 | 1,334,518 | 0 | 1.14 | 1.52 |
+| Confluent | 942,319 | 898.67 | 942,319 | 0 | 1.60 | 1.51 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf is 1.51x faster** than Confluent.Kafka for producer (fire-and-forget), 3 brokers throughput!
+**Dekaf is 1.42x faster** than Confluent.Kafka for producer (fire-and-forget), 3 brokers throughput!
 :::
 
 ## Producer (producer-acks-all) Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf | 1,525,269 | 1454.61 | 1,525,269 | 0 | 0.83 | 1.27 |
-| Confluent | 929,226 | 886.18 | 929,226 | 0 | 1.83 | 1.70 |
+| Dekaf | 1,371,658 | 1308.11 | 1,371,658 | 0 | 0.91 | 1.24 |
+| Confluent | 1,229,989 | 1173.01 | 1,229,989 | 0 | 1.40 | 1.72 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf is 1.64x faster** than Confluent.Kafka for producer (producer-acks-all) throughput!
+**Dekaf is 1.12x faster** than Confluent.Kafka for producer (producer-acks-all) throughput!
 :::
 
 ## Producer (producer-acks-all), 3 Brokers Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf | 1,066,122 | 1016.73 | 1,066,122 | 0 | 1.05 | 1.12 |
-| Confluent | 758,594 | 723.45 | 758,594 | 0 | 2.05 | 1.55 |
+| Dekaf | 989,128 | 943.31 | 989,128 | 0 | 1.14 | 1.13 |
+| Confluent | 875,672 | 835.11 | 875,672 | 0 | 1.76 | 1.54 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf is 1.41x faster** than Confluent.Kafka for producer (producer-acks-all), 3 brokers throughput!
+**Dekaf is 1.13x faster** than Confluent.Kafka for producer (producer-acks-all), 3 brokers throughput!
 :::
 
 ## Producer (Fire-and-Forget, Idempotent) Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf (3conn) | 1,557,044 | 1484.91 | 1,557,044 | 0 | 0.89 | 1.38 |
-| Dekaf | 1,405,106 | 1340.01 | 1,405,106 | 0 | 0.86 | 1.20 |
-| Confluent | 1,399,493 | 1334.66 | 1,399,493 | 0 | 1.25 | 1.74 |
+| Dekaf (3conn) | 1,632,542 | 1556.91 | 1,632,542 | 0 | 0.85 | 1.38 |
+| Dekaf | 1,382,971 | 1318.90 | 1,382,972 | 0 | 0.90 | 1.24 |
+| Confluent | 1,204,479 | 1148.68 | 1,204,479 | 0 | 1.43 | 1.72 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
-:::note
-Dekaf and Confluent.Kafka have similar producer (fire-and-forget, idempotent) performance.
+:::tip
+**Dekaf is 1.15x faster** than Confluent.Kafka for producer (fire-and-forget, idempotent) throughput!
 :::
 
 ## Producer (Fire-and-Forget, Idempotent), 3 Brokers Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf (3conn) | 953,218 | 909.06 | 953,218 | 0 | 1.16 | 1.10 |
-| Dekaf | 936,471 | 893.09 | 936,471 | 0 | 1.23 | 1.15 |
-| Confluent | 761,924 | 726.63 | 761,924 | 0 | 2.13 | 1.62 |
+| Dekaf (3conn) | 1,133,369 | 1080.86 | 1,133,369 | 0 | 1.17 | 1.32 |
+| Dekaf | 970,293 | 925.34 | 970,293 | 0 | 1.16 | 1.13 |
+| Confluent | 741,993 | 707.62 | 741,993 | 0 | 2.15 | 1.60 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf is 1.23x faster** than Confluent.Kafka for producer (fire-and-forget, idempotent), 3 brokers throughput!
+**Dekaf is 1.31x faster** than Confluent.Kafka for producer (fire-and-forget, idempotent), 3 brokers throughput!
 :::
 
 ## Consumer Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
-| Dekaf | 1,906,177 | 1817.87 | - | 0 | 0.80 | 1.53 |
-| Confluent | 104,545 | 99.70 | - | 0 | 0.92 | 0.10 |
+| Dekaf | 1,940,004 | 1850.13 | - | 0 | 0.78 | 1.51 |
+| Confluent | 126,660 | 120.79 | - | 0 | 1.06 | 0.13 |
 
 :::tip
-**Dekaf is 18.23x faster** than Confluent.Kafka for consumer throughput!
+**Dekaf is 15.32x faster** than Confluent.Kafka for consumer throughput!
 :::
 
 ## Memory & GC Statistics
 
 | Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |
 |--------|----------|------|------|------|-----------------|
-| Confluent | Consumer | 44589 | 0 | 0 | 213.85 GB |
-| Confluent | Producer (Fire-and-Forget) | 263590 | 1 | 1 | 1240.19 GB |
-| Confluent | Producer (Fire-and-Forget), 3 Brokers | 196618 | 0 | 0 | 920.65 GB |
-| Confluent | producer-acks-all | 208335 | 1 | 1 | 1003.56 GB |
-| Confluent | producer-acks-all, 3 Brokers | 172974 | 1 | 0 | 819.32 GB |
-| Confluent | Producer (Fire-and-Forget, Idempotent) | 319429 | 1 | 1 | 1511.49 GB |
-| Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 175970 | 2 | 2 | 822.91 GB |
-| Dekaf | Consumer | 81248 | 48075 | 2350 | 4026.25 GB |
-| Dekaf | Producer (Fire-and-Forget) | 530 | 98 | 41 | 5.27 GB |
-| Dekaf | Producer (Fire-and-Forget), 3 Brokers | 282 | 49 | 19 | 3.60 GB |
-| Dekaf | producer-acks-all | 728 | 253 | 49 | 5.84 GB |
-| Dekaf | producer-acks-all, 3 Brokers | 244 | 13 | 12 | 2.51 GB |
-| Dekaf | Producer (Fire-and-Forget, Idempotent) | 695 | 236 | 55 | 5.71 GB |
-| Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 197 | 36 | 13 | 2.47 GB |
-| Dekaf (3conn) | Producer (Fire-and-Forget) | 259 | 57 | 27 | 7.34 GB |
-| Dekaf (3conn) | Producer (Fire-and-Forget), 3 Brokers | 492 | 198 | 195 | 7.29 GB |
-| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent) | 253 | 14 | 13 | 2.80 GB |
-| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 137 | 20 | 11 | 1.98 GB |
+| Confluent | Consumer | 53324 | 1 | 1 | 259.08 GB |
+| Confluent | Producer (Fire-and-Forget) | 333837 | 1 | 1 | 1566.46 GB |
+| Confluent | Producer (Fire-and-Forget), 3 Brokers | 218283 | 1 | 1 | 1017.70 GB |
+| Confluent | producer-acks-all | 281227 | 1 | 1 | 1328.42 GB |
+| Confluent | producer-acks-all, 3 Brokers | 202779 | 1 | 0 | 945.77 GB |
+| Confluent | Producer (Fire-and-Forget, Idempotent) | 266588 | 1 | 1 | 1300.88 GB |
+| Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 168689 | 1 | 0 | 801.38 GB |
+| Dekaf | Consumer | 83504 | 49609 | 2344 | 3822.21 GB |
+| Dekaf | Producer (Fire-and-Forget) | 723 | 258 | 49 | 5.74 GB |
+| Dekaf | Producer (Fire-and-Forget), 3 Brokers | 286 | 15 | 14 | 2.92 GB |
+| Dekaf | producer-acks-all | 641 | 50 | 48 | 5.35 GB |
+| Dekaf | producer-acks-all, 3 Brokers | 192 | 59 | 11 | 2.49 GB |
+| Dekaf | Producer (Fire-and-Forget, Idempotent) | 558 | 37 | 36 | 5.21 GB |
+| Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 211 | 12 | 11 | 2.51 GB |
+| Dekaf (3conn) | Producer (Fire-and-Forget) | 353 | 86 | 47 | 16.70 GB |
+| Dekaf (3conn) | Producer (Fire-and-Forget), 3 Brokers | 482 | 164 | 160 | 8.11 GB |
+| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent) | 327 | 14 | 13 | 2.73 GB |
+| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 193 | 13 | 12 | 2.67 GB |
 
 ---
 
