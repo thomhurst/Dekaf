@@ -359,27 +359,40 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Act - produce null-key messages while linger keeps the current batch open.
-        var tasks = new List<ValueTask<RecordMetadata>>();
+        // Act - fire-and-forget callbacks avoid awaited-produce micro-linger, so the
+        // configured linger keeps the current batch open while all partition choices happen.
+        var results = new RecordMetadata?[10];
+        var callbackCount = 0;
+        var callbacksCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         for (var i = 0; i < 10; i++)
         {
-            tasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
+            var index = i;
+            await producer.FireAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = null,
                 Value = $"value-{i}"
-            }, CancellationToken.None));
+            }, (metadata, error) =>
+            {
+                if (error is not null)
+                {
+                    callbacksCompleted.TrySetException(error);
+                    return;
+                }
+
+                results[index] = metadata;
+                if (Interlocked.Increment(ref callbackCount) == results.Length)
+                    callbacksCompleted.TrySetResult();
+            });
         }
 
-        var results = new List<RecordMetadata>();
-        foreach (var task in tasks)
-        {
-            results.Add(await task);
-        }
+        await producer.FlushWithTimeoutAsync();
+        await callbacksCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // Assert - all messages choose the same sticky partition before batch completion.
-        await Assert.That(results).Count().IsEqualTo(10);
-        var partitions = results.Select(r => r.Partition).Distinct().ToList();
+        await Assert.That(results.Any(static result => !result.HasValue)).IsFalse();
+        var partitions = results.Select(static result => result.GetValueOrDefault().Partition).Distinct().ToList();
         await Assert.That(partitions.Count).IsEqualTo(1);
     }
 
