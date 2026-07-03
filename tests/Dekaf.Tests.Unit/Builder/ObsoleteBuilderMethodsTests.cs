@@ -1,9 +1,16 @@
 using Dekaf.Admin;
+using Dekaf.Compression.Brotli;
 using Dekaf.Compression.Lz4;
+using Dekaf.Compression.Snappy;
+using Dekaf.Compression.Zstd;
+using Dekaf.Consumer;
+using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
+using Dekaf.Security;
+using Dekaf.Serialization.Json;
 using Dekaf.Tests.Unit.SchemaRegistry;
 using NSubstitute;
 
@@ -11,6 +18,24 @@ namespace Dekaf.Tests.Unit.Builder;
 
 public sealed class ObsoleteBuilderMethodsTests
 {
+    [Test]
+    public async Task RootUseTls_DelegatesToWithTls()
+    {
+        var config = new TlsConfig { TargetHost = "broker.example" };
+
+#pragma warning disable CS0618 // Verifies the compatibility forwarder.
+        var obsoleteBuilder = new KafkaClientBuilder().UseTls(config);
+#pragma warning restore CS0618
+        var modernBuilder = new KafkaClientBuilder().WithTls(config);
+
+        await Assert.That(GetPrivateField<bool>(obsoleteBuilder, "_useTls")).IsTrue();
+        await Assert.That(GetPrivateField<bool>(obsoleteBuilder, "_useTls"))
+            .IsEqualTo(GetPrivateField<bool>(modernBuilder, "_useTls"));
+        await Assert.That(GetPrivateField<TlsConfig>(obsoleteBuilder, "_tlsConfig")).IsSameReferenceAs(config);
+        await Assert.That(GetPrivateField<TlsConfig>(obsoleteBuilder, "_tlsConfig"))
+            .IsSameReferenceAs(GetPrivateField<TlsConfig>(modernBuilder, "_tlsConfig"));
+    }
+
     [Test]
     public async Task ProducerUseTls_DelegatesToWithTls()
     {
@@ -34,47 +59,84 @@ public sealed class ObsoleteBuilderMethodsTests
     }
 
     [Test]
-    public async Task ProducerUseCompression_DelegatesToWithCompression()
+    public async Task ConsumerUseTlsConfig_DelegatesToWithTls()
     {
+        var config = new TlsConfig { TargetHost = "consumer.example" };
+
 #pragma warning disable CS0618 // Verifies the compatibility forwarder.
-        await using var obsoleteProducer = Kafka.CreateProducer<string, string>()
-            .UseCompression(CompressionType.Zstd)
+        await using var obsoleteConsumer = Kafka.CreateConsumer<string, string>()
+            .UseTls(config)
 #pragma warning restore CS0618
             .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
             .Build();
 
-        await using var modernProducer = Kafka.CreateProducer<string, string>()
-            .WithCompression(CompressionType.Zstd)
+        await using var modernConsumer = Kafka.CreateConsumer<string, string>()
+            .WithTls(config)
             .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
             .Build();
 
-        var obsoleteOptions = GetPrivateField<ProducerOptions>(obsoleteProducer, "_options");
-        var modernOptions = GetPrivateField<ProducerOptions>(modernProducer, "_options");
+        var obsoleteOptions = GetPrivateField<ConsumerOptions>(obsoleteConsumer, "_options");
+        var modernOptions = GetPrivateField<ConsumerOptions>(modernConsumer, "_options");
 
-        await Assert.That(obsoleteOptions.CompressionType).IsEqualTo(CompressionType.Zstd);
-        await Assert.That(obsoleteOptions.CompressionType).IsEqualTo(modernOptions.CompressionType);
+        await Assert.That(obsoleteOptions.UseTls).IsEqualTo(modernOptions.UseTls);
+        await Assert.That(obsoleteOptions.TlsConfig).IsSameReferenceAs(modernOptions.TlsConfig);
     }
 
     [Test]
-    public async Task ProducerUseLz4Compression_DelegatesToWithLz4Compression()
+    public async Task AdminUseTlsConfig_DelegatesToWithTls()
     {
+        var config = new TlsConfig { TargetHost = "admin.example" };
+
 #pragma warning disable CS0618 // Verifies the compatibility forwarder.
-        await using var obsoleteProducer = Kafka.CreateProducer<string, string>()
-            .UseLz4Compression()
+        await using var obsoleteAdmin = new AdminClientBuilder()
+            .UseTls(config)
 #pragma warning restore CS0618
             .WithBootstrapServers("localhost:9092")
             .Build();
 
-        await using var modernProducer = Kafka.CreateProducer<string, string>()
-            .WithLz4Compression()
+        await using var modernAdmin = new AdminClientBuilder()
+            .WithTls(config)
             .WithBootstrapServers("localhost:9092")
             .Build();
 
-        var obsoleteOptions = GetPrivateField<ProducerOptions>(obsoleteProducer, "_options");
-        var modernOptions = GetPrivateField<ProducerOptions>(modernProducer, "_options");
+        var obsoleteOptions = GetPrivateField<AdminClientOptions>(obsoleteAdmin, "_options");
+        var modernOptions = GetPrivateField<AdminClientOptions>(modernAdmin, "_options");
 
-        await Assert.That(obsoleteOptions.CompressionType).IsEqualTo(CompressionType.Lz4);
-        await Assert.That(obsoleteOptions.CompressionType).IsEqualTo(modernOptions.CompressionType);
+        await Assert.That(obsoleteOptions.UseTls).IsEqualTo(modernOptions.UseTls);
+        await Assert.That(obsoleteOptions.TlsConfig).IsSameReferenceAs(modernOptions.TlsConfig);
+    }
+
+    [Test]
+    public async Task ProducerCompressionForwarders_DelegateToWithCompression()
+    {
+#pragma warning disable CS0618 // Verifies the compatibility forwarders.
+        await AssertCompressionForwarder(
+            builder => builder.UseCompression(CompressionType.Zstd),
+            builder => builder.WithCompression(CompressionType.Zstd),
+            CompressionType.Zstd);
+        await AssertCompressionForwarder(
+            builder => builder.UseGzipCompression(),
+            builder => builder.WithGzipCompression(),
+            CompressionType.Gzip);
+        await AssertCompressionForwarder(
+            builder => builder.UseLz4Compression(),
+            builder => builder.WithLz4Compression(),
+            CompressionType.Lz4);
+        await AssertCompressionForwarder(
+            builder => builder.UseSnappyCompression(),
+            builder => builder.WithSnappyCompression(),
+            CompressionType.Snappy);
+        await AssertCompressionForwarder(
+            builder => builder.UseZstdCompression(),
+            builder => builder.WithZstdCompression(),
+            CompressionType.Zstd);
+        await AssertCompressionForwarder(
+            builder => builder.UseBrotliCompression(),
+            builder => builder.WithBrotliCompression(),
+            CompressionType.Brotli);
+#pragma warning restore CS0618
     }
 
     [Test]
@@ -107,21 +169,127 @@ public sealed class ObsoleteBuilderMethodsTests
     }
 
     [Test]
-    public async Task ProducerUseProtobufSchemaRegistry_DelegatesToWithProtobufSchemaRegistry()
+    public async Task AdminClientServiceUseTls_ReturnsSameBuilder()
+    {
+        var builder = new AdminClientServiceBuilder();
+
+#pragma warning disable CS0618 // Verifies the compatibility forwarder.
+        var result = builder.UseTls();
+#pragma warning restore CS0618
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task JsonSerializationForwarders_DelegateToWithJsonSerialization()
+    {
+#pragma warning disable CS0618 // Verifies the compatibility forwarders.
+        var obsoleteProducer = Kafka.CreateProducer<string, TestMessage>()
+            .UseJsonKeySerializer()
+            .UseJsonSerializer();
+        var obsoleteConsumer = Kafka.CreateConsumer<string, TestMessage>()
+            .UseJsonKeyDeserializer()
+            .UseJsonDeserializer();
+#pragma warning restore CS0618
+        var modernProducer = Kafka.CreateProducer<string, TestMessage>()
+            .WithJsonKeySerializer()
+            .WithJsonSerializer();
+        var modernConsumer = Kafka.CreateConsumer<string, TestMessage>()
+            .WithJsonKeyDeserializer()
+            .WithJsonDeserializer();
+
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_keySerializer"))
+            .IsTypeOf<Dekaf.Serialization.Json.JsonSerializer<string>>();
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_valueSerializer"))
+            .IsTypeOf<Dekaf.Serialization.Json.JsonSerializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_keyDeserializer"))
+            .IsTypeOf<Dekaf.Serialization.Json.JsonSerializer<string>>();
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_valueDeserializer"))
+            .IsTypeOf<Dekaf.Serialization.Json.JsonSerializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_keySerializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernProducer, "_keySerializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_valueSerializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernProducer, "_valueSerializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_keyDeserializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernConsumer, "_keyDeserializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_valueDeserializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernConsumer, "_valueDeserializer").GetType());
+    }
+
+    [Test]
+    public async Task JsonSchemaRegistryForwarders_DelegateToWithJsonSchemaRegistry()
     {
         var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
 
-#pragma warning disable CS0618 // Verifies the compatibility forwarder.
-        var obsoleteBuilder = Kafka.CreateProducer<string, TestMessage>()
-            .UseProtobufSchemaRegistry(schemaRegistry);
+#pragma warning disable CS0618 // Verifies the compatibility forwarders.
+        var obsoleteProducer = Kafka.CreateProducer<string, TestMessage>()
+            .UseJsonSchemaRegistry(schemaRegistry, "{}");
+        var obsoleteConsumer = Kafka.CreateConsumer<string, TestMessage>()
+            .UseJsonSchemaRegistry(schemaRegistry);
 #pragma warning restore CS0618
-        var modernBuilder = Kafka.CreateProducer<string, TestMessage>()
-            .WithProtobufSchemaRegistry(schemaRegistry);
+        var modernProducer = Kafka.CreateProducer<string, TestMessage>()
+            .WithJsonSchemaRegistry(schemaRegistry, "{}");
+        var modernConsumer = Kafka.CreateConsumer<string, TestMessage>()
+            .WithJsonSchemaRegistry(schemaRegistry);
 
-        await Assert.That(GetPrivateField<object>(obsoleteBuilder, "_valueSerializer"))
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_valueSerializer"))
+            .IsTypeOf<JsonSchemaRegistrySerializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_valueDeserializer"))
+            .IsTypeOf<JsonSchemaRegistryDeserializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_valueSerializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernProducer, "_valueSerializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_valueDeserializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernConsumer, "_valueDeserializer").GetType());
+    }
+
+    [Test]
+    public async Task ProtobufSchemaRegistryForwarders_DelegateToWithProtobufSchemaRegistry()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+
+#pragma warning disable CS0618 // Verifies the compatibility forwarders.
+        var obsoleteProducer = Kafka.CreateProducer<TestMessage, TestMessage>()
+            .UseProtobufSchemaRegistryForKeyAndValue(schemaRegistry);
+        var obsoleteConsumer = Kafka.CreateConsumer<TestMessage, TestMessage>()
+            .UseProtobufSchemaRegistryForKeyAndValue(schemaRegistry);
+#pragma warning restore CS0618
+        var modernProducer = Kafka.CreateProducer<TestMessage, TestMessage>()
+            .WithProtobufSchemaRegistryForKeyAndValue(schemaRegistry);
+        var modernConsumer = Kafka.CreateConsumer<TestMessage, TestMessage>()
+            .WithProtobufSchemaRegistryForKeyAndValue(schemaRegistry);
+
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_keySerializer"))
             .IsTypeOf<ProtobufSchemaRegistrySerializer<TestMessage>>();
-        await Assert.That(GetPrivateField<object>(modernBuilder, "_valueSerializer"))
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_valueSerializer"))
             .IsTypeOf<ProtobufSchemaRegistrySerializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_keyDeserializer"))
+            .IsTypeOf<ProtobufSchemaRegistryDeserializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_valueDeserializer"))
+            .IsTypeOf<ProtobufSchemaRegistryDeserializer<TestMessage>>();
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_keySerializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernProducer, "_keySerializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteProducer, "_valueSerializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernProducer, "_valueSerializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_keyDeserializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernConsumer, "_keyDeserializer").GetType());
+        await Assert.That(GetPrivateField<object>(obsoleteConsumer, "_valueDeserializer").GetType())
+            .IsEqualTo(GetPrivateField<object>(modernConsumer, "_valueDeserializer").GetType());
+    }
+
+    private static async Task AssertCompressionForwarder(
+        Action<ProducerBuilder<string, string>> obsoleteConfigure,
+        Action<ProducerBuilder<string, string>> modernConfigure,
+        CompressionType expected)
+    {
+        var obsoleteBuilder = Kafka.CreateProducer<string, string>();
+        obsoleteConfigure(obsoleteBuilder);
+        var modernBuilder = Kafka.CreateProducer<string, string>();
+        modernConfigure(modernBuilder);
+
+        await Assert.That(GetPrivateField<CompressionType>(obsoleteBuilder, "_compressionType"))
+            .IsEqualTo(expected);
+        await Assert.That(GetPrivateField<CompressionType>(obsoleteBuilder, "_compressionType"))
+            .IsEqualTo(GetPrivateField<CompressionType>(modernBuilder, "_compressionType"));
     }
 
     private static TField GetPrivateField<TField>(object target, string fieldName)

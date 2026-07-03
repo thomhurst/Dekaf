@@ -91,10 +91,6 @@ public static class BrotliProducerBuilderExtensions
 {
     /// <summary>
     /// Configures the producer to use Brotli compression.
-    /// <para>
-    /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
-    /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
-    /// </para>
     /// </summary>
     public static ProducerBuilder<TKey, TValue> WithBrotliCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
     {

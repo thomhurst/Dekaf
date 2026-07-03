@@ -127,17 +127,29 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
-    public KafkaClientBuilder UseTls()
+    public KafkaClientBuilder WithTls()
     {
         _useTls = true;
         return this;
     }
 
-    public KafkaClientBuilder UseTls(TlsConfig config)
+    [Obsolete("Use WithTls instead.")]
+    public KafkaClientBuilder UseTls()
+    {
+        return WithTls();
+    }
+
+    public KafkaClientBuilder WithTls(TlsConfig config)
     {
         _useTls = true;
         _tlsConfig = config;
         return this;
+    }
+
+    [Obsolete("Use WithTls instead.")]
+    public KafkaClientBuilder UseTls(TlsConfig config)
+    {
+        return WithTls(config);
     }
 
     public KafkaClientBuilder WithSaslPlain(string username, string password)
