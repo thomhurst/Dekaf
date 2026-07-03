@@ -99,6 +99,16 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await producer.PurgeAsync(PurgeOptions.None);
+        await producer.PurgeAsync(PurgeOptions.All);
+    }
+
+    [Test]
     public async Task Admin_TransactionIntrospection_ReturnsEmptyInMemoryState()
     {
         var cluster = new InMemoryKafkaCluster();

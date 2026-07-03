@@ -139,6 +139,13 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask PurgeAsync(PurgeOptions options, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        return ValueTask.CompletedTask;
+    }
+
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         ArgumentNullException.ThrowIfNull(metric);
