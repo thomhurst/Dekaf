@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Dekaf.Errors;
+using Dekaf.Internal;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -28,8 +29,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private volatile IReadOnlyList<FinalizedFeature>? _finalizedFeatures;
+    private readonly SemaphoreSlim _initializeLock = new(1, 1);
+    private volatile bool _initialized;
     private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
+    private readonly object _backgroundRefreshGate = new();
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
 
@@ -215,31 +219,76 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// credentials, or authorization decision applies everywhere, so fail fast and surface the
     /// real cause instead of masking it as a generic metadata-refresh failure.
     /// </summary>
-    private static bool IsFatalMetadataError(Exception ex) =>
-        ex is BrokerVersionException or AuthenticationException or AuthorizationException;
+    private bool IsFatalMetadataError(Exception ex)
+    {
+        if (ex is BrokerVersionException or AuthenticationException or AuthorizationException)
+            return true;
+
+        // KafkaConnection instances can be disposed independently during pool churn. Only the
+        // manager's own disposal is fatal; recycled connections should fall through to retry.
+        return ex is ObjectDisposedException && Volatile.Read(ref _disposed) != 0;
+    }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        var backoffMs = _options.RetryBackoffMs;
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(MetadataManager));
 
-        for (var attempt = 0; ; attempt++)
+        if (_initialized)
+            return;
+
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_initializeLock, nameof(MetadataManager), cancellationToken)
+            .ConfigureAwait(false);
+        try
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(MetadataManager));
+
+            if (_initialized)
+                return;
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
+            var initializationToken = linkedCts.Token;
+            var backoffMs = _options.RetryBackoffMs;
+
             try
             {
-                await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-                break;
+                for (var attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        await RefreshMetadataAsync(initializationToken).ConfigureAwait(false);
+                        break;
+                    }
+                    catch (Exception ex) when (!IsFatalMetadataError(ex) && attempt < _options.MaxInitRetries && !initializationToken.IsCancellationRequested)
+                    {
+                        LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
+                        await Task.Delay(backoffMs, initializationToken).ConfigureAwait(false);
+                        backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
+                    }
+                }
             }
-            catch (Exception ex) when (!IsFatalMetadataError(ex) && attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (_disposalCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
-                await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
-                backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
+                throw new ObjectDisposedException(nameof(MetadataManager));
             }
-        }
 
-        if (_options.EnableBackgroundRefresh)
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(MetadataManager));
+
+            if (_options.EnableBackgroundRefresh)
+            {
+                StartBackgroundRefresh();
+            }
+
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(MetadataManager));
+
+            _initialized = true;
+        }
+        finally
         {
-            StartBackgroundRefresh();
+            SemaphoreHelper.ReleaseSafely(_initializeLock);
         }
     }
 
@@ -484,7 +533,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
             throw new ObjectDisposedException(nameof(MetadataManager));
 
         LogMetadataRefreshRequested();
-        await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_refreshLock, nameof(MetadataManager), cancellationToken)
+            .ConfigureAwait(false);
         try
         {
             // Re-check cache after acquiring lock — another thread may have refreshed
@@ -501,7 +551,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
         finally
         {
-            _refreshLock.Release();
+            SemaphoreHelper.ReleaseSafely(_refreshLock);
         }
     }
 
@@ -906,8 +956,21 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private void StartBackgroundRefresh()
     {
-        _backgroundRefreshCts = new CancellationTokenSource();
-        _backgroundRefreshTask = BackgroundRefreshLoopAsync(_backgroundRefreshCts.Token);
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        lock (_backgroundRefreshGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            if (_backgroundRefreshTask is { IsCompleted: false })
+                return;
+
+            _backgroundRefreshCts?.Dispose();
+            _backgroundRefreshCts = new CancellationTokenSource();
+            _backgroundRefreshTask = BackgroundRefreshLoopAsync(_backgroundRefreshCts.Token);
+        }
     }
 
     private async Task BackgroundRefreshLoopAsync(CancellationToken cancellationToken)
@@ -927,11 +990,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 break;
             }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+                break;
+            }
             catch (Exception ex) when (IsFatalMetadataError(ex))
             {
                 // Credentials or authorization changed mid-session: retrying forever would mask the
-                // failure. Stop the background loop; the next foreground metadata operation will
-                // surface the fatal exception to the caller.
+                // failure. Stop the background loop and require a later InitializeAsync call to
+                // re-establish refresh after the caller handles the fatal error.
+                _initialized = false;
                 LogBackgroundMetadataRefreshFatal(ex);
                 break;
             }
@@ -963,6 +1031,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _disposalCts.Cancel();
         _backgroundRefreshCts?.Cancel();
 
+        await WaitForInitializationToDrainAsync().ConfigureAwait(false);
+        // An InitializeAsync racing disposal can create the background CTS while we drain it.
+        _backgroundRefreshCts?.Cancel();
+
         if (_backgroundRefreshTask is not null)
         {
             try
@@ -977,7 +1049,22 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         _backgroundRefreshCts?.Dispose();
         _disposalCts.Dispose();
+        _initializeLock.Dispose();
         _refreshLock.Dispose();
+    }
+
+    private async ValueTask WaitForInitializationToDrainAsync()
+    {
+        try
+        {
+            await _initializeLock.WaitAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        SemaphoreHelper.ReleaseSafely(_initializeLock);
     }
 
     #region Logging

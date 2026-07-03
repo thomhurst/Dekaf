@@ -76,12 +76,24 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsPerBroker(2))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateConsumer<string, string>().UseTls())
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithSaslPlain("user", "pass"))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionsPerBroker(2))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithTls())
@@ -96,6 +108,12 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateAdminClient().UseTls())
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithSaslPlain("user", "pass"))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
     }
 

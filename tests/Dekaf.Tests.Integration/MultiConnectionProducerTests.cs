@@ -78,7 +78,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         for (var p = 0; p < partitionCount; p++)
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+                Topic = topic,
+                Key = "warmup",
+                Value = "warmup",
+                Partition = p
             }, CancellationToken.None);
 
         // Produce sequenced messages to each partition
@@ -96,25 +99,38 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             }
         }
 
-        // Consume per-partition and verify ordering
+        // Consume all partitions in one assignment and verify ordering per partition.
+        // Reassigning the same consumer partition-by-partition can observe buffered
+        // records from the prior assignment, which is unrelated to producer ordering.
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
+        consumer.Assign(Enumerable.Range(0, partitionCount)
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray());
+
+        var messagesByPartition = new Dictionary<int, List<string>>();
+        for (var p = 0; p < partitionCount; p++)
+            messagesByPartition[p] = [];
+
+        var totalExpected = partitionCount * messagesPerPartition;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            if (msg.Value != "warmup")
+                messagesByPartition[msg.Partition].Add(msg.Value!);
+
+            var total = messagesByPartition.Values.Sum(messages => messages.Count);
+            if (total >= totalExpected)
+                break;
+        }
+
         for (var p = 0; p < partitionCount; p++)
         {
-            consumer.Assign(new TopicPartition(topic, p));
-            var messages = new List<string>();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-            {
-                if (msg.Value == "warmup") continue;
-                messages.Add(msg.Value!);
-                if (messages.Count >= messagesPerPartition) break;
-            }
-
+            var messages = messagesByPartition[p];
             await Assert.That(messages).Count().IsEqualTo(messagesPerPartition);
 
             // Verify strict ordering within this partition

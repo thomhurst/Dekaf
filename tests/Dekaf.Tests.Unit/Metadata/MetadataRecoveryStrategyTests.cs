@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -255,6 +256,23 @@ public sealed class MetadataRecoveryStrategyTests
         await Assert.That(producer).IsNotNull();
     }
 
+    [Test]
+    public async Task ProducerBuilder_MetadataRecoveryOptions_AreAppliedToMetadataManager()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(42))
+            .WithMetadataMaxAge(TimeSpan.FromSeconds(7))
+            .Build();
+
+        var options = GetMetadataOptions(producer);
+
+        await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
+        await Assert.That(options.MetadataRefreshInterval).IsEqualTo(TimeSpan.FromSeconds(7));
+    }
+
     #endregion
 
     #region ConsumerBuilder Methods
@@ -297,6 +315,23 @@ public sealed class MetadataRecoveryStrategyTests
         await Assert.That(consumer).IsNotNull();
     }
 
+    [Test]
+    public async Task ConsumerBuilder_MetadataRecoveryOptions_AreAppliedToMetadataManager()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(42))
+            .WithMetadataMaxAge(TimeSpan.FromSeconds(7))
+            .Build();
+
+        var options = GetMetadataOptions(consumer);
+
+        await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
+        await Assert.That(options.MetadataRefreshInterval).IsEqualTo(TimeSpan.FromSeconds(7));
+    }
+
     #endregion
 
     #region AdminClientBuilder Methods
@@ -315,6 +350,23 @@ public sealed class MetadataRecoveryStrategyTests
         var builder = new Dekaf.Admin.AdminClientBuilder();
         var result = builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000));
         await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task AdminClientBuilder_MetadataRecoveryOptions_AreAppliedToMetadataManager()
+    {
+        await using var admin = new Dekaf.Admin.AdminClientBuilder()
+            .WithBootstrapServers("localhost:9092")
+            .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(42))
+            .WithMetadataMaxAge(TimeSpan.FromSeconds(7))
+            .Build();
+
+        var options = GetMetadataOptions(admin);
+
+        await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
+        await Assert.That(options.MetadataRefreshInterval).IsEqualTo(TimeSpan.FromSeconds(7));
     }
 
     #endregion
@@ -619,6 +671,20 @@ public sealed class MetadataRecoveryStrategyTests
             connectionPool: null!,
             bootstrapServers: bootstrapServers ?? ["localhost:9092"],
             options: options);
+    }
+
+    private static MetadataOptions GetMetadataOptions(object client)
+    {
+        var metadataManager = GetField<MetadataManager>(client, "_metadataManager");
+        return GetField<MetadataOptions>(metadataManager, "_options");
+    }
+
+    private static T GetField<T>(object instance, string name)
+    {
+        var field = instance.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{name} field not found");
+
+        return (T)field.GetValue(instance)!;
     }
 
     #endregion

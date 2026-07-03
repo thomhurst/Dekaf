@@ -513,6 +513,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="strategy">The recovery strategy to use.</param>
     public ProducerBuilder<TKey, TValue> WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _metadataRecoveryStrategy = strategy;
         return this;
     }
@@ -524,6 +525,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
@@ -539,6 +541,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan interval)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
 
@@ -924,9 +927,12 @@ public sealed class ProducerBuilder<TKey, TValue>
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
-        var metadataOptions = _metadataMaxAge.HasValue
-            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
-            : null;
+        var metadataOptions = new MetadataOptions
+        {
+            MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+        };
 
         var producer = _clientInfrastructure is null
             ? new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions)
@@ -1631,6 +1637,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="strategy">The recovery strategy to use.</param>
     public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _metadataRecoveryStrategy = strategy;
         return this;
     }
@@ -1642,6 +1649,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
     public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
+        ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
@@ -1657,6 +1665,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan interval)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
 
@@ -1957,9 +1966,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
-        var metadataOptions = _metadataMaxAge.HasValue
-            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
-            : null;
+        var metadataOptions = new MetadataOptions
+        {
+            MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+        };
 
         var consumer = _clientInfrastructure is null
             ? new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions)
