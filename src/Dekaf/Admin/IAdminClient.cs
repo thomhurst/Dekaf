@@ -100,6 +100,31 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask CreatePartitionsAsync(IReadOnlyDictionary<string, int> newPartitionCounts, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Alters or cancels partition reassignments.
+    /// </summary>
+    /// <param name="reassignments">
+    /// The partition reassignments to alter. An empty optional value, null implicit value,
+    /// or empty target replica list cancels an in-progress reassignment.
+    /// </param>
+    /// <param name="options">Options for the request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask AlterPartitionReassignmentsAsync(
+        IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments,
+        AlterPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists in-progress partition reassignments.
+    /// </summary>
+    /// <param name="partitions">The partitions to list, or null to list all in-progress reassignments.</param>
+    /// <param name="options">Options for the request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
+        IEnumerable<TopicPartition>? partitions = null,
+        ListPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes SCRAM credentials for one or more users.
     /// </summary>
     /// <param name="users">The users to describe, or null to describe all users.</param>

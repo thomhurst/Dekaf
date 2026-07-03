@@ -1118,6 +1118,191 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask AlterPartitionReassignmentsAsync(
+        IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments,
+        AlterPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reassignments);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new AlterPartitionReassignmentsOptions();
+        var topics = BuildAlterPartitionReassignmentTopics(reassignments);
+        if (topics.Count == 0)
+        {
+            return;
+        }
+
+        // Materialize before retry so an ambiguous retriable failure resends the exact
+        // same target/cancel operations. Some already-applied retries surface as
+        // ReassignmentInProgress or NoReassignmentInProgress; those are tolerated only
+        // after a previous attempt may have reached the controller.
+        var alterMayHaveApplied = false;
+
+        await WithRetryAsync(async () =>
+        {
+            var isRetryAttempt = alterMayHaveApplied;
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+            var request = new AlterPartitionReassignmentsRequest
+            {
+                TimeoutMs = opts.TimeoutMs,
+                AllowReplicationFactorChange = opts.AllowReplicationFactorChange,
+                Topics = topics
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterPartitionReassignments,
+                AlterPartitionReassignmentsRequest.LowestSupportedVersion,
+                AlterPartitionReassignmentsRequest.HighestSupportedVersion);
+
+            alterMayHaveApplied = true;
+            var response = await controller.SendAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                if (IsToleratedReassignmentRetry(isRetryAttempt, response.ErrorCode))
+                {
+                    return;
+                }
+
+                throw new KafkaException(response.ErrorCode,
+                    $"AlterPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+            }
+
+            foreach (var topic in response.Responses)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.ErrorCode == Protocol.ErrorCode.None ||
+                        IsToleratedReassignmentRetry(isRetryAttempt, partition.ErrorCode))
+                    {
+                        continue;
+                    }
+
+                    throw new KafkaException(partition.ErrorCode,
+                        $"AlterPartitionReassignments failed for {topic.Name}-{partition.PartitionIndex}: " +
+                        $"{partition.ErrorMessage ?? partition.ErrorCode.ToString()}");
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
+        IEnumerable<TopicPartition>? partitions = null,
+        ListPartitionReassignmentsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new ListPartitionReassignmentsOptions();
+        var topics = partitions is null ? null : BuildListPartitionReassignmentTopics(partitions);
+
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+            var request = new ListPartitionReassignmentsRequest
+            {
+                TimeoutMs = opts.TimeoutMs,
+                Topics = topics
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListPartitionReassignments,
+                ListPartitionReassignmentsRequest.LowestSupportedVersion,
+                ListPartitionReassignmentsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<ListPartitionReassignmentsRequest, ListPartitionReassignmentsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode,
+                    $"ListPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+            }
+
+            var result = new Dictionary<TopicPartition, PartitionReassignment>();
+            foreach (var topic in response.Topics)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    result[new TopicPartition(topic.Name, partition.PartitionIndex)] = new PartitionReassignment
+                    {
+                        Replicas = partition.Replicas,
+                        AddingReplicas = partition.AddingReplicas,
+                        RemovingReplicas = partition.RemovingReplicas
+                    };
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static List<AlterPartitionReassignmentsRequestTopic> BuildAlterPartitionReassignmentTopics(
+        IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments) =>
+        reassignments
+            .Select(kvp =>
+            {
+                ValidateTopicPartition(kvp.Key);
+                var targetReplicas = kvp.Value.HasValue ? kvp.Value.Value.TargetReplicas : null;
+                return new
+                {
+                    TopicPartition = kvp.Key,
+                    Replicas = targetReplicas is { Count: > 0 } ? targetReplicas.ToList() : null
+                };
+            })
+            .GroupBy(item => item.TopicPartition.Topic)
+            .Select(group => new AlterPartitionReassignmentsRequestTopic
+            {
+                Name = group.Key,
+                Partitions = group
+                    .OrderBy(item => item.TopicPartition.Partition)
+                    .Select(item => new AlterPartitionReassignmentsRequestPartition
+                    {
+                        PartitionIndex = item.TopicPartition.Partition,
+                        Replicas = item.Replicas
+                    })
+                    .ToList()
+            })
+            .ToList();
+
+    private static List<ListPartitionReassignmentsRequestTopic> BuildListPartitionReassignmentTopics(
+        IEnumerable<TopicPartition> partitions) =>
+        partitions
+            .Select(partition =>
+            {
+                ValidateTopicPartition(partition);
+                return partition;
+            })
+            .GroupBy(partition => partition.Topic)
+            .Select(group => new ListPartitionReassignmentsRequestTopic
+            {
+                Name = group.Key,
+                PartitionIndexes = group.Select(partition => partition.Partition).Order().ToList()
+            })
+            .ToList();
+
+    private static void ValidateTopicPartition(TopicPartition topicPartition)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(topicPartition.Topic);
+        if (topicPartition.Partition < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(topicPartition), topicPartition.Partition, "Partition index must not be negative.");
+        }
+    }
+
+    private static bool IsToleratedReassignmentRetry(bool isRetryAttempt, Protocol.ErrorCode errorCode) =>
+        isRetryAttempt &&
+        (errorCode == Protocol.ErrorCode.ReassignmentInProgress ||
+         errorCode == Protocol.ErrorCode.NoReassignmentInProgress);
+
     public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
         IEnumerable<string>? users = null,
         DescribeUserScramCredentialsOptions? options = null,
