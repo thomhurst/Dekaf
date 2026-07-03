@@ -30,6 +30,19 @@ public sealed class CancelledCorrelationIdTrackerTests
     }
 
     [Test]
+    public async Task TryAdd_WhenIdsAreRemovedBeforeCapacity_StillBoundsQueuedEntries()
+    {
+        var tracker = new CancelledCorrelationIdTracker(capacity: 2);
+
+        for (var correlationId = 0; correlationId < 100; correlationId++)
+        {
+            await Assert.That(tracker.TryAdd(correlationId)).IsTrue();
+            await Assert.That(tracker.TryRemove(correlationId)).IsTrue();
+            await Assert.That(tracker.QueuedCount).IsLessThanOrEqualTo(2);
+        }
+    }
+
+    [Test]
     public async Task Clear_RemovesTrackedIdsAndQueuedEvictions()
     {
         var tracker = new CancelledCorrelationIdTracker(capacity: 2);
