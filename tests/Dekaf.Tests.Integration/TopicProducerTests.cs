@@ -10,14 +10,21 @@ namespace Dekaf.Tests.Integration;
 [Category("Producer")]
 public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    private ValueTask<ITopicProducer<string, string>> BuildTopicProducerAsync(string topic)
+    {
+        return Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildForTopicAsync(topic);
+    }
+
     [Test]
     public async Task TopicProducer_ProduceAsync_MessageDelivered()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         // Act
         var metadata = await producer.ProduceAsync("key1", "value1", CancellationToken.None);
@@ -34,8 +41,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         var headers = Headers.Create("trace-id", "abc123");
 
@@ -53,8 +59,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         // Act
         var metadata = await producer.ProduceAsync(partition: 1, "key1", "value1", CancellationToken.None);
@@ -72,8 +77,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var timestamp = DateTimeOffset.UtcNow.AddMinutes(-5);
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         var message = new TopicProducerMessage<string, string>
         {
@@ -96,8 +100,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         // Act - fire-and-forget
         await producer.ProduceAsync("key1", "value1");
@@ -127,8 +130,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         var headers = Headers.Create("custom-header", "header-value");
 
@@ -162,8 +164,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var callbackInvoked = new TaskCompletionSource<(RecordMetadata, Exception?)>();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         // Act
         await producer.FireAsync("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
@@ -186,8 +187,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 10;
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         var messages = Enumerable.Range(0, messageCount)
             .Select(i => ((string?)$"key-{i}", $"value-{i}"))
@@ -211,8 +211,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         var messages = new[]
         {
@@ -321,8 +320,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int messageCount = 100;
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         // Act - produce concurrently
         var tasks = Enumerable.Range(0, messageCount)
@@ -346,8 +344,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateTopicProducerAsync<string, string>(
-            KafkaContainer.BootstrapServers, topic);
+        await using var producer = await BuildTopicProducerAsync(topic);
 
         // Assert
         await Assert.That(producer.Topic).IsEqualTo(topic);

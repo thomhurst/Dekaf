@@ -155,10 +155,11 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task AdminClient_FactoryShortcut_WorksWithConnectionString()
+    public async Task AdminClient_Builder_WorksWithConnectionString()
     {
-        // Test the convenience factory: Kafka.CreateAdminClient(servers)
-        await using var admin = Kafka.CreateAdminClient(KafkaContainer.BootstrapServers);
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .Build();
 
         var cluster = await admin.DescribeClusterAsync();
         await Assert.That(cluster.Nodes).IsNotEmpty();
