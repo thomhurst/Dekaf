@@ -31,4 +31,11 @@ public sealed class ShareConsumerOptionsDefaultsTests
         var options = CreateOptions();
         await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
     }
+
+    [Test]
+    public async Task ClientDnsLookup_DefaultsTo_UseAllDnsIps()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.UseAllDnsIps);
+    }
 }

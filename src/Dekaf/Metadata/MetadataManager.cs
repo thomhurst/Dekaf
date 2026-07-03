@@ -787,16 +787,31 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // Apply a per-host timeout to prevent DNS hangs from blocking rebootstrap
                 using var dnsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 dnsCts.CancelAfter(TimeSpan.FromSeconds(5));
-                var addresses = await Dns.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
-                foreach (var address in addresses)
+                IPAddress[] addresses;
+                if (_options.ClientDnsLookup == ClientDnsLookup.ResolveCanonicalBootstrapServersOnly)
                 {
-                    var endpoint = (address.ToString(), port);
-                    // Add both the resolved IP and the original hostname
-                    // The original hostname is important because the broker may expect
-                    // connections using the hostname (e.g., for TLS SNI)
-                    if (seen.Add(endpoint))
+                    var entry = await Dns.GetHostEntryAsync(host, dnsCts.Token).ConfigureAwait(false);
+                    addresses = entry.AddressList;
+                    var canonicalHost = string.IsNullOrWhiteSpace(entry.HostName) ? host : entry.HostName;
+                    var canonicalEndpoint = (canonicalHost, port);
+                    if (seen.Add(canonicalEndpoint))
                     {
-                        resolved.Add(endpoint);
+                        resolved.Add(canonicalEndpoint);
+                    }
+                }
+                else
+                {
+                    addresses = await Dns.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
+                    foreach (var address in addresses)
+                    {
+                        var endpoint = (address.ToString(), port);
+                        // Add resolved IP endpoints for rebootstrap fan-out. The original
+                        // hostname fallback below preserves TLS/SASL target names when direct
+                        // IP endpoints are unsuitable.
+                        if (seen.Add(endpoint))
+                        {
+                            resolved.Add(endpoint);
+                        }
                     }
                 }
 
@@ -1173,6 +1188,11 @@ public sealed class MetadataOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Controls how bootstrap and broker hostnames are resolved before connecting.
+    /// </summary>
+    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// Initial retry backoff in milliseconds for metadata initialization.

@@ -58,6 +58,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _maxBlockMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private bool _enableIdempotence = true;
     private int _connectionsPerBroker = 1;
     private int _socketSendBufferBytes;
@@ -536,6 +537,16 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets how broker DNS names are resolved before connecting.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithClientDnsLookup(ClientDnsLookup lookup)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _clientDnsLookup = lookup;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum age of metadata before it is refreshed.
     /// This controls how frequently the client refreshes its view of the cluster topology.
     /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
@@ -969,6 +980,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             OAuthBearerTokenProvider = _oauthTokenProvider,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             ValueTaskSourcePoolSize = _valueTaskSourcePoolSize,
@@ -985,7 +997,8 @@ public sealed class ProducerBuilder<TKey, TValue>
         {
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup
         };
 
         var producer = _clientInfrastructure is null
@@ -1117,6 +1130,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int? _queuedMaxMessagesKbytes;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private readonly List<string> _topicsToSubscribe = [];
     private TimeSpan? _metadataMaxAge;
     private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
@@ -1727,6 +1741,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets how broker DNS names are resolved before connecting.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithClientDnsLookup(ClientDnsLookup lookup)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _clientDnsLookup = lookup;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum age of metadata before it is refreshed.
     /// This controls how frequently the client refreshes its view of the cluster topology.
     /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
@@ -2075,6 +2099,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
             PrefetchPipelineDepth = _prefetchPipelineDepth,
@@ -2090,7 +2115,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         {
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup
         };
 
         var consumer = _clientInfrastructure is null
@@ -2194,6 +2220,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
 
@@ -2454,6 +2481,16 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets how broker DNS names are resolved before connecting.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithClientDnsLookup(ClientDnsLookup lookup)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _clientDnsLookup = lookup;
+        return this;
+    }
+
     public ShareConsumerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
     {
         _retryPolicy = retryPolicy;
@@ -2534,6 +2571,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             ConnectionsPerBroker = _connectionsPerBroker,
+            ClientDnsLookup = _clientDnsLookup,
             RetryPolicy = _retryPolicy
         };
 

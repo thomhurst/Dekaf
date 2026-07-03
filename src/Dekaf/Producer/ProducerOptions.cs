@@ -398,6 +398,11 @@ public sealed class ProducerOptions
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 
     /// <summary>
+    /// Controls how broker hostnames are resolved before connecting.
+    /// </summary>
+    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+
+    /// <summary>
     /// Application-level retry policy for <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/>.
     /// When set, retriable exceptions that escape the internal protocol-level retries will be
     /// retried according to this policy. When <c>null</c>, no application-level retries occur.

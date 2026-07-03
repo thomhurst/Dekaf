@@ -147,6 +147,11 @@ public sealed class ShareConsumerOptions
     public int ConnectionsPerBroker { get; init; } = 2;
 
     /// <summary>
+    /// Controls how broker hostnames are resolved before connecting.
+    /// </summary>
+    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+
+    /// <summary>
     /// Custom retry policy for transient errors.
     /// </summary>
     public IRetryPolicy? RetryPolicy { get; init; }

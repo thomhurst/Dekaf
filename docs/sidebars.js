@@ -34,6 +34,7 @@ const sidebars = {
         'configuration/presets',
         'configuration/producer-options',
         'configuration/consumer-options',
+        'configuration/client-dns-lookup',
       ],
     },
     {

@@ -2,6 +2,7 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Metadata;
+using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Producer;
@@ -459,6 +460,12 @@ public sealed class AdminClientServiceBuilder
         return this;
     }
 
+    public AdminClientServiceBuilder WithClientDnsLookup(ClientDnsLookup lookup)
+    {
+        _builder.WithClientDnsLookup(lookup);
+        return this;
+    }
+
     public AdminClientServiceBuilder RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         _builder.RegisterMetricForSubscription(metric);
@@ -558,6 +565,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        if (TryGetValue<ClientDnsLookup>(configuration, nameof(ProducerOptions.ClientDnsLookup), out var clientDnsLookup))
+            builder.WithClientDnsLookup(clientDnsLookup);
         ApplyAdaptiveConnections(
             configuration,
             nameof(ProducerOptions.EnableAdaptiveConnections),
@@ -642,6 +651,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        if (TryGetValue<ClientDnsLookup>(configuration, nameof(ConsumerOptions.ClientDnsLookup), out var clientDnsLookup))
+            builder.WithClientDnsLookup(clientDnsLookup);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.PrefetchPipelineDepth), out var prefetchPipelineDepth))
             builder.WithPrefetchPipelineDepth(prefetchPipelineDepth);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
@@ -674,6 +685,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        if (TryGetValue<ClientDnsLookup>(configuration, nameof(AdminClientOptions.ClientDnsLookup), out var clientDnsLookup))
+            builder.WithClientDnsLookup(clientDnsLookup);
     }
 
     private static void ApplyTls<TBuilder>(

@@ -54,7 +54,8 @@ public sealed class AdminClient : IAdminClient
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
-                OAuthBearerToken = options.OAuthBearerToken
+                OAuthBearerToken = options.OAuthBearerToken,
+                ClientDnsLookup = options.ClientDnsLookup
             },
             loggerFactory);
 
@@ -2532,6 +2533,11 @@ public sealed class AdminClientOptions
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 
     /// <summary>
+    /// Controls how broker hostnames are resolved before connecting.
+    /// </summary>
+    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+
+    /// <summary>
     /// Application metrics registered for broker telemetry subscriptions.
     /// </summary>
     public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
@@ -2560,6 +2566,7 @@ public sealed class AdminClientBuilder
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private TimeSpan? _metadataMaxAge;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
@@ -2793,6 +2800,16 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Sets how broker DNS names are resolved before connecting.
+    /// </summary>
+    public AdminClientBuilder WithClientDnsLookup(ClientDnsLookup lookup)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _clientDnsLookup = lookup;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum age of metadata before it is refreshed.
     /// This controls how frequently the client refreshes its view of the cluster topology.
     /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
@@ -2905,6 +2922,7 @@ public sealed class AdminClientBuilder
             OAuthBearerTokenProvider = _oauthTokenProvider,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup,
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
@@ -2912,7 +2930,8 @@ public sealed class AdminClientBuilder
         {
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup
         };
 
         return _clientInfrastructure is null

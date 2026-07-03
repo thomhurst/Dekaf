@@ -63,6 +63,17 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
+    public async Task ProducerOptions_ClientDnsLookup_DefaultsToUseAllDnsIps()
+    {
+        var options = new Dekaf.Producer.ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.UseAllDnsIps);
+    }
+
+    [Test]
     public async Task ProducerOptions_MetadataRecoveryStrategy_CanBeSetToNone()
     {
         var options = new Dekaf.Producer.ProducerOptions
@@ -110,6 +121,17 @@ public sealed class MetadataRecoveryStrategyTests
         };
 
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(300000);
+    }
+
+    [Test]
+    public async Task ConsumerOptions_ClientDnsLookup_DefaultsToUseAllDnsIps()
+    {
+        var options = new Dekaf.Consumer.ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.UseAllDnsIps);
     }
 
     [Test]
@@ -195,6 +217,17 @@ public sealed class MetadataRecoveryStrategyTests
         await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(ConnectionOptions.DefaultConnectionsMaxIdleMs);
     }
 
+    [Test]
+    public async Task AdminClientOptions_ClientDnsLookup_DefaultsToUseAllDnsIps()
+    {
+        var options = new Dekaf.Admin.AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.UseAllDnsIps);
+    }
+
     #endregion
 
     #region MetadataOptions Defaults
@@ -213,6 +246,14 @@ public sealed class MetadataRecoveryStrategyTests
         var options = new MetadataOptions();
 
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(300000);
+    }
+
+    [Test]
+    public async Task MetadataOptions_ClientDnsLookup_DefaultsToUseAllDnsIps()
+    {
+        var options = new MetadataOptions();
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.UseAllDnsIps);
     }
 
     [Test]

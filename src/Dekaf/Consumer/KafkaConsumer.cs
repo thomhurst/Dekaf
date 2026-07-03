@@ -805,7 +805,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 SendBufferSize = options.SocketSendBufferBytes,
-                ReceiveBufferSize = options.SocketReceiveBufferBytes
+                ReceiveBufferSize = options.SocketReceiveBufferBytes,
+                ClientDnsLookup = options.ClientDnsLookup
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,

@@ -86,6 +86,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
+            .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateConsumer<string, string>().UseTls())
             .Throws<InvalidOperationException>();
@@ -103,6 +105,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
+            .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithTls())
             .Throws<InvalidOperationException>();
@@ -115,6 +119,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
             .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateAdminClient().UseTls())
@@ -131,6 +137,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
+            .Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -139,6 +147,7 @@ public sealed class KafkaClientBuilderTests
         await using var client = Kafka.Connect("localhost:9092", builder => builder
             .WithReconnectBackoff(TimeSpan.FromMilliseconds(123))
             .WithReconnectBackoffMax(TimeSpan.FromMilliseconds(456)));
+
         await using var producer = client.CreateProducer<string, string>().Build();
 
         var pool = GetField<ConnectionPool>(producer, "_connectionPool");
@@ -152,11 +161,25 @@ public sealed class KafkaClientBuilderTests
     {
         await using var client = Kafka.Connect("localhost:9092", builder => builder
             .WithConnectionsMaxIdle(TimeSpan.FromMilliseconds(1234)));
+
         await using var producer = client.CreateProducer<string, string>().Build();
 
         var pool = GetField<ConnectionPool>(producer, "_connectionPool");
 
         await Assert.That(pool.EffectiveConnectionOptions.ConnectionsMaxIdleMs).IsEqualTo(1234);
+    }
+
+    [Test]
+    public async Task RootClient_WithClientDnsLookup_ConfiguresSharedConnectionPool()
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+
+        await Assert.That(pool.EffectiveConnectionOptions.ClientDnsLookup)
+            .IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
     }
 
     [Test]

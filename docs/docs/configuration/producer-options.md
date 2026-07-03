@@ -70,6 +70,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 |------------|------------|-------|
 | `WithBootstrapServers(...)` | `BootstrapServers` | Server list (prefer `params string[]` in code; comma-separated string and JSON arrays are also supported) |
 | `WithClientId(...)` | `ClientId` | String |
+| `WithClientDnsLookup(...)` | `ClientDnsLookup` | `UseAllDnsIps` or `ResolveCanonicalBootstrapServersOnly` |
 | `WithAcks(...)` | `Acks` | `None`, `Leader`, `All` |
 | `WithLinger(...)` | `LingerMs` | Milliseconds |
 | `WithBatchSize(...)` | `BatchSize` | Bytes |
@@ -331,6 +332,7 @@ Enable logging:
 |--------|---------|-------------|
 | `WithBootstrapServers` | (required) | Broker addresses |
 | `WithClientId` | "dekaf-producer" | Client identifier |
+| `WithClientDnsLookup` | UseAllDnsIps | DNS lookup mode |
 | `WithAcks` | All | Acknowledgment mode |
 | `WithLinger` | 0ms | Batch wait time |
 | `WithBatchSize` | 1048576 | Max batch size in bytes |

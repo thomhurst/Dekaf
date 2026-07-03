@@ -192,7 +192,9 @@ public sealed partial class ConnectionPool : IConnectionPool
             ReconnectBackoff = options.ReconnectBackoff,
             ReconnectBackoffMax = options.ReconnectBackoffMax,
             ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
-            MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
+            MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,
+            ClientDnsLookup = options.ClientDnsLookup,
+            DnsResolver = options.DnsResolver
         };
     }
 

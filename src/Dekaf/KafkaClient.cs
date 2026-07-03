@@ -99,6 +99,7 @@ public sealed class KafkaClientBuilder
     private TimeSpan? _metadataMaxAge;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private ulong? _memoryBudgetBytes;
     private ILoggerFactory? _loggerFactory;
 
@@ -306,6 +307,15 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets how broker DNS names are resolved before connecting.
+    /// </summary>
+    public KafkaClientBuilder WithClientDnsLookup(ClientDnsLookup lookup)
+    {
+        _clientDnsLookup = lookup;
+        return this;
+    }
+
     public KafkaClientBuilder WithMemoryBudget(ulong bytes)
     {
         ArgumentOutOfRangeException.ThrowIfZero(bytes);
@@ -354,6 +364,7 @@ public sealed class KafkaClientBuilder
             MetadataMaxAge = _metadataMaxAge,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = _clientDnsLookup,
             MemoryBudgetBytes = _memoryBudgetBytes,
             LoggerFactory = _loggerFactory
         };
@@ -385,6 +396,7 @@ internal sealed class KafkaClientOptions
     public TimeSpan? MetadataMaxAge { get; init; }
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; }
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; }
+    public ClientDnsLookup ClientDnsLookup { get; init; }
     public ulong? MemoryBudgetBytes { get; init; }
     public ILoggerFactory? LoggerFactory { get; init; }
 }
@@ -448,7 +460,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes,
-                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
+                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,
+                ClientDnsLookup = options.ClientDnsLookup
             },
             options.LoggerFactory,
             options.ConnectionsPerBroker,
@@ -459,7 +472,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         {
             MetadataRefreshInterval = options.MetadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = options.ClientDnsLookup
         };
 
         var metadataManager = new MetadataManager(

@@ -307,6 +307,11 @@ public sealed class ConsumerOptions
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 
     /// <summary>
+    /// Controls how broker hostnames are resolved before connecting.
+    /// </summary>
+    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+
+    /// <summary>
     /// Application-level retry policy for message processing in hosted consumer services.
     /// When set, the consumer service will use this policy to determine delays between retries.
     /// When <c>null</c>, existing retry behavior is unchanged.

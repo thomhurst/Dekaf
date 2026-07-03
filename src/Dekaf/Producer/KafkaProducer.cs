@@ -232,7 +232,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes,
-                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection
+                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,
+                ClientDnsLookup = options.ClientDnsLookup
             },
             loggerFactory,
             options.ConnectionsPerBroker,

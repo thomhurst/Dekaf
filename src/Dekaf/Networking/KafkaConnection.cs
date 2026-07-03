@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
@@ -143,6 +144,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private readonly ResponseBufferPool _responseBufferPool;
 
     private Socket? _socket;
+    private string? _resolvedTargetHost;
     private Stream? _stream;
     private PipeReader? _reader;
     private SocketPipe? _socketPipe;
@@ -365,26 +367,18 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     {
         LogConnecting(_host, _port);
 
-        _socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
-        {
-            NoDelay = true
-        };
-
-        if (_options.SendBufferSize > 0)
-            _socket.SendBufferSize = _options.SendBufferSize;
-        if (_options.ReceiveBufferSize > 0)
-            _socket.ReceiveBufferSize = _options.ReceiveBufferSize;
-        ConfigureTcpKeepAlive(_socket);
-
-        var endpoint = new DnsEndPoint(_host, _port);
-        await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+        using var connectTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        connectTimeoutCts.CancelAfter(_options.ConnectionTimeout);
+        var (socket, targetHost) = await ConnectSocketAsync(connectTimeoutCts.Token).ConfigureAwait(false);
+        _socket = socket;
+        _resolvedTargetHost = targetHost;
 
         Stream networkStream = new NetworkStream(_socket, ownsSocket: false);
 
         if (_options.UseTls || _options.TlsConfig is not null)
         {
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
-            var sslOptions = BuildSslClientAuthenticationOptions();
+            var sslOptions = BuildSslClientAuthenticationOptions(targetHost);
             try
             {
                 await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
@@ -480,6 +474,63 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         _telemetryMetricCollector?.RecordConnectionCreated();
 
         LogConnected(_host, _port);
+    }
+
+    private async ValueTask<(Socket Socket, string TargetHost)> ConnectSocketAsync(CancellationToken cancellationToken)
+    {
+        var endpoints = await _options.DnsResolver
+            .ResolveAsync(_host, _port, _options.ClientDnsLookup, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (endpoints.Count == 0)
+            throw new SocketException((int)SocketError.HostNotFound);
+
+        Exception? lastException = null;
+        foreach (var endpoint in endpoints)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var socket = CreateSocket(endpoint.Address.AddressFamily);
+            try
+            {
+                await socket.ConnectAsync(new IPEndPoint(endpoint.Address, endpoint.Port), cancellationToken)
+                    .ConfigureAwait(false);
+
+                _options.DnsResolver.MarkSuccessful(_host, _port, _options.ClientDnsLookup, endpoint.Address);
+                return (socket, endpoint.TargetHost);
+            }
+            catch (OperationCanceledException)
+            {
+                socket.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                socket.Dispose();
+                lastException = ex;
+            }
+        }
+
+        if (lastException is not null)
+            ExceptionDispatchInfo.Capture(lastException).Throw();
+
+        throw new SocketException((int)SocketError.HostNotFound);
+    }
+
+    private Socket CreateSocket(AddressFamily addressFamily)
+    {
+        var socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp)
+        {
+            NoDelay = true
+        };
+
+        if (_options.SendBufferSize > 0)
+            socket.SendBufferSize = _options.SendBufferSize;
+        if (_options.ReceiveBufferSize > 0)
+            socket.ReceiveBufferSize = _options.ReceiveBufferSize;
+        ConfigureTcpKeepAlive(socket);
+
+        return socket;
     }
 
     public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
@@ -1539,12 +1590,12 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         ReleasePendingRequestSlots(releasedSlots);
     }
 
-    private SslClientAuthenticationOptions BuildSslClientAuthenticationOptions()
+    private SslClientAuthenticationOptions BuildSslClientAuthenticationOptions(string targetHost)
     {
         var tlsConfig = _options.TlsConfig;
         var options = new SslClientAuthenticationOptions
         {
-            TargetHost = tlsConfig?.TargetHost ?? _host,
+            TargetHost = tlsConfig?.TargetHost ?? targetHost,
             RemoteCertificateValidationCallback = _options.RemoteCertificateValidationCallback
         };
 
@@ -1924,7 +1975,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
         SaslMechanism.Gssapi => new GssapiAuthenticator(
             _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
-            _host),
+            _resolvedTargetHost ?? _host),
         SaslMechanism.OAuthBearer => CreateOAuthBearerAuthenticator(),
         _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
     };
@@ -2718,6 +2769,16 @@ public sealed class ConnectionOptions
     /// Maximum in-flight requests per connection. Used internally to derive pool sizes.
     /// </summary>
     internal int MaxInFlightRequestsPerConnection { get; init; } = 5;
+
+    /// <summary>
+    /// Controls how broker hostnames are resolved before connecting.
+    /// </summary>
+    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+
+    /// <summary>
+    /// DNS resolver used by connections. Internal for deterministic tests.
+    /// </summary>
+    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
 
     internal const int DefaultConnectionsMaxIdleMs = 540000;
 
