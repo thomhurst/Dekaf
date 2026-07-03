@@ -2690,10 +2690,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         ThrowIfNotInitialized();
 
-        var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
-        if (connection is null)
-            throw new InvalidOperationException($"No leader found for partition {topicPartition}");
-
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
             ListOffsetsRequest.LowestSupportedVersion,
@@ -2702,44 +2698,84 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var earliestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, EarliestOffsetTimestamp);
         var latestRequest = CreateWatermarkListOffsetsRequest(topicPartition, _options.IsolationLevel, LatestOffsetTimestamp);
 
-        var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            earliestRequest,
-            listOffsetsVersion,
-            cancellationToken).AsTask();
-
-        var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-            latestRequest,
-            listOffsetsVersion,
-            cancellationToken).AsTask();
-
-        await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
-
-        var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
-
-        if (earliestPartitionResponse?.ErrorCode != ErrorCode.None)
+        for (var attempt = 0; ; attempt++)
         {
-            throw new InvalidOperationException(
-                $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse?.ErrorCode}");
+            var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+            if (connection is null)
+                throw new InvalidOperationException($"No leader found for partition {topicPartition}");
+
+            var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                earliestRequest,
+                listOffsetsVersion,
+                cancellationToken).AsTask();
+
+            var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                latestRequest,
+                listOffsetsVersion,
+                cancellationToken).AsTask();
+
+            await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
+
+            var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
+
+            if (await ShouldRetryWatermarkQueryAsync(
+                    "earliest",
+                    topicPartition,
+                    earliestPartitionResponse,
+                    attempt,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
+
+            if (await ShouldRetryWatermarkQueryAsync(
+                    "latest",
+                    topicPartition,
+                    latestPartitionResponse,
+                    attempt,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
+            var highWatermark = latestPartitionResponse?.Offset ?? 0;
+            var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
+
+            // Cache the result
+            _watermarks[topicPartition] = watermarks;
+
+            return watermarks;
+        }
+    }
+
+    private async ValueTask<bool> ShouldRetryWatermarkQueryAsync(
+        string offsetName,
+        TopicPartition topicPartition,
+        ListOffsetsResponsePartition? partitionResponse,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        if (partitionResponse?.ErrorCode == ErrorCode.None)
+        {
+            return false;
         }
 
-        var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
-
-        var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
-
-        if (latestPartitionResponse?.ErrorCode != ErrorCode.None)
+        var errorCode = partitionResponse?.ErrorCode;
+        if (errorCode is not null &&
+            errorCode.Value.IsRetriable() &&
+            attempt < RetryHelper.MaxRetries)
         {
-            throw new InvalidOperationException(
-                $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse?.ErrorCode}");
+            await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+            var jitter = Random.Shared.Next(0, 100);
+            await Task.Delay(RetryHelper.RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
+            return true;
         }
 
-        var highWatermark = latestPartitionResponse?.Offset ?? 0;
-
-        var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
-
-        // Cache the result
-        _watermarks[topicPartition] = watermarks;
-
-        return watermarks;
+        throw new InvalidOperationException(
+            $"Failed to query {offsetName} offset for {topicPartition}: {errorCode}");
     }
 
     /// <inheritdoc />
