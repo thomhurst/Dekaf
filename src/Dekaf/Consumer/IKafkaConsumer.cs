@@ -17,6 +17,11 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     IReadOnlySet<string> Subscription { get; }
 
     /// <summary>
+    /// Gets the current server-side topic regex subscription, if any.
+    /// </summary>
+    string? SubscriptionPattern { get; }
+
+    /// <summary>
     /// Gets the current assignment.
     /// </summary>
     IReadOnlySet<TopicPartition> Assignment { get; }
@@ -61,6 +66,16 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Subscribes to topics matching a pattern.
     /// </summary>
     void Subscribe(Func<string, bool> topicFilter);
+
+    /// <summary>
+    /// Subscribes to topics matching a broker-side RE2/J regular expression.
+    /// </summary>
+    /// <remarks>
+    /// The pattern is sent to Kafka as-is. .NET regular expression syntax is not translated to RE2/J.
+    /// Requires ConsumerGroupHeartbeat v1, available on Kafka 4.1+ brokers.
+    /// </remarks>
+    /// <param name="pattern">The RE2/J topic regex pattern.</param>
+    void SubscribePattern(string pattern);
 
     /// <summary>
     /// Unsubscribes from all topics.

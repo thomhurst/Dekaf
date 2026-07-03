@@ -18,6 +18,41 @@ public sealed class PatternSubscriptionTests
     }
 
     [Test]
+    public async Task SubscribePattern_WithNullPattern_ThrowsArgumentNullException()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .Build();
+
+        var act = () => consumer.SubscribePattern(null!);
+        await Assert.That(act).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task SubscribePattern_WithEmptyPattern_ThrowsArgumentException()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .Build();
+
+        var act = () => consumer.SubscribePattern(" ");
+        await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task SubscribePattern_WithoutGroupId_ThrowsInvalidOperationException()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        var act = () => consumer.SubscribePattern("orders-.*");
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task Subscribe_WithFilter_ClearsExistingSubscription()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
@@ -30,6 +65,54 @@ public sealed class PatternSubscriptionTests
 
         // Subscribe with filter - should clear explicit subscription
         consumer.Subscribe(topic => topic.StartsWith("prefix-", StringComparison.Ordinal));
+        await Assert.That(consumer.Subscription.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task SubscribePattern_ClearsExistingSubscription()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .Build();
+
+        consumer.Subscribe("topic-a", "topic-b");
+
+        consumer.SubscribePattern("orders-.*");
+
+        await Assert.That(consumer.Subscription.Count).IsEqualTo(0);
+        await Assert.That(consumer.SubscriptionPattern).IsEqualTo("orders-.*");
+    }
+
+    [Test]
+    public async Task Subscribe_WithTopics_ClearsServerSidePattern()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .Build();
+
+        consumer.SubscribePattern("orders-.*");
+
+        consumer.Subscribe("topic-a");
+
+        await Assert.That(consumer.SubscriptionPattern).IsNull();
+        await Assert.That(consumer.Subscription).Contains("topic-a");
+    }
+
+    [Test]
+    public async Task Subscribe_WithFilter_ClearsServerSidePattern()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("test-group")
+            .Build();
+
+        consumer.SubscribePattern("orders-.*");
+
+        consumer.Subscribe(topic => topic.StartsWith("prefix-", StringComparison.Ordinal));
+
+        await Assert.That(consumer.SubscriptionPattern).IsNull();
         await Assert.That(consumer.Subscription.Count).IsEqualTo(0);
     }
 
@@ -62,6 +145,7 @@ public sealed class PatternSubscriptionTests
         // Unsubscribe - should clear everything including the filter
         consumer.Unsubscribe();
         await Assert.That(consumer.Subscription.Count).IsEqualTo(0);
+        await Assert.That(consumer.SubscriptionPattern).IsNull();
         await Assert.That(consumer.Assignment.Count).IsEqualTo(0);
     }
 

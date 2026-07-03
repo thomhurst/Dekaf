@@ -51,7 +51,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
 
     /// <summary>
     /// The subscribed topic regex pattern for regex-based subscriptions (v1+ only).
-    /// Null if not used or unchanged since the last heartbeat.
+    /// Null if unchanged since the last heartbeat. Empty string clears a previous regex subscription.
     /// </summary>
     public string? SubscribedTopicRegex { get; init; }
 
@@ -82,7 +82,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
                 w.WriteCompactString(topic);
             });
 
-        // v1+ adds SubscribedTopicRegex as a positional field (KIP-1082).
+        // v1+ adds SubscribedTopicRegex as a positional field.
         if (version >= 1)
         {
             writer.WriteCompactNullableString(SubscribedTopicRegex);

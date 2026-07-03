@@ -567,8 +567,7 @@ public sealed class InMemoryAdminClient : IAdminClient
         var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(replicaAssignments.Count);
         foreach (var (replica, logDir) in replicaAssignments)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(replica.Topic);
-            ArgumentOutOfRangeException.ThrowIfNegative(replica.Partition);
+            ValidateTopicPartition(replica.TopicPartition);
             ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
             ArgumentException.ThrowIfNullOrWhiteSpace(logDir);
 
