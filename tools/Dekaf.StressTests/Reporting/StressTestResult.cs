@@ -39,8 +39,10 @@ internal sealed class StressTestResult
 
     /// <summary>
     /// Headline throughput: the broker-confirmed delivered rate when the scenario
-    /// measured it (producers), falling back to the client-side tracker average
-    /// (consumers). Serialized so both reporters (including the Python CI summary)
+    /// measured it (producers), falling back to the client-side tracker average.
+    /// Producer scenarios fail outright when the delivered count is unavailable
+    /// (see StressTestHelpers.ComputeDelivered), so the fallback only ever applies
+    /// to consumers. Serialized so both reporters (including the Python CI summary)
     /// read one field instead of re-deriving the selection policy.
     /// </summary>
     public double EffectiveMessagesPerSecond =>

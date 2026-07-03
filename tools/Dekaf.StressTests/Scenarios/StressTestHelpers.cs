@@ -77,7 +77,8 @@ internal static class StressTestHelpers
     /// group). Producer scenarios snapshot this before and after the run: the delta is
     /// the broker-confirmed delivered count, independent of how many appends the client
     /// accepted into its local buffer. Returns null on failure (e.g. broker unresponsive
-    /// after the run) so delivered stats are omitted rather than failing the scenario.
+    /// after the run); <see cref="ComputeDelivered"/> escalates that to a scenario
+    /// failure so a dead broker can never masquerade as a throughput result.
     /// </summary>
     internal static async Task<long?> QueryTotalEndOffsetAsync(string bootstrapServers, string topic, int partitionCount)
     {
@@ -109,13 +110,19 @@ internal static class StressTestHelpers
     /// <summary>
     /// Computes the delivered-message count from before/after end-offset snapshots and
     /// logs it against the client-accepted count so the gap (buffered-but-never-delivered
-    /// messages) is visible in run output.
+    /// messages) is visible in run output. Throws when either snapshot is missing: that
+    /// means the broker was unreachable, the producer result is meaningless, and the
+    /// scenario must fail loudly instead of letting reporting fall back to the
+    /// client-side append rate (which once published a dead broker's buffer churn as
+    /// headline throughput).
     /// </summary>
-    internal static long? ComputeDelivered(long? startOffset, long? endOffset, ThroughputTracker throughput)
+    internal static long ComputeDelivered(long? startOffset, long? endOffset, ThroughputTracker throughput)
     {
         if (startOffset is not { } start || endOffset is not { } end)
         {
-            return null;
+            throw new InvalidOperationException(
+                "Broker-confirmed delivered count unavailable (end-offset query failed — broker likely " +
+                "unhealthy or dead). Failing the scenario rather than reporting the client-side append rate.");
         }
 
         var delivered = end - start;

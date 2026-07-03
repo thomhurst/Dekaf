@@ -26,6 +26,12 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     // overshoot the retention caps by roughly (produce rate × check interval) between
     // sweeps. A 10s interval meant ~10 GB overshoot windows — more than the broker tmpfs —
     // which filled the log dir and halted ingestion seconds into producer runs.
+    //
+    // The 1s initial task delay is equally load-bearing: LogManager runs its first
+    // retention sweep only after log.initial.task.delay.ms (internal config, default
+    // 30s; Kafka 3.8+). At ~1 GB/s a 6 GB tmpfs fills in ~5s, so with the default
+    // delay the broker died of "No space left on device" before retention ever ran —
+    // none of the settings above mattered.
     private static readonly Dictionary<string, string> RetentionConfig = new()
     {
         ["KAFKA_LOG_RETENTION_MS"] = "300000",
@@ -33,6 +39,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         ["KAFKA_LOG_SEGMENT_BYTES"] = "16777216",
         ["KAFKA_LOG_SEGMENT_DELETE_DELAY_MS"] = "1000",
         ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "1000",
+        ["KAFKA_LOG_INITIAL_TASK_DELAY_MS"] = "1000",
         ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
     };
 
@@ -112,7 +119,9 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     private static async Task<KafkaEnvironment> CreateSingleBrokerAsync()
     {
         Console.WriteLine("Starting Kafka container via Testcontainers...");
-        var builder = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
+        // 7.8.x = Kafka 3.8, the first release with log.initial.task.delay.ms — see
+        // RetentionConfig; older images silently ignore it and die on tmpfs fill.
+        var builder = new KafkaBuilder("confluentinc/cp-kafka:7.8.0")
             .WithPortBinding(9092, true)
             // Explicit log dir so the optional tmpfs mount target always matches
             .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)

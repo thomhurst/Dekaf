@@ -142,6 +142,9 @@ jobs:
           # dir on tmpfs so neither broker CPU starvation nor disk I/O caps ingestion.
           # mode=1777: the Kafka image runs as a non-root user, which cannot write to
           # a default root-owned tmpfs mount.
+          # KAFKA_LOG_INITIAL_TASK_DELAY_MS=1000 is load-bearing — without it the broker
+          # dies of tmpfs fill before its first retention sweep; see the rationale on
+          # KafkaEnvironment.RetentionConfig.
           docker run -d --name kafka \
             --cpuset-cpus="${BROKER_CPUS}" \
             --tmpfs /var/lib/kafka/data:rw,size=${BROKER_TMPFS},mode=1777 \
@@ -164,6 +167,7 @@ jobs:
             -e KAFKA_LOG_SEGMENT_BYTES=33554432 \
             -e KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=100 \
             -e KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS=1000 \
+            -e KAFKA_LOG_INITIAL_TASK_DELAY_MS=1000 \
             -e KAFKA_LOG_CLEANUP_POLICY=delete \
             apache/kafka:latest
 
@@ -199,7 +203,13 @@ jobs:
           # cycles from the client cores whose isolation this job exists to provide.
           taskset -c "${BROKER_CPUS}" bash -c '
             while true; do
-              for c in $(docker ps --format "{{.Names}}"); do
+              containers=$(docker ps --format "{{.Names}}")
+              if [ -z "$containers" ]; then
+                # A dead broker vanishes from docker ps; log that instead of going
+                # silent so the artifact shows *when* it died, not just that it did.
+                echo "[$(date -u "+%H:%M:%S")] no running containers"
+              fi
+              for c in $containers; do
                 line=$(docker exec "$c" df -h /var/lib/kafka/data 2>/dev/null | tail -n 1) \
                   && echo "[$(date -u "+%H:%M:%S")] $c: $line"
               done
@@ -236,6 +246,23 @@ jobs:
             echo "=== Broker last 60 log lines ==="
             docker logs --tail 60 kafka 2>&1 || true
           fi
+
+      # A broker that dies mid-run (e.g. log dir full -> LogManager shutdown) makes
+      # every number in this job's results meaningless; fail the job so they are never
+      # published. Producer scenarios also fail client-side (a dead broker fails the
+      # post-run end-offset query — that is what covers multi-broker runs, whose
+      # containers the test process owns and disposes), but consumer scenarios have no
+      # such check and would otherwise report near-zero throughput as a valid result;
+      # this step also gives a clearer verdict than the client's exception trace.
+      - name: Verify Broker Survived
+        if: matrix.brokers == 1
+        run: |
+          status=$(docker inspect -f '{{.State.Status}}' kafka 2>/dev/null || echo "missing")
+          if [ "$status" != "running" ]; then
+            echo "::error::Broker container is '$status' — it died during the run; see Broker Diagnostics above"
+            exit 1
+          fi
+          echo "Broker container is running"
 
       - name: Upload Results
         if: always()
@@ -381,9 +408,11 @@ jobs:
 
   publish-to-docs:
     name: Publish Stress Test Results to Documentation
-    needs: generate-summary
+    needs: [stress-test, generate-summary]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && needs.generate-summary.result == 'success'
+    # stress-test success is required: a failed scenario (e.g. broker died mid-run)
+    # must block the docs update rather than publish a partial or invalid table.
+    if: github.ref == 'refs/heads/main' && needs.stress-test.result == 'success' && needs.generate-summary.result == 'success'
 
     permissions:
       contents: write
