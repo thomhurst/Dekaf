@@ -85,6 +85,82 @@ public sealed class AdminClientClientQuotaTests
     }
 
     [Test]
+    public async Task DescribeClientQuotasAsync_NullComponents_ThrowsArgumentException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeClientQuotasAsync(new ClientQuotaFilter { Components = null! });
+        }).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task DescribeClientQuotasAsync_ExactComponentWithoutMatch_ThrowsArgumentException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeClientQuotasAsync(new ClientQuotaFilter
+            {
+                Components =
+                [
+                    new ClientQuotaFilterComponent
+                    {
+                        EntityType = ClientQuotaEntityType.User,
+                        MatchType = ClientQuotaMatchType.Exact,
+                        Match = null
+                    }
+                ]
+            });
+        }).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task DescribeClientQuotasAsync_DefaultComponentWithMatch_ThrowsArgumentException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeClientQuotasAsync(new ClientQuotaFilter
+            {
+                Components =
+                [
+                    new ClientQuotaFilterComponent
+                    {
+                        EntityType = ClientQuotaEntityType.User,
+                        MatchType = ClientQuotaMatchType.Default,
+                        Match = "alice"
+                    }
+                ]
+            });
+        }).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task DescribeClientQuotasAsync_UnsupportedMatchType_ThrowsArgumentOutOfRangeException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.DescribeClientQuotasAsync(new ClientQuotaFilter
+            {
+                Components =
+                [
+                    new ClientQuotaFilterComponent
+                    {
+                        EntityType = ClientQuotaEntityType.User,
+                        MatchType = (ClientQuotaMatchType)99
+                    }
+                ]
+            });
+        }).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task AlterClientQuotasAsync_SendsValidateOnlyAndEntries()
     {
         var (admin, connection) = CreateAdminWithMockConnection();
@@ -121,6 +197,42 @@ public sealed class AdminClientClientQuotaTests
         await Assert.That(capturedRequest.Entries[0].Ops[0].Key).IsEqualTo("consumer_byte_rate");
         await Assert.That(capturedRequest.Entries[0].Ops[0].Value).IsEqualTo(2048.25);
         await Assert.That(capturedRequest.Entries[0].Ops[0].Remove).IsFalse();
+    }
+
+    [Test]
+    public async Task AlterClientQuotasAsync_EmptyEntityComponents_ThrowsArgumentException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.AlterClientQuotasAsync(
+                [
+                    new ClientQuotaAlteration
+                    {
+                        Entity = new ClientQuotaEntity { Components = [] },
+                        Operations = [ClientQuotaOperation.Set("consumer_byte_rate", 1024)]
+                    }
+                ]);
+        }).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task AlterClientQuotasAsync_EmptyOperations_ThrowsArgumentException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection();
+
+        await Assert.That(async () =>
+        {
+            await admin.AlterClientQuotasAsync(
+                [
+                    new ClientQuotaAlteration
+                    {
+                        Entity = ClientQuotaEntity.ForUser("alice"),
+                        Operations = []
+                    }
+                ]);
+        }).Throws<ArgumentException>();
     }
 
     [Test]

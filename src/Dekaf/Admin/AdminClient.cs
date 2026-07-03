@@ -1434,22 +1434,24 @@ public sealed class AdminClient : IAdminClient
     }
 
     private static ClientQuotaEntity MapClientQuotaEntity(IReadOnlyList<DescribeClientQuotasEntityData> entity) =>
-        new()
-        {
-            Components = entity.Select(e => new ClientQuotaEntityComponent
-            {
-                EntityType = ClientQuotaEntityTypeNames.FromProtocolName(e.EntityType),
-                Name = e.EntityName
-            }).ToList()
-        };
+        MapClientQuotaEntity(entity, static e => (e.EntityType, e.EntityName));
 
     private static ClientQuotaEntity MapClientQuotaEntity(IReadOnlyList<AlterClientQuotasEntityData> entity) =>
+        MapClientQuotaEntity(entity, static e => (e.EntityType, e.EntityName));
+
+    private static ClientQuotaEntity MapClientQuotaEntity<T>(
+        IEnumerable<T> entity,
+        Func<T, (string EntityType, string? EntityName)> selector) =>
         new()
         {
-            Components = entity.Select(e => new ClientQuotaEntityComponent
+            Components = entity.Select(component =>
             {
-                EntityType = ClientQuotaEntityTypeNames.FromProtocolName(e.EntityType),
-                Name = e.EntityName
+                var (entityType, entityName) = selector(component);
+                return new ClientQuotaEntityComponent
+                {
+                    EntityType = ClientQuotaEntityTypeNames.FromProtocolName(entityType),
+                    Name = entityName
+                };
             }).ToList()
         };
 
