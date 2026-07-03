@@ -2825,11 +2825,6 @@ internal sealed class PooledResponseMemory : IPooledMemory
 
     private PooledResponseMemory() { }
 
-    public PooledResponseMemory(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
-    {
-        Initialize(buffer, length, isPooled, offset, pool, pooled: false);
-    }
-
     internal static PooledResponseMemory Create(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
     {
         var memory = s_pool.Rent();
