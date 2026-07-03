@@ -2644,12 +2644,14 @@ internal sealed class ResponseBufferPool
     /// Matches the previous static pool size (16 MB).
     /// </summary>
     internal const int DefaultMaxArrayLength = 16 * 1024 * 1024;
+    private const int SizeTierBytes = 1024 * 1024;
 
     /// <summary>
     /// Default shared instance used by producers, admin clients, and connections
     /// that don't have consumer-specific configuration.
     /// </summary>
     internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength);
+    private static readonly ConcurrentDictionary<int, ResponseBufferPool> s_sharedPools = new();
 
     internal ArrayPool<byte> Pool { get; }
     internal int MaxArrayLength { get; }
@@ -2667,16 +2669,33 @@ internal sealed class ResponseBufferPool
     }
 
     /// <summary>
-    /// Creates a <see cref="ResponseBufferPool"/> sized for the given <c>FetchMaxBytes</c>
-    /// configuration. The pool's max array length is <c>max(fetchMaxBytes + ProtocolOverheadBytes, DefaultMaxArrayLength)</c>
-    /// so it always accommodates at least the default 16 MB.
+    /// Returns a process-shared <see cref="ResponseBufferPool"/> sized for the given
+    /// <c>FetchMaxBytes</c> configuration. The pool's max array length is rounded up to
+    /// a MiB tier after adding protocol overhead, with a minimum of <see cref="DefaultMaxArrayLength"/>.
     /// </summary>
     internal static ResponseBufferPool Create(int fetchMaxBytes)
     {
+        var maxArrayLength = ComputeMaxArrayLength(fetchMaxBytes);
+        return maxArrayLength == DefaultMaxArrayLength
+            ? Default
+            : s_sharedPools.GetOrAdd(maxArrayLength, static length => new ResponseBufferPool(length));
+    }
+
+    internal static int ComputeMaxArrayLength(int fetchMaxBytes)
+    {
         // Use long arithmetic to avoid silent overflow when fetchMaxBytes is near int.MaxValue
-        var maxArrayLength = (int)Math.Min((long)fetchMaxBytes + ProtocolOverheadBytes, int.MaxValue);
-        maxArrayLength = Math.Max(maxArrayLength, DefaultMaxArrayLength);
-        return new ResponseBufferPool(maxArrayLength);
+        var requiredLength = Math.Min((long)fetchMaxBytes + ProtocolOverheadBytes, int.MaxValue);
+        var tieredLength = RoundUpToMiBTier(requiredLength);
+        return Math.Max(tieredLength, DefaultMaxArrayLength);
+    }
+
+    private static int RoundUpToMiBTier(long value)
+    {
+        if (value >= int.MaxValue)
+            return int.MaxValue;
+
+        var rounded = ((value + SizeTierBytes - 1) / SizeTierBytes) * SizeTierBytes;
+        return rounded >= int.MaxValue ? int.MaxValue : (int)rounded;
     }
 }
 

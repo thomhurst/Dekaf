@@ -19,6 +19,7 @@ public class ResponseBufferPoolTests
 
         await Assert.That(pool.MaxArrayLength)
             .IsEqualTo(ResponseBufferPool.DefaultMaxArrayLength);
+        await Assert.That(pool).IsSameReferenceAs(ResponseBufferPool.Default);
     }
 
     [Test]
@@ -43,6 +44,38 @@ public class ResponseBufferPoolTests
         var expected = fetchMaxBytes + ResponseBufferPool.ProtocolOverheadBytes;
 
         await Assert.That(pool.MaxArrayLength).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task Create_WithSameFetchMaxBytes_ReturnsSharedInstance()
+    {
+        const int fetchMaxBytes = 24 * 1024 * 1024;
+
+        var first = ResponseBufferPool.Create(fetchMaxBytes);
+        var second = ResponseBufferPool.Create(fetchMaxBytes);
+
+        await Assert.That(first).IsSameReferenceAs(second);
+    }
+
+    [Test]
+    public async Task Create_WithFetchMaxBytesInSameMiBTier_ReturnsSharedInstance()
+    {
+        const int baseFetchMaxBytes = 24 * 1024 * 1024;
+
+        var first = ResponseBufferPool.Create(baseFetchMaxBytes + 1);
+        var second = ResponseBufferPool.Create(baseFetchMaxBytes + 512 * 1024);
+
+        await Assert.That(first.MaxArrayLength).IsEqualTo(26 * 1024 * 1024);
+        await Assert.That(first).IsSameReferenceAs(second);
+    }
+
+    [Test]
+    public async Task Create_WithDifferentMiBTiers_ReturnsDifferentInstances()
+    {
+        var first = ResponseBufferPool.Create(24 * 1024 * 1024);
+        var second = ResponseBufferPool.Create(25 * 1024 * 1024);
+
+        await Assert.That(first).IsNotSameReferenceAs(second);
     }
 
     [Test]
