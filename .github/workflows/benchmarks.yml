@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'docs/docs/benchmarks.md'
   workflow_dispatch:
     inputs:
       benchmark_filter:
