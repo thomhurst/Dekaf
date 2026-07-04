@@ -54,10 +54,15 @@ public class PackModule : Module<List<PackedProject>>
                 ProjectSolution = projectFile.Path,
                 Configuration = "Release",
                 NoBuild = true,
+                IncludeSymbols = true,
+                IncludeSource = true,
                 Properties =
                 [
                     new KeyValue("Version", version),
-                    new KeyValue("PackageVersion", version)
+                    new KeyValue("PackageVersion", version),
+                    new KeyValue("ContinuousIntegrationBuild", "true"),
+                    new KeyValue("Deterministic", "true"),
+                    new KeyValue("PublishRepositoryUrl", "true")
                 ]
             }, null, cancellationToken);
 

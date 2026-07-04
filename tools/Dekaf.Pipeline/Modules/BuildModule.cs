@@ -31,6 +31,8 @@ public class BuildModule : Module<CommandResult>
             Properties =
             [
                 new KeyValue("Version", version),
+                new KeyValue("ContinuousIntegrationBuild", "true"),
+                new KeyValue("Deterministic", "true"),
                 new KeyValue("TreatWarningsAsErrors", "true")
             ]
         }, null, cancellationToken);

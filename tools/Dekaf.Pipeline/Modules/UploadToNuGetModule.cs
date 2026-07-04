@@ -54,17 +54,20 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
 
             context.Logger.LogInformation("Uploading {PackageName}", package.Name);
 
-            var result = await context.DotNet().Nuget.Push(new DotNetNugetPushOptions
+            results.Add(await PushPackageAsync(nupkgFile.Path));
+        }
+
+        return results;
+
+        Task<CommandResult> PushPackageAsync(string packagePath)
+        {
+            return context.DotNet().Nuget.Push(new DotNetNugetPushOptions
             {
-                Path = nupkgFile.Path,
+                Path = packagePath,
                 Source = options.Source,
                 ApiKey = options.ApiKey,
                 SkipDuplicate = true
             }, null, cancellationToken);
-
-            results.Add(result);
         }
-
-        return results;
     }
 }

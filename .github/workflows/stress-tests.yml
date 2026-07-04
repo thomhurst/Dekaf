@@ -18,6 +18,10 @@ concurrency:
   group: stress-tests
   cancel-in-progress: false
 
+env:
+  ContinuousIntegrationBuild: true
+  Deterministic: true
+
 jobs:
   # Run each test scenario in parallel
   stress-test:
