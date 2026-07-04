@@ -18,10 +18,12 @@ public class PackModule : Module<List<PackedProject>>
     private static readonly string[] PackageProjects =
     [
         "Dekaf",
+        "Dekaf.Compression.Brotli",
         "Dekaf.Compression.Lz4",
         "Dekaf.Compression.Snappy",
         "Dekaf.Compression.Zstd",
         "Dekaf.Extensions.DependencyInjection",
+        "Dekaf.Extensions.HealthChecks",
         "Dekaf.Extensions.Hosting",
         "Dekaf.OpenTelemetry",
         "Dekaf.SchemaRegistry",
