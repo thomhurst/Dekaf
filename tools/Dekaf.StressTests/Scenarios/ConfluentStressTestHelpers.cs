@@ -20,6 +20,40 @@ internal static class ConfluentStressTestHelpers
     /// </summary>
     internal const int QueueBufferingMaxMessages = 10_000_000;
 
+    // --- Consumer fetch sizing -------------------------------------------------------------
+    // Mirrors Dekaf's ConsumerBuilder.ForHighThroughput() preset (src/Dekaf/Builders.cs) so the
+    // Confluent consumer stress test fetches with the same bounds instead of librdkafka's much
+    // smaller defaults (max.partition.fetch.bytes 1 MB, fetch.max.bytes 50 MB, fetch.wait.max.ms
+    // 500 ms, queued.max.messages.kbytes 64 MB). Without this the "consumer" scenario measures a
+    // configuration gap rather than the client — the producer scenarios already match buffers
+    // this way via QueueBufferingMaxKbytes. Keep these in sync with ForHighThroughput() by hand:
+    // the preset's fields are private, so there is no compile-time link (same constraint as
+    // QueueBufferingMaxMessages above). librdkafka has no adaptive-fetch-sizing or explicit
+    // max-poll-records equivalent, so these pin the preset's base fetch sizes; the consume loop
+    // is single-message (consumer.Consume) either way.
+
+    /// <summary>Dekaf <c>_fetchMinBytes</c> — fetch.min.bytes.</summary>
+    internal const int FetchMinBytes = 1024;
+
+    /// <summary>Dekaf <c>_fetchMaxWaitMs</c> — fetch.wait.max.ms.</summary>
+    internal const int FetchMaxWaitMs = 200;
+
+    /// <summary>Dekaf <c>_maxPartitionFetchBytes</c> (preset base, pre-adaptive) — max.partition.fetch.bytes.</summary>
+    internal const int MaxPartitionFetchBytes = 4 * 1024 * 1024;
+
+    /// <summary>Dekaf <c>_fetchMaxBytes</c> (preset base, pre-adaptive) — fetch.max.bytes.</summary>
+    internal const int FetchMaxBytes = 100 * 1024 * 1024;
+
+    /// <summary>
+    /// librdkafka's local fetch queue is its prefetch pipeline (analogous to Dekaf's
+    /// <c>_prefetchPipelineDepth = 5</c>). Size it well above the 64 MB default so prefetch, not
+    /// the client's decode loop, is never the bottleneck. Range is 1..2097151 KB (≈2 GB).
+    /// </summary>
+    internal const int QueuedMaxMessagesKbytes = 1024 * 1024;
+
+    /// <summary>Companion to <see cref="QueuedMaxMessagesKbytes"/> — raise the message-count prefetch cap above the 100k default.</summary>
+    internal const int QueuedMinMessages = 1_000_000;
+
     /// <summary>
     /// Queries the high watermark of each partition, mirroring
     /// <see cref="StressTestHelpers.QueryEndOffsetsAsync"/> for Confluent scenarios

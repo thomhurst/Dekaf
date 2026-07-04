@@ -20,7 +20,17 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             ClientId = "stress-consumer-confluent",
             GroupId = $"stress-group-confluent-{Guid.NewGuid():N}",
             AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest,
-            EnableAutoCommit = true
+            EnableAutoCommit = true,
+            // Match Dekaf's ForHighThroughput() consumer preset so both clients fetch and prefetch
+            // with the same bounds. Otherwise Confluent runs on librdkafka's smaller defaults and
+            // the "consumer" throughput comparison measures the config gap, not the client — the
+            // producer scenarios already match buffers this way. See ConfluentStressTestHelpers.
+            FetchMinBytes = ConfluentStressTestHelpers.FetchMinBytes,
+            FetchWaitMaxMs = ConfluentStressTestHelpers.FetchMaxWaitMs,
+            MaxPartitionFetchBytes = ConfluentStressTestHelpers.MaxPartitionFetchBytes,
+            FetchMaxBytes = ConfluentStressTestHelpers.FetchMaxBytes,
+            QueuedMaxMessagesKbytes = ConfluentStressTestHelpers.QueuedMaxMessagesKbytes,
+            QueuedMinMessages = ConfluentStressTestHelpers.QueuedMinMessages
         };
 
         // The topic is pre-seeded by Program.SeedConsumerTopicAsync. The consumer re-reads
