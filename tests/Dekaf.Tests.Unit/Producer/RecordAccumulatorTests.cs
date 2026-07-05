@@ -2545,6 +2545,73 @@ public class RecordAccumulatorTests
         }
     }
 
+    [Test]
+    public async Task AppendFromSpansAsync_HotPathRefund_DrainsPendingAppendAfterPartitionLockReleased()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 30000
+        };
+        var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var seedResult = await accumulator.AppendFromSpansAsync(
+                topicPartition.Topic, topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, CancellationToken.None);
+
+            await Assert.That(seedResult).IsTrue();
+
+            EnableThreadOwnerTrackingForPartitionLock(accumulator, topicPartition);
+
+            var fillSize = checked((int)options.BufferMemory - (int)accumulator.BufferedBytes);
+            await Assert.That(accumulator.TryReserveMemoryForTest(fillSize)).IsTrue();
+
+            var pendingValue = new byte[128];
+            var pendingAppendTask = accumulator.AppendFromSpansAsync(
+                topicPartition.Topic, topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                pendingValue, valueIsNull: false,
+                null, 0, null, CancellationToken.None).AsTask();
+
+            while (accumulator.BufferPressureEvents == 0 && !pendingAppendTask.IsCompleted)
+                await Task.Yield();
+
+            await Assert.That(pendingAppendTask.IsCompleted).IsFalse();
+
+            // Free memory without draining. The next hot-path overestimate refund should
+            // drain the pending append, but only after the partition SpinLock is released.
+            SetBufferedBytesForTest(accumulator, 3000);
+
+            var hotResult = await accumulator.AppendFromSpansAsync(
+                topicPartition.Topic, topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(hotResult).IsTrue();
+
+            var pendingResult = await pendingAppendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(pendingResult).IsTrue();
+        }
+        finally
+        {
+            var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+            SetBufferedBytesForTest(accumulator, currentBatch.EstimatedSize);
+            await accumulator.DisposeAsync();
+        }
+    }
+
     #endregion
 
     private static ReadyBatch CompleteCurrentBatch(RecordAccumulator accumulator, TopicPartition topicPartition)
@@ -2577,6 +2644,22 @@ public class RecordAccumulatorTests
             throw new InvalidOperationException("Partition deque was not found.");
 
         return parameters[1]!;
+    }
+
+    private static void EnableThreadOwnerTrackingForPartitionLock(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var lockField = partitionDeque.GetType().GetField("Lock");
+        lockField!.SetValue(partitionDeque, new SpinLock(enableThreadOwnerTracking: true));
+    }
+
+    private static void SetBufferedBytesForTest(RecordAccumulator accumulator, long value)
+    {
+        var bufferedBytesField = typeof(RecordAccumulator).GetField("_bufferedBytes",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        bufferedBytesField!.SetValue(accumulator, value);
     }
 
     private static T GetPrivateField<T>(object instance, string fieldName)

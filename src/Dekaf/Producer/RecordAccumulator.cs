@@ -2158,6 +2158,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var appendSucceeded = false;
                 var disposed = false;
                 var messageTooLarge = false;
+                var memoryToReleaseAfterLock = 0;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -2191,8 +2192,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize))
+                                completionSource, callback, recordSize, out var overestimatedBytesToRelease))
                             {
+                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 ownsPendingCount = false;
@@ -2222,8 +2224,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize))
+                                completionSource, callback, recordSize, out var overestimatedBytesToRelease))
                             {
+                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 ownsPendingCount = false;
@@ -2258,6 +2261,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (batchToFail.TrySetMemoryReleased())
                         ReleaseMemory(batchToFail.DataSize);
                 }
+
+                if (memoryToReleaseAfterLock > 0)
+                    ReleaseMemory(memoryToReleaseAfterLock);
 
                 if (disposed)
                 {
@@ -2497,6 +2503,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var appendSucceeded = false;
                 var disposed = false;
                 var messageTooLarge = false;
+                var memoryToReleaseAfterLock = 0;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -2530,8 +2537,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize))
+                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease))
                             {
+                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 ownsPendingCount = false;
@@ -2561,8 +2569,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize))
+                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease))
                             {
+                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 ownsPendingCount = false;
@@ -2597,6 +2606,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (batchToFail.TrySetMemoryReleased())
                         ReleaseMemory(batchToFail.DataSize);
                 }
+
+                if (memoryToReleaseAfterLock > 0)
+                    ReleaseMemory(memoryToReleaseAfterLock);
 
                 if (disposed)
                 {
@@ -2648,7 +2660,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Helper: tries to append a record to the given batch.
     /// Called under the deque lock.
     /// </summary>
-    private bool TryAppendToBatch(
+    private static bool TryAppendToBatch(
         PartitionBatch batch,
         long timestamp,
         PooledMemory key,
@@ -2657,16 +2669,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedSize)
+        int estimatedSize,
+        out int overestimatedBytesToRelease)
     {
+        overestimatedBytesToRelease = 0;
         var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
-            var overestimate = estimatedSize - result.ActualSizeAdded;
-            if (overestimate > 0)
-                ReleaseMemory(overestimate);
+            overestimatedBytesToRelease = Math.Max(0, estimatedSize - result.ActualSizeAdded);
             return true;
         }
 
@@ -2781,7 +2793,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Helper: tries to append a record from span data to the given batch using arena zero-copy.
     /// Called under the deque lock.
     /// </summary>
-    private bool TryAppendFromSpansToBatch(
+    private static bool TryAppendFromSpansToBatch(
         PartitionBatch batch,
         long timestamp,
         ReadOnlySpan<byte> keyData,
@@ -2792,17 +2804,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedSize)
+        int estimatedSize,
+        out int overestimatedBytesToRelease)
     {
+        overestimatedBytesToRelease = 0;
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
             headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
-            var overestimate = estimatedSize - result.ActualSizeAdded;
-            if (overestimate > 0)
-                ReleaseMemory(overestimate);
+            overestimatedBytesToRelease = Math.Max(0, estimatedSize - result.ActualSizeAdded);
             return true;
         }
 
