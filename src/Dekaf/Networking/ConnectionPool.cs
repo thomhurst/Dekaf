@@ -1031,7 +1031,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             if (Volatile.Read(ref _disposed) != 0)
                 return 0;
 
-            var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+            var now = Dekaf.MonotonicClock.GetMilliseconds();
             var reaped = 0;
 
             foreach (var (endpoint, connection) in _connectionsByEndpoint.ToArray())

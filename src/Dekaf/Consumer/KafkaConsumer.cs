@@ -3402,7 +3402,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
 
-        var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
         var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
 
         // Rate-limit: skip if we refreshed recently (unless this is the first call)
@@ -4491,7 +4491,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!updated)
             ScheduleLeaderRefresh(topic);
 
-        return ValueTaskCompatibility.CompletedTask;
+        return default;
     }
 
     private void UpdatePreferredReadReplica(string topic, FetchResponsePartition partitionResponse)

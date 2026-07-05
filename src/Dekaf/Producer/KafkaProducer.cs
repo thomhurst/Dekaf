@@ -936,7 +936,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
         var cache = GetOrCreateCache();
-        var currentTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+        var currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
         if (cache.CachedMetadataManager == _metadataManager &&
             cache.CachedTopicName == topic &&
             cache.CachedTopicInfo is not null &&
@@ -963,7 +963,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         cache.CachedTopicInfo = topicInfo;
         // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
         // while still detecting stale metadata reasonably quickly
-        cache.CachedTopicValidUntilTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64 + 1000;
+        cache.CachedTopicValidUntilTicks = Dekaf.MonotonicClock.GetMilliseconds() + 1000;
     }
 
     /// <summary>
@@ -1440,7 +1440,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ThrowIfNotInitialized();
 
         if ((options & PurgeOptions.All) == PurgeOptions.None)
-            return ValueTaskCompatibility.CompletedTask;
+            return default;
 
         ThrowIfPurgeCannotRun();
 
@@ -1449,7 +1449,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             "Produce operation was purged before delivery completed.");
 
         _accumulator.Purge(options, exception, CompleteInflightEntry);
-        return ValueTaskCompatibility.CompletedTask;
+        return default;
     }
 
     private void ThrowIfPurgeCannotRun()
@@ -3104,10 +3104,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         var cache = GetOrCreateCache();
 
-        // Use Dekaf.Compatibility.EnvironmentCompat.TickCount64 (cheap counter) to determine if we need to refresh.
+        // Use a cheap monotonic counter to determine if we need to refresh.
         // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
         // the difference is still much cheaper than calling DateTimeOffset.UtcNow.
-        var currentTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+        var currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
 
         // Refresh if more than ~1ms has passed (or on first call when CachedTimestampTicks is 0)
         if (currentTicks - cache.CachedTimestampTicks > 1 || cache.CachedTimestampTicks == 0)

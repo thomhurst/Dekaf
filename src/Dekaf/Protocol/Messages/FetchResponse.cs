@@ -52,7 +52,7 @@ public sealed class FetchResponse : IKafkaResponse
     {
         get
         {
-            Dekaf.Compatibility.ObjectDisposedExceptionCompat.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _responses;
         }
         internal set => _responses = value;
@@ -195,7 +195,7 @@ public sealed class FetchResponseTopic
     {
         get
         {
-            Dekaf.Compatibility.ObjectDisposedExceptionCompat.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _partitions;
         }
         internal set => _partitions = value;
@@ -349,7 +349,7 @@ public sealed class FetchResponsePartition
     {
         get
         {
-            Dekaf.Compatibility.ObjectDisposedExceptionCompat.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _abortedTransactions;
         }
         internal set => _abortedTransactions = value;
@@ -367,7 +367,7 @@ public sealed class FetchResponsePartition
     {
         get
         {
-            Dekaf.Compatibility.ObjectDisposedExceptionCompat.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _pooled) != 0, this);
             return _records;
         }
         internal set => _records = value;

@@ -1672,7 +1672,7 @@ public sealed class AdminClient : IAdminClient
                     break;
 
                 case UserScramCredentialUpsertion upsertion:
-                    var salt = upsertion.Salt ?? Dekaf.Compatibility.RandomNumberGeneratorCompat.GetBytes(32);
+                    var salt = upsertion.Salt ?? RandomNumberGenerator.GetBytes(32);
                     var saltedPassword = ComputeSaltedPassword(
                         upsertion.Password,
                         salt,

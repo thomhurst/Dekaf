@@ -191,7 +191,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
     private int _connected;
-    private long _lastUsedTimestampMs = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+    private long _lastUsedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
@@ -1235,7 +1235,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             if (_pendingRequestSlots.Wait(0, cancellationToken))
             {
                 if (Volatile.Read(ref _disposed) == 0)
-                    return ValueTaskCompatibility.CompletedTask;
+                    return default;
 
                 _pendingRequestSlots.Release();
                 throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -1427,7 +1427,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         return count;
     }
 
-    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Dekaf.Compatibility.EnvironmentCompat.TickCount64);
+    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Dekaf.MonotonicClock.GetMilliseconds());
 
     private bool TryReadResponse(
         ref ReadOnlySequence<byte> buffer,

@@ -674,7 +674,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
-        var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
 
         // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
         if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)

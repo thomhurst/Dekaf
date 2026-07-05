@@ -218,13 +218,13 @@ internal sealed class GuidSerde : ISerde<Guid>
 #endif
     {
         var span = destination.GetSpan(16);
-        Dekaf.Compatibility.GuidCompatibility.WriteBigEndian(value, span);
+        Dekaf.KafkaGuid.WriteBigEndian(value, span);
         destination.Advance(16);
     }
 
     public Guid Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return Dekaf.Compatibility.GuidCompatibility.ReadBigEndian(data.Span);
+        return Dekaf.KafkaGuid.ReadBigEndian(data.Span);
     }
 }
 

@@ -2930,7 +2930,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
 
         // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < ScaleCooldownMs)
