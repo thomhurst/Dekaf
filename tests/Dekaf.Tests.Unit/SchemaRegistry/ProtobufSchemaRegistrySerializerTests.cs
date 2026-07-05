@@ -211,6 +211,45 @@ public class ProtobufSchemaRegistrySerializerTests
     }
 
     [Test]
+    public async Task Serialize_DisablesAutoRegisterSchemas_WhenLookupFaults_ThrowsSchemaRegistryException()
+    {
+        await AssertLookupFaultThrowsSchemaRegistryExceptionAsync(
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false },
+            50001);
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_WhenLookupFaults_ThrowsSchemaRegistryException()
+    {
+        await AssertLookupFaultThrowsSchemaRegistryExceptionAsync(
+            new ProtobufSerializerConfig { UseLatestVersion = true },
+            50002);
+    }
+
+    private static async Task AssertLookupFaultThrowsSchemaRegistryExceptionAsync(
+        ProtobufSerializerConfig config,
+        int errorCode)
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetSchemaBySubjectAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<RegisteredSchema>(new SchemaRegistryException(errorCode, "lookup failed")));
+
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var message = new TestMessage { Id = 1, Name = "Test", Value = 3.14 };
+        var buffer = new ArrayBufferWriter<byte>();
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
+        {
+            serializer.Serialize(message, ref buffer, CreateContext());
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
+    }
+
+    [Test]
     public async Task DisposeAsync_DisposesOwnedClient()
     {
         // Arrange

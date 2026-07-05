@@ -119,7 +119,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_config.UseLatestVersion)
         {
             task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+                .ContinueWith(static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
         }
         else if (_config.AutoRegisterSchemas)
         {
@@ -128,7 +128,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         else
         {
             task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+                .ContinueWith(static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
         }
 
         // Add timeout to prevent indefinite blocking
