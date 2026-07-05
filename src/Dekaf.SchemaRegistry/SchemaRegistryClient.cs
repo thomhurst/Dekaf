@@ -69,7 +69,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
+        using var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
@@ -92,7 +92,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (_schemaByIdCache.TryGetValue(id, out var cached))
             return cached;
 
-        var response = await _httpClient.GetAsync(
+        using var response = await _httpClient.GetAsync(
             $"schemas/ids/{id}",
             cancellationToken).ConfigureAwait(false);
 
@@ -122,7 +122,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetAsync(
+        using var response = await _httpClient.GetAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
             cancellationToken).ConfigureAwait(false);
 
@@ -173,7 +173,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
+        using var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}",
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
@@ -220,7 +220,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetAsync("subjects", cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.GetAsync("subjects", cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<string>>(
@@ -229,7 +229,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<IReadOnlyList<int>> GetVersionsAsync(string subject, CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetAsync(
+        using var response = await _httpClient.GetAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
             cancellationToken).ConfigureAwait(false);
 
@@ -253,7 +253,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
+        using var response = await _httpClient.PostAsJsonAsync(
             $"compatibility/subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
@@ -276,7 +276,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (permanent)
             url += "?permanent=true";
 
-        var response = await _httpClient.DeleteAsync(url, cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.DeleteAsync(url, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<int>>(
