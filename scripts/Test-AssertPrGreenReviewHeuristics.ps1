@@ -245,6 +245,44 @@ Nice allocation-free helper, but it is not thread-safe and will corrupt the buff
         Blocks = $true
     },
     @{
+        Name = 'blocks no-bugs heading followed by though deadlocks'
+        Body = @'
+## Review
+
+### Correctness - no bugs found, though the retry path deadlocks under high load.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks no-bugs paragraph followed by exception'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found. That said, this will throw a NullReferenceException whenever the batch is empty.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks looks-good heading with actionable paragraph'
+        Body = @'
+## Review
+
+### Correctness - looks good
+This introduces a deadlock when Flush and Dispose run concurrently, since both take the same lock without a timeout.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks verified heading followed by blocker text'
+        Body = @'
+## Review
+
+### Correctness - verified, still broken and leaks a connection on every retry
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'blocks category parenthetical finding'
         Body = @'
 ## Review
@@ -357,6 +395,17 @@ The new commit avoids the unsafe queue path.
         Blocks = $false
     },
     @{
+        Name = 'allows regression fixed in commit heading'
+        Body = @'
+## Review
+
+### Self-triggering `UnknownTopicOrPartition` regression (from review #1) - fixed in `bb0f437f`
+
+The regression is covered.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'blocks previously flagged issue still not fixed'
         Body = @'
 ## Review
@@ -390,6 +439,34 @@ The finding remains open.
         Blocks = $true
     }
 )
+
+$positivePrefixes = @(
+    'No bugs found.'
+    'The core fix is sound:'
+    'Looks good.'
+    'Verified against code.'
+)
+$actionableContinuations = @(
+    'Though the retry path deadlocks under high load.'
+    'That said, this throws a NullReferenceException when the batch is empty.'
+    'But the hot path boxes the partition key per record.'
+    'However, the new index math has an off-by-one error.'
+)
+
+for ($prefixIndex = 0; $prefixIndex -lt $positivePrefixes.Count; $prefixIndex++) {
+    for ($continuationIndex = 0; $continuationIndex -lt $actionableContinuations.Count; $continuationIndex++) {
+        $cases += @{
+            Name = "blocks generated positive prefix $prefixIndex with actionable continuation $continuationIndex"
+            Body = @"
+## Review
+
+### Correctness
+$($positivePrefixes[$prefixIndex]) $($actionableContinuations[$continuationIndex])
+"@
+            Blocks = $true
+        }
+    }
+}
 
 foreach ($case in $cases) {
     $reason = Get-ActionableReviewBodyReason -Body $case.Body
