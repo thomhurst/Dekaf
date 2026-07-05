@@ -1061,15 +1061,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                     var readHasRequestTimeout = HasPendingRequests();
                     try
                     {
-                        if (!timeoutCts.TryReset())
-                        {
-                            reg.Dispose();
-                            timeoutCts.Dispose();
-                            timeoutCts = _timeoutCtsPool.Rent();
-                            reg = cancellationToken.CanBeCanceled
-                                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                                : default;
-                        }
+                        timeoutCts.TryReset();
 
                         // Only arm RequestTimeout while a response is outstanding. Idle
                         // connections are governed by ConnectionsMaxIdleMs instead.

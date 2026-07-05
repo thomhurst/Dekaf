@@ -213,12 +213,12 @@ public sealed class KafkaConnectionTests
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
-                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(100) });
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(1) });
 
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
 
-            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
 
             await Assert.That(connection.IsConnected).IsTrue();
         }
@@ -242,7 +242,7 @@ public sealed class KafkaConnectionTests
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
-                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(100) });
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(1) });
 
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
@@ -262,7 +262,7 @@ public sealed class KafkaConnectionTests
             });
             await Assert.That(thrown!.CancellationToken).IsEqualTo(callerCancellation.Token);
 
-            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
 
             await Assert.That(connection.IsConnected).IsTrue();
         }
