@@ -797,13 +797,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     CoalesceBatch(drainList[i], coalescedBatches, ref coalescedCount,
                         coalescedPartitions, carryOver);
-
-                    if (coalescedCount >= maxCoalesce)
-                    {
-                        for (var j = i + 1; j < drainList.Count; j++)
-                            carryOver.Add(drainList[j]);
-                        break;
-                    }
                 }
 
                 // Read from the event channel lazily during coalescing (like main reads
