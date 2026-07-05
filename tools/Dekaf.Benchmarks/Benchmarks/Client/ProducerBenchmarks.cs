@@ -1,9 +1,9 @@
-using System.Diagnostics;
 using System.Threading;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
+using Dekaf.Tooling;
 using DekafProducer = Dekaf.Producer;
 
 namespace Dekaf.Benchmarks.Benchmarks.Client;
@@ -24,9 +24,6 @@ public class ProducerBenchmarks
     private Confluent.Kafka.IProducer<string, string> _confluentFireAndForgetProducer = null!;
 
     private const string Topic = "benchmark-producer";
-    // Keep librdkafka's local queue byte-bound, not message-count-bound, during bursty fire-and-forget runs.
-    private const int ConfluentQueueBufferingMaxKbytes = 1024 * 1024;
-    private const int ConfluentQueueBufferingMaxMessages = 10_000_000;
     private static readonly TimeSpan QueueFullRetryTimeout = TimeSpan.FromSeconds(30);
     private string _messageValue = null!;
 
@@ -58,24 +55,35 @@ public class ProducerBenchmarks
             .Build();
 
         _confluentFireAndForgetProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
-            CreateConfluentConfig("confluent-benchmark-fnf", enableDeliveryReports: false))
+            CreateConfluentConfig(
+                "confluent-benchmark-fnf",
+                enableDeliveryReports: false,
+                queueBufferingMaxMessages: ConfluentProducerBackpressure.QueueBufferingMaxMessages))
             .Build();
 
         await WarmupAsync().ConfigureAwait(false);
     }
 
-    private Confluent.Kafka.ProducerConfig CreateConfluentConfig(string clientId, bool enableDeliveryReports)
-        => new()
+    private Confluent.Kafka.ProducerConfig CreateConfluentConfig(
+        string clientId,
+        bool enableDeliveryReports,
+        int? queueBufferingMaxMessages = null)
+    {
+        var config = new Confluent.Kafka.ProducerConfig
         {
             BootstrapServers = _kafka.BootstrapServers,
             ClientId = clientId,
             Acks = Confluent.Kafka.Acks.Leader,
             LingerMs = 5,
             BatchSize = 16384,
-            QueueBufferingMaxKbytes = ConfluentQueueBufferingMaxKbytes,
-            QueueBufferingMaxMessages = ConfluentQueueBufferingMaxMessages,
             EnableDeliveryReports = enableDeliveryReports
         };
+
+        if (queueBufferingMaxMessages is { } maxMessages)
+            config.QueueBufferingMaxMessages = maxMessages;
+
+        return config;
+    }
 
     private async Task WarmupAsync()
     {
@@ -206,22 +214,14 @@ public class ProducerBenchmarks
             Key = key,
             Value = value
         };
-        var startedAt = Stopwatch.GetTimestamp();
 
-        while (true)
-        {
-            try
-            {
-                _confluentFireAndForgetProducer.Produce(Topic, message);
-                return;
-            }
-            catch (Confluent.Kafka.ProduceException<string, string> ex)
-                when (ex.Error.Code == Confluent.Kafka.ErrorCode.Local_QueueFull &&
-                      Stopwatch.GetElapsedTime(startedAt) < QueueFullRetryTimeout)
-            {
-                Thread.Sleep(1);
-            }
-        }
+        ConfluentProducerBackpressure.ProduceWithBackpressure(
+            _confluentFireAndForgetProducer,
+            Topic,
+            message,
+            deliveryHandler: null,
+            cancellationToken: CancellationToken.None,
+            retryTimeout: QueueFullRetryTimeout);
     }
 
     [BenchmarkCategory("FireAndForget")]
