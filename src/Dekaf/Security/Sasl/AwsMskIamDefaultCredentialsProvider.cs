@@ -247,13 +247,15 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             if (string.IsNullOrWhiteSpace(roleName))
                 return null;
 
-            roleName = roleName.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+            roleName = roleName!.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(static line => line.Trim())
+                .First(static line => line.Length > 0);
             var json = await GetImdsStringAsync(
                 "http://169.254.169.254/latest/meta-data/iam/security-credentials/" + Uri.EscapeDataString(roleName),
                 token,
                 cancellationToken).ConfigureAwait(false);
 
-            return string.IsNullOrWhiteSpace(json) ? null : ParseJsonCredentials(json);
+            return string.IsNullOrWhiteSpace(json) ? null : ParseJsonCredentials(json!);
         }
         catch (HttpRequestException)
         {

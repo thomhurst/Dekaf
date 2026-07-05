@@ -94,7 +94,7 @@ public ref struct KafkaProtocolWriter
     public void WriteUuid(Guid value)
     {
         var span = _output.GetSpan(16);
-        value.TryWriteBytes(span, bigEndian: true, out _);
+        Dekaf.Compatibility.GuidCompatibility.WriteBigEndian(value, span);
         _output.Advance(16);
         _bytesWritten += 16;
     }

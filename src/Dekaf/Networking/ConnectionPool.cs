@@ -442,7 +442,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     {
         foreach (var task in tasks)
         {
-            if (task is not null && task.IsCompletedSuccessfully)
+            if (task is not null && task.Status == TaskStatus.RanToCompletion)
             {
                 try { await task.Result.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup */ }
@@ -1031,7 +1031,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             if (Volatile.Read(ref _disposed) != 0)
                 return 0;
 
-            var now = Environment.TickCount64;
+            var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
             var reaped = 0;
 
             foreach (var (endpoint, connection) in _connectionsByEndpoint.ToArray())

@@ -73,7 +73,7 @@ internal static class OAuthBearerJwtAssertion
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new InvalidOperationException(message);
-        return value;
+        return value!;
     }
 
     private static void ValidateAdditionalClaims(IReadOnlyDictionary<string, object?>? claims)
@@ -176,7 +176,7 @@ internal static class OAuthBearerJwtAssertion
 
     private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, float value)
     {
-        if (!float.IsFinite(value))
+        if (float.IsNaN(value) || float.IsInfinity(value))
             throw UnsupportedAdditionalClaimValue(claimName, value);
 
         writer.WriteNumberValue(value);
@@ -184,7 +184,7 @@ internal static class OAuthBearerJwtAssertion
 
     private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, double value)
     {
-        if (!double.IsFinite(value))
+        if (double.IsNaN(value) || double.IsInfinity(value))
             throw UnsupportedAdditionalClaimValue(claimName, value);
 
         writer.WriteNumberValue(value);
@@ -289,9 +289,13 @@ internal static class OAuthBearerJwtAssertion
         byte[] signingInput,
         HashAlgorithmName hashAlgorithm)
     {
+#if NETSTANDARD2_0
+        throw new PlatformNotSupportedException("ECDSA JWT-bearer assertions require .NET APIs that are not available on netstandard2.0.");
+#else
         if (key is not ECDsa ecdsa)
             throw new InvalidOperationException("Selected JWT-bearer signing algorithm requires an ECDSA private key");
 
         return ecdsa.SignData(signingInput, hashAlgorithm, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+#endif
     }
 }

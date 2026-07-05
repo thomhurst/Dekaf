@@ -24,6 +24,10 @@
     <PackageReference Include="System.IO.Hashing" Version="10.0.9" />
   </ItemGroup>
 
+  <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+  </PropertyGroup>
+
   <!-- Compatibility probe dependencies only. Dekaf still defaults to net10.0 until netstandard2.0 support is complete. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="System.IO.Pipelines" Version="10.0.9" />

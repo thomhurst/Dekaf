@@ -132,7 +132,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _pool = pool;
 
         // Arm timeout timer. Compute remaining ms from deadline.
-        var remainingMs = deadlineTickCount - Environment.TickCount64;
+        var remainingMs = deadlineTickCount - Dekaf.Compatibility.EnvironmentCompat.TickCount64;
         if (remainingMs > 0)
         {
             _timer.Change(remainingMs, Timeout.Infinite);
@@ -220,7 +220,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private void OnTimeout()
     {
         var configured = TimeSpan.FromMilliseconds(_accumulator.MaxBlockMsOption);
-        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _startTicks);
+        var elapsed = TimeSpan.FromMilliseconds(Dekaf.Compatibility.EnvironmentCompat.TickCount64 - _startTicks);
 
         var exception = new KafkaTimeoutException(
             TimeoutKind.MaxBlock,

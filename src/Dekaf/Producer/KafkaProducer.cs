@@ -840,7 +840,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, null);
 
-                if (appendResult.IsCompletedSuccessfully)
+                if (appendResult.IsCompleted)
                 {
                     // Hot path complete — fully synchronous, zero allocation
                     if (!appendResult.Result)
@@ -898,7 +898,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 var appendResult = SerializeAndAppendFromSpansAsync(topic, key, value, null, null, null, topicInfo!, null);
 
-                if (appendResult.IsCompletedSuccessfully)
+                if (appendResult.IsCompleted)
                 {
                     if (!appendResult.Result)
                         throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -936,7 +936,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
         var cache = GetOrCreateCache();
-        var currentTicks = Environment.TickCount64;
+        var currentTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
         if (cache.CachedMetadataManager == _metadataManager &&
             cache.CachedTopicName == topic &&
             cache.CachedTopicInfo is not null &&
@@ -963,7 +963,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         cache.CachedTopicInfo = topicInfo;
         // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
         // while still detecting stale metadata reasonably quickly
-        cache.CachedTopicValidUntilTicks = Environment.TickCount64 + 1000;
+        cache.CachedTopicValidUntilTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64 + 1000;
     }
 
     /// <summary>
@@ -1244,7 +1244,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, deliveryHandler);
 
-                if (appendResult.IsCompletedSuccessfully)
+                if (appendResult.IsCompleted)
                 {
                     // Hot path complete — fully synchronous, zero allocation
                     if (!appendResult.Result)
@@ -1440,7 +1440,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ThrowIfNotInitialized();
 
         if ((options & PurgeOptions.All) == PurgeOptions.None)
-            return ValueTask.CompletedTask;
+            return ValueTaskCompatibility.CompletedTask;
 
         ThrowIfPurgeCannotRun();
 
@@ -1449,7 +1449,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             "Produce operation was purged before delivery completed.");
 
         _accumulator.Purge(options, exception, CompleteInflightEntry);
-        return ValueTask.CompletedTask;
+        return ValueTaskCompatibility.CompletedTask;
     }
 
     private void ThrowIfPurgeCannotRun()
@@ -3104,10 +3104,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         var cache = GetOrCreateCache();
 
-        // Use Environment.TickCount64 (cheap counter) to determine if we need to refresh.
+        // Use Dekaf.Compatibility.EnvironmentCompat.TickCount64 (cheap counter) to determine if we need to refresh.
         // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
         // the difference is still much cheaper than calling DateTimeOffset.UtcNow.
-        var currentTicks = Environment.TickCount64;
+        var currentTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
 
         // Refresh if more than ~1ms has passed (or on first call when CachedTimestampTicks is 0)
         if (currentTicks - cache.CachedTimestampTicks > 1 || cache.CachedTimestampTicks == 0)
@@ -3685,7 +3685,11 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 /// Used with thread-local buffers to avoid per-message ArrayPool rentals.
 /// After serialization, ToPooledMemory() copies data to a right-sized pooled buffer.
 /// </summary>
+#if NETSTANDARD2_0
+internal struct ReusableBufferWriter : IBufferWriter<byte>
+#else
 internal ref struct ReusableBufferWriter : IBufferWriter<byte>
+#endif
 {
     private byte[] _buffer;
     private int _written;

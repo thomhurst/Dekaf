@@ -108,7 +108,10 @@ public readonly struct Ignore;
 internal sealed class ByteArraySerde : ISerde<byte[]>
 {
     public void Serialize<TWriter>(byte[] value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(value.Length);
         value.CopyTo(span);
@@ -124,7 +127,10 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
 internal sealed class StringSerde : ISerde<string>
 {
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(checked(value.Length * 3));
         var bytesWritten = Encoding.UTF8.GetBytes(value, span);
@@ -140,7 +146,10 @@ internal sealed class StringSerde : ISerde<string>
 internal sealed class NullableStringSerde : ISerde<string?>
 {
     public void Serialize<TWriter>(string? value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         if (value is null)
             return;
@@ -165,7 +174,10 @@ internal sealed class NullableStringSerde : ISerde<string?>
 internal sealed class Int32Serde : ISerde<int>
 {
     public void Serialize<TWriter>(int value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(4);
         BinaryPrimitives.WriteInt32BigEndian(span, value);
@@ -181,7 +193,10 @@ internal sealed class Int32Serde : ISerde<int>
 internal sealed class Int64Serde : ISerde<long>
 {
     public void Serialize<TWriter>(long value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(8);
         BinaryPrimitives.WriteInt64BigEndian(span, value);
@@ -197,23 +212,29 @@ internal sealed class Int64Serde : ISerde<long>
 internal sealed class GuidSerde : ISerde<Guid>
 {
     public void Serialize<TWriter>(Guid value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(16);
-        value.TryWriteBytes(span, bigEndian: true, out _);
+        Dekaf.Compatibility.GuidCompatibility.WriteBigEndian(value, span);
         destination.Advance(16);
     }
 
     public Guid Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return new Guid(data.Span, bigEndian: true);
+        return Dekaf.Compatibility.GuidCompatibility.ReadBigEndian(data.Span);
     }
 }
 
 internal sealed class DoubleSerde : ISerde<double>
 {
     public void Serialize<TWriter>(double value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(8);
         BinaryPrimitives.WriteDoubleBigEndian(span, value);
@@ -229,7 +250,10 @@ internal sealed class DoubleSerde : ISerde<double>
 internal sealed class FloatSerde : ISerde<float>
 {
     public void Serialize<TWriter>(float value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(4);
         BinaryPrimitives.WriteSingleBigEndian(span, value);
@@ -245,7 +269,10 @@ internal sealed class FloatSerde : ISerde<float>
 internal sealed class DateTimeSerde : ISerde<DateTime>
 {
     public void Serialize<TWriter>(DateTime value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(8);
         BinaryPrimitives.WriteInt64BigEndian(span, value.ToUniversalTime().Ticks);
@@ -262,7 +289,10 @@ internal sealed class DateTimeSerde : ISerde<DateTime>
 internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
 {
     public void Serialize<TWriter>(DateTimeOffset value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(10);
         BinaryPrimitives.WriteInt64BigEndian(span, value.UtcTicks);
@@ -283,7 +313,10 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
 internal sealed class TimeSpanSerde : ISerde<TimeSpan>
 {
     public void Serialize<TWriter>(TimeSpan value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(8);
         BinaryPrimitives.WriteInt64BigEndian(span, value.Ticks);
@@ -300,7 +333,10 @@ internal sealed class TimeSpanSerde : ISerde<TimeSpan>
 internal sealed class NullSerde<T> : ISerde<T?> where T : class
 {
     public void Serialize<TWriter>(T? value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         // No-op
     }
@@ -314,7 +350,10 @@ internal sealed class NullSerde<T> : ISerde<T?> where T : class
 internal sealed class IgnoreSerde : ISerde<Ignore>
 {
     public void Serialize<TWriter>(Ignore value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         // No-op
     }
@@ -336,7 +375,10 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
 internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
 {
     public void Serialize<TWriter>(ReadOnlyMemory<byte> value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         var span = destination.GetSpan(value.Length);
         value.Span.CopyTo(span);

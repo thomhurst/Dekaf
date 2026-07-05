@@ -137,10 +137,10 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return ValueTask.CompletedTask;
+            return ValueTaskCompatibility.CompletedTask;
 
         _stack.Clear();
 
-        return ValueTask.CompletedTask;
+        return ValueTaskCompatibility.CompletedTask;
     }
 }

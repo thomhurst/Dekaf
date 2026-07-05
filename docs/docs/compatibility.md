@@ -61,15 +61,25 @@ dotnet build src/Dekaf/Dekaf.csproj --configuration Release `
   -p:TargetFramework=netstandard2.0
 ```
 
-The probe is still expected to fail until #1300 removes or isolates the remaining core API blockers. Current blocker categories:
+The #1300 pass removes the core compile blocker layer. The forced probe now builds cleanly:
 
-- Runtime intrinsics: `System.Runtime.Intrinsics` is not available as a `netstandard2.0` package, so the CRC/vectorized record batch paths need conditional fallbacks.
-- Modern collection and threading APIs: `IReadOnlySet<T>`, `System.Threading.Lock`, `PeriodicTimer`, non-generic `TaskCompletionSource`, and `Task.WaitAsync`.
-- Runtime feature constraints: static abstract interface members, by-ref-like generics, and ref fields are not supported by the `netstandard2.0` target runtime.
-- Buffer and stream APIs: `SequenceReader<T>`, `ArrayBufferWriter<T>`, and span-based `Stream.Write(ReadOnlySpan<byte>)` need compatibility paths.
-- TLS/GSSAPI APIs: `SslClientAuthenticationOptions`, `NegotiateAuthentication`, and `NegotiateAuthenticationClientOptions` need target-specific handling.
+```bash
+dotnet build src/Dekaf/Dekaf.csproj --configuration Release `
+  -p:TargetFrameworks=netstandard2.0 `
+  -p:TargetFramework=netstandard2.0
+```
 
-This baseline does not declare package support for `netstandard2.0`; it only makes the next compile-blocker work measurable.
+This pass includes:
+
+- CRC32C hardware intrinsics are guarded so `netstandard2.0` uses the existing software CRC path.
+- `IReadOnlySet<T>` public and internal surfaces are target-aliased to `IReadOnlyCollection<T>` for `netstandard2.0`.
+- `System.Threading.Lock`, `PeriodicTimer`, non-generic `TaskCompletionSource`, `Task.WaitAsync`, `CancellationTokenSource.CancelAsync`, `ArrayBufferWriter<T>`, `SequenceReader<T>`, `Index`, `Range`, `HashCode`, `ValueTask.CompletedTask`, and related BCL helpers have conditional compatibility shims.
+- Span-based compression stream APIs use array-based stream calls on `netstandard2.0`.
+- Generic protocol send/read paths no longer require static abstract interface members for `netstandard2.0`; `net10.0` keeps static interface dispatch through the metadata helper.
+- TLS authentication uses the older `SslStream.AuthenticateAsClientAsync` overload on `netstandard2.0`.
+- GSSAPI remains part of the API surface, but using it on `netstandard2.0` throws `PlatformNotSupportedException` because `NegotiateAuthentication` is unavailable there.
+
+This baseline does not declare package support for `netstandard2.0`; it makes the core compile state clean so packaging and runtime validation can proceed separately.
 
 ## Blocker Categories
 

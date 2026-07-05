@@ -30,7 +30,10 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
     }
 
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
-        where TWriter : System.Buffers.IBufferWriter<byte>, allows ref struct
+        where TWriter : System.Buffers.IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
     {
         _inner.Serialize(value, ref destination, context);
     }

@@ -54,7 +54,7 @@ internal static class AwsMskIamSignedPayload
 
         var canonicalRequest = CreateCanonicalRequest(queryParameters, host);
         var stringToSign = string.Join(
-            '\n',
+            "\n",
             Algorithm,
             amzDate,
             credentialScope,
@@ -89,11 +89,11 @@ internal static class AwsMskIamSignedPayload
         string host)
     {
         var canonicalQuery = string.Join(
-            '&',
+            "&",
             queryParameters.Select(pair => $"{UriEncode(pair.Key)}={UriEncode(pair.Value)}"));
 
         return string.Join(
-            '\n',
+            "\n",
             "GET",
             "/",
             canonicalQuery,

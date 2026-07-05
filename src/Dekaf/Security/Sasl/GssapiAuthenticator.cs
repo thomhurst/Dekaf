@@ -1,4 +1,6 @@
+#if !NETSTANDARD2_0
 using System.Net.Security;
+#endif
 using Dekaf.Errors;
 
 namespace Dekaf.Security.Sasl;
@@ -21,9 +23,11 @@ namespace Dekaf.Security.Sasl;
 /// </remarks>
 public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
 {
+#if !NETSTANDARD2_0
     private readonly GssapiConfig _config;
     private readonly string _targetHost;
     private NegotiateAuthentication? _auth;
+#endif
     private GssapiState _state = GssapiState.Initial;
     private bool _disposed;
 
@@ -41,9 +45,15 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
     /// <param name="targetHost">The target broker hostname for SPN construction.</param>
     public GssapiAuthenticator(GssapiConfig config, string targetHost)
     {
+#if NETSTANDARD2_0
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(targetHost);
+        config.Validate();
+#else
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _targetHost = targetHost ?? throw new ArgumentNullException(nameof(targetHost));
         _config.Validate();
+#endif
     }
 
     /// <inheritdoc />
@@ -55,6 +65,10 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
     /// <inheritdoc />
     public byte[] GetInitialResponse()
     {
+#if NETSTANDARD2_0
+        throw new PlatformNotSupportedException(
+            "SASL GSSAPI requires System.Net.Security.NegotiateAuthentication, which is not available on netstandard2.0.");
+#else
         if (_state != GssapiState.Initial)
         {
             throw new InvalidOperationException("GetInitialResponse can only be called once");
@@ -83,11 +97,16 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
         }
 
         return outgoingBlob ?? [];
+#endif
     }
 
     /// <inheritdoc />
     public byte[]? EvaluateChallenge(byte[] challenge)
     {
+#if NETSTANDARD2_0
+        throw new PlatformNotSupportedException(
+            "SASL GSSAPI requires System.Net.Security.NegotiateAuthentication, which is not available on netstandard2.0.");
+#else
         if (_auth is null)
         {
             throw new InvalidOperationException("GetInitialResponse must be called before EvaluateChallenge");
@@ -113,6 +132,7 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
         }
 
         throw new AuthenticationException($"GSSAPI authentication failed: {statusCode}");
+#endif
     }
 
     /// <inheritdoc />
@@ -123,7 +143,9 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
             return;
         }
 
+#if !NETSTANDARD2_0
         _auth?.Dispose();
+#endif
         _disposed = true;
     }
 }

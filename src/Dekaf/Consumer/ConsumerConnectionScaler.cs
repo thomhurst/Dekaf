@@ -126,7 +126,7 @@ internal sealed class ConsumerConnectionScaler
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
     {
         var task = action(CancellationToken.None);
-        if (task.IsCompletedSuccessfully)
+        if (task.IsCompleted)
             return;
 
         task.AsTask().ContinueWith(static (t, state) =>

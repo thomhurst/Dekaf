@@ -201,7 +201,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
 
     private static long GetUnixTimeNanoseconds()
     {
-        var ticksSinceUnixEpoch = DateTimeOffset.UtcNow.UtcTicks - DateTime.UnixEpoch.Ticks;
+        var ticksSinceUnixEpoch = DateTimeOffset.UtcNow.UtcTicks - 621355968000000000L;
         return checked(ticksSinceUnixEpoch * 100);
     }
 }

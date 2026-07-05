@@ -49,7 +49,11 @@ public sealed class DefaultPartitioner : IPartitioner
 public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwarePartitioner
 {
     private readonly ConcurrentDictionary<string, int> _stickyPartitions = new();
+#if NETSTANDARD2_0
+    private int _counter;
+#else
     private uint _counter;
+#endif
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
@@ -64,7 +68,7 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
             // Cold path: topic not yet seen, compute and add a partition.
             // Use uint to avoid overflow to negative values.
             // GetOrAdd handles the race condition - if another thread added first, we use their value.
-            var newPartition = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+            var newPartition = NextPartition(partitionCount);
             return _stickyPartitions.GetOrAdd(topic, newPartition);
         }
 
@@ -80,9 +84,17 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
         // Use uint to avoid overflow to negative values.
         _stickyPartitions.AddOrUpdate(
             topic,
-            _ => (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount),
-            (_, _) => (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount));
+            _ => NextPartition(partitionCount),
+            (_, _) => NextPartition(partitionCount));
     }
+
+#if NETSTANDARD2_0
+    private int NextPartition(int partitionCount)
+        => (int)((uint)Interlocked.Increment(ref _counter) % (uint)partitionCount);
+#else
+    private int NextPartition(int partitionCount)
+        => (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+#endif
 }
 
 /// <summary>

@@ -113,9 +113,10 @@ public sealed class OAuthBearerTokenProvider : IDisposable
             _ => throw new InvalidOperationException($"Unsupported OAuth bearer grant type: {_config.GrantType}")
         };
 
-        if (!string.IsNullOrEmpty(_config.Scope))
+        var scope = _config.Scope;
+        if (!string.IsNullOrEmpty(scope))
         {
-            body["scope"] = _config.Scope;
+            body["scope"] = scope!;
         }
 
         if (_config.AdditionalParameters is not null)
@@ -196,7 +197,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         {
             var sub = subElement.GetString();
             if (!string.IsNullOrEmpty(sub))
-                return sub;
+                return sub!;
         }
 
         // Try to decode JWT and extract subject claim
@@ -229,7 +230,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
                     {
                         var value = claimElement.GetString();
                         if (!string.IsNullOrEmpty(value))
-                            return value;
+                            return value!;
                     }
                 }
             }
