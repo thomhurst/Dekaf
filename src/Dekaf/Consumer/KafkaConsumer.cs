@@ -2775,11 +2775,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             finally
             {
                 activity?.Dispose();
-                FlushConsumedPositions(pending);
-
-                if (metricsEnabled && pending.MessageCount > 0)
-                    EmitFetchMetrics(pending);
             }
+
+            FlushConsumedPositions(pending);
+
+            if (metricsEnabled && pending.MessageCount > 0)
+                EmitFetchMetrics(pending);
 
             if (batchProcessingStarted.HasValue)
             {
@@ -2795,8 +2796,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        if (_options.OffsetCommitMode == OffsetCommitMode.Manual)
-            FlushActiveConsumedPosition();
+        FlushActiveConsumedPosition();
 
         await CommitStoredOffsetsAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -2918,8 +2918,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public long? GetPosition(TopicPartition partition)
     {
-        if (_options.OffsetCommitMode == OffsetCommitMode.Manual
-            && TryGetActiveConsumedPosition(partition, out var activePosition, out var leaderEpoch))
+        if (TryGetActiveConsumedPosition(partition, out var activePosition, out var leaderEpoch))
         {
             RecordConsumedPosition(partition, activePosition, leaderEpoch);
             return activePosition;
@@ -5069,25 +5068,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var partitionStopCancellation = await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
 
         // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
-        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_dirtyStoredOffsets.IsEmpty)
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
-            for (var attempt = 0; attempt < 3; attempt++)
+            FlushActiveConsumedPosition();
+
+            if (!_dirtyStoredOffsets.IsEmpty)
             {
-                try
+                for (var attempt = 0; attempt < 3; attempt++)
                 {
-                    await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
-                    LogCommittedPendingOffsets();
-                    break;
-                }
-                catch (OperationCanceledException)
-                {
-                    break; // Caller cancelled — don't retry
-                }
-                catch (Exception ex)
-                {
-                    LogCommitOffsetsDuringCloseFailed(ex, attempt + 1);
-                    if (attempt < 2)
-                        await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
+                        LogCommittedPendingOffsets();
+                        break;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break; // Caller cancelled — don't retry
+                    }
+                    catch (Exception ex)
+                    {
+                        LogCommitOffsetsDuringCloseFailed(ex, attempt + 1);
+                        if (attempt < 2)
+                            await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
         }
