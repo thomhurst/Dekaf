@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
+using Dekaf;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Json;
 
@@ -8,8 +10,10 @@ namespace Dekaf.Tests.Unit.Serialization;
 
 public class JsonSerializerTests
 {
-    private static SerializationContext CreateContext(string topic = "test") =>
-        new() { Topic = topic, Component = SerializationComponent.Value };
+    private static SerializationContext CreateContext(
+        string topic = "test",
+        SerializationComponent component = SerializationComponent.Value) =>
+        new() { Topic = topic, Component = component };
 
     #region Basic Roundtrip Tests
 
@@ -83,6 +87,78 @@ public class JsonSerializerTests
         var json = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
         await Assert.That(json).Contains("\"Name\"");
         await Assert.That(json).Contains("\"Age\"");
+    }
+
+    [Test]
+    public async Task Serialize_SourceGeneratedTypeInfo_RoundTrips()
+    {
+        var serializer = new JsonSerializer<SourceGeneratedPerson>(
+            JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson);
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var person = new SourceGeneratedPerson { Name = "Ava", Age = 42 };
+
+        serializer.Serialize(person, ref buffer, context);
+        var result = serializer.Deserialize(buffer.WrittenMemory, context);
+
+        await Assert.That(result.Name).IsEqualTo("Ava");
+        await Assert.That(result.Age).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task Serialize_SourceGeneratedKeyTypeInfo_RoundTrips()
+    {
+        var serializer = new JsonSerializer<SourceGeneratedOrderKey>(
+            JsonSerializerTestsJsonContext.Default.SourceGeneratedOrderKey);
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext(component: SerializationComponent.Key);
+        var key = new SourceGeneratedOrderKey { Id = "order-123" };
+
+        serializer.Serialize(key, ref buffer, context);
+        var result = serializer.Deserialize(buffer.WrittenMemory, context);
+
+        var json = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        await Assert.That(json).IsEqualTo("{\"id\":\"order-123\"}");
+        await Assert.That(result.Id).IsEqualTo("order-123");
+    }
+
+    [Test]
+    public async Task Serialize_SourceGeneratedTypeInfo_UsesGeneratedNamingPolicy()
+    {
+        var serializer = new JsonSerializer<SourceGeneratedPerson>(
+            JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson);
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(new SourceGeneratedPerson { Name = "Ivy", Age = 11 }, ref buffer, context);
+
+        var json = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        await Assert.That(json).IsEqualTo("{\"name\":\"Ivy\",\"age\":11}");
+    }
+
+    [Test]
+    public async Task FluentHelpers_SourceGeneratedTypeInfo_ReturnBuilders()
+    {
+        var producerBuilder = new ProducerBuilder<SourceGeneratedOrderKey, SourceGeneratedPerson>();
+        var consumerBuilder = new ConsumerBuilder<SourceGeneratedOrderKey, SourceGeneratedPerson>();
+
+        var configuredProducerBuilder = producerBuilder
+            .UseJsonKeySerializer(JsonSerializerTestsJsonContext.Default.SourceGeneratedOrderKey)
+            .UseJsonSerializer(JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson);
+        var configuredConsumerBuilder = consumerBuilder
+            .UseJsonKeyDeserializer(JsonSerializerTestsJsonContext.Default.SourceGeneratedOrderKey)
+            .UseJsonDeserializer(JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson);
+
+        await Assert.That(configuredProducerBuilder).IsSameReferenceAs(producerBuilder);
+        await Assert.That(configuredConsumerBuilder).IsSameReferenceAs(consumerBuilder);
+    }
+
+    [Test]
+    public async Task Constructor_NullTypeInfo_ThrowsArgumentNullException()
+    {
+        var act = () => new JsonSerializer<SourceGeneratedPerson>((JsonTypeInfo<SourceGeneratedPerson>)null!);
+
+        await Assert.That(act).Throws<ArgumentNullException>();
     }
 
     #endregion
@@ -225,3 +301,19 @@ public class JsonSerializerTests
 
     #endregion
 }
+
+internal sealed class SourceGeneratedPerson
+{
+    public string? Name { get; set; }
+    public int Age { get; set; }
+}
+
+internal sealed class SourceGeneratedOrderKey
+{
+    public string? Id { get; set; }
+}
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(SourceGeneratedPerson))]
+[JsonSerializable(typeof(SourceGeneratedOrderKey))]
+internal sealed partial class JsonSerializerTestsJsonContext : JsonSerializerContext;
