@@ -115,7 +115,23 @@ public sealed class AvroSchemaRegistryDeserializer<
         var writerSchema = GetWriterSchemaCached(schemaId);
 
         // Extract Avro payload using pooled buffer to avoid allocation
-        var payload = span.Slice(5);
+        var payloadMemory = data.Slice(5);
+        if (_config.RuleExecutor is not null)
+        {
+            var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            payloadMemory = _config.RuleExecutor.TransformDeserializedPayload(
+                payloadMemory,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Schema = schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Avro
+                });
+        }
+
+        var payload = payloadMemory.Span;
         var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
         var memoryStream = codecState.Stream;
         var rentedBuffer = ArrayPool<byte>.Shared.Rent(payload.Length);

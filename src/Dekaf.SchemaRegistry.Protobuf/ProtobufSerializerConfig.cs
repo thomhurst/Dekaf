@@ -57,6 +57,12 @@ public sealed class ProtobufSerializerConfig
     /// Default is <see cref="ReferenceSubjectNameStrategy.ReferenceName"/>.
     /// </summary>
     public ReferenceSubjectNameStrategy ReferenceSubjectNameStrategy { get; init; } = ReferenceSubjectNameStrategy.ReferenceName;
+
+    /// <summary>
+    /// Optional rule executor applied to Protobuf message bytes before the Schema Registry envelope is written.
+    /// The Protobuf message-index prefix is not transformed.
+    /// </summary>
+    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
 }
 
 /// <summary>

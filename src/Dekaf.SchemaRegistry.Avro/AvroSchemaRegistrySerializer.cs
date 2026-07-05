@@ -126,14 +126,35 @@ public sealed class AvroSchemaRegistrySerializer<
             encoder.Flush();
 
             var avroPayloadLength = (int)memoryStream.Position;
+            var payload = new ReadOnlyMemory<byte>(memoryStream.GetBuffer(), 0, avroPayloadLength);
+            if (_config.RuleExecutor is not null)
+            {
+                var isKey = context.Component == SerializationComponent.Key;
+                var subject = GetSubjectName(context.Topic, isKey);
+                payload = _config.RuleExecutor.TransformSerializedPayload(
+                    payload,
+                    new SchemaRegistryRuleContext
+                    {
+                        Topic = context.Topic,
+                        Component = context.Component,
+                        SchemaId = schemaId,
+                        Subject = subject,
+                        Schema = new RegistrySchema
+                        {
+                            SchemaType = SchemaType.Avro,
+                            SchemaString = GetSchemaFromValue(value).ToString()
+                        },
+                        PayloadFormat = SchemaRegistryPayloadFormat.Avro
+                    });
+            }
 
             // Write wire format: [0x00] [schema ID] [Avro payload]
-            var totalSize = 1 + 4 + avroPayloadLength;
+            var totalSize = 1 + 4 + payload.Length;
             var span = destination.GetSpan(totalSize);
 
             span[0] = MagicByte;
             BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-            memoryStream.GetBuffer().AsSpan(0, avroPayloadLength).CopyTo(span.Slice(5));
+            payload.Span.CopyTo(span.Slice(5));
 
             destination.Advance(totalSize);
         }

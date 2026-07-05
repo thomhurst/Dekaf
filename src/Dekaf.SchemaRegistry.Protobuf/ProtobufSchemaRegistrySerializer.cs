@@ -81,9 +81,25 @@ public sealed class ProtobufSchemaRegistrySerializer<
         var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
 
         var protoSize = value.CalculateSize();
+        ReadOnlyMemory<byte> transformedPayload = default;
+        if (_config.RuleExecutor is not null)
+        {
+            transformedPayload = _config.RuleExecutor.TransformSerializedPayload(
+                value.ToByteArray(),
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key),
+                    Schema = _schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
+                });
+        }
 
         // Total size: magic byte + schema ID + indexes + message
-        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protoSize;
+        var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
+        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protobufPayloadLength;
         var span = destination.GetSpan(totalSize);
 
         // Write magic byte
@@ -97,7 +113,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
         offset += _encodedMessageIndexes.Length;
 
         // Write the protobuf message
-        value.WriteTo(span.Slice(offset, protoSize));
+        if (_config.RuleExecutor is null)
+            value.WriteTo(span.Slice(offset, protoSize));
+        else
+            transformedPayload.Span.CopyTo(span.Slice(offset, transformedPayload.Length));
 
         destination.Advance(totalSize);
     }

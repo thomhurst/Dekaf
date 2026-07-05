@@ -32,6 +32,10 @@ public sealed class AvroSerializerConfig
     /// </summary>
     public bool UseLatestVersion { get; init; }
 
+    /// <summary>
+    /// Optional rule executor applied to Avro payload bytes before the Schema Registry envelope is written.
+    /// </summary>
+    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
 }
 
 /// <summary>
@@ -44,4 +48,9 @@ public sealed class AvroDeserializerConfig
     /// When null, the reader schema is derived from the type T.
     /// </summary>
     public string? ReaderSchema { get; init; }
+
+    /// <summary>
+    /// Optional rule executor applied to Avro payload bytes after the Schema Registry envelope is read.
+    /// </summary>
+    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
 }

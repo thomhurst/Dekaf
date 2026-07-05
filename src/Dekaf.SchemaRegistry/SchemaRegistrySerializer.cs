@@ -38,6 +38,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -57,7 +58,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         Func<string, Schema> getSchema,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
@@ -65,6 +67,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
     }
 
     /// <summary>
@@ -82,7 +85,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         Func<string, Schema> getSchema,
         ISubjectNameStrategy customSubjectNameStrategy,
         bool autoRegisterSchemas = true,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
@@ -90,6 +94,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
     }
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
@@ -104,13 +109,31 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         if (payloadBuffer.Capacity > 1024 * 1024)
             SchemaRegistryBuffers.PayloadBuffer = null;
 
+        var payload = payloadBuffer.WrittenMemory;
+        if (_ruleExecutor is not null)
+        {
+            var isKey = context.Component == SerializationComponent.Key;
+            var subject = GetSubjectName(context.Topic, isKey);
+            payload = _ruleExecutor.TransformSerializedPayload(
+                payload,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Subject = subject,
+                    Schema = _getSchema(subject),
+                    PayloadFormat = SchemaRegistryPayloadFormat.Custom
+                });
+        }
+
         // Write wire format: [0x00] [schema ID] [payload]
-        var totalSize = 1 + 4 + payloadBuffer.WrittenCount;
+        var totalSize = 1 + 4 + payload.Length;
         var span = destination.GetSpan(totalSize);
 
         span[0] = MagicByte;
         BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        payloadBuffer.WrittenSpan.CopyTo(span.Slice(5));
+        payload.Span.CopyTo(span.Slice(5));
 
         destination.Advance(totalSize);
     }
@@ -204,6 +227,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly Func<ReadOnlyMemory<byte>, Schema, T> _deserialize;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
     /// <summary>
     /// Creates a new Schema Registry deserializer.
@@ -214,11 +238,13 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     public SchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         Func<byte[], Schema, T> deserialize,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
         : this(
             schemaRegistry,
             (ReadOnlyMemory<byte> payload, Schema schema) => deserialize(payload.ToArray(), schema),
-            ownsClient)
+            ownsClient,
+            ruleExecutor)
     {
     }
 
@@ -231,11 +257,13 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     internal SchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
-        bool ownsClient)
+        bool ownsClient,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -252,6 +280,19 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
 
         var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
         var payload = data.Slice(5);
+        if (_ruleExecutor is not null)
+        {
+            payload = _ruleExecutor.TransformDeserializedPayload(
+                payload,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Schema = schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Custom
+                });
+        }
 
         return _deserialize(payload, schema);
     }
@@ -280,8 +321,9 @@ public static class SchemaRegistryDeserializer
     public static SchemaRegistryDeserializer<T> Create<T>(
         ISchemaRegistryClient schemaRegistry,
         Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
-        bool ownsClient = false)
-        => new(schemaRegistry, deserialize, ownsClient);
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        => new(schemaRegistry, deserialize, ownsClient, ruleExecutor);
 }
 
 /// <summary>

@@ -13,6 +13,24 @@ public class ProtobufSchemaRegistrySerializerTests
     private static SerializationContext CreateContext(string topic = "test-topic", bool isKey = false) =>
         new() { Topic = topic, Component = isKey ? SerializationComponent.Key : SerializationComponent.Value };
 
+    private sealed class ReplacingRuleExecutor(byte[] serializedPayload) : ISchemaRegistryRuleExecutor
+    {
+        public SchemaRegistryRuleContext? Context { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            Context = context;
+            return serializedPayload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+            => payload;
+    }
+
     [Test]
     public async Task Serialize_WritesCorrectWireFormat()
     {
@@ -45,6 +63,31 @@ public class ProtobufSchemaRegistrySerializerTests
         var expectedPayload = message.ToByteArray();
         await Assert.That(written.AsSpan(6).ToArray()).IsEquivalentTo(expectedPayload);
     }
+
+    [Test]
+    public async Task Serialize_RuleExecutor_TransformsMessageBytes_AfterMessageIndexes()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(42));
+
+        var replacement = new TestMessage { Id = 9, Name = "Encrypted", Value = 1.25 };
+        var executor = new ReplacingRuleExecutor(replacement.ToByteArray());
+        var config = new ProtobufSerializerConfig { RuleExecutor = executor };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new TestMessage { Id = 1, Name = "Plain", Value = 3.14 }, ref buffer, CreateContext());
+
+        var written = buffer.WrittenMemory.ToArray();
+        await Assert.That(written[5]).IsEqualTo((byte)0);
+        await Assert.That(written.AsSpan(6).ToArray()).IsEquivalentTo(replacement.ToByteArray());
+        await Assert.That(executor.Context).IsNotNull();
+        await Assert.That(executor.Context!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Protobuf);
+        await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-value");
+        await Assert.That(executor.Context.SchemaId).IsEqualTo(42);
+    }
+
 
     [Test]
     public async Task Serialize_CachesSchemaId()

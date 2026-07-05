@@ -121,6 +121,30 @@ public sealed class SchemaRegistryCacheTests
         }
     }
 
+    private sealed class ReplacingRuleExecutor(
+        byte[]? serializedPayload = null,
+        byte[]? deserializedPayload = null) : ISchemaRegistryRuleExecutor
+    {
+        public SchemaRegistryRuleContext? SerializeContext { get; private set; }
+        public SchemaRegistryRuleContext? DeserializeContext { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            SerializeContext = context;
+            return serializedPayload ?? payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            DeserializeContext = context;
+            return deserializedPayload ?? payload;
+        }
+    }
+
     private static SerializationContext CreateContext(string topic = "topic", bool isKey = false) =>
         new()
         {
@@ -221,6 +245,62 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(strategy.CallCount).IsEqualTo(1);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Serializer_RuleExecutor_TransformsSerializedPayload()
+    {
+        var registry = new CountingSchemaRegistryClient();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
+        var executor = new ReplacingRuleExecutor(serializedPayload: "encrypted"u8.ToArray());
+
+        await using var serializer = new SchemaRegistrySerializer<string>(
+            registry,
+            serialize: static (value, writer) =>
+            {
+                var byteCount = Encoding.UTF8.GetByteCount(value);
+                Encoding.UTF8.GetBytes(value, writer.GetSpan(byteCount));
+                writer.Advance(byteCount);
+            },
+            getSchema: _ => schema,
+            ruleExecutor: executor);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("plain", ref buffer, CreateContext());
+
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan.Slice(5))).IsEqualTo("encrypted");
+        await Assert.That(executor.SerializeContext).IsNotNull();
+        await Assert.That(executor.SerializeContext!.Subject).IsEqualTo("topic-value");
+        await Assert.That(executor.SerializeContext.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Custom);
+        await Assert.That(executor.SerializeContext.SchemaId).IsEqualTo(registry.GetSchemaId("topic-value"));
+        await Assert.That(executor.SerializeContext.Schema).IsSameReferenceAs(schema);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_TransformsDeserializedPayload()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
+        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var cipherText = "encrypted"u8.ToArray();
+        var wireBytes = new byte[5 + cipherText.Length];
+        wireBytes[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), schemaId);
+        cipherText.CopyTo(wireBytes.AsSpan(5));
+
+        var executor = new ReplacingRuleExecutor(deserializedPayload: "plain"u8.ToArray());
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            ruleExecutor: executor);
+
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        await Assert.That(result).IsEqualTo("plain");
+        await Assert.That(executor.DeserializeContext).IsNotNull();
+        await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Custom);
+        await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
+        await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }
 
     [Test]
@@ -351,6 +431,33 @@ public sealed class SchemaRegistryCacheTests
         var expectedPayload = JsonSerializer.SerializeToUtf8Bytes(payload, CamelCaseJsonOptions);
         await Assert.That(actualPayload).IsEquivalentTo(expectedPayload);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task JsonSerializer_RuleExecutor_TransformsPayload()
+    {
+        var registry = new CountingSchemaRegistryClient();
+        var executor = new ReplacingRuleExecutor(serializedPayload: "encrypted-json"u8.ToArray());
+        await using var serializer = new JsonSchemaRegistrySerializer<JsonPayload>(
+            registry,
+            """
+            {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "name": { "type": "string" }
+                }
+            }
+            """,
+            ruleExecutor: executor);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new JsonPayload(7, "Test"), ref buffer, CreateContext());
+
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan.Slice(5))).IsEqualTo("encrypted-json");
+        await Assert.That(executor.SerializeContext).IsNotNull();
+        await Assert.That(executor.SerializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Json);
+        await Assert.That(executor.SerializeContext.Subject).IsEqualTo("topic-value");
     }
 
     [Test]
