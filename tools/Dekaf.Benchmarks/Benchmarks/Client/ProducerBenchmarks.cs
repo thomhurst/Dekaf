@@ -3,6 +3,7 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
+using Dekaf.Tooling;
 using DekafProducer = Dekaf.Producer;
 
 namespace Dekaf.Benchmarks.Benchmarks.Client;
@@ -20,8 +21,10 @@ public class ProducerBenchmarks
     private KafkaTestEnvironment _kafka = null!;
     private DekafProducer.IKafkaProducer<string, string> _dekafProducer = null!;
     private Confluent.Kafka.IProducer<string, string> _confluentProducer = null!;
+    private Confluent.Kafka.IProducer<string, string> _confluentFireAndForgetProducer = null!;
 
     private const string Topic = "benchmark-producer";
+    private static readonly TimeSpan QueueFullRetryTimeout = TimeSpan.FromSeconds(30);
     private string _messageValue = null!;
 
     [Params(100, 1000)]
@@ -47,18 +50,39 @@ public class ProducerBenchmarks
             .BuildAsync()
             .ConfigureAwait(false);
 
-        var confluentConfig = new Confluent.Kafka.ProducerConfig
+        _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
+            CreateConfluentConfig("confluent-benchmark", enableDeliveryReports: true))
+            .Build();
+
+        _confluentFireAndForgetProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
+            CreateConfluentConfig(
+                "confluent-benchmark-fnf",
+                enableDeliveryReports: false,
+                queueBufferingMaxMessages: ConfluentProducerBackpressure.QueueBufferingMaxMessages))
+            .Build();
+
+        await WarmupAsync().ConfigureAwait(false);
+    }
+
+    private Confluent.Kafka.ProducerConfig CreateConfluentConfig(
+        string clientId,
+        bool enableDeliveryReports,
+        int? queueBufferingMaxMessages = null)
+    {
+        var config = new Confluent.Kafka.ProducerConfig
         {
             BootstrapServers = _kafka.BootstrapServers,
-            ClientId = "confluent-benchmark",
+            ClientId = clientId,
             Acks = Confluent.Kafka.Acks.Leader,
             LingerMs = 5,
             BatchSize = 16384,
-            QueueBufferingMaxMessages = 1000000
+            EnableDeliveryReports = enableDeliveryReports
         };
-        _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
 
-        await WarmupAsync().ConfigureAwait(false);
+        if (queueBufferingMaxMessages is { } maxMessages)
+            config.QueueBufferingMaxMessages = maxMessages;
+
+        return config;
     }
 
     private async Task WarmupAsync()
@@ -77,10 +101,13 @@ public class ProducerBenchmarks
                 Key = "warmup",
                 Value = "warmup"
             }).ConfigureAwait(false);
+
+            ProduceConfluentFireAndForget("warmup", "warmup");
         }
 
         await _dekafProducer.FlushAsync().ConfigureAwait(false);
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
+        _confluentFireAndForgetProducer.Flush(TimeSpan.FromSeconds(5));
     }
 
     [GlobalCleanup]
@@ -96,9 +123,11 @@ public class ProducerBenchmarks
             // Ignore flush errors during cleanup
         }
         _confluentProducer.Flush(TimeSpan.FromSeconds(60));
+        _confluentFireAndForgetProducer.Flush(TimeSpan.FromSeconds(60));
 
         await _dekafProducer.DisposeAsync().ConfigureAwait(false);
         _confluentProducer.Dispose();
+        _confluentFireAndForgetProducer.Dispose();
         await _kafka.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -174,12 +203,25 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _confluentProducer.Produce(Topic, new Confluent.Kafka.Message<string, string>
-            {
-                Key = $"key-{i}",
-                Value = _messageValue
-            });
+            ProduceConfluentFireAndForget($"key-{i}", _messageValue);
         }
+    }
+
+    private void ProduceConfluentFireAndForget(string key, string value)
+    {
+        var message = new Confluent.Kafka.Message<string, string>
+        {
+            Key = key,
+            Value = value
+        };
+
+        ConfluentProducerBackpressure.ProduceWithBackpressure(
+            _confluentFireAndForgetProducer,
+            Topic,
+            message,
+            deliveryHandler: null,
+            cancellationToken: CancellationToken.None,
+            retryTimeout: QueueFullRetryTimeout);
     }
 
     [BenchmarkCategory("FireAndForget")]
