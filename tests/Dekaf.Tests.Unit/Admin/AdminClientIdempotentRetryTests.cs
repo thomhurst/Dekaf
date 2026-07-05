@@ -28,22 +28,35 @@ public sealed class AdminClientIdempotentRetryTests
                 if (Interlocked.Increment(ref calls) == 1)
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
 
-                return ValueTask.FromResult(new DeleteTopicsResponse
-                {
-                    Responses =
-                    [
-                        new DeleteTopicsResponseTopic
-                        {
-                            Name = TopicName,
-                            ErrorCode = ErrorCode.UnknownTopicOrPartition
-                        }
-                    ]
-                });
+                return ValueTask.FromResult(CreateUnknownTopicResponse());
             });
 
         await admin.DeleteTopicsAsync([TopicName]);
 
         await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_UnknownTopicWithoutPriorSendFailure_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteTopics);
+        var calls = 0;
+
+        connection.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                Arg.Any<DeleteTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                return ValueTask.FromResult(CreateUnknownTopicResponse());
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DeleteTopicsAsync([TopicName]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(calls).IsEqualTo(4);
     }
 
     [Test]
@@ -239,6 +252,18 @@ public sealed class AdminClientIdempotentRetryTests
                 ]
             }));
     }
+
+    private static DeleteTopicsResponse CreateUnknownTopicResponse() => new()
+    {
+        Responses =
+        [
+            new DeleteTopicsResponseTopic
+            {
+                Name = TopicName,
+                ErrorCode = ErrorCode.UnknownTopicOrPartition
+            }
+        ]
+    };
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
         params ApiKey[] extraApiKeys)

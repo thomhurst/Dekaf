@@ -306,11 +306,19 @@ public sealed class AdminClient : IAdminClient
                 };
             }
 
-            deleteMayHaveApplied = true;
-            var response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            DeleteTopicsResponse response;
+            try
+            {
+                response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                deleteMayHaveApplied = true;
+                throw;
+            }
 
             // Check for errors
             foreach (var topic in response.Responses)
