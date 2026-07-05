@@ -141,6 +141,18 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Stores the consumed message's next offset for the automatic commit loop.
+    /// Use with <see cref="ConsumerOptions.EnableAutoOffsetStore"/> disabled to store offsets only
+    /// after message processing succeeds.
+    /// </summary>
+    void StoreOffset(ConsumeResult<TKey, TValue> result);
+
+    /// <summary>
+    /// Stores an offset for the automatic commit loop.
+    /// </summary>
+    void StoreOffset(TopicPartitionOffset offset);
+
+    /// <summary>
     /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
     /// notifies <see cref="IPartitionStopListener"/> when configured, commits pending offsets,
     /// leaves the consumer group, and releases resources.

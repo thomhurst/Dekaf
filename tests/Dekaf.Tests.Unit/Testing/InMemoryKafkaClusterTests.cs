@@ -80,6 +80,36 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_ManualOffsetStore_WithAutoCommit_CommitsStoredOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = false
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+
+        await producer.ProduceAsync("jobs", "a", "one");
+        consumer.Subscribe("jobs");
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var offsetsBeforeStore = await admin.ListConsumerGroupOffsetsAsync("workers");
+        consumer.StoreOffset(result!.Value);
+        await consumer.CloseAsync();
+        var offsetsAfterStore = await admin.ListConsumerGroupOffsetsAsync("workers");
+
+        await Assert.That(offsetsBeforeStore.ContainsKey(partition)).IsFalse();
+        await Assert.That(offsetsAfterStore[partition]).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Admin_CreatesDescribesAndDeletesTopics()
     {
         var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions { AutoCreateTopics = false });
