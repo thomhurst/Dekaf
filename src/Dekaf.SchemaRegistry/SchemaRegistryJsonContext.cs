@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using System.Text.Json.Serialization.Metadata;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -16,38 +15,6 @@ namespace Dekaf.SchemaRegistry;
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(List<int>))]
 internal sealed partial class SchemaRegistryJsonContext : JsonSerializerContext;
-
-internal static class SchemaRegistryJsonTypeInfo
-{
-    internal static readonly JsonTypeInfo<RegisterSchemaRequest> RegisterSchemaRequest =
-        GetRequired<RegisterSchemaRequest>();
-
-    internal static readonly JsonTypeInfo<RegisterSchemaResponse> RegisterSchemaResponse =
-        GetRequired<RegisterSchemaResponse>();
-
-    internal static readonly JsonTypeInfo<GetSchemaResponse> GetSchemaResponse =
-        GetRequired<GetSchemaResponse>();
-
-    internal static readonly JsonTypeInfo<GetSubjectVersionResponse> GetSubjectVersionResponse =
-        GetRequired<GetSubjectVersionResponse>();
-
-    internal static readonly JsonTypeInfo<CompatibilityResponse> CompatibilityResponse =
-        GetRequired<CompatibilityResponse>();
-
-    internal static readonly JsonTypeInfo<ErrorResponse> ErrorResponse =
-        GetRequired<ErrorResponse>();
-
-    internal static readonly JsonTypeInfo<List<string>> StringList =
-        GetRequired<List<string>>();
-
-    internal static readonly JsonTypeInfo<List<int>> Int32List =
-        GetRequired<List<int>>();
-
-    private static JsonTypeInfo<T> GetRequired<T>()
-    {
-        return (JsonTypeInfo<T>)SchemaRegistryJsonContext.Default.GetTypeInfo(typeof(T))!;
-    }
-}
 
 internal sealed class RegisterSchemaRequest
 {
