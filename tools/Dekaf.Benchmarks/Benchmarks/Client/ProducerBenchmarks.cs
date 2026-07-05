@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
@@ -20,8 +21,13 @@ public class ProducerBenchmarks
     private KafkaTestEnvironment _kafka = null!;
     private DekafProducer.IKafkaProducer<string, string> _dekafProducer = null!;
     private Confluent.Kafka.IProducer<string, string> _confluentProducer = null!;
+    private Confluent.Kafka.IProducer<string, string> _confluentFireAndForgetProducer = null!;
 
     private const string Topic = "benchmark-producer";
+    // Keep librdkafka's local queue byte-bound, not message-count-bound, during bursty fire-and-forget runs.
+    private const int ConfluentQueueBufferingMaxKbytes = 1024 * 1024;
+    private const int ConfluentQueueBufferingMaxMessages = 10_000_000;
+    private static readonly TimeSpan QueueFullRetryTimeout = TimeSpan.FromSeconds(30);
     private string _messageValue = null!;
 
     [Params(100, 1000)]
@@ -47,19 +53,29 @@ public class ProducerBenchmarks
             .BuildAsync()
             .ConfigureAwait(false);
 
-        var confluentConfig = new Confluent.Kafka.ProducerConfig
-        {
-            BootstrapServers = _kafka.BootstrapServers,
-            ClientId = "confluent-benchmark",
-            Acks = Confluent.Kafka.Acks.Leader,
-            LingerMs = 5,
-            BatchSize = 16384,
-            QueueBufferingMaxMessages = 1000000
-        };
-        _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
+        _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
+            CreateConfluentConfig("confluent-benchmark", enableDeliveryReports: true))
+            .Build();
+
+        _confluentFireAndForgetProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
+            CreateConfluentConfig("confluent-benchmark-fnf", enableDeliveryReports: false))
+            .Build();
 
         await WarmupAsync().ConfigureAwait(false);
     }
+
+    private Confluent.Kafka.ProducerConfig CreateConfluentConfig(string clientId, bool enableDeliveryReports)
+        => new()
+        {
+            BootstrapServers = _kafka.BootstrapServers,
+            ClientId = clientId,
+            Acks = Confluent.Kafka.Acks.Leader,
+            LingerMs = 5,
+            BatchSize = 16384,
+            QueueBufferingMaxKbytes = ConfluentQueueBufferingMaxKbytes,
+            QueueBufferingMaxMessages = ConfluentQueueBufferingMaxMessages,
+            EnableDeliveryReports = enableDeliveryReports
+        };
 
     private async Task WarmupAsync()
     {
@@ -77,10 +93,13 @@ public class ProducerBenchmarks
                 Key = "warmup",
                 Value = "warmup"
             }).ConfigureAwait(false);
+
+            ProduceConfluentFireAndForget("warmup", "warmup");
         }
 
         await _dekafProducer.FlushAsync().ConfigureAwait(false);
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
+        _confluentFireAndForgetProducer.Flush(TimeSpan.FromSeconds(5));
     }
 
     [GlobalCleanup]
@@ -96,9 +115,11 @@ public class ProducerBenchmarks
             // Ignore flush errors during cleanup
         }
         _confluentProducer.Flush(TimeSpan.FromSeconds(60));
+        _confluentFireAndForgetProducer.Flush(TimeSpan.FromSeconds(60));
 
         await _dekafProducer.DisposeAsync().ConfigureAwait(false);
         _confluentProducer.Dispose();
+        _confluentFireAndForgetProducer.Dispose();
         await _kafka.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -174,11 +195,32 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _confluentProducer.Produce(Topic, new Confluent.Kafka.Message<string, string>
+            ProduceConfluentFireAndForget($"key-{i}", _messageValue);
+        }
+    }
+
+    private void ProduceConfluentFireAndForget(string key, string value)
+    {
+        var message = new Confluent.Kafka.Message<string, string>
+        {
+            Key = key,
+            Value = value
+        };
+        var startedAt = Stopwatch.GetTimestamp();
+
+        while (true)
+        {
+            try
             {
-                Key = $"key-{i}",
-                Value = _messageValue
-            });
+                _confluentFireAndForgetProducer.Produce(Topic, message);
+                return;
+            }
+            catch (Confluent.Kafka.ProduceException<string, string> ex)
+                when (ex.Error.Code == Confluent.Kafka.ErrorCode.Local_QueueFull &&
+                      Stopwatch.GetElapsedTime(startedAt) < QueueFullRetryTimeout)
+            {
+                Thread.Sleep(1);
+            }
         }
     }
 
