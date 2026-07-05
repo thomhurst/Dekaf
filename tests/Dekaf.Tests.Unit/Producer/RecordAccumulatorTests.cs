@@ -2583,8 +2583,9 @@ public class RecordAccumulatorTests
                 pendingValue, valueIsNull: false,
                 null, 0, null, CancellationToken.None).AsTask();
 
-            while (accumulator.BufferPressureEvents == 0 && !pendingAppendTask.IsCompleted)
-                await Task.Yield();
+            await TestWait.UntilAsync(
+                () => accumulator.BufferPressureEvents > 0 || pendingAppendTask.IsCompleted,
+                TimeSpan.FromSeconds(5));
 
             await Assert.That(pendingAppendTask.IsCompleted).IsFalse();
 
