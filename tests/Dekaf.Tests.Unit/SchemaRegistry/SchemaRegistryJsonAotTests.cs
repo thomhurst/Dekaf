@@ -39,10 +39,10 @@ public sealed class SchemaRegistryJsonAotTests
 
         var requestJson = JsonSerializer.SerializeToUtf8Bytes(
             request,
-            SchemaRegistryJsonTypeInfo.RegisterSchemaRequest);
+            SchemaRegistryJsonContext.Default.RegisterSchemaRequest);
         var roundTrippedRequest = JsonSerializer.Deserialize(
             requestJson,
-            SchemaRegistryJsonTypeInfo.RegisterSchemaRequest);
+            SchemaRegistryJsonContext.Default.RegisterSchemaRequest);
 
         var subjectResponseJson = """
             {
@@ -62,14 +62,14 @@ public sealed class SchemaRegistryJsonAotTests
             """u8;
         var subjectResponse = JsonSerializer.Deserialize(
             subjectResponseJson,
-            SchemaRegistryJsonTypeInfo.GetSubjectVersionResponse);
+            SchemaRegistryJsonContext.Default.GetSubjectVersionResponse);
 
         var compatibilityJson = JsonSerializer.SerializeToUtf8Bytes(
             new CompatibilityResponse { IsCompatible = true },
-            SchemaRegistryJsonTypeInfo.CompatibilityResponse);
+            SchemaRegistryJsonContext.Default.CompatibilityResponse);
         var errorJson = JsonSerializer.SerializeToUtf8Bytes(
             new ErrorResponse { ErrorCode = 40401, Message = "missing" },
-            SchemaRegistryJsonTypeInfo.ErrorResponse);
+            SchemaRegistryJsonContext.Default.ErrorResponse);
         using var compatibilityDocument = JsonDocument.Parse(compatibilityJson);
         using var errorDocument = JsonDocument.Parse(errorJson);
 
