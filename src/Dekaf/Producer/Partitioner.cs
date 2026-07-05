@@ -37,8 +37,8 @@ public sealed class DefaultPartitioner : IPartitioner
             return (int)(++_counter % (uint)partitionCount);
         }
 
-        // Murmur2 hash for consistent partitioning
-        return (int)(Murmur2.Hash(key) % partitionCount);
+        // Kafka-compatible Murmur2 partitioning for keyed messages.
+        return Murmur2.Partition(key, partitionCount);
     }
 }
 
@@ -72,7 +72,7 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
             return _stickyPartitions.GetOrAdd(topic, newPartition);
         }
 
-        return (int)(Murmur2.Hash(key) % partitionCount);
+        return Murmur2.Partition(key, partitionCount);
     }
 
     /// <summary>
@@ -119,6 +119,12 @@ internal static class Murmur2
     private const uint Seed = 0x9747b28c;
     private const int M = 0x5bd1e995;
     private const int R = 24;
+    private const uint PositiveMask = 0x7fff_ffff;
+
+    public static int Partition(ReadOnlySpan<byte> key, int partitionCount)
+    {
+        return (int)((Hash(key) & PositiveMask) % (uint)partitionCount);
+    }
 
     public static uint Hash(ReadOnlySpan<byte> data)
     {

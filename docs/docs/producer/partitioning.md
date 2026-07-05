@@ -27,6 +27,8 @@ await producer.ProduceAsync("orders", "order-123", event3);
 
 This guarantees ordering for messages with the same key - they'll be consumed in the order they were produced.
 
+Dekaf uses Kafka's Murmur2 positive-hash partition reduction for keyed messages, matching the Java client and librdkafka/Confluent.Kafka. This preserves key-to-partition assignments when migrating producers or running mixed client fleets.
+
 :::tip
 Use meaningful keys like user IDs, order IDs, or entity IDs to keep related messages together.
 :::

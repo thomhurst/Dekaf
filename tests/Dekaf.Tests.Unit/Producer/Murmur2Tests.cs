@@ -5,6 +5,15 @@ namespace Dekaf.Tests.Unit.Producer;
 
 public class Murmur2Tests
 {
+    private static readonly JavaPartitionVector[] JavaPartitionVectors =
+    [
+        new("user-123", 0xa87c3114u, 10, 8),
+        new("order-123", 0xc7f202c1u, 12, 1),
+        new("tenant-a", 0xe20b7283u, 50, 29),
+        new("a", 0xa2d0b27cu, 6, 4),
+        new("kafka", 0xd067cf64u, 100, 80)
+    ];
+
     #region Consistency Tests
 
     [Test]
@@ -106,13 +115,35 @@ public class Murmur2Tests
     }
 
     [Test]
+    public async Task Hash_JavaPartitionVectors_MatchExpectedHashes()
+    {
+        foreach (var vector in JavaPartitionVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            await Assert.That(Murmur2.Hash(key)).IsEqualTo(vector.Hash);
+        }
+    }
+
+    [Test]
+    public async Task Partition_JavaPartitionVectors_MatchPositiveHashReduction()
+    {
+        foreach (var vector in JavaPartitionVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            await Assert.That(Murmur2.Partition(key, vector.PartitionCount)).IsEqualTo(vector.ExpectedPartition);
+        }
+    }
+
+    [Test]
     public async Task Hash_PartitionConsistency_SameKeyAlwaysMapsToSamePartition()
     {
         const int partitionCount = 10;
         var key = Encoding.UTF8.GetBytes("user-123");
 
-        var partition1 = (int)(Murmur2.Hash(key) % partitionCount);
-        var partition2 = (int)(Murmur2.Hash(key) % partitionCount);
+        var partition1 = Murmur2.Partition(key, partitionCount);
+        var partition2 = Murmur2.Partition(key, partitionCount);
 
         await Assert.That(partition1).IsEqualTo(partition2);
     }
@@ -172,6 +203,21 @@ public class Murmur2Tests
         }
     }
 
+    [Test]
+    public async Task DefaultPartitioner_WithKey_MatchesJavaPartitionVectors()
+    {
+        var partitioner = new DefaultPartitioner();
+
+        foreach (var vector in JavaPartitionVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            var partition = partitioner.Partition("topic", key, false, vector.PartitionCount);
+
+            await Assert.That(partition).IsEqualTo(vector.ExpectedPartition);
+        }
+    }
+
     #endregion
 
     #region RoundRobinPartitioner Tests
@@ -222,6 +268,21 @@ public class Murmur2Tests
     }
 
     [Test]
+    public async Task StickyPartitioner_WithKey_MatchesJavaPartitionVectors()
+    {
+        var partitioner = new StickyPartitioner();
+
+        foreach (var vector in JavaPartitionVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            var partition = partitioner.Partition("topic", key, false, vector.PartitionCount);
+
+            await Assert.That(partition).IsEqualTo(vector.ExpectedPartition);
+        }
+    }
+
+    [Test]
     public async Task StickyPartitioner_WithNullKey_SticksToSamePartition()
     {
         var partitioner = new StickyPartitioner();
@@ -249,4 +310,10 @@ public class Murmur2Tests
     }
 
     #endregion
+
+    private sealed record JavaPartitionVector(
+        string Key,
+        uint Hash,
+        int PartitionCount,
+        int ExpectedPartition);
 }
