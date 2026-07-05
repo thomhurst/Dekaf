@@ -732,6 +732,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             _ignoreRestartFailures.Remove(partition);
             await StopPartitionAsync(partition, reason, cancellationToken).ConfigureAwait(false);
         }
+
+        StartAssignedPartitions(_consumer.Partitions.Assignment);
     }
 
     private async ValueTask StopPartitionAsync(
