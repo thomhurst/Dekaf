@@ -53,7 +53,7 @@ The #1299 baseline keeps `Dekaf` defaulting to `net10.0`, but adds the condition
 - Modern compiler-support shims are included only for `netstandard2.0`, including `IsExternalInit`, required-member attributes, nullable flow annotation support, and `SkipLocalsInitAttribute`.
 - The forced probe now restores successfully and gets past the missing package-reference and required-member compiler-support errors.
 
-Run the current probe with:
+Run the current probe with both target-framework overrides. `TargetFrameworks` forces restore to write a `netstandard2.0` asset target for the single-target project, and `TargetFramework` selects that target for compilation.
 
 ```powershell
 dotnet build src/Dekaf/Dekaf.csproj --configuration Release `
@@ -131,6 +131,8 @@ Compatibility support is not complete until these checks exist:
 - Any compatibility helper has focused tests or compile canaries.
 
 Integration tests should keep using the existing runtime target unless a specific compatibility runtime issue requires a separate run.
+
+Compile canaries and package smoke validation for the `netstandard2.0` baseline are tracked by #1301. Until that lands, the forced build probe above remains a manual diagnostic rather than a supported package target.
 
 ## Non-goals
 
