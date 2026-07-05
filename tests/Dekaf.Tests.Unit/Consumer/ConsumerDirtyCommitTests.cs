@@ -332,8 +332,20 @@ public sealed class ConsumerDirtyCommitTests
             "CommitStoredOffsetsAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        var commit = (ValueTask)method.Invoke(consumer, [CancellationToken.None])!;
-        await commit.ConfigureAwait(false);
+        var commit = method.Invoke(consumer, [CancellationToken.None])!;
+        if (commit is ValueTask valueTask)
+        {
+            await valueTask.ConfigureAwait(false);
+            return;
+        }
+
+        if (commit is ValueTask<bool> valueTaskWithResult)
+        {
+            _ = await valueTaskWithResult.ConfigureAwait(false);
+            return;
+        }
+
+        throw new InvalidOperationException($"Unexpected CommitStoredOffsetsAsync return type: {commit.GetType()}.");
     }
 
     private static ConsumeResult<string, string> CreateConsumeResult(long offset, int leaderEpoch)
