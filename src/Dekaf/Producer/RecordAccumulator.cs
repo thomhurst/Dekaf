@@ -23,9 +23,22 @@ namespace Dekaf.Producer;
 /// </summary>
 internal ref struct SpinLockGuard
 {
+#if NETSTANDARD2_0
+    private readonly object _lock;
+#else
     private ref SpinLock _lock;
+#endif
     private bool _taken;
 
+#if NETSTANDARD2_0
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public SpinLockGuard(ref object gate)
+    {
+        _lock = gate;
+        _taken = false;
+        Monitor.Enter(_lock, ref _taken);
+    }
+#else
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public SpinLockGuard(ref SpinLock spinLock)
     {
@@ -33,11 +46,16 @@ internal ref struct SpinLockGuard
         _taken = false;
         _lock.Enter(ref _taken);
     }
+#endif
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Dispose()
     {
+#if NETSTANDARD2_0
+        if (_taken) Monitor.Exit(_lock);
+#else
         if (_taken) _lock.Exit();
+#endif
     }
 }
 
@@ -546,7 +564,7 @@ internal sealed class BatchArena
 
     internal BatchArena(int capacity, int maxPooledCapacity)
     {
-        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        _buffer = CompatibilityBcl.AllocateUninitializedArray<byte>(capacity, pinned: true);
         _position = 0;
         _maxPooledCapacity = maxPooledCapacity;
     }
@@ -614,7 +632,7 @@ internal sealed class BatchArena
 
         // Buffer too small (or null) - allocate a new permanent buffer.
         // The old buffer (if any) will be collected by GC.
-        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        _buffer = CompatibilityBcl.AllocateUninitializedArray<byte>(capacity, pinned: true);
         _position = 0;
     }
 
@@ -971,7 +989,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // re-enter the wait loop — O(1) wake latency instead of O(N).
     // The TCS allocation per signal is acceptable: it only fires on the backpressure slow
     // path (buffer full), not per-message, and is guarded by a waiter count.
-    private volatile TaskCompletionSource _bufferSpaceSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile TaskCompletionSource<bool> _bufferSpaceSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _bufferSpaceWaiters; // Number of threads waiting on _bufferSpaceSignal
 
     // Pooled slow path: replaces async state machine allocation with a pooled IValueTaskSource<bool>.
@@ -996,7 +1014,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
+#if NETSTANDARD2_0
+        public object Lock = new();
+#else
         public SpinLock Lock = new(enableThreadOwnerTracking: false);
+#endif
 
         /// <summary>Current unsealed batch accepting new records. Null if no active batch.</summary>
         public PartitionBatch? CurrentBatch;
@@ -1611,8 +1633,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var prev = Interlocked.Exchange(
             ref _bufferSpaceSignal,
-            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
-        prev.TrySetResult();
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+        prev.TrySetResult(true);
     }
 
     internal ValueTask<bool> WaitForWakeupAsync(int timeoutMs)
@@ -1674,7 +1696,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
-        _appendWorkerCount = Math.Clamp(Environment.ProcessorCount, 1, 8);
+        _appendWorkerCount = CompatibilityBcl.Clamp(Environment.ProcessorCount, 1, 8);
         _appendWorkerChannels = new Channel<AppendWorkItem>[_appendWorkerCount];
         for (var i = 0; i < _appendWorkerCount; i++)
         {
@@ -1697,7 +1719,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // allocations during ramp-up but avoids excessive steady-state POH retention.
         // With default 256MB/1MB = 256 batches, pool = max(64, 128) = 128 (DefaultPoolSize floor), ~140MB of arenas.
         var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
-        return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
+        return CompatibilityBcl.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
     }
 
     /// <summary>
@@ -2280,7 +2302,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             key.Return();
             value.Return();
             ReturnPooledHeaders(headers);
-            return ValueTask.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
+            return CompatibilityBcl.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
 
         if (cancellationToken.IsCancellationRequested)
@@ -2288,7 +2310,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             key.Return();
             value.Return();
             ReturnPooledHeaders(headers);
-            return ValueTask.FromException<bool>(new OperationCanceledException(cancellationToken));
+            return CompatibilityBcl.FromException<bool>(new OperationCanceledException(cancellationToken));
         }
 
         var (startTicks, deadline) = BeginReservationWait(recordSize);
@@ -2310,7 +2332,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Caller gets a pre-built exception ValueTask, so nobody will call GetResult
                 // on this op. Manually return it to the pool to avoid leaking.
                 op.ReturnToPoolAfterTryFail();
-                return ValueTask.FromException<bool>(disposedException);
+                return CompatibilityBcl.FromException<bool>(disposedException);
             }
         }
 
@@ -2965,7 +2987,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
         var currentMaxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
         LogBufferMemoryWaiting(recordSize, currentBufferedBytes, currentMaxBufferMemory);
-        var currentTicks = Environment.TickCount64;
+        var currentTicks = CompatibilityBcl.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
@@ -2995,7 +3017,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            var remainingMs = deadline - Environment.TickCount64;
+            var remainingMs = deadline - CompatibilityBcl.TickCount64;
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, startTicks);
 
@@ -3074,7 +3096,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
     {
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startTicks);
+        var elapsed = TimeSpan.FromMilliseconds(CompatibilityBcl.TickCount64 - startTicks);
         throw new KafkaTimeoutException(
             TimeoutKind.MaxBlock,
             elapsed,
@@ -3195,7 +3217,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             // Reset oldest batch tracking since there are no batches
             Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
-            return ValueTask.CompletedTask;
+            return default;
         }
 
         // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
@@ -3206,11 +3228,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
             if (oldestTicks != long.MaxValue)
             {
-                var millisSinceOldest = (long)Stopwatch.GetElapsedTime(oldestTicks).TotalMilliseconds;
+                var millisSinceOldest = (long)CompatibilityBcl.GetElapsedTime(oldestTicks).TotalMilliseconds;
                 if (millisSinceOldest < _options.LingerMs)
                 {
                     // No batch is old enough to flush yet.
-                    return ValueTask.CompletedTask;
+                    return default;
                 }
             }
         }
@@ -3599,7 +3621,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue; // Another thread already handled this batch
 
             expiredCount++;
-            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+            var elapsed = CompatibilityBcl.GetElapsedTime(batch.StopwatchCreatedTicks);
 
             // Diagnostic: capture partition state to help identify why batch was orphaned
             var isMuted = _mutedPartitions.ContainsKey(batch.TopicPartition);
@@ -3687,7 +3709,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </returns>
     internal int Purge(PurgeOptions options, Exception exception, Action<ReadyBatch>? onPurgingBatch = null)
     {
-        ArgumentNullException.ThrowIfNull(exception);
+        CompatibilityThrowHelpers.ThrowIfNull(exception);
 
         var purgedCount = 0;
 
@@ -3894,7 +3916,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Fast path: no unsealed batches AND no in-flight batches - avoid async overhead entirely
         if (!HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0)
         {
-            return ValueTask.CompletedTask;
+            return default;
         }
 
         return FlushAsyncCore(cancellationToken);
@@ -4174,7 +4196,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _disposalCts?.Dispose();
         // _bufferSpaceSignal is a TaskCompletionSource — no Dispose needed.
         // Signal any remaining waiters so they can observe disposal.
-        _bufferSpaceSignal.TrySetResult();
+        _bufferSpaceSignal.TrySetResult(true);
         _flushLingerLock.Dispose();
         // _flushTcs doesn't need disposal - it's a TaskCompletionSource
     }
@@ -4339,7 +4361,7 @@ internal sealed class PartitionBatch
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
 
         _initialRecordCapacity = options.InitialBatchRecordCapacity > 0
-            ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
+            ? CompatibilityBcl.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
             : ComputeInitialRecordCapacity(options.BatchSize);
 
         // Create arena for append-time record encoding
@@ -4721,7 +4743,7 @@ internal sealed class PartitionBatch
         if (Volatile.Read(ref _recordCount) == 0)
             return false;
 
-        var elapsedMs = Stopwatch.GetElapsedTime(_createdStopwatchTimestamp, nowStopwatchTimestamp).TotalMilliseconds;
+        var elapsedMs = CompatibilityBcl.GetElapsedTime(_createdStopwatchTimestamp, nowStopwatchTimestamp).TotalMilliseconds;
 
         // Awaited produces: use micro-linger instead of immediate flush.
         // When LingerMs > 0 (default is 5), wait min(1ms, LingerMs/10) to let co-temporal messages batch.

@@ -30,7 +30,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
 
     internal AwsMskIamDefaultCredentialsProvider(HttpClient httpClient, string? profileName = null, string? region = null)
     {
-        ArgumentNullException.ThrowIfNull(httpClient);
+        CompatibilityThrowHelpers.ThrowIfNull(httpClient);
 
         _httpClient = httpClient;
         _profileName = profileName;
@@ -95,7 +95,11 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         if (string.IsNullOrWhiteSpace(roleArn) || string.IsNullOrWhiteSpace(tokenFile) || !File.Exists(tokenFile))
             return null;
 
+#if NETSTANDARD2_0
+        var webIdentityToken = await Task.Run(() => File.ReadAllText(tokenFile), cancellationToken).ConfigureAwait(false);
+#else
         var webIdentityToken = await File.ReadAllTextAsync(tokenFile, cancellationToken).ConfigureAwait(false);
+#endif
         var sessionName = Environment.GetEnvironmentVariable("AWS_ROLE_SESSION_NAME") ?? _webIdentitySessionName;
         var endpoint = BuildStsEndpoint(ResolveStsRegion());
 
@@ -247,13 +251,16 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             if (string.IsNullOrWhiteSpace(roleName))
                 return null;
 
-            roleName = roleName.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+            roleName = roleName!
+                .Split(['\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(static line => line.Trim())
+                .First(static line => line.Length > 0);
             var json = await GetImdsStringAsync(
                 "http://169.254.169.254/latest/meta-data/iam/security-credentials/" + Uri.EscapeDataString(roleName),
                 token,
                 cancellationToken).ConfigureAwait(false);
 
-            return string.IsNullOrWhiteSpace(json) ? null : ParseJsonCredentials(json);
+            return string.IsNullOrWhiteSpace(json) ? null : ParseJsonCredentials(json!);
         }
         catch (HttpRequestException)
         {

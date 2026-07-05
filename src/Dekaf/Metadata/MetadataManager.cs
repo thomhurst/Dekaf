@@ -57,7 +57,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     internal IDisposable AddBrokerCountDiscoveredCallback(Action<int> callback)
     {
-        ArgumentNullException.ThrowIfNull(callback);
+        CompatibilityThrowHelpers.ThrowIfNull(callback);
 
         lock (_brokerCountDiscoveredLock)
         {
@@ -126,9 +126,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
             var colonIndex = server.IndexOf(':');
             if (colonIndex > 0 && colonIndex < server.Length - 1)
             {
+#if NETSTANDARD2_0
+                var host = server.Substring(0, colonIndex);
+                if (int.TryParse(server.Substring(colonIndex + 1), out var port))
+#else
                 var host = server[..colonIndex];
                 // Use span-based parsing to avoid string allocation for port
                 if (int.TryParse(server.AsSpan(colonIndex + 1), out var port))
+#endif
                 {
                     _bootstrapEndpoints.Add((host, port));
                     _originalBootstrapHostnames.Add(server);
@@ -671,7 +676,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
-        var now = Environment.TickCount64;
+        var now = CompatibilityBcl.TickCount64;
 
         // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
         if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
@@ -795,7 +800,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 IPAddress[] addresses;
                 if (_options.ClientDnsLookup == ClientDnsLookup.ResolveCanonicalBootstrapServersOnly)
                 {
-                    var entry = await Dns.GetHostEntryAsync(host, dnsCts.Token).ConfigureAwait(false);
+                    var entry = await CompatibilityBcl.GetHostEntryAsync(host, dnsCts.Token).ConfigureAwait(false);
                     addresses = entry.AddressList;
                     var canonicalHost = string.IsNullOrWhiteSpace(entry.HostName) ? host : entry.HostName;
                     var canonicalEndpoint = (canonicalHost, port);
@@ -806,7 +811,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 }
                 else
                 {
-                    addresses = await Dns.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
+                    addresses = await CompatibilityBcl.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
                     foreach (var address in addresses)
                     {
                         var endpoint = (address.ToString(), port);
@@ -944,8 +949,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 currentBrokers.Count + _bootstrapEndpoints.Count);
 
             // First try known brokers, tracking seen endpoints for O(1) dedup
-            var seen = new HashSet<(string Host, int Port)>(
-                currentBrokers.Count + _bootstrapEndpoints.Count);
+            var seen = new HashSet<(string Host, int Port)>();
 
             foreach (var broker in currentBrokers)
             {

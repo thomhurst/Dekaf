@@ -23,7 +23,7 @@ internal sealed class PendingAppendPool
     /// <param name="maxPoolSize">Maximum number of instances to keep in the pool.</param>
     public PendingAppendPool(int maxPoolSize)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        CompatibilityThrowHelpers.ThrowIfNegativeOrZero(maxPoolSize);
         _stack = new LockFreeStack<PendingAppend>(maxPoolSize);
     }
 

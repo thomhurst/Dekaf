@@ -48,7 +48,7 @@ internal sealed class LockFreeStack<T> where T : class
     /// <param name="capacity">Maximum number of items the stack can hold.</param>
     public LockFreeStack(int capacity)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
+        CompatibilityThrowHelpers.ThrowIfNegativeOrZero(capacity);
         _capacity = capacity;
 
         var stripeCount = ComputeStripeCount(capacity);
@@ -175,7 +175,7 @@ internal sealed class LockFreeStack<T> where T : class
     {
         foreach (var stripe in _stripes)
         {
-            Array.Clear(stripe.Slots);
+            Array.Clear(stripe.Slots, 0, stripe.Slots.Length);
             Volatile.Write(ref stripe.Top, 0);
         }
     }
@@ -193,5 +193,5 @@ internal sealed class LockFreeStack<T> where T : class
     private int GetStartStripe()
         => _stripes.Length == 1
             ? 0
-            : (Thread.GetCurrentProcessorId() & int.MaxValue) % _stripes.Length;
+            : (CompatibilityBcl.GetCurrentProcessorId() & int.MaxValue) % _stripes.Length;
 }

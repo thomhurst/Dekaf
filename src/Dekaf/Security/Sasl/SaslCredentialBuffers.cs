@@ -7,6 +7,6 @@ internal static class SaslCredentialBuffers
     public static void Clear(byte[]? buffer)
     {
         if (buffer is { Length: > 0 })
-            CryptographicOperations.ZeroMemory(buffer);
+            CompatibilityBcl.ZeroMemory(buffer);
     }
 }

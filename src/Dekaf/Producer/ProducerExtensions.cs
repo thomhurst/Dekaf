@@ -27,8 +27,8 @@ public static class ProducerExtensions
         Headers headers,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(producer);
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(producer);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
 
         if (producer is IProducerFastPath<TKey, TValue> fastPath)
             return fastPath.ProduceAsync(topic, key, value, headers, partition: null, timestamp: null, cancellationToken);
@@ -62,8 +62,8 @@ public static class ProducerExtensions
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(producer);
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(producer);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
 
         if (producer is IProducerFastPath<TKey, TValue> fastPath)
             return fastPath.ProduceAsync(topic, key, value, headers: null, partition: partition, timestamp: null, cancellationToken);
@@ -94,8 +94,8 @@ public static class ProducerExtensions
         TValue value,
         Headers headers)
     {
-        ArgumentNullException.ThrowIfNull(producer);
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(producer);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
 
         return producer.FireAsync(new ProducerMessage<TKey, TValue>
         {

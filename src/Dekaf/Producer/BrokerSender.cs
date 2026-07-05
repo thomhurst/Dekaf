@@ -1255,7 +1255,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                 UnmutePartition(batch.TopicPartition);
-                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var elapsed = CompatibilityBcl.GetElapsedTime(batch.StopwatchCreatedTicks);
                 var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                 FailAndCleanupBatch(batch, new KafkaTimeoutException(
                     TimeoutKind.Delivery,
@@ -1700,7 +1700,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
                     {
                         UnmutePartition(batch.TopicPartition);
-                        var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                        var elapsed = CompatibilityBcl.GetElapsedTime(batch.StopwatchCreatedTicks);
                         var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                         try
                         {
@@ -1815,7 +1815,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             UnmutePartition(batch.TopicPartition);
-            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+            var elapsed = CompatibilityBcl.GetElapsedTime(batch.StopwatchCreatedTicks);
             var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
             var ex = new KafkaTimeoutException(
                 TimeoutKind.Delivery,
@@ -2219,7 +2219,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                     {
                         UnmutePartition(batch.TopicPartition);
-                        var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                        var elapsed = CompatibilityBcl.GetElapsedTime(batch.StopwatchCreatedTicks);
                         var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                         FailAndCleanupBatch(batch, new KafkaTimeoutException(
                             TimeoutKind.Delivery,
@@ -2330,8 +2330,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // batches are rare; the common case (single topic or already sorted) skips the sort.
             if (!alreadySorted)
             {
+#if NETSTANDARD2_0
+                Array.Sort(batches, 0, count, Comparer<ReadyBatch>.Create(static (a, b) =>
+                    string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal)));
+#else
                 batchesSpan.Sort(static (a, b) =>
                     string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
+#endif
 
                 // Discard the partial topicCount from the pre-scan and recount from scratch.
                 // Post-sort, topics are contiguous so simple != equality suffices (no need for
@@ -2687,7 +2692,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition);
-                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var elapsed = CompatibilityBcl.GetElapsedTime(batch.StopwatchCreatedTicks);
                 var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                 FailAndCleanupBatch(batch, new KafkaTimeoutException(
                     TimeoutKind.Delivery,
@@ -2775,7 +2780,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // After the send loop exits, these won't be polled by MaybeScaleConnections.
         if (_pendingShrinkTask is not null)
         {
-            if (_pendingShrinkTask.IsCompletedSuccessfully)
+            if (CompatibilityBcl.IsCompletedSuccessfully(_pendingShrinkTask))
             {
                 var removedConn = _pendingShrinkTask.Result;
                 if (removedConn is not null)
@@ -2869,7 +2874,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var task = _pendingScaleTask;
             _pendingScaleTask = null;
 
-            if (task.IsCompletedSuccessfully)
+            if (CompatibilityBcl.IsCompletedSuccessfully(task))
             {
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
@@ -2894,7 +2899,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var task = _pendingShrinkTask;
             _pendingShrinkTask = null;
 
-            if (task.IsCompletedSuccessfully)
+            if (CompatibilityBcl.IsCompletedSuccessfully(task))
             {
                 var removedConnection = task.Result;
                 if (removedConnection is not null)
@@ -2910,7 +2915,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        var now = Environment.TickCount64;
+        var now = CompatibilityBcl.TickCount64;
 
         // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < ScaleCooldownMs)

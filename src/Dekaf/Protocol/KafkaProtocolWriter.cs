@@ -94,7 +94,7 @@ public ref struct KafkaProtocolWriter
     public void WriteUuid(Guid value)
     {
         var span = _output.GetSpan(16);
-        value.TryWriteBytes(span, bigEndian: true, out _);
+        CompatibilityBcl.TryWriteGuidBigEndian(value, span);
         _output.Advance(16);
         _bytesWritten += 16;
     }
@@ -103,7 +103,7 @@ public ref struct KafkaProtocolWriter
     public void WriteFloat64(double value)
     {
         var span = _output.GetSpan(8);
-        BinaryPrimitives.WriteDoubleBigEndian(span, value);
+        CompatibilityBcl.WriteDoubleBigEndian(span, value);
         _output.Advance(8);
         _bytesWritten += 8;
     }

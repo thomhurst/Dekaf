@@ -36,7 +36,7 @@ internal sealed class RefCountedMemoryOwner : IPooledMemory
 
     private void Initialize(IPooledMemory inner, int initialRefCount, bool pooled)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(initialRefCount, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(initialRefCount, 1);
         _inner = inner;
         _refCount = initialRefCount;
         _pooled = pooled ? 1 : 0;

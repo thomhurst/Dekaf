@@ -74,33 +74,33 @@ internal static class PoolSizing
         // — which is the failure mode previously observed in single-broker idempotent stress.
         var clampedMaxConns = Math.Max(1, maxConnectionsPerBroker);
         var clampedMaxInFlight = Math.Max(1, maxInFlightRequestsPerConnection);
-        // Compute in long to make the final Math.Clamp ceiling unconditional — pathological
+        // Compute in long to make the final CompatibilityBcl.Clamp ceiling unconditional — pathological
         // inputs (e.g. misconfigured maxConnectionsPerBroker) would otherwise overflow int
         // and produce a negative intermediate that clamps to the floor instead of the ceiling.
         var peakInflightEntries = (long)clampedMaxConns * clampedMaxInFlight * InflightEntriesPerBatch;
         var bufferDerivedEntries = (long)maxBatches * InflightEntriesPerBatch;
         var inflightEntries = Math.Max(peakInflightEntries, bufferDerivedEntries);
 
-        var pendingAppends = Math.Clamp(clampedMaxConns * clampedMaxInFlight * 4, 64, 1024);
+        var pendingAppends = CompatibilityBcl.Clamp(clampedMaxConns * clampedMaxInFlight * 4, 64, 1024);
 
         return new ProducerPoolSizes
         {
-            ValueTaskSources = Math.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
+            ValueTaskSources = CompatibilityBcl.Clamp(estimatedMessages, MinValueTaskSources, MaxValueTaskSources),
             // Floor at 256KB to avoid ArrayPool thrash from frequent grow/shrink on modest workloads.
             MaxRetainedBufferSize = Math.Max(batchSize, 256 * 1024),
-            InflightEntries = (int)Math.Clamp(inflightEntries, 128L, 16384L),
+            InflightEntries = (int)CompatibilityBcl.Clamp(inflightEntries, 128L, 16384L),
             PendingAppends = pendingAppends,
         };
     }
 
     internal static ConnectionPoolSizes ForConnection(int maxInFlightRequestsPerConnection)
     {
-        var pendingRequests = Math.Clamp(maxInFlightRequestsPerConnection * 4, 64, 1024);
+        var pendingRequests = CompatibilityBcl.Clamp(maxInFlightRequestsPerConnection * 4, 64, 1024);
 
         return new ConnectionPoolSizes
         {
             PendingRequests = pendingRequests,
-            CancellationTokenSources = Math.Clamp(maxInFlightRequestsPerConnection * 8, 64, 2048),
+            CancellationTokenSources = CompatibilityBcl.Clamp(maxInFlightRequestsPerConnection * 8, 64, 2048),
         };
     }
 
@@ -108,8 +108,8 @@ internal static class PoolSizing
     {
         return new ConsumerPoolSizes
         {
-            FetchDataPool = Math.Clamp(maxPartitionCount * 2, 32, 512),
-            CancellationTokenSources = Math.Clamp(maxPartitionCount * 4, 64, 2048),
+            FetchDataPool = CompatibilityBcl.Clamp(maxPartitionCount * 2, 32, 512),
+            CancellationTokenSources = CompatibilityBcl.Clamp(maxPartitionCount * 4, 64, 2048),
         };
     }
 
@@ -132,7 +132,7 @@ internal static class PoolSizing
         var pipelineFloor = pipelineDepth * connectionCount;
         var capacity = Math.Max(Math.Max(byteBoundItems, pipelineItems), pipelineFloor);
 
-        return (int)Math.Clamp(
+        return (int)CompatibilityBcl.Clamp(
             capacity,
             MinConsumerPrefetchBufferCapacity,
             MaxConsumerPrefetchBufferCapacity);
@@ -202,7 +202,7 @@ internal static class PoolSizing
         int batchSize = 1048576,
         int maxConnectionsPerBroker = 10)
     {
-        var clampedBrokers = Math.Clamp(brokerCount, 1, 16);
+        var clampedBrokers = CompatibilityBcl.Clamp(brokerCount, 1, 16);
         var clampedConnections = Math.Max(1, connectionsPerBroker);
         var clampedMaxConnections = Math.Max(clampedConnections, maxConnectionsPerBroker);
         var clampedMaxInFlight = Math.Max(1, maxInFlightRequestsPerConnection);
@@ -214,8 +214,8 @@ internal static class PoolSizing
         // each message rents key+value arrays that are held until batch cleanup.
         // Arrays in-flight ≈ messagesPerBatch × inFlightBatches × connections.
         // Use maxConnectionsPerBroker (not current) since adaptive scaling can ramp up.
-        var clampedBatchSize = Math.Clamp(batchSize, 1024, 4 * 1024 * 1024);
-        var estimatedMessagesPerBatch = Math.Clamp(clampedBatchSize / 256, 8, 512);
+        var clampedBatchSize = CompatibilityBcl.Clamp(batchSize, 1024, 4 * 1024 * 1024);
+        var estimatedMessagesPerBatch = CompatibilityBcl.Clamp(clampedBatchSize / 256, 8, 512);
         var peakInFlightBatches = SaturatingMultiply(totalMaxConnections, clampedMaxInFlight);
         var producerDataArrays = ClampPoolDepth(
             SaturatingMultiply(estimatedMessagesPerBatch, peakInFlightBatches),
@@ -262,7 +262,7 @@ internal static class PoolSizing
     }
 
     private static int ClampPoolDepth(long value, int floor, int ceiling) =>
-        (int)Math.Clamp(value, floor, (long)ceiling);
+        (int)CompatibilityBcl.Clamp(value, floor, (long)ceiling);
 
     private static long SaturatingMultiply(long left, long right)
     {

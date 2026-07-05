@@ -24,7 +24,7 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
     public AwsMskIamAuthenticator(AwsMskIamConfig? config, string host)
     {
         _config = config ?? DefaultConfig;
-        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(host);
         _host = host;
         _credentialsProvider = _config.CreateCredentialsProvider();
     }
@@ -58,7 +58,7 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
             credentials,
             _host,
             region,
-            string.IsNullOrWhiteSpace(_config.UserAgent) ? "dekaf" : _config.UserAgent,
+            string.IsNullOrWhiteSpace(_config.UserAgent) ? "dekaf" : _config.UserAgent!,
             DateTimeOffset.UtcNow,
             _config.AuthenticationPayloadExpiration);
 
@@ -108,7 +108,11 @@ internal static class AwsMskIamRegionResolver
 {
     public static string? TryResolveFromHost(string host)
     {
-        var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var labels = host
+            .Split(['.'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(static label => label.Trim())
+            .Where(static label => label.Length > 0)
+            .ToArray();
         for (var i = 0; i < labels.Length; i++)
         {
             if (!IsAmazonAwsSuffix(labels, i) || i < 2)
@@ -154,7 +158,7 @@ internal static class AwsMskIamRegionResolver
 
     private static bool LooksLikeRegion(string value)
     {
-        var parts = value.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        var parts = value.Split(['-'], StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 3)
             return false;
 

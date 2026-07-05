@@ -369,7 +369,7 @@ public sealed class AdminClient : IAdminClient
         CancellationToken cancellationToken = default)
     {
         var opts = options ?? new DescribeTopicPartitionsOptions();
-        ArgumentOutOfRangeException.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
 
         var topicList = topicNames.ToList();
         if (topicList.Count == 0)
@@ -410,7 +410,7 @@ public sealed class AdminClient : IAdminClient
         CancellationToken cancellationToken = default)
     {
         var opts = options ?? new DescribeTopicPartitionsPageOptions();
-        ArgumentOutOfRangeException.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
 
         var topicList = topicNames.ToList();
         if (topicList.Count == 0)
@@ -914,7 +914,7 @@ public sealed class AdminClient : IAdminClient
         IEnumerable<string> transactionalIds,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(transactionalIds);
+        CompatibilityThrowHelpers.ThrowIfNull(transactionalIds);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
@@ -997,7 +997,7 @@ public sealed class AdminClient : IAdminClient
         IEnumerable<TopicPartition> partitions,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(partitions);
+        CompatibilityThrowHelpers.ThrowIfNull(partitions);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1408,7 +1408,7 @@ public sealed class AdminClient : IAdminClient
         AlterPartitionReassignmentsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(reassignments);
+        CompatibilityThrowHelpers.ThrowIfNull(reassignments);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var opts = options ?? new AlterPartitionReassignmentsOptions();
@@ -1576,7 +1576,7 @@ public sealed class AdminClient : IAdminClient
 
     private static void ValidateTopicPartition(TopicPartition topicPartition)
     {
-        ArgumentException.ThrowIfNullOrEmpty(topicPartition.Topic);
+        CompatibilityThrowHelpers.ThrowIfNullOrEmpty(topicPartition.Topic);
         if (topicPartition.Partition < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(topicPartition), topicPartition.Partition, "Partition index must not be negative.");
@@ -1672,7 +1672,7 @@ public sealed class AdminClient : IAdminClient
                     break;
 
                 case UserScramCredentialUpsertion upsertion:
-                    var salt = upsertion.Salt ?? RandomNumberGenerator.GetBytes(32);
+                    var salt = upsertion.Salt ?? CompatibilityBcl.GetRandomBytes(32);
                     var saltedPassword = ComputeSaltedPassword(
                         upsertion.Password,
                         salt,
@@ -1728,7 +1728,7 @@ public sealed class AdminClient : IAdminClient
         DescribeClientQuotasOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(filter);
+        CompatibilityThrowHelpers.ThrowIfNull(filter);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var components = BuildDescribeClientQuotaComponents(filter);
@@ -1775,7 +1775,7 @@ public sealed class AdminClient : IAdminClient
         AlterClientQuotasOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(alterations);
+        CompatibilityThrowHelpers.ThrowIfNull(alterations);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var opts = options ?? new AlterClientQuotasOptions();
@@ -1829,7 +1829,7 @@ public sealed class AdminClient : IAdminClient
 
         return filter.Components.Select(component =>
         {
-            ArgumentNullException.ThrowIfNull(component);
+            CompatibilityThrowHelpers.ThrowIfNull(component);
             component.Validate();
             return new DescribeClientQuotasRequestComponent
             {
@@ -1842,14 +1842,14 @@ public sealed class AdminClient : IAdminClient
 
     private static AlterClientQuotasRequestEntry BuildAlterClientQuotaEntry(ClientQuotaAlteration alteration)
     {
-        ArgumentNullException.ThrowIfNull(alteration);
+        CompatibilityThrowHelpers.ThrowIfNull(alteration);
         alteration.Validate();
 
         return new AlterClientQuotasRequestEntry
         {
             Entity = alteration.Entity.Components.Select(component =>
             {
-                ArgumentNullException.ThrowIfNull(component);
+                CompatibilityThrowHelpers.ThrowIfNull(component);
                 return new AlterClientQuotasEntityData
                 {
                     EntityType = ClientQuotaEntityTypeNames.ToProtocolName(component.EntityType),
@@ -1858,8 +1858,8 @@ public sealed class AdminClient : IAdminClient
             }).ToList(),
             Ops = alteration.Operations.Select(operation =>
             {
-                ArgumentNullException.ThrowIfNull(operation);
-                ArgumentException.ThrowIfNullOrEmpty(operation.Key);
+                CompatibilityThrowHelpers.ThrowIfNull(operation);
+                CompatibilityThrowHelpers.ThrowIfNullOrEmpty(operation.Key);
 
                 return new AlterClientQuotasOpData
                 {
@@ -1965,7 +1965,7 @@ public sealed class AdminClient : IAdminClient
         TimeSpan? renewPeriod = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(hmac);
+        CompatibilityThrowHelpers.ThrowIfNull(hmac);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var renewPeriodMs = ToKafkaMilliseconds(renewPeriod, nameof(renewPeriod));
@@ -2003,7 +2003,7 @@ public sealed class AdminClient : IAdminClient
         TimeSpan? expiryTimePeriod = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(hmac);
+        CompatibilityThrowHelpers.ThrowIfNull(hmac);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var expiryTimePeriodMs = ToKafkaMilliseconds(expiryTimePeriod, nameof(expiryTimePeriod));
@@ -2145,7 +2145,7 @@ public sealed class AdminClient : IAdminClient
 
         var hashSize = mechanism == ScramMechanism.ScramSha256 ? 32 : 64;
 
-        return Rfc2898DeriveBytes.Pbkdf2(
+        return CompatibilityBcl.Pbkdf2(
             Encoding.UTF8.GetBytes(password),
             salt,
             iterations,
@@ -2565,8 +2565,8 @@ public sealed class AdminClient : IAdminClient
         DeleteConsumerGroupOffsetsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(groupId);
-        ArgumentNullException.ThrowIfNull(partitions);
+        CompatibilityThrowHelpers.ThrowIfNull(groupId);
+        CompatibilityThrowHelpers.ThrowIfNull(partitions);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
@@ -2824,7 +2824,7 @@ public sealed class AdminClient : IAdminClient
         IEnumerable<TopicPartition>? partitions = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(brokerIds);
+        CompatibilityThrowHelpers.ThrowIfNull(brokerIds);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
@@ -2910,7 +2910,7 @@ public sealed class AdminClient : IAdminClient
         IReadOnlyDictionary<TopicPartitionReplica, string> replicaAssignments,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(replicaAssignments);
+        CompatibilityThrowHelpers.ThrowIfNull(replicaAssignments);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
@@ -3933,7 +3933,7 @@ public sealed class AdminClientBuilder
     public AdminClientBuilder WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentNullException.ThrowIfNull(options);
+        CompatibilityThrowHelpers.ThrowIfNull(options);
         var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
@@ -3948,7 +3948,7 @@ public sealed class AdminClientBuilder
     /// <param name="configure">Callback that configures the JWT-bearer OAuth options.</param>
     public AdminClientBuilder WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        CompatibilityThrowHelpers.ThrowIfNull(configure);
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
@@ -3994,7 +3994,7 @@ public sealed class AdminClientBuilder
     /// <param name="metric">The application metric to register.</param>
     public AdminClientBuilder RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
-        ArgumentNullException.ThrowIfNull(metric);
+        CompatibilityThrowHelpers.ThrowIfNull(metric);
         _applicationMetrics[metric.Name] = metric;
         return this;
     }
@@ -4006,7 +4006,7 @@ public sealed class AdminClientBuilder
     /// <param name="name">The application metric name.</param>
     public AdminClientBuilder UnregisterMetricFromSubscription(string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(name);
         _applicationMetrics.Remove(name);
         return this;
     }
@@ -4066,7 +4066,7 @@ public sealed class AdminClientBuilder
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;

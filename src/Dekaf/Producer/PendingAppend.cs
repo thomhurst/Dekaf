@@ -132,7 +132,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _pool = pool;
 
         // Arm timeout timer. Compute remaining ms from deadline.
-        var remainingMs = deadlineTickCount - Environment.TickCount64;
+        var remainingMs = deadlineTickCount - CompatibilityBcl.TickCount64;
         if (remainingMs > 0)
         {
             _timer.Change(remainingMs, Timeout.Infinite);
@@ -212,7 +212,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     /// <summary>
     /// Manually returns this instance to the pool when TryFail succeeded but the caller
-    /// bypasses the normal GetResult path (e.g., returning ValueTask.FromException directly).
+    /// bypasses the normal GetResult path (e.g., returning CompatibilityBcl.FromException directly).
     /// Must only be called after TryFail returned true.
     /// </summary>
     internal void ReturnToPoolAfterTryFail() => ResetAndReturnToPool();
@@ -220,7 +220,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private void OnTimeout()
     {
         var configured = TimeSpan.FromMilliseconds(_accumulator.MaxBlockMsOption);
-        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _startTicks);
+        var elapsed = TimeSpan.FromMilliseconds(CompatibilityBcl.TickCount64 - _startTicks);
 
         var exception = new KafkaTimeoutException(
             TimeoutKind.MaxBlock,

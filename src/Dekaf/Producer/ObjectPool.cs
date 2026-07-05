@@ -37,7 +37,7 @@ internal abstract class ObjectPool<T> where T : class
 
     protected ObjectPool(int maxPoolSize)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        CompatibilityThrowHelpers.ThrowIfNegativeOrZero(maxPoolSize);
         MaxPoolSize = maxPoolSize;
         _stack = new LockFreeStack<T>(maxPoolSize);
     }

@@ -4,6 +4,11 @@ using Dekaf.Internal;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using Lock = System.Object;
+#else
+using Lock = System.Threading.Lock;
+#endif
 
 namespace Dekaf.Networking;
 
@@ -442,7 +447,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     {
         foreach (var task in tasks)
         {
-            if (task is not null && task.IsCompletedSuccessfully)
+            if (task is not null && CompatibilityBcl.IsCompletedSuccessfully(task))
             {
                 try { await task.Result.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup */ }
@@ -527,7 +532,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
-        ArgumentOutOfRangeException.ThrowIfLessThan(newCount, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(newCount, 1);
 
         // Check current group size without locking
         if (!_connectionGroupsById.TryGetValue(brokerId, out var currentGroup) || currentGroup.Length <= newCount)
@@ -1006,7 +1011,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         if (baseMs < maxMs)
         {
             var jitterMaxMs = Math.Max(1, (int)Math.Ceiling(baseMs * 0.2));
-            baseMs = Math.Min(maxMs, baseMs + Random.Shared.Next(jitterMaxMs + 1));
+            baseMs = Math.Min(maxMs, baseMs + CompatibilityBcl.RandomNext(jitterMaxMs + 1));
         }
 
         return TimeSpan.FromMilliseconds(baseMs);
@@ -1031,7 +1036,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             if (Volatile.Read(ref _disposed) != 0)
                 return 0;
 
-            var now = Environment.TickCount64;
+            var now = CompatibilityBcl.TickCount64;
             var reaped = 0;
 
             foreach (var (endpoint, connection) in _connectionsByEndpoint.ToArray())
@@ -1218,7 +1223,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     }
 
     private static TimeSpan GetIdleReaperInterval(int connectionsMaxIdleMs)
-        => TimeSpan.FromMilliseconds(Math.Clamp(connectionsMaxIdleMs / 2, 1000, 60000));
+        => TimeSpan.FromMilliseconds(CompatibilityBcl.Clamp(connectionsMaxIdleMs / 2, 1000, 60000));
 
     public async ValueTask RemoveConnectionAsync(int brokerId)
     {

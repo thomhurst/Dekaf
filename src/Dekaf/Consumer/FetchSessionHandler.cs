@@ -216,7 +216,7 @@ internal sealed class FetchSessionHandler
     private static string ResolveTopicName(FetchRequestTopic topic, ClusterMetadata? clusterMetadata)
     {
         if (!string.IsNullOrEmpty(topic.Topic))
-            return topic.Topic;
+            return topic.Topic!;
 
         return topic.TopicId == Guid.Empty
             ? string.Empty

@@ -68,7 +68,7 @@ public sealed class ClientDnsLookupTests
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var acceptTask = listener.AcceptSocketAsync();
         var resolver = new ClientDnsEndpointResolver(new StubDnsLookup(
-            addresses: [IPAddress.Parse("127.0.0.2"), IPAddress.Loopback]));
+            addresses: [IPAddress.IPv6Loopback, IPAddress.Loopback]));
 
         await using var connection = new KafkaConnection(
             "multi.example",

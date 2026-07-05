@@ -272,7 +272,7 @@ public sealed class ClusterMetadata
             if (currentPartition.LeaderEpoch >= 0 && leaderEpoch <= currentPartition.LeaderEpoch)
                 return false;
 
-            var brokers = new Dictionary<int, BrokerNode>(existing.Brokers);
+            var brokers = existing.Brokers.ToDictionary(static pair => pair.Key, static pair => pair.Value);
             if (leaderEndpoint is not null)
             {
                 if (leaderEndpoint.NodeId != leaderId)
@@ -312,8 +312,8 @@ public sealed class ClusterMetadata
             if (!updated)
                 return false;
 
-            var topics = new Dictionary<string, TopicInfo>(existing.Topics);
-            var topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById);
+            var topics = existing.Topics.ToDictionary(static pair => pair.Key, static pair => pair.Value);
+            var topicsById = existing.TopicsById.ToDictionary(static pair => pair.Key, static pair => pair.Value);
             var updatedTopic = new TopicInfo
             {
                 Name = topic.Name,

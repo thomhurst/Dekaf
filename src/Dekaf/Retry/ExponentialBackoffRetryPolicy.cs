@@ -42,7 +42,7 @@ public sealed class ExponentialBackoffRetryPolicy : IRetryPolicy
         if (Jitter)
         {
             // Jitter range: 0.5x to 1.5x of computed delay
-            var jitterMultiplier = 0.5 + Random.Shared.NextDouble();
+            var jitterMultiplier = 0.5 + CompatibilityBcl.RandomNextDouble();
             delayTicks = (long)(delayTicks * jitterMultiplier);
 
             // Clamp again so jitter cannot exceed MaxDelay

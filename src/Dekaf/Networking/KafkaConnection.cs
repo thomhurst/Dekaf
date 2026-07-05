@@ -120,7 +120,7 @@ internal static class ConnectionHelper
         var totalConnections = (ulong)connectionsPerBroker * (ulong)brokerCount;
         var perPipeBudget = bufferMemory / totalConnections / BufferMemoryDivisor;
 
-        var pauseThreshold = Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
+        var pauseThreshold = CompatibilityBcl.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
 
         var resumeThreshold = pauseThreshold / 2;
 
@@ -172,7 +172,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
     private readonly CancellationTokenSource _pendingRequestSlotCts = new();
-    private readonly TaskCompletionSource _pendingRequestSlotOperationsDrained =
+    private readonly TaskCompletionSource<bool> _pendingRequestSlotOperationsDrained =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _pendingRequestSlotOperationCount;
     private int _pendingRequestSlotsClosed;
@@ -191,7 +191,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
     private int _connected;
-    private long _lastUsedTimestampMs = Environment.TickCount64;
+    private long _lastUsedTimestampMs = CompatibilityBcl.TickCount64;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
@@ -548,8 +548,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+        var headerVersion = KafkaRequestMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+        var responseHeaderVersion = KafkaRequestMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
@@ -572,7 +572,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
 
             // Write phase
-            LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+            LogSendingRequest(KafkaRequestMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
             await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
                 .ConfigureAwait(false);
@@ -643,11 +643,11 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+        var headerVersion = KafkaRequestMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
 
         // Don't register a pending request - we won't receive a response
 
-        LogSendingFireAndForgetRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+        LogSendingFireAndForgetRequest(KafkaRequestMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
         await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
             .ConfigureAwait(false);
@@ -699,8 +699,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+        var headerVersion = KafkaRequestMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+        var responseHeaderVersion = KafkaRequestMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
@@ -772,7 +772,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
+                    throw CreateResponseTimeoutException(KafkaRequestMetadata<TRequest, TResponse>.ApiKey, correlationId);
                 }
                 finally
                 {
@@ -798,7 +798,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
-                    throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
+                    throw CreateResponseTimeoutException(KafkaRequestMetadata<TRequest, TResponse>.ApiKey, correlationId);
                 }
                 finally
                 {
@@ -810,7 +810,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
             LogResponseReceived(correlationId);
 
-            var isFetchResponse = TRequest.ApiKey == ApiKey.Fetch;
+            var isFetchResponse = KafkaRequestMetadata<TRequest, TResponse>.ApiKey == ApiKey.Fetch;
 
             if (isFetchResponse)
             {
@@ -818,7 +818,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner);
 
                 var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                var response = (TResponse)TResponse.Read(ref reader, apiVersion);
+                var response = (TResponse)KafkaResponseMetadata<TResponse>.Read(ref reader, apiVersion);
 
                 if (ResponseParsingContext.WasMemoryUsed)
                 {
@@ -844,7 +844,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 try
                 {
                     var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                    return (TResponse)TResponse.Read(ref reader, apiVersion);
+                    return (TResponse)KafkaResponseMetadata<TResponse>.Read(ref reader, apiVersion);
                 }
                 finally
                 {
@@ -900,7 +900,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         var bodyWriter = new KafkaProtocolWriter(writer);
         var header = new RequestHeader
         {
-            ApiKey = TRequest.ApiKey,
+            ApiKey = KafkaRequestMetadata<TRequest, TResponse>.ApiKey,
             ApiVersion = apiVersion,
             CorrelationId = correlationId,
             ClientId = _clientId,
@@ -935,7 +935,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         where TResponse : IKafkaResponse
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
-        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
+        var clearSerializedArray = KafkaRequestMetadata<TRequest, TResponse>.ApiKey == ApiKey.SaslAuthenticate;
         byte[]? arrayToReturn = serializedArray;
         try
         {
@@ -1223,7 +1223,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             if (_pendingRequestSlots.Wait(0, cancellationToken))
             {
                 if (Volatile.Read(ref _disposed) == 0)
-                    return ValueTask.CompletedTask;
+                    return default;
 
                 _pendingRequestSlots.Release();
                 throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -1354,7 +1354,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         if (count == 0 && Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
         {
-            _pendingRequestSlotOperationsDrained.TrySetResult();
+            _pendingRequestSlotOperationsDrained.TrySetResult(true);
         }
     }
 
@@ -1415,7 +1415,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         return count;
     }
 
-    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Environment.TickCount64);
+    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, CompatibilityBcl.TickCount64);
 
     private bool TryReadResponse(
         ref ReadOnlySequence<byte> buffer,
@@ -1473,7 +1473,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         correlationId = 0;
         responseData = default;
 
-        var span = buffer.FirstSpan;
+        var span = buffer.First.Span;
 
         // Read size prefix directly from span
         var size = BinaryPrimitives.ReadInt32BigEndian(span);
@@ -1650,6 +1650,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         TrySetSocketOption(socket, SocketOptionLevel.Socket, SocketOptionName.KeepAlive, 1);
 
+#if !NETSTANDARD2_0
         var keepAliveTimeSeconds = ToPositiveSeconds(_options.TcpKeepAliveTime);
         if (keepAliveTimeSeconds > 0)
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, keepAliveTimeSeconds);
@@ -1660,6 +1661,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         if (_options.TcpKeepAliveRetryCount > 0)
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, _options.TcpKeepAliveRetryCount);
+#endif
     }
 
     private static int ToPositiveSeconds(TimeSpan value)
@@ -1734,13 +1736,21 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         if (extension is ".pfx" or ".p12")
         {
+#if NETSTANDARD2_0
+            collection.Add(new X509Certificate2(path));
+#else
             // Load PFX/PKCS12 file using modern API
             collection.Add(X509CertificateLoader.LoadPkcs12FromFile(path, password: null));
+#endif
         }
         else
         {
+#if NETSTANDARD2_0
+            throw new PlatformNotSupportedException("PEM certificate loading is not supported on the netstandard2.0 compatibility target.");
+#else
             // Assume PEM format - can contain multiple certificates
             collection.ImportFromPemFile(path);
+#endif
         }
 
         return collection;
@@ -1768,13 +1778,22 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             X509Certificate2 cert;
             if (extension is ".pfx" or ".p12")
             {
+#if NETSTANDARD2_0
+                cert = new X509Certificate2(
+                    certPath,
+                    string.IsNullOrEmpty(tlsConfig.ClientKeyPassword) ? null : tlsConfig.ClientKeyPassword);
+#else
                 // Load PFX/PKCS12 file (contains both certificate and private key) using modern API
                 cert = X509CertificateLoader.LoadPkcs12FromFile(
                     certPath,
                     string.IsNullOrEmpty(tlsConfig.ClientKeyPassword) ? null : tlsConfig.ClientKeyPassword);
+#endif
             }
             else
             {
+#if NETSTANDARD2_0
+                throw new PlatformNotSupportedException("PEM client certificate loading is not supported on the netstandard2.0 compatibility target.");
+#else
                 // PEM format - need separate key file
                 if (tlsConfig.ClientKeyPath is null)
                 {
@@ -1785,6 +1804,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
                     ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
+#endif
             }
 
             _loadedClientCertificate = cert;
@@ -1810,6 +1830,9 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         // If the only error is an untrusted root, validate against our custom CA
         if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chain is not null)
         {
+#if NETSTANDARD2_0
+            return false;
+#else
             // Track if we created a new certificate to dispose it later
             X509Certificate2? ownedCert = null;
             try
@@ -1852,6 +1875,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             {
                 ownedCert?.Dispose();
             }
+#endif
         }
 
         return false;
@@ -2225,7 +2249,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             throw new InvalidOperationException("Not connected");
 
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+        var headerVersion = KafkaRequestMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
 
         // Write to stream directly (no pipe yet). Use the pooled serializer path instead
         // of the thread-local SASL buffer so credential-bearing requests can be cleared.
@@ -2234,7 +2258,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             correlationId,
             apiVersion,
             headerVersion);
-        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
+        var clearSerializedArray = KafkaRequestMetadata<TRequest, TResponse>.ApiKey == ApiKey.SaslAuthenticate;
         try
         {
             await _stream.WriteAsync(buffer.AsMemory(0, totalSize), cancellationToken).ConfigureAwait(false);
@@ -2266,7 +2290,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
 
                 // Skip response header and parse body
-                var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+                var responseHeaderVersion = KafkaRequestMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
                 var offset = 4; // Correlation ID
 
                 if (responseHeaderVersion >= 1)
@@ -2304,7 +2328,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
 
                 var reader = new KafkaProtocolReader(responseBuffer.AsMemory(offset, responseSize - offset));
-                return (TResponse)TResponse.Read(ref reader, apiVersion);
+                return (TResponse)KafkaResponseMetadata<TResponse>.Read(ref reader, apiVersion);
             }
             finally
             {
@@ -2627,7 +2651,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             var destination = context.Buffer.AsSpan(context.Offset, available);
 
             if (buffer.IsSingleSegment)
-                buffer.FirstSpan.Slice(0, available).CopyTo(destination);
+                buffer.First.Span.Slice(0, available).CopyTo(destination);
             else
                 buffer.Slice(0, available).CopyTo(destination);
 
@@ -2821,7 +2845,7 @@ public sealed class ConnectionOptions
                 paramName,
                 "Connections max idle must be non-negative, or Timeout.InfiniteTimeSpan to disable.");
 
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, paramName);
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, paramName);
         return (int)value.TotalMilliseconds;
     }
 

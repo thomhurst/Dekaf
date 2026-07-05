@@ -115,14 +115,14 @@ public sealed class OAuthBearerTokenProvider : IDisposable
 
         if (!string.IsNullOrEmpty(_config.Scope))
         {
-            body["scope"] = _config.Scope;
+            body["scope"] = _config.Scope!;
         }
 
         if (_config.AdditionalParameters is not null)
         {
             foreach (var (key, value) in _config.AdditionalParameters)
             {
-                body[key] = value;
+                body[key] = value!;
             }
         }
 
@@ -196,7 +196,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         {
             var sub = subElement.GetString();
             if (!string.IsNullOrEmpty(sub))
-                return sub;
+                return sub!;
         }
 
         // Try to decode JWT and extract subject claim
@@ -229,7 +229,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
                     {
                         var value = claimElement.GetString();
                         if (!string.IsNullOrEmpty(value))
-                            return value;
+                            return value!;
                     }
                 }
             }

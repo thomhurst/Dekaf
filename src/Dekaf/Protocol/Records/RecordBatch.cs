@@ -2,8 +2,10 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+#if !NETSTANDARD2_0
 using System.Runtime.Intrinsics.X86;
 using ArmCrc32 = System.Runtime.Intrinsics.Arm.Crc32;
+#endif
 using Dekaf.Compression;
 using Dekaf.Internal;
 using Dekaf.Producer;
@@ -131,8 +133,8 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
-        var required = Math.Min((long)_written + sizeHint, Array.MaxLength);
+        var doubled = Math.Min((long)_buffer.Length * 2, CompatibilityBcl.ArrayMaxLength);
+        var required = Math.Min((long)_written + sizeHint, CompatibilityBcl.ArrayMaxLength);
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)
@@ -252,8 +254,8 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
-        var required = Math.Min((long)_written + sizeHint, Array.MaxLength);
+        var doubled = Math.Min((long)_buffer.Length * 2, CompatibilityBcl.ArrayMaxLength);
+        var required = Math.Min((long)_written + sizeHint, CompatibilityBcl.ArrayMaxLength);
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)
@@ -1161,7 +1163,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
             // Re-check after parsing — EnsureParsedUpTo may have reduced _count
             // due to truncated data, making this index out of range.
-            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _count);
+            CompatibilityThrowHelpers.ThrowIfGreaterThanOrEqual(index, _count);
 
             return _parsedRecords![index];
         }
@@ -1396,6 +1398,9 @@ internal static class Crc32C
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint Compute(ReadOnlySpan<byte> data)
     {
+#if NETSTANDARD2_0
+        return ComputeSoftware(data);
+#else
         if (Sse42.IsSupported)
         {
             return ComputeHardwareX86(data);
@@ -1407,8 +1412,10 @@ internal static class Crc32C
         }
 
         return ComputeSoftware(data);
+#endif
     }
 
+#if !NETSTANDARD2_0
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static uint ComputeHardwareX86(ReadOnlySpan<byte> data)
     {
@@ -1532,6 +1539,7 @@ internal static class Crc32C
 
         return crc ^ 0xFFFFFFFFu;
     }
+#endif
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static uint ComputeSoftware(ReadOnlySpan<byte> data)

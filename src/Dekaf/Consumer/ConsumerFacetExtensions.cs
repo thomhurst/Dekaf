@@ -14,7 +14,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         params TopicPartition[] partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Partitions.Assign(partitions);
     }
 
@@ -23,7 +23,7 @@ public static class ConsumerFacetExtensions
     /// </summary>
     public static void Unassign<TKey, TValue>(this IKafkaConsumer<TKey, TValue> consumer)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Partitions.Unassign();
     }
 
@@ -34,7 +34,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         IEnumerable<TopicPartitionOffset> partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Partitions.IncrementalAssign(partitions);
     }
 
@@ -45,7 +45,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         IEnumerable<TopicPartition> partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Partitions.IncrementalUnassign(partitions);
     }
 
@@ -57,7 +57,7 @@ public static class ConsumerFacetExtensions
         TopicPartition partition,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         return consumer.Positions.GetCommittedOffsetAsync(partition, cancellationToken);
     }
 
@@ -68,7 +68,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         TopicPartition partition)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         return consumer.Positions.GetPosition(partition);
     }
 
@@ -79,7 +79,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         TopicPartitionOffset offset)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Positions.Seek(offset);
     }
 
@@ -90,7 +90,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         params TopicPartition[] partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Positions.SeekToBeginning(partitions);
     }
 
@@ -101,7 +101,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         params TopicPartition[] partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Positions.SeekToEnd(partitions);
     }
 
@@ -112,7 +112,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         params TopicPartition[] partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Partitions.Pause(partitions);
     }
 
@@ -123,7 +123,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         params TopicPartition[] partitions)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         consumer.Partitions.Resume(partitions);
     }
 
@@ -135,7 +135,7 @@ public static class ConsumerFacetExtensions
         IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         return consumer.Offsets.GetOffsetsForTimesAsync(timestampsToSearch, cancellationToken);
     }
 
@@ -146,7 +146,7 @@ public static class ConsumerFacetExtensions
         this IKafkaConsumer<TKey, TValue> consumer,
         TopicPartition topicPartition)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         return consumer.Offsets.GetWatermarkOffsets(topicPartition);
     }
 
@@ -158,7 +158,7 @@ public static class ConsumerFacetExtensions
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
         return consumer.Offsets.QueryWatermarkOffsetsAsync(topicPartition, cancellationToken);
     }
 }

@@ -64,22 +64,22 @@ public sealed class GssapiConfig
 
     internal void Validate()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(ServiceName);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(ServiceName);
 
         if (Principal is not null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(Principal);
+            CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(Principal);
         }
 
         if (Realm is not null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(Realm);
+            CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(Realm);
         }
 
         if (KeytabPath is not null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(KeytabPath);
-            if (OperatingSystem.IsWindows())
+            CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(KeytabPath);
+            if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
             {
                 throw new NotSupportedException(
                     "GSSAPI KeytabPath is not supported on Windows by .NET NegotiateAuthentication. " +
@@ -152,7 +152,7 @@ public sealed class GssapiConfig
 
     internal string BuildSpn(string targetHost)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetHost);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(targetHost);
 
         var spn = $"{ServiceName}/{targetHost}";
         return Realm is null ? spn : $"{spn}@{Realm}";

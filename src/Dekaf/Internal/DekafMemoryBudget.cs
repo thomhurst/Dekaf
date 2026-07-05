@@ -97,7 +97,7 @@ public static class DekafMemoryBudget
     /// </summary>
     public static void SetBudget(ulong bytes)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(bytes);
+        CompatibilityThrowHelpers.ThrowIfZero(bytes);
         RebalanceSnapshot snapshot;
         lock (_lock)
         {
@@ -248,10 +248,7 @@ public static class DekafMemoryBudget
         if (_explicitBudget.HasValue)
             return _explicitBudget.Value;
 
-        var available = (ulong)GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
-        if (available == 0)
-            return FallbackBudgetBytes;
-
+        var available = CompatibilityBcl.GetTotalAvailableMemoryBytes(FallbackBudgetBytes);
         return (ulong)(available * _percentOfAvailable);
     }
 

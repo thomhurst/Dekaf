@@ -5,6 +5,7 @@ namespace Dekaf.Protocol;
 /// </summary>
 public interface IKafkaMessage
 {
+#if !NETSTANDARD2_0
     /// <summary>
     /// The API key for this message type.
     /// </summary>
@@ -19,6 +20,7 @@ public interface IKafkaMessage
     /// The highest supported API version.
     /// </summary>
     static abstract short HighestSupportedVersion { get; }
+#endif
 }
 
 /// <summary>
@@ -32,6 +34,7 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
     /// </summary>
     void Write(ref KafkaProtocolWriter writer, short version);
 
+#if !NETSTANDARD2_0
     /// <summary>
     /// Returns true if this API version uses flexible encoding.
     /// With Kafka 4.0+ all supported versions are flexible.
@@ -49,6 +52,7 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
     /// With Kafka 4.0+ all responses use header v1.
     /// </summary>
     static virtual short GetResponseHeaderVersion(short version) => 1;
+#endif
 }
 
 /// <summary>
@@ -56,8 +60,10 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
 /// </summary>
 public interface IKafkaResponse : IKafkaMessage
 {
+#if !NETSTANDARD2_0
     /// <summary>
     /// Reads the response body from the protocol reader.
     /// </summary>
     static abstract IKafkaResponse Read(ref KafkaProtocolReader reader, short version);
+#endif
 }

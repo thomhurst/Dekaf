@@ -15,6 +15,11 @@ using Dekaf.Retry;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using Lock = System.Object;
+#else
+using Lock = System.Threading.Lock;
+#endif
 
 namespace Dekaf.Producer;
 
@@ -89,8 +94,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // the fail-fast produce guard for context. ErrorCode is short-backed, so volatile is valid.
     internal volatile ErrorCode _lastTransactionError = ErrorCode.None;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
-    private readonly System.Threading.Lock _epochBumpLock = new();
-    internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
+    private readonly Lock _epochBumpLock = new();
+    internal readonly Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
     internal volatile bool _currentTransactionUsesTV2;
 
@@ -672,7 +677,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Diagnostics.DekafMetrics.MessagesSent.Add(1, tagList);
         Diagnostics.DekafMetrics.BytesSent.Add(metadata.KeySize + metadata.ValueSize, tagList);
         Diagnostics.DekafMetrics.OperationDuration.Record(
-            Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
+            CompatibilityBcl.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
     }
 
     private TagList GetMetricTags(string topic)
@@ -936,7 +941,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
         var cache = GetOrCreateCache();
-        var currentTicks = Environment.TickCount64;
+        var currentTicks = CompatibilityBcl.TickCount64;
         if (cache.CachedMetadataManager == _metadataManager &&
             cache.CachedTopicName == topic &&
             cache.CachedTopicInfo is not null &&
@@ -963,7 +968,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         cache.CachedTopicInfo = topicInfo;
         // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
         // while still detecting stale metadata reasonably quickly
-        cache.CachedTopicValidUntilTicks = Environment.TickCount64 + 1000;
+        cache.CachedTopicValidUntilTicks = CompatibilityBcl.TickCount64 + 1000;
     }
 
     /// <summary>
@@ -1227,7 +1232,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
 
-        ArgumentNullException.ThrowIfNull(deliveryHandler);
+        CompatibilityThrowHelpers.ThrowIfNull(deliveryHandler);
 
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
@@ -1370,7 +1375,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IEnumerable<ProducerMessage<TKey, TValue>> messages,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(messages);
+        CompatibilityThrowHelpers.ThrowIfNull(messages);
 
         // Convert to list to get count and allow multiple enumeration
         var messageList = messages as IList<ProducerMessage<TKey, TValue>> ?? messages.ToList();
@@ -1395,8 +1400,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IEnumerable<(TKey? Key, TValue Value)> messages,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(topic);
-        ArgumentNullException.ThrowIfNull(messages);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(messages);
 
         // Convert to list to get count and allow multiple enumeration
         var messageList = messages as IList<(TKey? Key, TValue Value)> ?? messages.ToList();
@@ -1440,7 +1445,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ThrowIfNotInitialized();
 
         if ((options & PurgeOptions.All) == PurgeOptions.None)
-            return ValueTask.CompletedTask;
+            return default;
 
         ThrowIfPurgeCannotRun();
 
@@ -1449,7 +1454,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             "Produce operation was purged before delivery completed.");
 
         _accumulator.Purge(options, exception, CompleteInflightEntry);
-        return ValueTask.CompletedTask;
+        return default;
     }
 
     private void ThrowIfPurgeCannotRun()
@@ -2131,7 +2136,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <inheritdoc />
     public ITopicProducer<TKey, TValue> ForTopic(string topic)
     {
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
@@ -2514,7 +2519,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-                var elapsed = Stopwatch.GetElapsedTime(startedAt);
+                var elapsed = CompatibilityBcl.GetElapsedTime(startedAt);
                 throw new KafkaTimeoutException(
                     TimeoutKind.Metadata,
                     elapsed,
@@ -3104,10 +3109,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         var cache = GetOrCreateCache();
 
-        // Use Environment.TickCount64 (cheap counter) to determine if we need to refresh.
+        // Use CompatibilityBcl.TickCount64 (cheap counter) to determine if we need to refresh.
         // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
         // the difference is still much cheaper than calling DateTimeOffset.UtcNow.
-        var currentTicks = Environment.TickCount64;
+        var currentTicks = CompatibilityBcl.TickCount64;
 
         // Refresh if more than ~1ms has passed (or on first call when CachedTimestampTicks is 0)
         if (currentTicks - cache.CachedTimestampTicks > 1 || cache.CachedTimestampTicks == 0)
@@ -3206,7 +3211,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             // Graceful shutdown timed out - fall back to forceful shutdown
             gracefulShutdown = false;
-            var gracefulElapsed = Stopwatch.GetElapsedTime(disposeStart);
+            var gracefulElapsed = CompatibilityBcl.GetElapsedTime(disposeStart);
             var gracefulElapsedMs = gracefulElapsed.TotalMilliseconds;
             LogGracefulShutdownTimedOut(gracefulMs, gracefulElapsedMs);
         }
@@ -3377,7 +3382,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 "network");
         }
 
-        var disposeElapsedMs = Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        var disposeElapsedMs = CompatibilityBcl.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogProducerDisposed(disposeElapsedMs, gracefulShutdown);
     }
 
@@ -3685,7 +3690,11 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 /// Used with thread-local buffers to avoid per-message ArrayPool rentals.
 /// After serialization, ToPooledMemory() copies data to a right-sized pooled buffer.
 /// </summary>
+#if NETSTANDARD2_0
+internal struct ReusableBufferWriter : IBufferWriter<byte>
+#else
 internal ref struct ReusableBufferWriter : IBufferWriter<byte>
+#endif
 {
     private byte[] _buffer;
     private int _written;
@@ -3808,7 +3817,11 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
 /// to the pool or use-after-disposal.
 /// </para>
 /// </remarks>
+#if NETSTANDARD2_0
+internal struct PooledBufferWriter : IBufferWriter<byte>
+#else
 internal ref struct PooledBufferWriter : IBufferWriter<byte>
+#endif
 {
     private byte[]? _buffer;
     private int _written;
@@ -3832,7 +3845,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance(int count)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        CompatibilityThrowHelpers.ThrowIfNegative(count);
 
         if (_buffer is null)
             throw new ObjectDisposedException(nameof(PooledBufferWriter));
@@ -3918,7 +3931,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     private void Grow(int sizeHint)
     {
         // Calculate new size: at least double, but ensure it fits the requested size
-        // Use checked arithmetic to detect overflow and cap at Array.MaxLength
+        // Use checked arithmetic to detect overflow and cap at CompatibilityBcl.ArrayMaxLength
         var currentLength = _buffer!.Length;
         int newSize;
         try
@@ -3930,12 +3943,12 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         catch (OverflowException)
         {
             // On overflow, use the maximum array size
-            newSize = Array.MaxLength;
+            newSize = CompatibilityBcl.ArrayMaxLength;
         }
 
         // Ensure we don't exceed the maximum array size
-        if (newSize > Array.MaxLength)
-            newSize = Array.MaxLength;
+        if (newSize > CompatibilityBcl.ArrayMaxLength)
+            newSize = CompatibilityBcl.ArrayMaxLength;
 
         // If we can't grow anymore and current capacity isn't enough, throw
         if (newSize <= currentLength)

@@ -1,6 +1,13 @@
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
+#if NETSTANDARD2_0
+using TopicNameSet = System.Collections.Generic.IReadOnlyCollection<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using TopicNameSet = System.Collections.Generic.IReadOnlySet<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
 
 namespace Dekaf.Consumer;
 
@@ -14,7 +21,7 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Gets the current subscription.
     /// </summary>
-    IReadOnlySet<string> Subscription { get; }
+    TopicNameSet Subscription { get; }
 
     /// <summary>
     /// Gets the current server-side topic regex subscription, if any.
@@ -24,12 +31,12 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Gets the current assignment.
     /// </summary>
-    IReadOnlySet<TopicPartition> Assignment { get; }
+    TopicPartitionSet Assignment { get; }
 
     /// <summary>
     /// Gets the paused partitions.
     /// </summary>
-    IReadOnlySet<TopicPartition> Paused { get; }
+    TopicPartitionSet Paused { get; }
 
     /// <summary>
     /// Gets the member ID if part of a consumer group.
@@ -196,12 +203,12 @@ public interface IConsumerPartitions
     /// <summary>
     /// Gets the current assignment.
     /// </summary>
-    IReadOnlySet<TopicPartition> Assignment { get; }
+    TopicPartitionSet Assignment { get; }
 
     /// <summary>
     /// Gets the paused partitions.
     /// </summary>
-    IReadOnlySet<TopicPartition> Paused { get; }
+    TopicPartitionSet Paused { get; }
 
     /// <summary>
     /// Manually assigns partitions.

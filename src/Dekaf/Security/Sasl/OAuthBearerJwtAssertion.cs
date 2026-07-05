@@ -66,14 +66,14 @@ internal static class OAuthBearerJwtAssertion
 
         var signingInput = $"{header}.{payload}";
         var signature = Sign(privateKey, algorithm, Encoding.ASCII.GetBytes(signingInput));
-        return $"{signingInput}.{Base64Url.EncodeToString(signature)}";
+        return $"{signingInput}.{CompatibilityBcl.Base64UrlEncode(signature)}";
     }
 
     private static string Required(string? value, string message)
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new InvalidOperationException(message);
-        return value;
+        return value!;
     }
 
     private static void ValidateAdditionalClaims(IReadOnlyDictionary<string, object?>? claims)
@@ -176,7 +176,7 @@ internal static class OAuthBearerJwtAssertion
 
     private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, float value)
     {
-        if (!float.IsFinite(value))
+        if (!CompatibilityBcl.IsFinite(value))
             throw UnsupportedAdditionalClaimValue(claimName, value);
 
         writer.WriteNumberValue(value);
@@ -184,7 +184,7 @@ internal static class OAuthBearerJwtAssertion
 
     private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, double value)
     {
-        if (!double.IsFinite(value))
+        if (!CompatibilityBcl.IsFinite(value))
             throw UnsupportedAdditionalClaimValue(claimName, value);
 
         writer.WriteNumberValue(value);
@@ -221,7 +221,7 @@ internal static class OAuthBearerJwtAssertion
             writer.WriteEndObject();
         }
 
-        return Base64Url.EncodeToString(buffer.WrittenSpan);
+        return CompatibilityBcl.Base64UrlEncode(buffer.WrittenSpan);
     }
 
     private static OAuthBearerJwtSigningAlgorithm ResolveAlgorithm(
@@ -292,6 +292,76 @@ internal static class OAuthBearerJwtAssertion
         if (key is not ECDsa ecdsa)
             throw new InvalidOperationException("Selected JWT-bearer signing algorithm requires an ECDSA private key");
 
+#if NETSTANDARD2_0
+        var derSignature = ecdsa.SignData(signingInput, hashAlgorithm);
+        return DerEcdsaSignatureToIeeeP1363(derSignature, (ecdsa.KeySize + 7) / 8);
+#else
         return ecdsa.SignData(signingInput, hashAlgorithm, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+#endif
     }
+
+#if NETSTANDARD2_0
+    private static byte[] DerEcdsaSignatureToIeeeP1363(byte[] derSignature, int fieldLength)
+    {
+        var offset = 0;
+        if (ReadByte(derSignature, ref offset) != 0x30)
+            throw new InvalidOperationException("ECDSA signature was not encoded as a DER sequence.");
+
+        ReadDerLength(derSignature, ref offset);
+        var r = ReadDerInteger(derSignature, ref offset);
+        var s = ReadDerInteger(derSignature, ref offset);
+        var result = new byte[fieldLength * 2];
+        CopyIntegerToFixedField(r, result.AsSpan(0, fieldLength));
+        CopyIntegerToFixedField(s, result.AsSpan(fieldLength, fieldLength));
+        return result;
+    }
+
+    private static ReadOnlySpan<byte> ReadDerInteger(byte[] der, ref int offset)
+    {
+        if (ReadByte(der, ref offset) != 0x02)
+            throw new InvalidOperationException("ECDSA signature DER integer expected.");
+
+        var length = ReadDerLength(der, ref offset);
+        var value = der.AsSpan(offset, length);
+        offset += length;
+        return value!;
+    }
+
+    private static int ReadDerLength(byte[] der, ref int offset)
+    {
+        var first = ReadByte(der, ref offset);
+        if ((first & 0x80) == 0)
+            return first;
+
+        var lengthBytes = first & 0x7F;
+        var length = 0;
+        for (var i = 0; i < lengthBytes; i++)
+        {
+            length = (length << 8) | ReadByte(der, ref offset);
+        }
+
+        return length;
+    }
+
+    private static byte ReadByte(byte[] der, ref int offset)
+    {
+        if ((uint)offset >= (uint)der.Length)
+            throw new InvalidOperationException("ECDSA signature DER data ended unexpectedly.");
+
+        return der[offset++];
+    }
+
+    private static void CopyIntegerToFixedField(ReadOnlySpan<byte> integer, Span<byte> destination)
+    {
+        while (integer.Length > 0 && integer[0] == 0)
+        {
+            integer = integer[1..];
+        }
+
+        if (integer.Length > destination.Length)
+            throw new InvalidOperationException("ECDSA signature integer is larger than the expected key size.");
+
+        integer.CopyTo(destination[(destination.Length - integer.Length)..]);
+    }
+#endif
 }

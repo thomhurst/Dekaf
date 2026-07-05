@@ -127,7 +127,7 @@ public sealed class KafkaClientBuilder
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -238,7 +238,7 @@ public sealed class KafkaClientBuilder
 
     public KafkaClientBuilder WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        CompatibilityThrowHelpers.ThrowIfNull(options);
         var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
@@ -249,7 +249,7 @@ public sealed class KafkaClientBuilder
 
     public KafkaClientBuilder WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        CompatibilityThrowHelpers.ThrowIfNull(configure);
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
@@ -278,37 +278,37 @@ public sealed class KafkaClientBuilder
 
     public KafkaClientBuilder WithSocketSendBufferBytes(int bytes)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        CompatibilityThrowHelpers.ThrowIfNegative(bytes);
         _socketSendBufferBytes = bytes;
         return this;
     }
 
     public KafkaClientBuilder WithSocketReceiveBufferBytes(int bytes)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        CompatibilityThrowHelpers.ThrowIfNegative(bytes);
         _socketReceiveBufferBytes = bytes;
         return this;
     }
 
     public KafkaClientBuilder WithConnectionsPerBroker(int connectionsPerBroker)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
+        CompatibilityThrowHelpers.ThrowIfLessThan(connectionsPerBroker, 1);
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
 
     public KafkaClientBuilder WithMaxInFlightRequestsPerConnection(int maxInFlightRequestsPerConnection)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxInFlightRequestsPerConnection, 1000000);
+        CompatibilityThrowHelpers.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(maxInFlightRequestsPerConnection, 1000000);
         _maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
         return this;
     }
 
     public KafkaClientBuilder WithMaxConnectionsPerBroker(int maxConnectionsPerBroker)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnectionsPerBroker, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(maxConnectionsPerBroker, 1);
         _maxConnectionsPerBroker = maxConnectionsPerBroker;
         return this;
     }
@@ -341,7 +341,7 @@ public sealed class KafkaClientBuilder
 
     public KafkaClientBuilder WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
@@ -357,7 +357,7 @@ public sealed class KafkaClientBuilder
 
     public KafkaClientBuilder WithMemoryBudget(ulong bytes)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(bytes);
+        CompatibilityThrowHelpers.ThrowIfZero(bytes);
         _memoryBudgetBytes = bytes;
         return this;
     }

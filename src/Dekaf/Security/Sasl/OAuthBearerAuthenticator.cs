@@ -20,7 +20,7 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
     /// <param name="token">The OAuth bearer token to use.</param>
     public OAuthBearerAuthenticator(OAuthBearerToken token)
     {
-        ArgumentNullException.ThrowIfNull(token);
+        CompatibilityThrowHelpers.ThrowIfNull(token);
         _currentToken = token;
         _tokenProvider = _ => new ValueTask<OAuthBearerToken>(token);
     }
@@ -143,7 +143,7 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
             var errorResponse = Encoding.UTF8.GetString(challenge);
 
             // If the response starts with '{', it's a JSON error
-            if (errorResponse.StartsWith('{'))
+            if (StartsWithJsonObject(errorResponse))
             {
                 throw new AuthenticationException($"OAUTHBEARER authentication failed: {errorResponse}");
             }
@@ -151,5 +151,14 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
 
         _complete = true;
         return null;
+    }
+
+    private static bool StartsWithJsonObject(string value)
+    {
+#if NETSTANDARD2_0
+        return value.StartsWith("{", StringComparison.Ordinal);
+#else
+        return value.StartsWith('{');
+#endif
     }
 }

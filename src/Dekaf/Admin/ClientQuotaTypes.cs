@@ -333,7 +333,7 @@ public sealed class ClientQuotaAlteration
     /// </summary>
     public void Validate()
     {
-        ArgumentNullException.ThrowIfNull(Entity);
+        CompatibilityThrowHelpers.ThrowIfNull(Entity);
 
         if (Entity.Components is null || Entity.Components.Count == 0)
         {
@@ -342,7 +342,7 @@ public sealed class ClientQuotaAlteration
 
         foreach (var component in Entity.Components)
         {
-            ArgumentNullException.ThrowIfNull(component);
+            CompatibilityThrowHelpers.ThrowIfNull(component);
             _ = ClientQuotaEntityTypeNames.ToProtocolName(component.EntityType);
         }
 
@@ -353,8 +353,8 @@ public sealed class ClientQuotaAlteration
 
         foreach (var operation in Operations)
         {
-            ArgumentNullException.ThrowIfNull(operation);
-            ArgumentException.ThrowIfNullOrEmpty(operation.Key);
+            CompatibilityThrowHelpers.ThrowIfNull(operation);
+            CompatibilityThrowHelpers.ThrowIfNullOrEmpty(operation.Key);
         }
     }
 }

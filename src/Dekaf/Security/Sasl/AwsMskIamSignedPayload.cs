@@ -12,7 +12,7 @@ internal static class AwsMskIamSignedPayload
     private const string Service = "kafka-cluster";
     private const string Version = "2020_10_22";
     private const string SignedHeaders = "host";
-    private static readonly byte[] EmptyPayloadHash = SHA256.HashData([]);
+    private static readonly byte[] EmptyPayloadHash = CompatibilityBcl.Sha256HashData([]);
 
     public static string Create(
         AwsCredentials credentials,
@@ -22,10 +22,10 @@ internal static class AwsMskIamSignedPayload
         DateTimeOffset now,
         TimeSpan expiration)
     {
-        ArgumentNullException.ThrowIfNull(credentials);
-        ArgumentException.ThrowIfNullOrWhiteSpace(host);
-        ArgumentException.ThrowIfNullOrWhiteSpace(region);
-        ArgumentException.ThrowIfNullOrWhiteSpace(userAgent);
+        CompatibilityThrowHelpers.ThrowIfNull(credentials);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(host);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(region);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(userAgent);
 
         if (expiration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(expiration), "Expiration must be positive");
@@ -54,11 +54,11 @@ internal static class AwsMskIamSignedPayload
 
         var canonicalRequest = CreateCanonicalRequest(queryParameters, host);
         var stringToSign = string.Join(
-            '\n',
+            "\n",
             Algorithm,
             amzDate,
             credentialScope,
-            Hex(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))));
+            Hex(CompatibilityBcl.Sha256HashData(Encoding.UTF8.GetBytes(canonicalRequest))));
 
         var signature = CalculateSignature(credentials.SecretAccessKey, dateStamp, region, stringToSign);
 
@@ -89,11 +89,11 @@ internal static class AwsMskIamSignedPayload
         string host)
     {
         var canonicalQuery = string.Join(
-            '&',
+            "&",
             queryParameters.Select(pair => $"{UriEncode(pair.Key)}={UriEncode(pair.Value)}"));
 
         return string.Join(
-            '\n',
+            "\n",
             "GET",
             "/",
             canonicalQuery,
@@ -116,11 +116,11 @@ internal static class AwsMskIamSignedPayload
     }
 
     private static byte[] Hmac(byte[] key, string message)
-        => HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(message));
+        => CompatibilityBcl.HmacSha256HashData(key, Encoding.UTF8.GetBytes(message));
 
     private static string Hex(ReadOnlySpan<byte> bytes)
     {
-        return Convert.ToHexString(bytes).ToLowerInvariant();
+        return CompatibilityBcl.ToHexStringLower(bytes);
     }
 
     private static string UriEncode(string value)

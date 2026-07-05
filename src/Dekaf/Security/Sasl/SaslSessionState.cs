@@ -26,7 +26,7 @@ internal sealed class SaslSessionState
         SaslReauthenticationConfig config,
         DateTimeOffset? authenticationTime = null)
     {
-        ArgumentNullException.ThrowIfNull(config);
+        CompatibilityThrowHelpers.ThrowIfNull(config);
 
         _sessionLifetimeMs = sessionLifetimeMs;
         _reauthenticationThreshold = config.ReauthenticationThreshold;

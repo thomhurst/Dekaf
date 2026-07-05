@@ -27,8 +27,8 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     /// <param name="ownsProducer">If true, this topic producer will dispose the underlying producer on disposal.</param>
     internal TopicProducer(IKafkaProducer<TKey, TValue> producer, string topic, bool ownsProducer)
     {
-        ArgumentNullException.ThrowIfNull(producer);
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(producer);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
 
         _producer = producer;
         Topic = topic;
@@ -101,7 +101,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(message);
+        CompatibilityThrowHelpers.ThrowIfNull(message);
 
         if (_producer is IProducerFastPath<TKey, TValue> fastPath)
         {
@@ -153,7 +153,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(messages);
+        CompatibilityThrowHelpers.ThrowIfNull(messages);
         return _producer.ProduceAllAsync(Topic, messages, cancellationToken);
     }
 
@@ -163,7 +163,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(messages);
+        CompatibilityThrowHelpers.ThrowIfNull(messages);
 
         // Convert TopicProducerMessage to ProducerMessage with embedded topic
         var producerMessages = messages.Select(m => new ProducerMessage<TKey, TValue>

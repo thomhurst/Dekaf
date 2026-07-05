@@ -134,7 +134,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
         var salt = Convert.FromBase64String(saltBase64);
 
         // Compute salted password using PBKDF2
-        _saltedPassword = Rfc2898DeriveBytes.Pbkdf2(
+        _saltedPassword = CompatibilityBcl.Pbkdf2(
             Encoding.UTF8.GetBytes(_password),
             salt,
             iterations,
@@ -183,7 +183,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
         var expectedServerSignature = Hmac(serverKey, _authMessage!);
         var actualServerSignature = Convert.FromBase64String(serverSignatureBase64);
 
-        if (!CryptographicOperations.FixedTimeEquals(expectedServerSignature, actualServerSignature))
+        if (!CompatibilityBcl.FixedTimeEquals(expectedServerSignature, actualServerSignature))
         {
             throw new AuthenticationException("Server signature verification failed");
         }
@@ -210,7 +210,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
 
     private static string GenerateNonce()
     {
-        var bytes = RandomNumberGenerator.GetBytes(24);
+        var bytes = CompatibilityBcl.GetRandomBytes(24);
         return Convert.ToBase64String(bytes);
     }
 
@@ -229,15 +229,15 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
     private byte[] Hmac(byte[] key, byte[] message)
     {
         return _hashAlgorithm == HashAlgorithmName.SHA256
-            ? HMACSHA256.HashData(key, message)
-            : HMACSHA512.HashData(key, message);
+            ? CompatibilityBcl.HmacSha256HashData(key, message)
+            : CompatibilityBcl.HmacSha512HashData(key, message);
     }
 
     private byte[] Hash(byte[] data)
     {
         return _hashAlgorithm == HashAlgorithmName.SHA256
-            ? SHA256.HashData(data)
-            : SHA512.HashData(data);
+            ? CompatibilityBcl.Sha256HashData(data)
+            : CompatibilityBcl.Sha512HashData(data);
     }
 
     private static byte[] Xor(byte[] a, byte[] b)

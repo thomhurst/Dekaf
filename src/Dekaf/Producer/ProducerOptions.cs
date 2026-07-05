@@ -451,7 +451,7 @@ public sealed class ProducerOptions
         get => _maxConnectionsPerBroker;
         init
         {
-            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            CompatibilityThrowHelpers.ThrowIfLessThan(value, 1);
             _maxConnectionsPerBroker = value;
         }
     }

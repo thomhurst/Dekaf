@@ -38,7 +38,7 @@ internal static class TraceContextPropagator
 
         if (!string.IsNullOrEmpty(activity.TraceStateString))
         {
-            headers.Add(TracestateHeader, activity.TraceStateString);
+            headers.Add(TracestateHeader, activity.TraceStateString!);
         }
 
         return headers;

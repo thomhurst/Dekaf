@@ -67,8 +67,17 @@ public sealed class GzipCompressionCodec : ICompressionCodec
             0 => CompressionLevel.NoCompression,
             >= 1 and <= 3 => CompressionLevel.Fastest,
             >= 4 and <= 6 => CompressionLevel.Optimal,
-            _ => CompressionLevel.SmallestSize
+            _ => GetSmallestCompressionLevel()
         };
+    }
+
+    private static CompressionLevel GetSmallestCompressionLevel()
+    {
+#if NETSTANDARD2_0
+        return CompressionLevel.Optimal;
+#else
+        return CompressionLevel.SmallestSize;
+#endif
     }
 
     public CompressionType Type => CompressionType.Gzip;
@@ -80,7 +89,12 @@ public sealed class GzipCompressionCodec : ICompressionCodec
 
         foreach (var segment in source)
         {
+#if NETSTANDARD2_0
+            var buffer = segment.ToArray();
+            gzipStream.Write(buffer, 0, buffer.Length);
+#else
             gzipStream.Write(segment.Span);
+#endif
         }
     }
 
@@ -99,6 +113,26 @@ internal static class CompressionStreamCopy
 
     internal static void CopyToBufferWriter(Stream source, IBufferWriter<byte> destination)
     {
+#if NETSTANDARD2_0
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            while (true)
+            {
+                var bytesRead = source.Read(buffer, 0, buffer.Length);
+                if (bytesRead == 0)
+                    break;
+
+                var span = destination.GetSpan(bytesRead);
+                buffer.AsSpan(0, bytesRead).CopyTo(span);
+                destination.Advance(bytesRead);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+#else
         while (true)
         {
             var span = destination.GetSpan(BufferSize);
@@ -108,6 +142,7 @@ internal static class CompressionStreamCopy
 
             destination.Advance(bytesRead);
         }
+#endif
     }
 }
 
@@ -151,12 +186,14 @@ internal sealed class BufferWriterStream : Stream
         _writer.Advance(count);
     }
 
+#if !NETSTANDARD2_0
     public override void Write(ReadOnlySpan<byte> buffer)
     {
         var span = _writer.GetSpan(buffer.Length);
         buffer.CopyTo(span);
         _writer.Advance(buffer.Length);
     }
+#endif
 }
 
 /// <summary>

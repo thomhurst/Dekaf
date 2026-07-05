@@ -81,14 +81,14 @@ internal sealed class ClientTelemetryMetricCollector
 
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
-        ArgumentNullException.ThrowIfNull(metric);
+        CompatibilityThrowHelpers.ThrowIfNull(metric);
         _applicationMetrics[metric.Name] = metric;
         _applicationCounterPreviousValues.TryRemove(metric.Name, out _);
     }
 
     public void RegisterMetricsForSubscription(IEnumerable<ApplicationTelemetryMetric> metrics)
     {
-        ArgumentNullException.ThrowIfNull(metrics);
+        CompatibilityThrowHelpers.ThrowIfNull(metrics);
 
         foreach (var metric in metrics)
         {
@@ -98,7 +98,7 @@ internal sealed class ClientTelemetryMetricCollector
 
     public void UnregisterMetricFromSubscription(string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(name);
         _applicationMetrics.TryRemove(name, out _);
         _applicationCounterPreviousValues.TryRemove(name, out _);
     }
@@ -262,7 +262,7 @@ internal sealed class ClientTelemetryMetricCollector
                 continue;
             }
 
-            if (!double.IsFinite(value))
+            if (!CompatibilityBcl.IsFinite(value))
             {
                 continue;
             }

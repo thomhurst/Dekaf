@@ -122,7 +122,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="linger">The time to wait before sending a batch.</param>
     public ProducerBuilder<TKey, TValue> WithLinger(TimeSpan linger)
     {
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(linger.TotalMilliseconds, int.MaxValue, nameof(linger));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(linger.TotalMilliseconds, int.MaxValue, nameof(linger));
         _lingerMs = (int)linger.TotalMilliseconds;
         return this;
     }
@@ -163,7 +163,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (maxBlock <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(maxBlock), "MaxBlock must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBlock.TotalMilliseconds, int.MaxValue, nameof(maxBlock));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(maxBlock.TotalMilliseconds, int.MaxValue, nameof(maxBlock));
 
         _maxBlockMs = (int)maxBlock.TotalMilliseconds;
         return this;
@@ -214,8 +214,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
+        CompatibilityThrowHelpers.ThrowIfLessThan(connectionsPerBroker, 1);
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
@@ -239,7 +239,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 10)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
         return this;
@@ -264,7 +264,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        CompatibilityThrowHelpers.ThrowIfNegative(bytes);
         _socketSendBufferBytes = bytes;
         return this;
     }
@@ -277,7 +277,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        CompatibilityThrowHelpers.ThrowIfNegative(bytes);
         _socketReceiveBufferBytes = bytes;
         return this;
     }
@@ -298,7 +298,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Transaction timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _transactionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -488,7 +488,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentNullException.ThrowIfNull(options);
+        CompatibilityThrowHelpers.ThrowIfNull(options);
         var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
@@ -503,7 +503,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="configure">Callback that configures the JWT-bearer OAuth options.</param>
     public ProducerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        CompatibilityThrowHelpers.ThrowIfNull(configure);
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
@@ -573,7 +573,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
@@ -675,7 +675,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> AddInterceptor(IProducerInterceptor<TKey, TValue> interceptor)
     {
-        ArgumentNullException.ThrowIfNull(interceptor);
+        CompatibilityThrowHelpers.ThrowIfNull(interceptor);
         _interceptors ??= [];
         _interceptors.Add(interceptor);
         return this;
@@ -703,7 +703,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Delivery timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _deliveryTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -719,7 +719,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -786,7 +786,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="metric">The application metric to register.</param>
     public ProducerBuilder<TKey, TValue> RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
-        ArgumentNullException.ThrowIfNull(metric);
+        CompatibilityThrowHelpers.ThrowIfNull(metric);
         _applicationMetrics[metric.Name] = metric;
         return this;
     }
@@ -798,7 +798,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="name">The application metric name.</param>
     public ProducerBuilder<TKey, TValue> UnregisterMetricFromSubscription(string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(name);
         _applicationMetrics.Remove(name);
         return this;
     }
@@ -806,14 +806,14 @@ public sealed class ProducerBuilder<TKey, TValue>
     internal ProducerBuilder<TKey, TValue> WithMaxInFlightRequestsPerConnection(int maxInFlightRequestsPerConnection)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
         _maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
         return this;
     }
 
     internal ProducerBuilder<TKey, TValue> WithRetries(int retries)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(retries);
+        CompatibilityThrowHelpers.ThrowIfNegative(retries);
         _retries = retries;
         return this;
     }
@@ -822,7 +822,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (backoff < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
 
         _retryBackoffMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -832,7 +832,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (backoff < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
 
         _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -842,7 +842,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         if (timeout < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Close timeout cannot be negative");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _closeTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -850,28 +850,28 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     internal ProducerBuilder<TKey, TValue> WithMaxRequestSize(int maxRequestSize)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxRequestSize, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(maxRequestSize, 1);
         _maxRequestSize = maxRequestSize;
         return this;
     }
 
     internal ProducerBuilder<TKey, TValue> WithValueTaskSourcePoolSize(int poolSize)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(poolSize);
+        CompatibilityThrowHelpers.ThrowIfNegative(poolSize);
         _valueTaskSourcePoolSize = poolSize;
         return this;
     }
 
     internal ProducerBuilder<TKey, TValue> WithArenaCapacity(int arenaCapacity)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(arenaCapacity);
+        CompatibilityThrowHelpers.ThrowIfNegative(arenaCapacity);
         _arenaCapacity = arenaCapacity;
         return this;
     }
 
     internal ProducerBuilder<TKey, TValue> WithInitialBatchRecordCapacity(int capacity)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        CompatibilityThrowHelpers.ThrowIfNegative(capacity);
         _initialBatchRecordCapacity = capacity;
         return this;
     }
@@ -929,7 +929,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         string topic,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
         var producer = await BuildAsync(cancellationToken).ConfigureAwait(false);
         return new TopicProducer<TKey, TValue>(producer, topic, ownsProducer: true);
     }
@@ -1088,7 +1088,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>A producer bound to the specified topic.</returns>
     public ITopicProducer<TKey, TValue> BuildForTopic(string topic)
     {
-        ArgumentNullException.ThrowIfNull(topic);
+        CompatibilityThrowHelpers.ThrowIfNull(topic);
         var producer = Build();
         return new TopicProducer<TKey, TValue>(producer, topic, ownsProducer: true);
     }
@@ -1301,7 +1301,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="pattern">The RE2/J topic regex pattern.</param>
     public ConsumerBuilder<TKey, TValue> SubscribeToPattern(string pattern)
     {
-        ArgumentNullException.ThrowIfNull(pattern);
+        CompatibilityThrowHelpers.ThrowIfNull(pattern);
         if (string.IsNullOrWhiteSpace(pattern))
         {
             throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
@@ -1318,7 +1318,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="interval">The interval between automatic commits.</param>
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(TimeSpan interval)
     {
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
         _autoCommitIntervalMs = (int)interval.TotalMilliseconds;
         return this;
     }
@@ -1459,7 +1459,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (maxWait <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(maxWait), "Fetch max wait must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxWait.TotalMilliseconds, int.MaxValue, nameof(maxWait));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(maxWait.TotalMilliseconds, int.MaxValue, nameof(maxWait));
         _fetchMaxWaitMs = (int)maxWait.TotalMilliseconds;
         return this;
     }
@@ -1480,7 +1480,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="timeout">The session timeout duration.</param>
     public ConsumerBuilder<TKey, TValue> WithSessionTimeout(TimeSpan timeout)
     {
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
         _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
     }
@@ -1497,7 +1497,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Heartbeat interval must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
 
         _heartbeatIntervalMs = (int)interval.TotalMilliseconds;
         return this;
@@ -1644,7 +1644,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentNullException.ThrowIfNull(options);
+        CompatibilityThrowHelpers.ThrowIfNull(options);
         var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
@@ -1659,7 +1659,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="configure">Callback that configures the JWT-bearer OAuth options.</param>
     public ConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        CompatibilityThrowHelpers.ThrowIfNull(configure);
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
@@ -1798,7 +1798,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
@@ -1813,7 +1813,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 4)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
+        CompatibilityThrowHelpers.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
         return this;
@@ -1849,7 +1849,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
         _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
@@ -1993,7 +1993,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> AddInterceptor(IConsumerInterceptor<TKey, TValue> interceptor)
     {
-        ArgumentNullException.ThrowIfNull(interceptor);
+        CompatibilityThrowHelpers.ThrowIfNull(interceptor);
         _interceptors ??= [];
         _interceptors.Add(interceptor);
         return this;
@@ -2031,7 +2031,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="metric">The application metric to register.</param>
     public ConsumerBuilder<TKey, TValue> RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
-        ArgumentNullException.ThrowIfNull(metric);
+        CompatibilityThrowHelpers.ThrowIfNull(metric);
         _applicationMetrics[metric.Name] = metric;
         return this;
     }
@@ -2043,7 +2043,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <param name="name">The application metric name.</param>
     public ConsumerBuilder<TKey, TValue> UnregisterMetricFromSubscription(string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(name);
         _applicationMetrics.Remove(name);
         return this;
     }
@@ -2052,7 +2052,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval), "Max poll interval must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
 
         _maxPollIntervalMs = (int)interval.TotalMilliseconds;
         return this;
@@ -2062,7 +2062,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Rebalance timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _rebalanceTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -2072,7 +2072,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         if (timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -2087,7 +2087,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     internal ConsumerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        CompatibilityThrowHelpers.ThrowIfNegative(bytes);
         _socketSendBufferBytes = bytes;
         return this;
     }
@@ -2095,7 +2095,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     internal ConsumerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        CompatibilityThrowHelpers.ThrowIfNegative(bytes);
         _socketReceiveBufferBytes = bytes;
         return this;
     }
@@ -2579,7 +2579,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(OAuthBearerJwtBearerOptions options)
     {
         ThrowIfClientOwnedConnectionSettings();
-        ArgumentNullException.ThrowIfNull(options);
+        CompatibilityThrowHelpers.ThrowIfNull(options);
         var oauthConfig = options.ToOAuthBearerConfig();
         _saslMechanism = SaslMechanism.OAuthBearer;
         _oauthConfig = oauthConfig;
@@ -2590,7 +2590,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerJwtBearer(Action<OAuthBearerJwtBearerOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        CompatibilityThrowHelpers.ThrowIfNull(configure);
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
@@ -2711,7 +2711,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
-        ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
+        CompatibilityThrowHelpers.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
         ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);

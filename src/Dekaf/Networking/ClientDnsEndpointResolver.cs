@@ -93,11 +93,11 @@ internal sealed class SystemDnsLookup : IDnsLookup
 {
     public async ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
     {
-        return await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+        return await CompatibilityBcl.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken)
     {
-        return await Dns.GetHostEntryAsync(host, cancellationToken).ConfigureAwait(false);
+        return await CompatibilityBcl.GetHostEntryAsync(host, cancellationToken).ConfigureAwait(false);
     }
 }

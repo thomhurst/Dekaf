@@ -6,15 +6,15 @@ internal static class ReconnectBackoffValidation
     {
         if (value < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(parameterName, errorMessage);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, parameterName);
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, parameterName);
 
         return (int)value.TotalMilliseconds;
     }
 
     public static void ValidateMilliseconds(int reconnectBackoffMs, int reconnectBackoffMaxMs)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(reconnectBackoffMs);
-        ArgumentOutOfRangeException.ThrowIfNegative(reconnectBackoffMaxMs);
+        CompatibilityThrowHelpers.ThrowIfNegative(reconnectBackoffMs);
+        CompatibilityThrowHelpers.ThrowIfNegative(reconnectBackoffMaxMs);
         if (reconnectBackoffMaxMs < reconnectBackoffMs)
         {
             throw new ArgumentOutOfRangeException(

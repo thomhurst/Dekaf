@@ -42,7 +42,7 @@ internal static class RetryHelper
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
 
-                var jitter = Random.Shared.Next(0, 100);
+                var jitter = CompatibilityBcl.RandomNext(0, 100);
                 await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -75,7 +75,7 @@ internal static class RetryHelper
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
 
-                var jitter = Random.Shared.Next(0, 100);
+                var jitter = CompatibilityBcl.RandomNext(0, 100);
                 await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
             }
         }

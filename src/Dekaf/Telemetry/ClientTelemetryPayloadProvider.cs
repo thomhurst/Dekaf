@@ -148,7 +148,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
         WriteTag(writer, fieldNumber, WireLengthDelimited);
         WriteVarint(writer, (ulong)byteCount);
         var span = writer.GetSpan(byteCount);
-        var written = System.Text.Encoding.UTF8.GetBytes(value, span);
+        var written = CompatibilityBcl.GetUtf8Bytes(value, span);
         writer.Advance(written);
     }
 
@@ -168,7 +168,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
 
     private static void WriteDoubleField(IBufferWriter<byte> writer, int fieldNumber, double value)
     {
-        WriteFixed64Field(writer, fieldNumber, (ulong)BitConverter.DoubleToInt64Bits(value));
+        WriteFixed64Field(writer, fieldNumber, (ulong)CompatibilityBcl.DoubleToInt64Bits(value));
     }
 
     private static void WriteTag(IBufferWriter<byte> writer, int fieldNumber, int wireType) =>
@@ -201,7 +201,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
 
     private static long GetUnixTimeNanoseconds()
     {
-        var ticksSinceUnixEpoch = DateTimeOffset.UtcNow.UtcTicks - DateTime.UnixEpoch.Ticks;
+        var ticksSinceUnixEpoch = DateTimeOffset.UtcNow.UtcTicks - CompatibilityBcl.UnixEpoch.Ticks;
         return checked(ticksSinceUnixEpoch * 100);
     }
 }

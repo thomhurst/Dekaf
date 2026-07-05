@@ -8,6 +8,13 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using TopicNameSet = System.Collections.Generic.IReadOnlyCollection<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using TopicNameSet = System.Collections.Generic.IReadOnlySet<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
 
 namespace Dekaf.ShareConsumer;
 
@@ -34,8 +41,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
-    private volatile IReadOnlySet<string> _subscriptionSnapshot = new HashSet<string>();
-    private volatile IReadOnlySet<TopicPartition> _assignmentSnapshot = new HashSet<TopicPartition>();
+    private volatile TopicNameSet _subscriptionSnapshot = new HashSet<string>();
+    private volatile TopicPartitionSet _assignmentSnapshot = new HashSet<TopicPartition>();
 
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private volatile bool _initialized;
@@ -132,8 +139,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             loggerFactory?.CreateLogger<ShareConsumerCoordinator>());
     }
 
-    public IReadOnlySet<string> Subscription => _subscriptionSnapshot;
-    public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
+    public TopicNameSet Subscription => _subscriptionSnapshot;
+    public TopicPartitionSet Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator.MemberId;
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -510,7 +517,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             foreach (var batch in batches)
             {
                 var types = new byte[batch.AcknowledgeTypes.Length];
-                Array.Fill(types, (byte)AcknowledgeType.Release);
+                CompatibilityBcl.FillArray(types, (byte)AcknowledgeType.Release);
                 releasedBatches.Add(new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, types));
             }
             released[tp] = releasedBatches;
@@ -664,7 +671,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     /// Groups assigned partitions by their leader broker.
     /// </summary>
     private Dictionary<int, List<TopicPartition>> GroupPartitionsByLeader(
-        IReadOnlySet<TopicPartition> assignment)
+        TopicPartitionSet assignment)
     {
         var result = new Dictionary<int, List<TopicPartition>>();
 

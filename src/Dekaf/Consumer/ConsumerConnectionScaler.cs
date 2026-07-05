@@ -90,12 +90,12 @@ internal sealed class ConsumerConnectionScaler
     {
         var now = GetTimestamp();
 
-        if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
+        if (_lastScaleTimestamp != 0 && CompatibilityBcl.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
             return;
 
         if (_saturationStartTimestamp != 0
             && _currentConnectionCount < _maxConnectionCount
-            && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+            && CompatibilityBcl.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
         {
             Interlocked.Increment(ref _currentConnectionCount);
             _saturationStartTimestamp = 0;
@@ -106,7 +106,7 @@ internal sealed class ConsumerConnectionScaler
 
         if (_lowUtilizationStartTimestamp != 0
             && _currentConnectionCount > _initialConnectionCount
-            && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
+            && CompatibilityBcl.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
         {
             Interlocked.Decrement(ref _currentConnectionCount);
             _lowUtilizationStartTimestamp = 0;

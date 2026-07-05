@@ -10,7 +10,7 @@ internal sealed class CancelledCorrelationIdTracker
 
     public CancelledCorrelationIdTracker(int capacity)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
+        CompatibilityThrowHelpers.ThrowIfNegativeOrZero(capacity);
         _capacity = capacity;
     }
 

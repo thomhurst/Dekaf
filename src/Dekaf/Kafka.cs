@@ -36,7 +36,7 @@ public static class Kafka
     /// <param name="configure">Optional root-client configuration.</param>
     public static KafkaClient Connect(string bootstrapServers, Action<KafkaClientBuilder> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        CompatibilityThrowHelpers.ThrowIfNull(configure);
 
         var builder = new KafkaClientBuilder()
             .WithBootstrapServers(bootstrapServers);

@@ -129,12 +129,12 @@ internal sealed class AdaptiveFetchSizer
         if (_lastFetchStartTimestamp == 0 || _lastFetchEndTimestamp == 0)
             return;
 
-        var fetchDuration = Stopwatch.GetElapsedTime(_lastFetchStartTimestamp, _lastFetchEndTimestamp);
+        var fetchDuration = CompatibilityBcl.GetElapsedTime(_lastFetchStartTimestamp, _lastFetchEndTimestamp);
 
         if (fetchDuration <= TimeSpan.Zero)
             return;
 
-        var ratio = processingDuration / fetchDuration;
+        var ratio = processingDuration.Ticks / (double)fetchDuration.Ticks;
         EvaluateAndAdjust(ratio);
     }
 

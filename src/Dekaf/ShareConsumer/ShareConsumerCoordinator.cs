@@ -6,6 +6,13 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Consumer;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using TopicNameSet = System.Collections.Generic.IReadOnlyCollection<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using TopicNameSet = System.Collections.Generic.IReadOnlySet<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
 
 namespace Dekaf.ShareConsumer;
 
@@ -39,7 +46,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     private volatile int _heartbeatIntervalMs;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
-    private volatile IReadOnlySet<string>? _subscribedTopics;
+    private volatile TopicNameSet? _subscribedTopics;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
@@ -64,7 +71,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     public string? MemberId => _memberId;
     public int MemberEpoch => _memberEpoch;
     public CoordinatorState State => _state;
-    public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
+    public TopicPartitionSet Assignment => _assignedPartitions;
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next
@@ -79,7 +86,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// Ensures the share consumer has joined the group.
     /// </summary>
     public async ValueTask EnsureActiveGroupAsync(
-        IReadOnlySet<string> topics,
+        TopicNameSet topics,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -357,7 +364,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// Ensures the share consumer has joined the group using the ShareGroupHeartbeat API.
     /// </summary>
     private async ValueTask EnsureActiveGroupCoreAsync(
-        IReadOnlySet<string> topics,
+        TopicNameSet topics,
         CancellationToken cancellationToken)
     {
         if (!_metadataManager.HasApiKey(ApiKey.ShareGroupHeartbeat))
@@ -386,11 +393,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             while (_state != CoordinatorState.Stable)
             {
-                if (Stopwatch.GetElapsedTime(startedAt) > timeout)
+                if (CompatibilityBcl.GetElapsedTime(startedAt) > timeout)
                 {
                     throw new KafkaTimeoutException(
                         TimeoutKind.Rebalance,
-                        Stopwatch.GetElapsedTime(startedAt),
+                        CompatibilityBcl.GetElapsedTime(startedAt),
                         timeout,
                         $"Failed to join share group '{_options.GroupId}' within timeout ({_options.SessionTimeoutMs}ms)");
                 }
@@ -546,8 +553,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             var request = new ShareGroupHeartbeatRequest
             {
-                GroupId = _options.GroupId,
-                MemberId = _memberId,
+                GroupId = _options.GroupId!,
+                MemberId = _memberId!,
                 MemberEpoch = -1
             };
 

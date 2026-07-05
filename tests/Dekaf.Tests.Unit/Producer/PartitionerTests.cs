@@ -171,11 +171,11 @@ public class StickyPartitionerTests
     {
         var partitioner = new StickyPartitioner();
 
-        // Set counter to near uint.MaxValue using reflection
+        // Counter is stored as int for Interlocked compatibility, then interpreted as uint for modulo.
         var counterField = typeof(StickyPartitioner).GetField("_counter",
             BindingFlags.NonPublic | BindingFlags.Instance);
         await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 100);
+        counterField!.SetValue(partitioner, unchecked((int)(uint.MaxValue - 100)));
 
         // Call partition and OnBatchComplete many times around the overflow point
         for (var i = 0; i < 200; i++)
@@ -195,11 +195,11 @@ public class StickyPartitionerTests
         var partitioner = new StickyPartitioner();
         const int partitionCount = 10;
 
-        // Set counter to uint.MaxValue - 1
+        // Counter is stored as int for Interlocked compatibility, then interpreted as uint for modulo.
         var counterField = typeof(StickyPartitioner).GetField("_counter",
             BindingFlags.NonPublic | BindingFlags.Instance);
         await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 1);
+        counterField!.SetValue(partitioner, unchecked((int)(uint.MaxValue - 1)));
 
         // Trigger overflow with OnBatchComplete
         partitioner.OnBatchComplete("test-topic", partitionCount);

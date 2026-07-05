@@ -39,8 +39,8 @@ public sealed class ApplicationTelemetryMetric
         Func<double> observe,
         IReadOnlyDictionary<string, string>? attributes = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(observe);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(name);
+        CompatibilityThrowHelpers.ThrowIfNull(observe);
 
         Name = name;
         Kind = kind;

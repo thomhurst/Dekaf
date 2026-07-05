@@ -4,13 +4,13 @@ internal static class BootstrapServerList
 {
     internal static string[] FromCommaSeparated(string servers)
     {
-        ArgumentNullException.ThrowIfNull(servers);
+        CompatibilityThrowHelpers.ThrowIfNull(servers);
         return FromValues(servers.Split(','));
     }
 
     internal static string[] FromValues(params string[] servers)
     {
-        ArgumentNullException.ThrowIfNull(servers);
+        CompatibilityThrowHelpers.ThrowIfNull(servers);
 
         if (servers.Length == 0)
             throw new ArgumentException("At least one bootstrap server must be specified.", nameof(servers));

@@ -14,8 +14,8 @@ public sealed class AwsCredentials
         string? sessionToken = null,
         DateTimeOffset? expiration = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(accessKeyId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(secretAccessKey);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(accessKeyId);
+        CompatibilityThrowHelpers.ThrowIfNullOrWhiteSpace(secretAccessKey);
 
         AccessKeyId = accessKeyId;
         SecretAccessKey = secretAccessKey;

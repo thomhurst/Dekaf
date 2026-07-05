@@ -21,8 +21,8 @@ public static class ConsumerExtensions
         Func<ConsumeResult<TKey, TValue>, bool> predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(predicate);
+        CompatibilityThrowHelpers.ThrowIfNull(source);
+        CompatibilityThrowHelpers.ThrowIfNull(predicate);
 
         await foreach (var item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
@@ -48,8 +48,8 @@ public static class ConsumerExtensions
         Func<ConsumeResult<TKey, TValue>, TResult> selector,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(selector);
+        CompatibilityThrowHelpers.ThrowIfNull(source);
+        CompatibilityThrowHelpers.ThrowIfNull(selector);
 
         await foreach (var item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
@@ -71,8 +71,8 @@ public static class ConsumerExtensions
         int count,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        CompatibilityThrowHelpers.ThrowIfNull(source);
+        CompatibilityThrowHelpers.ThrowIfNegative(count);
 
         if (count == 0)
         {
@@ -108,8 +108,8 @@ public static class ConsumerExtensions
         int batchSize,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        CompatibilityThrowHelpers.ThrowIfNull(source);
+        CompatibilityThrowHelpers.ThrowIfLessThan(batchSize, 1);
 
         var batch = new List<ConsumeResult<TKey, TValue>>(batchSize);
 
@@ -144,8 +144,8 @@ public static class ConsumerExtensions
         Func<ConsumeResult<TKey, TValue>, bool> predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(predicate);
+        CompatibilityThrowHelpers.ThrowIfNull(source);
+        CompatibilityThrowHelpers.ThrowIfNull(predicate);
 
         var skipping = true;
         await foreach (var item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -174,8 +174,8 @@ public static class ConsumerExtensions
         Func<ConsumeResult<TKey, TValue>, bool> predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(predicate);
+        CompatibilityThrowHelpers.ThrowIfNull(source);
+        CompatibilityThrowHelpers.ThrowIfNull(predicate);
 
         await foreach (var item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
@@ -202,8 +202,8 @@ public static class ConsumerExtensions
         Func<ConsumeResult<TKey, TValue>, ValueTask> processor,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
-        ArgumentNullException.ThrowIfNull(processor);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(processor);
 
         await foreach (var result in consumer.ConsumeAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -225,8 +225,8 @@ public static class ConsumerExtensions
         Action<ConsumeResult<TKey, TValue>> processor,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consumer);
-        ArgumentNullException.ThrowIfNull(processor);
+        CompatibilityThrowHelpers.ThrowIfNull(consumer);
+        CompatibilityThrowHelpers.ThrowIfNull(processor);
 
         await foreach (var result in consumer.ConsumeAsync(cancellationToken).ConfigureAwait(false))
         {

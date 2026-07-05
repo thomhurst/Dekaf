@@ -90,8 +90,8 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
-        var required = Math.Min((long)_written + sizeHint, Array.MaxLength);
+        var doubled = Math.Min((long)_buffer.Length * 2, CompatibilityBcl.ArrayMaxLength);
+        var required = Math.Min((long)_written + sizeHint, CompatibilityBcl.ArrayMaxLength);
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)

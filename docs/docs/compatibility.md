@@ -61,15 +61,16 @@ dotnet build src/Dekaf/Dekaf.csproj --configuration Release `
   -p:TargetFramework=netstandard2.0
 ```
 
-The probe is still expected to fail until #1300 removes or isolates the remaining core API blockers. Current blocker categories:
+After the #1300 core API blocker pass, the forced `src/Dekaf` probe builds clean for `netstandard2.0` while the package still defaults to `net10.0`.
 
-- Runtime intrinsics: `System.Runtime.Intrinsics` is not available as a `netstandard2.0` package, so the CRC/vectorized record batch paths need conditional fallbacks.
-- Modern collection and threading APIs: `IReadOnlySet<T>`, `System.Threading.Lock`, `PeriodicTimer`, non-generic `TaskCompletionSource`, and `Task.WaitAsync`.
-- Runtime feature constraints: static abstract interface members, by-ref-like generics, and ref fields are not supported by the `netstandard2.0` target runtime.
-- Buffer and stream APIs: `SequenceReader<T>`, `ArrayBufferWriter<T>`, and span-based `Stream.Write(ReadOnlySpan<byte>)` need compatibility paths.
-- TLS/GSSAPI APIs: `SslClientAuthenticationOptions`, `NegotiateAuthentication`, and `NegotiateAuthenticationClientOptions` need target-specific handling.
+This does not declare package support for `netstandard2.0`. It means the core source can be compiled under the forced target so #1301 can add package/smoke validation and decide the final supported asset set.
 
-This baseline does not declare package support for `netstandard2.0`; it only makes the next compile-blocker work measurable.
+Target-specific compatibility notes:
+
+- Runtime intrinsics: CRC32C uses the existing software fallback on `netstandard2.0`; hardware intrinsics remain on the `net10.0` path.
+- Modern BCL APIs: internal compatibility helpers cover throw helpers, `Task.WaitAsync`, collection helpers, `ArrayBufferWriter<T>`, `SequenceReader<T>`, `PeriodicTimer`, and related API gaps.
+- TLS/GSSAPI: basic TLS paths compile for `netstandard2.0`; PEM certificate loading, custom root trust, and ECDSA JWT-bearer signing throw `PlatformNotSupportedException` on the compatibility target where the runtime APIs are unavailable.
+- Serializer hot paths keep ref-struct writer support on `net10.0`; `netstandard2.0` uses non-ref-struct generic constraints required by the target runtime.
 
 ## Blocker Categories
 

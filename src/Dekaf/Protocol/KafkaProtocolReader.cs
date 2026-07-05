@@ -68,7 +68,7 @@ public ref struct KafkaProtocolReader
         if (buffer.IsSingleSegment)
         {
             // Fast path: Single segment - use direct span access
-            _span = buffer.FirstSpan;
+            _span = buffer.First.Span;
             _memory = buffer.First;
             _hasMemory = true;
             _position = 0;
@@ -302,7 +302,7 @@ public ref struct KafkaProtocolReader
         {
             if (_position + 16 > _span.Length)
                 ThrowInsufficientData();
-            var result = new Guid(_span.Slice(_position, 16), bigEndian: true);
+            var result = CompatibilityBcl.ReadGuidBigEndian(_span.Slice(_position, 16));
             _position += 16;
             return result;
         }
@@ -314,7 +314,7 @@ public ref struct KafkaProtocolReader
     {
         if (_reader.UnreadSpan.Length >= 16)
         {
-            var result = new Guid(_reader.UnreadSpan[..16], bigEndian: true);
+            var result = CompatibilityBcl.ReadGuidBigEndian(_reader.UnreadSpan[..16]);
             _reader.Advance(16);
             return result;
         }
@@ -322,7 +322,7 @@ public ref struct KafkaProtocolReader
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
         _reader.Advance(16);
-        return new Guid(buffer, bigEndian: true);
+        return CompatibilityBcl.ReadGuidBigEndian(buffer);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -332,7 +332,7 @@ public ref struct KafkaProtocolReader
         {
             if (_position + 8 > _span.Length)
                 ThrowInsufficientData();
-            var result = BinaryPrimitives.ReadDoubleBigEndian(_span.Slice(_position));
+            var result = CompatibilityBcl.ReadDoubleBigEndian(_span.Slice(_position));
             _position += 8;
             return result;
         }
@@ -344,7 +344,7 @@ public ref struct KafkaProtocolReader
     {
         if (_reader.UnreadSpan.Length >= 8)
         {
-            var result = BinaryPrimitives.ReadDoubleBigEndian(_reader.UnreadSpan);
+            var result = CompatibilityBcl.ReadDoubleBigEndian(_reader.UnreadSpan);
             _reader.Advance(8);
             return result;
         }
@@ -352,7 +352,7 @@ public ref struct KafkaProtocolReader
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
         _reader.Advance(8);
-        return BinaryPrimitives.ReadDoubleBigEndian(buffer);
+        return CompatibilityBcl.ReadDoubleBigEndian(buffer);
     }
 
     /// <summary>

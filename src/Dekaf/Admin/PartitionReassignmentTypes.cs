@@ -39,7 +39,7 @@ public static class Optional
     /// </summary>
     public static Optional<T> Some<T>(T value)
     {
-        ArgumentNullException.ThrowIfNull(value);
+        CompatibilityThrowHelpers.ThrowIfNull(value);
         return new Optional<T>(value);
     }
 

@@ -40,7 +40,7 @@ internal sealed class InflightEntry
         return true;
     }
 
-    private TaskCompletionSource? _completionSignal;
+    private TaskCompletionSource<bool>? _completionSignal;
 
     /// <summary>
     /// Initializes the entry for use. Called after renting from pool.
@@ -56,9 +56,9 @@ internal sealed class InflightEntry
     /// Gets or lazily creates the completion signal TCS.
     /// Only called on OutOfOrderSequenceNumber (failure path), so zero allocation in happy path.
     /// </summary>
-    internal TaskCompletionSource GetOrCreateCompletionSignal()
+    internal TaskCompletionSource<bool> GetOrCreateCompletionSignal()
     {
-        return _completionSignal ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        return _completionSignal ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>
@@ -67,7 +67,7 @@ internal sealed class InflightEntry
     /// </summary>
     internal void SignalComplete()
     {
-        _completionSignal?.TrySetResult();
+        _completionSignal?.TrySetResult(true);
     }
 
     /// <summary>

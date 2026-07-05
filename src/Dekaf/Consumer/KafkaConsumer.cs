@@ -17,6 +17,15 @@ using Dekaf.Retry;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using Lock = System.Object;
+using TopicNameSet = System.Collections.Generic.IReadOnlyCollection<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using Lock = System.Threading.Lock;
+using TopicNameSet = System.Collections.Generic.IReadOnlySet<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
 
 namespace Dekaf.Consumer;
 
@@ -600,10 +609,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private readonly ConcurrentDictionary<string, byte> _subscription = new();
     private readonly HashSet<TopicPartition> _assignment = [];
-    private volatile IReadOnlySet<TopicPartition> _assignmentSnapshot = new HashSet<TopicPartition>();
+    private volatile TopicPartitionSet _assignmentSnapshot = new HashSet<TopicPartition>();
     private readonly ConcurrentDictionary<TopicPartition, byte> _paused = new();
-    private volatile IReadOnlySet<string> _subscriptionSnapshot = new HashSet<string>();
-    private volatile IReadOnlySet<TopicPartition> _pausedSnapshot = new HashSet<TopicPartition>();
+    private volatile TopicNameSet _subscriptionSnapshot = new HashSet<string>();
+    private volatile TopicPartitionSet _pausedSnapshot = new HashSet<TopicPartition>();
 
     // Pattern subscription support
     private volatile Func<string, bool>? _topicFilter;
@@ -842,8 +851,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool ownsInfrastructure,
         IDekafMemoryBudget memoryBudget)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+        CompatibilityThrowHelpers.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
+        CompatibilityThrowHelpers.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
@@ -937,11 +946,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
     }
 
-    public IReadOnlySet<string> Subscription => _subscriptionSnapshot;
+    public TopicNameSet Subscription => _subscriptionSnapshot;
     public string? SubscriptionPattern => _topicPattern;
-    public IReadOnlySet<TopicPartition> Assignment => _assignmentSnapshot;
+    public TopicPartitionSet Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator?.MemberId;
-    public IReadOnlySet<TopicPartition> Paused => _pausedSnapshot;
+    public TopicPartitionSet Paused => _pausedSnapshot;
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
     public IConsumerOffsets Offsets => this;
@@ -992,9 +1001,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             return new ConsumerGroupMetadata
             {
-                GroupId = _options.GroupId,
+                GroupId = _options.GroupId!,
                 GenerationId = _coordinator.GenerationId,
-                MemberId = _coordinator.MemberId,
+                MemberId = _coordinator.MemberId!,
                 GroupInstanceId = _options.GroupInstanceId
             };
         }
@@ -1015,7 +1024,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void Subscribe(Func<string, bool> topicFilter)
     {
-        ArgumentNullException.ThrowIfNull(topicFilter);
+        CompatibilityThrowHelpers.ThrowIfNull(topicFilter);
 
         _topicFilter = topicFilter;
         _topicPattern = null;
@@ -1026,7 +1035,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void SubscribePattern(string pattern)
     {
-        ArgumentNullException.ThrowIfNull(pattern);
+        CompatibilityThrowHelpers.ThrowIfNull(pattern);
         if (string.IsNullOrWhiteSpace(pattern))
         {
             throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
@@ -1477,7 +1486,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Report batch processing time to the adaptive fetch sizer (per-batch, not per-message)
                     if (batchProcessingStarted.HasValue)
                     {
-                        var processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        var processingDuration = CompatibilityBcl.GetElapsedTime(batchProcessingStarted.Value);
                         _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
                     }
 
@@ -1642,7 +1651,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Report batch processing time to the adaptive fetch sizer
                     if (batchProcessingStarted.HasValue)
                     {
-                        TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        TimeSpan processingDuration = CompatibilityBcl.GetElapsedTime(batchProcessingStarted.Value);
                         _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
                     }
                 }
@@ -1785,7 +1794,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Report batch processing time to the adaptive fetch sizer
                     if (batchProcessingStarted.HasValue)
                     {
-                        TimeSpan processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                        TimeSpan processingDuration = CompatibilityBcl.GetElapsedTime(batchProcessingStarted.Value);
                         _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
                     }
                 }
@@ -1953,8 +1962,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // the bottleneck (slowest broker) which is the right signal for adaptive sizing.
                 _adaptiveFetchSizer?.RecordFetchStart();
 
+#if NETSTANDARD2_0
+                await Task.WhenAll(fetchTasks.Take(taskCount)).ConfigureAwait(false);
+#else
                 // ReadOnlySpan overload (.NET 9+) avoids internal array copy and ArraySegment boxing
                 await Task.WhenAll(new ReadOnlySpan<Task>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
+#endif
 
                 _adaptiveFetchSizer?.RecordFetchEnd();
             }
@@ -2039,7 +2052,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     internal static int CalculatePrefetchBufferCapacity(ConsumerOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        CompatibilityThrowHelpers.ThrowIfNull(options);
 
         return PoolSizing.ForConsumerPrefetchBuffer(
             options.QueuedMaxMessagesKbytes,
@@ -2715,7 +2728,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (batchProcessingStarted.HasValue)
             {
-                var processingDuration = System.Diagnostics.Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                var processingDuration = CompatibilityBcl.GetElapsedTime(batchProcessingStarted.Value);
                 _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
             }
 
@@ -2859,7 +2872,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return;
 
         Diagnostics.DekafMetrics.FetchDuration.Record(
-            Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+            CompatibilityBcl.GetElapsedTime(fetchStarted).TotalSeconds,
             GetFetchDurationMetricTags(brokerId));
     }
 
@@ -3365,7 +3378,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
 
-        var now = Environment.TickCount64;
+        var now = CompatibilityBcl.TickCount64;
         var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
 
         // Rate-limit: skip if we refreshed recently (unless this is the first call)
@@ -3813,8 +3826,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // the bottleneck (slowest broker) which is the right signal for adaptive sizing.
                 _adaptiveFetchSizer?.RecordFetchStart();
 
+#if NETSTANDARD2_0
+                await Task.WhenAll(fetchTasks.Take(taskCount)).ConfigureAwait(false);
+#else
                 // ReadOnlySpan overload: same zero-copy benefit as above
                 await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
+#endif
 
                 _adaptiveFetchSizer?.RecordFetchEnd();
 
@@ -3958,7 +3975,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 brokerTasks[i] = ResolvePartitionFetchBrokerAsync(assignmentArray[i], cancellationToken);
             }
 
+#if NETSTANDARD2_0
+            await Task.WhenAll(brokerTasks.Take(assignmentCount)).ConfigureAwait(false);
+#else
             await Task.WhenAll(new ReadOnlySpan<Task<(TopicPartition Partition, BrokerNode? Broker)>>(brokerTasks, 0, assignmentCount)).ConfigureAwait(false);
+#endif
         }
         finally
         {
@@ -4446,7 +4467,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!updated)
             ScheduleLeaderRefresh(topic);
 
-        return ValueTask.CompletedTask;
+        return default;
     }
 
     private void UpdatePreferredReadReplica(string topic, FetchResponsePartition partitionResponse)
@@ -4532,7 +4553,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
-        TaskCompletionSource refreshCompletion;
+        TaskCompletionSource<bool> refreshCompletion;
         CancellationToken cancellationToken;
 
         lock (_leaderRefreshTasksLock)
@@ -4552,7 +4573,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return;
             }
 
-            refreshCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            refreshCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingLeaderRefreshTasks[topic] = refreshCompletion.Task;
         }
 
@@ -4561,7 +4582,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async Task ExecuteLeaderRefreshAsync(
         string topic,
-        TaskCompletionSource refreshCompletion,
+        TaskCompletionSource<bool> refreshCompletion,
         CancellationToken cancellationToken)
     {
         try
@@ -4584,7 +4605,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            refreshCompletion.TrySetResult();
+            refreshCompletion.TrySetResult(true);
         }
     }
 
@@ -5066,7 +5087,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(timestampsToSearch);
+        CompatibilityThrowHelpers.ThrowIfNull(timestampsToSearch);
 
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
@@ -5228,7 +5249,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        var closeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        var closeElapsedMs = CompatibilityBcl.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogConsumerCloseCompleted(closeElapsedMs);
 
         CancelActiveConsumeOperations();
@@ -5297,7 +5318,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await _connectionPool.DisposeAsync().ConfigureAwait(false);
         }
 
-        var disposeElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
+        var disposeElapsedMs = CompatibilityBcl.GetElapsedTime(disposeStart).TotalMilliseconds;
         LogConsumerDisposed(disposeElapsedMs);
     }
 

@@ -1,3 +1,9 @@
+#if NETSTANDARD2_0
+using Lock = System.Object;
+#else
+using Lock = System.Threading.Lock;
+#endif
+
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>

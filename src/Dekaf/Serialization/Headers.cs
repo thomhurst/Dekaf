@@ -212,7 +212,7 @@ public sealed class Headers : IEnumerable<Header>
     {
         if (!string.IsNullOrEmpty(value))
         {
-            Add(key, value);
+            Add(key, value!);
         }
         return this;
     }
@@ -398,7 +398,7 @@ public readonly record struct Header
     {
         // ASCII keys (99%+ of cases): byte count == char count. Ascii.IsValid is
         // SIMD-optimized and much cheaper than UTF8.GetByteCount for this case.
-        var keyBytes = Ascii.IsValid(Key) ? Key.Length : Encoding.UTF8.GetByteCount(Key);
+        var keyBytes = Key.All(static c => c <= 0x7F) ? Key.Length : Encoding.UTF8.GetByteCount(Key);
         var size = Record.VarIntSize(keyBytes) + keyBytes;
 
         if (IsValueNull)
