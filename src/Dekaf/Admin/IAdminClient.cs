@@ -96,6 +96,22 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Fences active producers for transactional IDs by initializing new producer epochs.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
+        IEnumerable<string> transactionalIds,
+        FenceProducersOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Forcefully aborts an open transaction on a topic partition.
+    /// </summary>
+    ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
+        AbortTransactionSpec transaction,
+        AbortTransactionOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Deletes consumer groups.
     /// </summary>
     ValueTask DeleteConsumerGroupsAsync(IEnumerable<string> groupIds, CancellationToken cancellationToken = default);
@@ -657,6 +673,63 @@ public sealed class ActiveProducerDescription
     public long LastTimestamp { get; init; }
     public int CoordinatorEpoch { get; init; }
     public long CurrentTransactionStartOffset { get; init; }
+}
+
+/// <summary>
+/// Options for fencing transactional producers.
+/// </summary>
+public sealed class FenceProducersOptions
+{
+    /// <summary>
+    /// Timeout in milliseconds used by the transaction coordinator while fencing.
+    /// </summary>
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Result of fencing producers for a transactional ID.
+/// </summary>
+public sealed class FenceProducersResultInfo
+{
+    public required string TransactionalId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public long ProducerId { get; init; } = -1;
+    public short ProducerEpoch { get; init; } = -1;
+}
+
+/// <summary>
+/// Specification for forcefully aborting an open transaction on a topic partition.
+/// </summary>
+public sealed class AbortTransactionSpec
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public long ProducerId { get; init; }
+    public short ProducerEpoch { get; init; }
+
+    /// <summary>
+    /// Transaction coordinator epoch. The default -1 matches admin abort semantics when
+    /// the caller wants the broker to validate producer state without coordinator fencing.
+    /// </summary>
+    public int CoordinatorEpoch { get; init; } = -1;
+}
+
+/// <summary>
+/// Options for forcefully aborting a transaction.
+/// </summary>
+public sealed class AbortTransactionOptions
+{
+}
+
+/// <summary>
+/// Result of forcefully aborting a transaction.
+/// </summary>
+public sealed class AbortTransactionResultInfo
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public long ProducerId { get; init; }
+    public short ProducerEpoch { get; init; }
+    public int CoordinatorEpoch { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
 }
 
 /// <summary>
