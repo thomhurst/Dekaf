@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -61,6 +62,41 @@ public sealed class PartitionedConsumerRuntimeTests
 
         await Assert.That(() => Snapshot(processed, firstPartition))
             .Eventually(offsets => offsets.IsEquivalentTo(new long[] { 0, 1 }), TimeSpan.FromSeconds(5));
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_RoutesViaConsumeBatchAsync()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var processed = new ConcurrentBag<long>();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    processed.Add(message.Offset);
+                    context.MarkProcessed(message);
+                }
+            },
+            new PartitionedProcessingOptions { MaxBufferedRecordsPerPartition = 8 },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(
+            CreateResult(partition, 0),
+            CreateResult(partition, 1),
+            CreateResult(partition, 2));
+
+        await Assert.That(() => processed.Count)
+            .Eventually(count => count.IsEqualTo(3), TimeSpan.FromSeconds(5));
+
+        await Assert.That(consumer.ConsumeOneCalls).IsEqualTo(0);
+        await Assert.That(consumer.ConsumeBatchCalls).IsGreaterThan(0);
 
         await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
     }
@@ -675,6 +711,8 @@ public sealed class PartitionedConsumerRuntimeTests
         private readonly HashSet<TopicPartition> _paused = [];
         private readonly List<IRebalanceListener> _rebalanceListeners = [];
         private readonly SemaphoreSlim _changed = new(0);
+        private int _consumeOneCalls;
+        private int _consumeBatchCalls;
 
         public IReadOnlySet<string> Subscription => new HashSet<string>(StringComparer.Ordinal);
 
@@ -718,6 +756,10 @@ public sealed class PartitionedConsumerRuntimeTests
         public List<TopicPartition[]> ResumeCalls { get; } = [];
 
         public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
+
+        public int ConsumeOneCalls => Volatile.Read(ref _consumeOneCalls);
+
+        public int ConsumeBatchCalls => Volatile.Read(ref _consumeBatchCalls);
 
         public TaskCompletionSource? CommitStarted { get; init; }
 
@@ -767,6 +809,8 @@ public sealed class PartitionedConsumerRuntimeTests
             TimeSpan timeout,
             CancellationToken cancellationToken = default)
         {
+            Interlocked.Increment(ref _consumeOneCalls);
+
             var deadline = timeout == Timeout.InfiniteTimeSpan
                 ? DateTimeOffset.MaxValue
                 : DateTimeOffset.UtcNow.Add(timeout);
@@ -799,12 +843,23 @@ public sealed class PartitionedConsumerRuntimeTests
         public async IAsyncEnumerable<ConsumeBatch<string, string>> ConsumeBatchAsync(
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.CompletedTask.ConfigureAwait(false);
-            throw new NotSupportedException();
-#pragma warning disable CS0162
-            yield break;
-#pragma warning restore CS0162
+            Interlocked.Increment(ref _consumeBatchCalls);
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (!TryDequeueBatch(out var results))
+                {
+                    await _changed.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                using var pending = CreatePendingFetchData(results);
+                yield return new ConsumeBatch<string, string>(
+                    pending,
+                    Serializers.String,
+                    Serializers.String,
+                    IsAssigned);
+            }
         }
 
         public async IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(
@@ -1009,6 +1064,83 @@ public sealed class PartitionedConsumerRuntimeTests
 
             result = default;
             return false;
+        }
+
+        private bool TryDequeueBatch(out List<ConsumeResult<string, string>> results)
+        {
+            lock (_gate)
+            {
+                var count = _records.Count;
+                TopicPartition batchPartition = default;
+                var hasBatchPartition = false;
+                results = [];
+
+                for (var i = 0; i < count; i++)
+                {
+                    var candidate = _records.Dequeue();
+                    var partition = new TopicPartition(candidate.Topic, candidate.Partition);
+                    if (_assignment.Contains(partition)
+                        && !_paused.Contains(partition)
+                        && (!hasBatchPartition || partition == batchPartition))
+                    {
+                        if (!hasBatchPartition)
+                        {
+                            batchPartition = partition;
+                            hasBatchPartition = true;
+                        }
+
+                        results.Add(candidate);
+                        continue;
+                    }
+
+                    _records.Enqueue(candidate);
+                }
+
+                return results.Count != 0;
+            }
+        }
+
+        private bool IsAssigned(TopicPartition partition)
+        {
+            lock (_gate)
+                return _assignment.Contains(partition);
+        }
+
+        private static PendingFetchData CreatePendingFetchData(IReadOnlyList<ConsumeResult<string, string>> results)
+        {
+            var first = results[0];
+            var baseOffset = first.Offset;
+            var baseTimestamp = first.TimestampMs;
+            var records = new Record[results.Count];
+
+            for (var i = 0; i < results.Count; i++)
+            {
+                var result = results[i];
+                records[i] = new Record
+                {
+                    OffsetDelta = checked((int)(result.Offset - baseOffset)),
+                    TimestampDelta = result.TimestampMs - baseTimestamp,
+                    IsKeyNull = true,
+                    IsValueNull = true
+                };
+            }
+
+            var recordBatch = new RecordBatch
+            {
+                BaseOffset = baseOffset,
+                BaseTimestamp = baseTimestamp,
+                MaxTimestamp = results[^1].TimestampMs,
+                LastOffsetDelta = records[^1].OffsetDelta,
+                PartitionLeaderEpoch = first.LeaderEpoch ?? -1,
+                Records = records
+            };
+
+            var pending = PendingFetchData.Create(
+                first.Topic,
+                first.Partition,
+                new List<RecordBatch> { recordBatch });
+            pending.EagerParseAll();
+            return pending;
         }
 
         private void RemoveAssignment(params TopicPartition[] partitions)
