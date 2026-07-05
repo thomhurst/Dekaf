@@ -81,6 +81,8 @@ public sealed class PartitionedProcessingOptions
     public PartitionStopPolicy StopPolicy { get; init; } = PartitionStopPolicy.Drain;
     public TimeSpan StopTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public PartitionWorkerErrorPolicy ErrorPolicy { get; init; } = PartitionWorkerErrorPolicy.StopConsumer;
+    public TimeSpan IgnoreRestartBackoff { get; init; } = TimeSpan.FromMilliseconds(100);
+    public TimeSpan IgnoreRestartBackoffMax { get; init; } = TimeSpan.FromSeconds(5);
     public PartitionCommitPolicy CommitPolicy { get; init; } = PartitionCommitPolicy.CommitCompletedOnRevoke;
     public TimeSpan CommitInterval { get; init; } = TimeSpan.FromSeconds(5);
 }
@@ -254,9 +256,9 @@ Default behavior is fail-fast:
 
 `StopPartition` is available for advanced users, but it needs careful operational handling because a stopped partition that remains assigned can cause lag.
 
-When `StopPartition` stops a failed partition, the runtime pauses it while it remains assigned. A later revoke/lost event clears that stopped state so a legitimate reassignment can start a fresh lane.
+When `StopPartition` stops a failed partition, the runtime logs the processor exception and pauses the partition while it remains assigned. A later revoke/lost event clears that stopped state so a legitimate reassignment can start a fresh lane.
 
-`Ignore` is opt-in only. It restarts the partition lane and keeps the rest of the run active. Prefer handling retries and dead-letter routing inside the processor so unexpected exceptions remain visible.
+`Ignore` is opt-in only. It logs the processor exception, waits with exponential backoff between restarts, restarts the partition lane, and keeps the rest of the run active. `IgnoreRestartBackoff` controls the first delay and `IgnoreRestartBackoffMax` caps the delay. Prefer handling retries and dead-letter routing inside the processor so unexpected exceptions remain visible.
 
 If a processor does not stop within `StopTimeout`, the runtime treats that timeout as fatal because it can no longer guarantee one active processor per partition.
 

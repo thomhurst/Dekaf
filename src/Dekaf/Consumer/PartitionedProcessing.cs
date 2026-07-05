@@ -1,5 +1,7 @@
 using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dekaf.Consumer;
 
@@ -23,9 +25,21 @@ public static class PartitionedConsumerExtensions
         options ??= new PartitionedProcessingOptions();
         options.Validate();
 
-        var runtime = new PartitionedConsumerRuntime<TKey, TValue>(consumer, processor, options);
+        var logger = consumer is IConsumerLoggerFactorySource loggerSource
+            ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
+            : null;
+        var runtime = new PartitionedConsumerRuntime<TKey, TValue>(
+            consumer,
+            processor,
+            options,
+            logger);
         await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
     }
+}
+
+internal interface IConsumerLoggerFactorySource
+{
+    ILoggerFactory? LoggerFactory { get; }
 }
 
 /// <summary>
@@ -115,6 +129,16 @@ public sealed class PartitionedProcessingOptions
     public PartitionWorkerErrorPolicy ErrorPolicy { get; init; } = PartitionWorkerErrorPolicy.StopConsumer;
 
     /// <summary>
+    /// Gets the first delay before restarting a failed lane when <see cref="ErrorPolicy"/> is <see cref="PartitionWorkerErrorPolicy.Ignore"/>.
+    /// </summary>
+    public TimeSpan IgnoreRestartBackoff { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// Gets the maximum exponential restart delay for failed lanes when <see cref="ErrorPolicy"/> is <see cref="PartitionWorkerErrorPolicy.Ignore"/>.
+    /// </summary>
+    public TimeSpan IgnoreRestartBackoffMax { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Gets how completed partition offsets are committed.
     /// </summary>
     public PartitionCommitPolicy CommitPolicy { get; init; } = PartitionCommitPolicy.CommitCompletedOnRevoke;
@@ -130,6 +154,15 @@ public sealed class PartitionedProcessingOptions
 
         if (StopTimeout < TimeSpan.Zero && StopTimeout != Timeout.InfiniteTimeSpan)
             throw new ArgumentOutOfRangeException(nameof(StopTimeout));
+
+        if (IgnoreRestartBackoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoff));
+
+        if (IgnoreRestartBackoffMax < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoffMax));
+
+        if (IgnoreRestartBackoffMax < IgnoreRestartBackoff)
+            throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoffMax));
 
         if (CommitInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(CommitInterval));
@@ -225,9 +258,11 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly IKafkaConsumer<TKey, TValue> _consumer;
     private readonly PartitionProcessor<TKey, TValue> _processor;
     private readonly PartitionedProcessingOptions _options;
+    private readonly ILogger _logger;
     private readonly Dictionary<TopicPartition, PartitionLane<TKey, TValue>> _lanes = [];
     private readonly HashSet<TopicPartition> _pausedByRuntime = [];
     private readonly HashSet<TopicPartition> _stoppedByFailure = [];
+    private readonly Dictionary<TopicPartition, int> _ignoreRestartFailures = [];
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
     private readonly CancellationTokenSource _failureCancellation = new();
     private readonly object _failureGate = new();
@@ -237,11 +272,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     public PartitionedConsumerRuntime(
         IKafkaConsumer<TKey, TValue> consumer,
         PartitionProcessor<TKey, TValue> processor,
-        PartitionedProcessingOptions options)
+        PartitionedProcessingOptions options,
+        ILogger? logger)
     {
         _consumer = consumer;
         _processor = processor;
         _options = options;
+        _logger = logger ?? NullLogger.Instance;
         _commands = Channel.CreateUnbounded<RuntimeCommand<TKey, TValue>>(new UnboundedChannelOptions
         {
             AllowSynchronousContinuations = false,
@@ -382,6 +419,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         {
             _stoppedByFailure.Remove(partition);
             _pausedByRuntime.Remove(partition);
+            _ignoreRestartFailures.Remove(partition);
         }
 
         foreach (var partition in _lanes.Keys.Where(partition => !assignment.Contains(partition)).ToArray())
@@ -468,6 +506,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer)
         {
+            LogPartitionProcessorFailureStoppingConsumer(
+                lane.TopicPartition,
+                exception);
             CaptureFailure(exception);
             _failureCancellation.Cancel();
             return;
@@ -546,6 +587,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             _stoppedByFailure.Add(lane.TopicPartition);
             if (_pausedByRuntime.Add(lane.TopicPartition))
                 _consumer.Partitions.Pause(lane.TopicPartition);
+
+            LogPartitionProcessorFailureStoppingPartition(
+                lane.TopicPartition,
+                exception);
         }
         else if (_pausedByRuntime.Remove(lane.TopicPartition))
         {
@@ -563,6 +608,27 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             && _consumer.Partitions.Assignment.Contains(lane.TopicPartition)
             && !_lanes.ContainsKey(lane.TopicPartition))
         {
+            if (lane.LastProcessedOffset.HasValue)
+                _ignoreRestartFailures.Remove(lane.TopicPartition);
+
+            var restartAttempt = RecordIgnoreRestartFailure(lane.TopicPartition);
+            var restartDelay = GetIgnoreRestartDelay(restartAttempt);
+            LogPartitionProcessorFailureIgnored(
+                lane.TopicPartition,
+                restartAttempt,
+                restartDelay,
+                exception);
+
+            if (restartDelay > TimeSpan.Zero)
+                await Task.Delay(restartDelay, cancellationToken).ConfigureAwait(false);
+
+            if (_failureCancellation.IsCancellationRequested
+                || !_consumer.Partitions.Assignment.Contains(lane.TopicPartition)
+                || _lanes.ContainsKey(lane.TopicPartition))
+            {
+                return;
+            }
+
             StartLane(lane.TopicPartition);
         }
     }
@@ -598,6 +664,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         foreach (var partition in partitions)
         {
             _stoppedByFailure.Remove(partition);
+            _ignoreRestartFailures.Remove(partition);
             await StopPartitionAsync(partition, reason, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -610,11 +677,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         if (!_lanes.TryGetValue(partition, out var lane))
         {
             _pausedByRuntime.Remove(partition);
+            _ignoreRestartFailures.Remove(partition);
             return;
         }
 
         _lanes.Remove(partition);
         _pausedByRuntime.Remove(partition);
+        _ignoreRestartFailures.Remove(partition);
 
         await StopLaneAsync(
             lane,
@@ -694,6 +763,33 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             or PartitionCommitPolicy.CommitCompletedPeriodically;
     }
 
+    private int RecordIgnoreRestartFailure(TopicPartition partition)
+    {
+        var nextAttempt = _ignoreRestartFailures.TryGetValue(partition, out var current)
+            && current < int.MaxValue
+                ? current + 1
+                : 1;
+
+        _ignoreRestartFailures[partition] = nextAttempt;
+        return nextAttempt;
+    }
+
+    private TimeSpan GetIgnoreRestartDelay(int attempt)
+    {
+        var delay = _options.IgnoreRestartBackoff;
+        var max = _options.IgnoreRestartBackoffMax;
+
+        for (var i = 1; i < attempt && delay < max; i++)
+        {
+            var doubledTicks = delay.Ticks > max.Ticks / 2
+                ? max.Ticks
+                : delay.Ticks * 2;
+            delay = TimeSpan.FromTicks(doubledTicks);
+        }
+
+        return delay;
+    }
+
     private void ThrowIfFailed()
     {
         _failure?.Throw();
@@ -712,6 +808,43 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             if (command.Kind == RuntimeCommandKind.Commit)
                 command.Completion!.TrySetCanceled();
         }
+    }
+
+    private void LogPartitionProcessorFailureStoppingConsumer(
+        TopicPartition partition,
+        Exception exception)
+    {
+        _logger.LogError(
+            exception,
+            "Partition processor for {Topic}-{Partition} failed; stopping partitioned consumer.",
+            partition.Topic,
+            partition.Partition);
+    }
+
+    private void LogPartitionProcessorFailureStoppingPartition(
+        TopicPartition partition,
+        Exception exception)
+    {
+        _logger.LogWarning(
+            exception,
+            "Partition processor for {Topic}-{Partition} failed under StopPartition; pausing partition.",
+            partition.Topic,
+            partition.Partition);
+    }
+
+    private void LogPartitionProcessorFailureIgnored(
+        TopicPartition partition,
+        int restartAttempt,
+        TimeSpan restartDelay,
+        Exception exception)
+    {
+        _logger.LogWarning(
+            exception,
+            "Partition processor for {Topic}-{Partition} failed under Ignore; restarting after {RestartDelayMs}ms (attempt {RestartAttempt}).",
+            partition.Topic,
+            partition.Partition,
+            restartDelay.TotalMilliseconds,
+            restartAttempt);
     }
 }
 

@@ -3,6 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -257,7 +258,8 @@ public sealed class PartitionedConsumerRuntimeTests
     public async Task RunPartitionedAsync_StopPartitionPausesUntilPartitionLeavesAssignment()
     {
         var partition = new TopicPartition("topic-a", 0);
-        var consumer = new TestConsumer();
+        var loggerFactory = new CapturingLoggerFactory();
+        var consumer = new TestConsumer { LoggerFactory = loggerFactory };
         consumer.AssignFromCoordinator(partition);
 
         var attempts = 0;
@@ -279,6 +281,11 @@ public sealed class PartitionedConsumerRuntimeTests
             .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
         await Assert.That(() => consumer.Paused.Contains(partition))
             .Eventually(paused => paused.IsTrue(), TimeSpan.FromSeconds(5));
+        await Assert.That(() => loggerFactory.Entries.Any(
+                static entry => entry.LogLevel == LogLevel.Warning
+                    && entry.Exception is InvalidOperationException
+                    && entry.Message.Contains("pausing partition", StringComparison.Ordinal)))
+            .Eventually(logged => logged.IsTrue(), TimeSpan.FromSeconds(5));
 
         consumer.RevokeFromCoordinator(partition);
         consumer.AssignFromCoordinator(partition);
@@ -325,6 +332,46 @@ public sealed class PartitionedConsumerRuntimeTests
 
         await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
         await Assert.That(consumer.PauseCalls).IsEmpty();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_IgnoreBacksOffAndLogsPersistentFailures()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var loggerFactory = new CapturingLoggerFactory();
+        var consumer = new TestConsumer { LoggerFactory = loggerFactory };
+        consumer.AssignFromCoordinator(partition);
+
+        var attempts = 0;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync<string, string>(
+            (_, _) =>
+            {
+                Interlocked.Increment(ref attempts);
+                throw new InvalidOperationException("still failing");
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                IgnoreRestartBackoff = TimeSpan.FromSeconds(30),
+                IgnoreRestartBackoffMax = TimeSpan.FromSeconds(30)
+            },
+            cts.Token).AsTask();
+
+        await Assert.That(() => Volatile.Read(ref attempts))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await Assert.That(() => loggerFactory.Entries.Any(
+                static entry => entry.LogLevel == LogLevel.Warning
+                    && entry.Exception is InvalidOperationException
+                    && entry.Message.Contains("restarting after", StringComparison.Ordinal)
+                    && entry.Message.Contains("attempt 1", StringComparison.Ordinal)))
+            .Eventually(logged => logged.IsTrue(), TimeSpan.FromSeconds(5));
+
+        await Task.Delay(100, cts.Token).ConfigureAwait(false);
+        await Assert.That(Volatile.Read(ref attempts)).IsEqualTo(1);
 
         await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
     }
@@ -501,7 +548,8 @@ public sealed class PartitionedConsumerRuntimeTests
         IConsumerPositions,
         IConsumerPartitions,
         IConsumerOffsets,
-        IConsumerRebalanceEventSource
+        IConsumerRebalanceEventSource,
+        IConsumerLoggerFactorySource
     {
         private readonly object _gate = new();
         private readonly Queue<ConsumeResult<string, string>> _records = [];
@@ -556,6 +604,8 @@ public sealed class PartitionedConsumerRuntimeTests
         public TaskCompletionSource? CommitStarted { get; init; }
 
         public TaskCompletionSource? ReleaseCommit { get; init; }
+
+        public ILoggerFactory? LoggerFactory { get; init; }
 
         IReadOnlySet<TopicPartition> IConsumerPartitions.Assignment => Assignment;
 
@@ -886,4 +936,34 @@ public sealed class PartitionedConsumerRuntimeTests
             }
         }
     }
+
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        public ConcurrentQueue<LogEntry> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
+
+        public void AddProvider(ILoggerProvider provider) { }
+
+        public void Dispose() { }
+    }
+
+    private sealed class CapturingLogger(ConcurrentQueue<LogEntry> entries) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            entries.Enqueue(new LogEntry(logLevel, formatter(state, exception), exception));
+        }
+    }
+
+    private sealed record LogEntry(LogLevel LogLevel, string Message, Exception? Exception);
 }

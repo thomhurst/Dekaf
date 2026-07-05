@@ -564,6 +564,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
+    IConsumerLoggerFactorySource,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
@@ -610,6 +611,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly bool _ownsInfrastructure;
     private readonly ConsumerCoordinator? _coordinator;
     private readonly CompressionCodecRegistry _compressionCodecs;
+    private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger _logger;
 
     private readonly ConcurrentDictionary<string, byte> _subscription = new();
@@ -892,6 +894,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _memoryBudget = memoryBudget;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
+        _loggerFactory = loggerFactory;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
@@ -964,6 +967,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return _coordinator?.RegisterRuntimeRebalanceListener(listener) ?? NoopDisposable.Instance;
     }
+
+    ILoggerFactory? IConsumerLoggerFactorySource.LoggerFactory => _loggerFactory;
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
