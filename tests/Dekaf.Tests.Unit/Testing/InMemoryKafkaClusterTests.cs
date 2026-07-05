@@ -80,6 +80,75 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_ManualOffsetStore_WithAutoCommit_CommitsStoredOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = false
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+
+        await producer.ProduceAsync("jobs", "a", "one");
+        consumer.Subscribe("jobs");
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var offsetsBeforeStore = await admin.ListConsumerGroupOffsetsAsync("workers");
+        consumer.StoreOffset(result!.Value);
+        await consumer.CloseAsync();
+        var offsetsAfterStore = await admin.ListConsumerGroupOffsetsAsync("workers");
+
+        await Assert.That(offsetsBeforeStore.ContainsKey(partition)).IsFalse();
+        await Assert.That(offsetsAfterStore[partition]).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments("Seek")]
+    [Arguments("SeekToBeginning")]
+    [Arguments("SeekToEnd")]
+    public async Task Consumer_ManualOffsetStore_CommitAsyncDoesNotCommitSeekedPositionUntilStored(string seekOperation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                EnableAutoOffsetStore = false
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+
+        await producer.ProduceAsync("jobs", "a", "one");
+        await producer.ProduceAsync("jobs", "b", "two");
+        consumer.Subscribe("jobs");
+        ApplySeek(consumer, seekOperation, partition);
+
+        await consumer.CommitAsync();
+
+        var offsetsBeforeStore = await admin.ListConsumerGroupOffsetsAsync("workers");
+
+        consumer.StoreOffset(new TopicPartitionOffset("jobs", 0, 1));
+
+        await consumer.CommitAsync();
+
+        var offsetsAfterStore = await admin.ListConsumerGroupOffsetsAsync("workers");
+
+        await Assert.That(offsetsBeforeStore.ContainsKey(partition)).IsFalse();
+        await Assert.That(offsetsAfterStore[partition]).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Admin_CreatesDescribesAndDeletesTopics()
     {
         var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions { AutoCreateTopics = false });
@@ -606,5 +675,26 @@ public sealed class InMemoryKafkaClusterTests
             BindingFlags.Instance | BindingFlags.NonPublic)!;
 
         return (Task)method.Invoke(cluster, [timeout, cancellationToken])!;
+    }
+
+    private static void ApplySeek(
+        InMemoryConsumer<string, string> consumer,
+        string seekOperation,
+        TopicPartition partition)
+    {
+        switch (seekOperation)
+        {
+            case "Seek":
+                consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 1));
+                break;
+            case "SeekToBeginning":
+                consumer.SeekToBeginning(partition);
+                break;
+            case "SeekToEnd":
+                consumer.SeekToEnd(partition);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(seekOperation), seekOperation, null);
+        }
     }
 }

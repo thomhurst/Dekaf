@@ -642,7 +642,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //   a single fetch using a stale position before being updated by the next operation.
     //   Adding locks would defeat the purpose of lock-free consumption.
     private readonly ConcurrentDictionary<TopicPartition, long> _positions = new();      // Consumed position (what app has seen)
-    private readonly ConcurrentDictionary<TopicPartition, long> _dirtyPositions = new(); // Positions changed since last successful commit
+    private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();  // Offsets staged for commit
+    private readonly ConcurrentDictionary<TopicPartition, long> _dirtyStoredOffsets = new(); // Stored offsets changed since last successful commit
+    private readonly ConcurrentDictionary<TopicPartition, int> _storedOffsetLeaderEpochs = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
     // Last consumed record-batch leader epoch, sent as FetchRequest.LastFetchedEpoch.
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
@@ -2303,8 +2305,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!TryGetConsumedPosition(pending, out var tp, out var nextOffset, out var leaderEpoch))
             return;
 
-        SetPosition(tp, nextOffset, dirty: true);
-        SetLastConsumedLeaderEpoch(tp, leaderEpoch);
+        RecordConsumedPosition(tp, nextOffset, leaderEpoch);
 
         if (!_prefetchEnabled)
         {
@@ -2320,8 +2321,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var pending = _pendingFetches.Peek();
         if (TryGetConsumedPosition(pending, out var tp, out var nextOffset, out var leaderEpoch))
         {
-            SetPosition(tp, nextOffset, dirty: true);
-            SetLastConsumedLeaderEpoch(tp, leaderEpoch);
+            RecordConsumedPosition(tp, nextOffset, leaderEpoch);
         }
     }
 
@@ -2369,9 +2369,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         _positions[partition] = position;
         if (dirty)
-            _dirtyPositions[partition] = position;
+        {
+            if (_options.EnableAutoOffsetStore)
+                StoreOffsetCore(partition, position, GetLastConsumedLeaderEpoch(partition));
+        }
         else
-            _dirtyPositions.TryRemove(partition, out _);
+        {
+            ClearStoredOffset(partition);
+        }
+    }
+
+    private void RecordConsumedPosition(TopicPartition partition, long position, int leaderEpoch)
+    {
+        _positions[partition] = position;
+        SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+        if (_options.EnableAutoOffsetStore)
+            StoreOffsetCore(partition, position, leaderEpoch);
+    }
+
+    private void StoreOffsetCore(TopicPartition partition, long offset, int leaderEpoch)
+    {
+        _storedOffsets[partition] = offset;
+        _dirtyStoredOffsets[partition] = offset;
+
+        if (leaderEpoch >= 0)
+            _storedOffsetLeaderEpochs[partition] = leaderEpoch;
+        else
+            _storedOffsetLeaderEpochs.TryRemove(partition, out _);
+    }
+
+    private void ClearStoredOffset(TopicPartition partition)
+    {
+        _storedOffsets.TryRemove(partition, out _);
+        _dirtyStoredOffsets.TryRemove(partition, out _);
+        _storedOffsetLeaderEpochs.TryRemove(partition, out _);
     }
 
     private void SetLastConsumedLeaderEpoch(TopicPartition partition, int leaderEpoch)
@@ -2390,15 +2421,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _lastConsumedLeaderEpochs.TryRemove(partition, out _);
     }
 
-    private void ClearDirtyPositionIfCommitted(TopicPartition partition, long committedOffset)
+    private void ClearDirtyStoredOffsetIfCommitted(TopicPartition partition, long committedOffset)
     {
-        _dirtyPositions.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
+        _dirtyStoredOffsets.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
     }
 
     private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
     {
         _committed[partition] = committedOffset;
-        ClearDirtyPositionIfCommitted(partition, committedOffset);
+        ClearDirtyStoredOffsetIfCommitted(partition, committedOffset);
     }
 
     private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
@@ -2767,6 +2798,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode == OffsetCommitMode.Manual)
             FlushActiveConsumedPosition();
 
+        await CommitStoredOffsetsAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask CommitStoredOffsetsAsync(CancellationToken cancellationToken)
+    {
         if (_coordinator is null)
             return;
 
@@ -2774,10 +2811,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int offsetCount;
 
         {
-            // Commit only positions that changed since the last successful commit.
+            // Commit only offsets that changed since the last successful commit.
             // Snapshot the concurrent dictionary to avoid race conditions during enumeration
-            var dirtyPositionsSnapshot = _dirtyPositions.ToArray();
-            offsetCount = dirtyPositionsSnapshot.Length;
+            var dirtyOffsetsSnapshot = _dirtyStoredOffsets.ToArray();
+            offsetCount = dirtyOffsetsSnapshot.Length;
             if (offsetCount == 0)
                 return;
 
@@ -2788,13 +2825,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             try
             {
                 int index = 0;
-                foreach (var kvp in dirtyPositionsSnapshot)
+                foreach (var kvp in dirtyOffsetsSnapshot)
                 {
                     offsetsArray[index++] = new TopicPartitionOffset(
                         kvp.Key.Topic,
                         kvp.Key.Partition,
                         kvp.Value,
-                        GetLastConsumedLeaderEpoch(kvp.Key));
+                        GetStoredOffsetLeaderEpoch(kvp.Key));
                 }
 
                 // Create array segment to pass only the used portion
@@ -2839,6 +2876,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         InvokeOnCommitInterceptors(offsetsList);
     }
 
+    public void StoreOffset(ConsumeResult<TKey, TValue> result)
+    {
+        if (result.IsPartitionEof)
+            return;
+
+        StoreOffset(new TopicPartitionOffset(
+            result.Topic,
+            result.Partition,
+            checked(result.Offset + 1),
+            result.LeaderEpoch ?? -1));
+    }
+
+    public void StoreOffset(TopicPartitionOffset offset)
+    {
+        StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+    }
+
     public async ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default)
     {
         if (_committed.TryGetValue(partition, out var offset))
@@ -2867,8 +2921,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode == OffsetCommitMode.Manual
             && TryGetActiveConsumedPosition(partition, out var activePosition, out var leaderEpoch))
         {
-            SetPosition(partition, activePosition, dirty: true);
-            SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+            RecordConsumedPosition(partition, activePosition, leaderEpoch);
             return activePosition;
         }
 
@@ -2910,11 +2963,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         LogSeek(offset.Topic, offset.Partition, offset.Offset);
         var tp = new TopicPartition(offset.Topic, offset.Partition);
         // Update positions (thread-safe with ConcurrentDictionary)
-        SetPosition(tp, offset.Offset, dirty: true);
         if (offset.LeaderEpoch >= 0)
             SetLastConsumedLeaderEpoch(tp, offset.LeaderEpoch);
         else
             ClearLastConsumedLeaderEpoch(tp);
+        SetPosition(tp, offset.Offset, dirty: true);
         _fetchPositions[tp] = offset.Offset;
 
         // Reset EOF state for this partition so it can fire again
@@ -2927,8 +2980,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Update positions (thread-safe with ConcurrentDictionary)
         foreach (var partition in partitions)
         {
-            SetPosition(partition, 0, dirty: true);
             ClearLastConsumedLeaderEpoch(partition);
+            SetPosition(partition, 0, dirty: true);
             _fetchPositions[partition] = 0;
         }
 
@@ -2945,8 +2998,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Update positions (thread-safe with ConcurrentDictionary)
         foreach (var partition in partitions)
         {
-            SetPosition(partition, -1, dirty: true); // Special value meaning end
             ClearLastConsumedLeaderEpoch(partition);
+            SetPosition(partition, -1, dirty: true); // Special value meaning end
             _fetchPositions[partition] = -1; // Special value meaning end
         }
 
@@ -2968,7 +3021,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var partition in partitions)
         {
             _positions.TryRemove(partition, out _);
-            _dirtyPositions.TryRemove(partition, out _);
+            ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _committed.TryRemove(partition, out _);
@@ -4412,6 +4465,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int GetLastConsumedLeaderEpoch(TopicPartition partition) =>
         _lastConsumedLeaderEpochs.GetValueOrDefault(partition, -1);
 
+    private int GetStoredOffsetLeaderEpoch(TopicPartition partition) =>
+        _storedOffsetLeaderEpochs.GetValueOrDefault(partition, -1);
+
     private void ThrowPendingFetchException()
     {
         if (_pendingFetchExceptions.TryDequeue(out var exception))
@@ -4927,7 +4983,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (_coordinator is null || _coordinator.State != CoordinatorState.Stable)
                     continue;
 
-                await CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -4939,7 +4995,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     await Task.Delay(200, cancellationToken).ConfigureAwait(false);
-                    await CommitAsync(cancellationToken).ConfigureAwait(false);
+                    await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
                 }
                 catch { /* Best effort — will retry on next interval */ }
             }
@@ -5013,13 +5069,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var partitionStopCancellation = await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
 
         // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
-        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_dirtyPositions.IsEmpty)
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_dirtyStoredOffsets.IsEmpty)
         {
             for (var attempt = 0; attempt < 3; attempt++)
             {
                 try
                 {
-                    await CommitAsync(cancellationToken).ConfigureAwait(false);
+                    await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
                     LogCommittedPendingOffsets();
                     break;
                 }

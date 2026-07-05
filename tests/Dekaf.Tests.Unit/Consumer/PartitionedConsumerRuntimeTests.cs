@@ -902,6 +902,14 @@ public sealed class PartitionedConsumerRuntimeTests
                 CommitCalls.Add(offsets.ToArray());
         }
 
+        public void StoreOffset(ConsumeResult<string, string> result)
+        {
+        }
+
+        public void StoreOffset(TopicPartitionOffset offset)
+        {
+        }
+
         public ValueTask CloseAsync(CancellationToken cancellationToken = default)
             => ValueTask.CompletedTask;
 

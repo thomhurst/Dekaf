@@ -452,4 +452,73 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             await Assert.That(committedValue!.Value).IsGreaterThanOrEqualTo(3);
         }
     }
+
+    [Test]
+    public async Task OffsetCommitMode_Auto_WithManualOffsetStore_CommitsOnlyStoredOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 3; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
+            .WithOffsetCommitMode(OffsetCommitMode.Auto)
+            .WithAutoOffsetStore(false)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), consumeCts.Token).ConfigureAwait(false);
+        var second = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), consumeCts.Token).ConfigureAwait(false);
+
+        await Assert.That(first).IsNotNull();
+        await Assert.That(second).IsNotNull();
+        consumer.StoreOffset(first!.Value);
+
+        var tp = new TopicPartition(topic, 0);
+        using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        long? committedOffset = null;
+        while (!commitCts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                var committed = await consumer.GetCommittedOffsetAsync(tp).ConfigureAwait(false);
+                if (committed is not null)
+                {
+                    committedOffset = committed;
+                    break;
+                }
+            }
+            catch (IOException ex)
+            {
+                TestContext.Current?.OutputWriter?.WriteLine($"Manual offset store polling: IOException caught, retrying: {ex.Message}");
+            }
+
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+
+        await Assert.That(committedOffset).IsEqualTo(1);
+    }
 }

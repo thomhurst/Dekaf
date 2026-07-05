@@ -77,6 +77,13 @@ public sealed class ConsumerOptions
     public int AutoCommitIntervalMs { get; init; } = 5000;
 
     /// <summary>
+    /// Automatically stores each consumed message's next offset for auto-commit.
+    /// Disable to call <c>StoreOffset</c> after processing succeeds while keeping
+    /// automatic background commits enabled.
+    /// </summary>
+    public bool EnableAutoOffsetStore { get; init; } = true;
+
+    /// <summary>
     /// Auto offset reset behavior.
     /// </summary>
     public AutoOffsetReset AutoOffsetReset { get; init; } = AutoOffsetReset.Latest;

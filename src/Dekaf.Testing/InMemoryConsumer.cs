@@ -25,6 +25,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
+    private readonly Dictionary<TopicPartition, long> _storedOffsets = [];
     private readonly string? _memberId;
     private string? _subscriptionPattern;
     private bool _disposed;
@@ -206,6 +207,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            _storedOffsets.Clear();
             UnregisterConsumerGroupMemberUnderLock();
         }
     }
@@ -299,7 +301,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         lock (_gate)
-            CommitCurrentOffsets();
+            CommitStoredOffsets();
 
         return ValueTask.CompletedTask;
     }
@@ -318,6 +320,27 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         return ValueTask.CompletedTask;
     }
 
+    public void StoreOffset(ConsumeResult<TKey, TValue> result)
+    {
+        ThrowIfDisposed();
+        if (result.IsPartitionEof)
+            return;
+
+        StoreOffset(new TopicPartitionOffset(
+            result.Topic,
+            result.Partition,
+            checked(result.Offset + 1),
+            result.LeaderEpoch ?? -1));
+    }
+
+    public void StoreOffset(TopicPartitionOffset offset)
+    {
+        ThrowIfDisposed();
+
+        lock (_gate)
+            _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+    }
+
     public ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -331,7 +354,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return ValueTask.CompletedTask;
 
             if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                CommitCurrentOffsets();
+                CommitStoredOffsets();
 
             UnregisterConsumerGroupMemberUnderLock();
             _disposed = true;
@@ -372,7 +395,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         lock (_gate)
-            _positions[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+        {
+            var partition = new TopicPartition(offset.Topic, offset.Partition);
+            _positions[partition] = offset.Offset;
+            if (_options.EnableAutoOffsetStore)
+                _storedOffsets[partition] = offset.Offset;
+        }
     }
 
     public void SeekToBeginning(params TopicPartition[] partitions)
@@ -383,7 +411,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             foreach (var partition in SelectTargetPartitions(partitions))
-                _positions[partition] = _cluster.GetWatermarks(partition).Low;
+            {
+                var position = _cluster.GetWatermarks(partition).Low;
+                _positions[partition] = position;
+                if (_options.EnableAutoOffsetStore)
+                    _storedOffsets[partition] = position;
+            }
         }
     }
 
@@ -395,7 +428,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             foreach (var partition in SelectTargetPartitions(partitions))
-                _positions[partition] = _cluster.GetWatermarks(partition).High;
+            {
+                var position = _cluster.GetWatermarks(partition).High;
+                _positions[partition] = position;
+                if (_options.EnableAutoOffsetStore)
+                    _storedOffsets[partition] = position;
+            }
         }
     }
 
@@ -422,6 +460,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            _storedOffsets.Clear();
             UnregisterConsumerGroupMemberUnderLock();
         }
     }
@@ -457,6 +496,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _assignment.Remove(partition);
                 _paused.Remove(partition);
                 _positions.Remove(partition);
+                _storedOffsets.Remove(partition);
             }
 
             RegisterConsumerGroupMemberUnderLock();
@@ -538,8 +578,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 selected = record;
                 selectedPartition = partition;
                 _positions[partition] = record.Offset + 1;
+                if (_options.EnableAutoOffsetStore)
+                    _storedOffsets[partition] = record.Offset + 1;
                 if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                    CommitCurrentOffsets();
+                    CommitStoredOffsets();
                 break;
             }
         }
@@ -581,6 +623,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _assignment.Clear();
         _paused.Clear();
         _positions.Clear();
+        _storedOffsets.Clear();
 
         foreach (var (partition, position) in nextPositions)
         {
@@ -620,13 +663,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         return match.Success && match.Index == 0 && match.Length == topic.Length;
     }
 
-    private void CommitCurrentOffsets()
+    private void CommitStoredOffsets()
+        => CommitOffsetsFrom(_storedOffsets);
+
+    private void CommitOffsetsFrom(Dictionary<TopicPartition, long> positions)
     {
         if (_options.GroupId is null)
             return;
 
         var assignment = GetCurrentAssignmentUnderLock();
-        var offsets = _positions
+        var offsets = positions
             .Where(item => assignment.Contains(item.Key))
             .Select(item => new TopicPartitionOffset(
                 item.Key.Topic,
