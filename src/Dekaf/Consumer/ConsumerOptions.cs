@@ -476,7 +476,9 @@ public interface IRebalanceListener
 /// Non-cancellation exceptions follow the rebalance listener policy: they are caught
 /// and logged at <c>Error</c> level. <see cref="OperationCanceledException"/> follows
 /// the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> token or internal
-/// disposal shutdown token.
+/// disposal shutdown token, but close/disposal teardown still runs before
+/// <c>CloseAsync</c> rethrows the cancellation. The callback is bounded by a
+/// five-second timeout.
 /// </remarks>
 public interface IPartitionStopListener
 {

@@ -265,6 +265,10 @@ auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal:
 .WithRebalanceListener(new MyRebalanceListener())
 ```
 
+The stop callback is best-effort and bounded to five seconds. If it observes
+shutdown cancellation, Dekaf still completes local cleanup before rethrowing the
+cancellation from `CloseAsync`.
+
 ## Networking
 
 ### WithConnectionsMaxIdle

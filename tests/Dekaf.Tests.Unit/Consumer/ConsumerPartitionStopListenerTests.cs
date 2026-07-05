@@ -55,6 +55,7 @@ public sealed class ConsumerPartitionStopListenerTests
             .Throws<OperationCanceledException>();
         await Assert.That(listener.CancellationTokens).Count().IsEqualTo(1);
         await Assert.That(listener.CancellationTokens[0].IsCancellationRequested).IsTrue();
+        await Assert.That(consumer.Assignment).IsEmpty();
     }
 
     [Test]

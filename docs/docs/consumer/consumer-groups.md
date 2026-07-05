@@ -229,6 +229,10 @@ When a consumer leaves gracefully (`await using` or `CloseAsync`):
 4. Consumer sends `LeaveGroup` and releases resources
 5. Remaining consumers get its partitions
 
+The stop callback is bounded to five seconds. If it is cancelled, Dekaf still
+clears local assignment and releases resources before `CloseAsync` rethrows the
+cancellation.
+
 Cancel the token passed to `ConsumeAsync` before closing when you need to stop a pending fetch promptly during shutdown.
 
 ### Maximum Parallelism

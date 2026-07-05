@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -571,6 +572,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// cancellation and timeout handling (~10 checks per second).
     /// </summary>
     private const int AllPartitionsPausedDelayMs = 100;
+    private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ConsumerOptions _options;
 
@@ -1170,15 +1172,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // yield zero items on the second and third passes.
         var partitionList = partitions as IReadOnlyList<TopicPartition> ?? partitions.ToList();
 
+        RemoveAssignedPartitions(partitionList, clearAll: false);
+    }
+
+    private void RemoveAssignedPartitions(IReadOnlyCollection<TopicPartition> partitions, bool clearAll)
+    {
+        if (partitions.Count == 0)
+            return;
+
         var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            foreach (var partition in partitionList)
+            if (clearAll)
             {
-                _assignment.Remove(partition);
+                _assignment.Clear();
             }
-            hadPaused = RemovePartitionState(partitionList);
+            else
+            {
+                foreach (var partition in partitions)
+                {
+                    _assignment.Remove(partition);
+                }
+            }
+
+            hadPaused = RemovePartitionState(partitions);
 
             PublishAssignmentSnapshot();
         }
@@ -1188,7 +1206,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Clear any pending fetch data for the removed partitions
-        ClearFetchBufferForPartitions(partitionList);
+        ClearFetchBufferForPartitions(partitions);
 
         if (hadPaused)
             PublishPausedSnapshot();
@@ -4840,7 +4858,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Step 5: Notify partition-scoped resources of normal stop before final commit/leave.
-        await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
+        var partitionStopCancellation = await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
 
         // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_dirtyPositions.IsEmpty)
@@ -4900,52 +4918,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         await _telemetryManager.StopAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
 
         LogConsumerClosed();
+
+        if (partitionStopCancellation is not null)
+            ExceptionDispatchInfo.Capture(partitionStopCancellation).Throw();
     }
 
-    private async ValueTask InvokePartitionStopListenerAsync(CancellationToken cancellationToken)
+    private async ValueTask<OperationCanceledException?> InvokePartitionStopListenerAsync(CancellationToken cancellationToken)
     {
         if (_options.RebalanceListener is not IPartitionStopListener listener)
-            return;
+            return null;
 
         var partitions = _assignmentSnapshot.ToArray();
         if (partitions.Length == 0)
-            return;
+            return null;
 
         LogPartitionStopListenerCall(partitions.Length);
         try
         {
-            await listener.OnPartitionsStoppedAsync(partitions, cancellationToken).ConfigureAwait(false);
+            var listenerTask = listener.OnPartitionsStoppedAsync(partitions, cancellationToken).AsTask();
+            await listenerTask.WaitAsync(PartitionStopListenerTimeout, cancellationToken).ConfigureAwait(false);
+            return null;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException ex)
+        {
+            return ex;
+        }
+        catch (Exception ex)
         {
             LogPartitionStopListenerCallbackError(ex);
+            return null;
         }
     }
 
     private void ClearAssignmentAfterClose()
     {
-        var partitions = _assignmentSnapshot;
-        if (partitions.Count == 0)
-            return;
-
-        var hadPaused = false;
-        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
-        try
-        {
-            _assignment.Clear();
-            hadPaused = RemovePartitionState(partitions);
-            PublishAssignmentSnapshot();
-        }
-        finally
-        {
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
-        }
-
-        if (hadPaused)
-            PublishPausedSnapshot();
-
-        InvalidatePartitionCache();
-        InvalidateFetchRequestCache();
+        RemoveAssignedPartitions(_assignmentSnapshot, clearAll: true);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
