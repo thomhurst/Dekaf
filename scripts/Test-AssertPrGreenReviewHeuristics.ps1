@@ -197,6 +197,54 @@ No outstanding issues.
         Blocks = $false
     },
     @{
+        Name = 'blocks positive phrase followed by incorrect scope'
+        Body = @'
+## Review
+
+### Correctness - fix is scoped incorrectly, still misses the edge case for empty batches
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks genuine improvement followed by race'
+        Body = @'
+## Review
+
+### Design / Architecture
+Genuine improvement in the abstraction, but this introduces a new race condition when two threads call Dispose concurrently.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks sound fix followed by leak'
+        Body = @'
+## Review
+
+### Correctness
+The core fix is sound for the happy path, but it leaks a socket on the cancellation branch.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks allocation-free helper followed by unsafe text'
+        Body = @'
+## Review
+
+### Design / CLAUDE.md compliance
+Nice allocation-free helper, but it is not thread-safe and will corrupt the buffer under concurrent access.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks not-a-regression heading with real bug'
+        Body = @'
+## Review
+
+### Not a regression, but this is a real bug that leaks memory
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'blocks category parenthetical finding'
         Body = @'
 ## Review
