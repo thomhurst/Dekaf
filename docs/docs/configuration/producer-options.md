@@ -189,8 +189,8 @@ Enable message compression:
 Control how messages are assigned to partitions:
 
 ```csharp
-.WithPartitioner(PartitionerType.Default)     // Hash key or round-robin
-.WithPartitioner(PartitionerType.Sticky)      // Stick to partition for batching
+.WithPartitioner(PartitionerType.Default)     // Hash key or sticky null keys
+.WithPartitioner(PartitionerType.Sticky)      // Stick null keys for batching
 .WithPartitioner(PartitionerType.RoundRobin)  // Even distribution
 ```
 

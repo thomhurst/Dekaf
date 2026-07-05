@@ -3,6 +3,31 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
 
+internal static class StickyPartitionerTestHelpers
+{
+    public static void SetCounter(object partitioner, uint value)
+    {
+        var trackerField = partitioner.GetType().GetField("_stickyPartitionTracker",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(partitioner.GetType().Name, "_stickyPartitionTracker");
+
+        var tracker = trackerField.GetValue(partitioner)
+            ?? throw new InvalidOperationException("_stickyPartitionTracker was null.");
+
+        var counterField = tracker.GetType().GetField("_counter",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(tracker.GetType().Name, "_counter");
+
+        if (counterField.FieldType == typeof(int))
+        {
+            counterField.SetValue(tracker, unchecked((int)value));
+            return;
+        }
+
+        counterField.SetValue(tracker, value);
+    }
+}
+
 public class DefaultPartitionerTests
 {
     [Test]
@@ -16,19 +41,29 @@ public class DefaultPartitionerTests
     }
 
     [Test]
-    public async Task Partition_WithNullKey_RoundRobins()
+    public async Task Partition_WithNullKey_SticksToSamePartition()
     {
         var partitioner = new DefaultPartitioner();
-        var partitions = new HashSet<int>();
 
-        // Call enough times to cycle through all partitions
-        for (var i = 0; i < 10; i++)
-        {
-            var partition = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, 3);
-            partitions.Add(partition);
-        }
+        var partition1 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, 5);
+        var partition2 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, 5);
+        var partition3 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, 5);
 
-        await Assert.That(partitions.Count).IsEqualTo(3);
+        await Assert.That(partition1).IsEqualTo(partition2);
+        await Assert.That(partition2).IsEqualTo(partition3);
+    }
+
+    [Test]
+    public async Task OnBatchComplete_ChangesPartition()
+    {
+        var partitioner = new DefaultPartitioner();
+        const int partitionCount = 5;
+
+        var partition1 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+        partitioner.OnBatchComplete("test-topic", partitionCount);
+        var partition2 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+
+        await Assert.That(partition1).IsNotEqualTo(partition2);
     }
 
     [Test]
@@ -50,19 +85,17 @@ public class DefaultPartitionerTests
     public async Task Partition_NearUIntMaxValue_NeverReturnsNegative()
     {
         var partitioner = new DefaultPartitioner();
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue - 100);
 
-        // Set counter to near uint.MaxValue using reflection
-        var counterField = typeof(DefaultPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 100);
-
-        // Call partition many times around the overflow point
+        // Call partition and OnBatchComplete many times around the overflow point
         for (var i = 0; i < 200; i++)
         {
-            var partition = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, 7);
+            var topicName = $"test-topic-{i}";
+            var partition = partitioner.Partition(topicName, ReadOnlySpan<byte>.Empty, true, 7);
             await Assert.That(partition).IsGreaterThanOrEqualTo(0);
             await Assert.That(partition).IsLessThan(7);
+
+            partitioner.OnBatchComplete(topicName, 7);
         }
     }
 
@@ -72,26 +105,17 @@ public class DefaultPartitionerTests
         var partitioner = new DefaultPartitioner();
         const int partitionCount = 10;
 
-        // Set counter to uint.MaxValue - 1 so next increment wraps to 0
-        var counterField = typeof(DefaultPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 1);
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue - 1);
 
-        // Get partition right before overflow
-        var beforeOverflow = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
-        await Assert.That(beforeOverflow).IsGreaterThanOrEqualTo(0);
-        await Assert.That(beforeOverflow).IsLessThan(partitionCount);
+        partitioner.OnBatchComplete("test-topic", partitionCount);
+        var partition = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+        await Assert.That(partition).IsGreaterThanOrEqualTo(0);
+        await Assert.That(partition).IsLessThan(partitionCount);
 
-        // Get partition at overflow (counter wraps from uint.MaxValue to 0)
-        var atOverflow = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
-        await Assert.That(atOverflow).IsGreaterThanOrEqualTo(0);
-        await Assert.That(atOverflow).IsLessThan(partitionCount);
-
-        // Get partition after overflow
-        var afterOverflow = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
-        await Assert.That(afterOverflow).IsGreaterThanOrEqualTo(0);
-        await Assert.That(afterOverflow).IsLessThan(partitionCount);
+        partitioner.OnBatchComplete("test-topic", partitionCount);
+        partition = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+        await Assert.That(partition).IsGreaterThanOrEqualTo(0);
+        await Assert.That(partition).IsLessThan(partitionCount);
     }
 }
 
@@ -170,12 +194,7 @@ public class StickyPartitionerTests
     public async Task Partition_NearUIntMaxValue_NeverReturnsNegative()
     {
         var partitioner = new StickyPartitioner();
-
-        // Set counter to near uint.MaxValue using reflection
-        var counterField = typeof(StickyPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 100);
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue - 100);
 
         // Call partition and OnBatchComplete many times around the overflow point
         for (var i = 0; i < 200; i++)
@@ -195,11 +214,7 @@ public class StickyPartitionerTests
         var partitioner = new StickyPartitioner();
         const int partitionCount = 10;
 
-        // Set counter to uint.MaxValue - 1
-        var counterField = typeof(StickyPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 1);
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue - 1);
 
         // Trigger overflow with OnBatchComplete
         partitioner.OnBatchComplete("test-topic", partitionCount);

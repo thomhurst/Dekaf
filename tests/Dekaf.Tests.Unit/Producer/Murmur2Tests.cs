@@ -165,27 +165,38 @@ public class Murmur2Tests
     }
 
     [Test]
-    public async Task DefaultPartitioner_WithNullKey_UsesRoundRobin()
+    public async Task DefaultPartitioner_WithNullKey_SticksToSamePartition()
     {
         var partitioner = new DefaultPartitioner();
 
         var partition1 = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, true, 10);
         var partition2 = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, true, 10);
 
-        // Round-robin should produce incrementing partitions (mod count)
-        // They should not be the same (unless wrapping, which won't happen in 2 calls with 10 partitions)
-        await Assert.That(partition1).IsNotEqualTo(partition2);
+        await Assert.That(partition1).IsEqualTo(partition2);
     }
 
     [Test]
-    public async Task DefaultPartitioner_WithEmptyKey_UsesRoundRobin()
+    public async Task DefaultPartitioner_WithEmptyKey_SticksToSamePartition()
     {
         var partitioner = new DefaultPartitioner();
 
         var partition1 = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, false, 10);
         var partition2 = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, false, 10);
 
-        // Empty keys also use round-robin
+        await Assert.That(partition1).IsEqualTo(partition2);
+    }
+
+    [Test]
+    public async Task DefaultPartitioner_OnBatchComplete_SwitchesPartition()
+    {
+        var partitioner = new DefaultPartitioner();
+
+        var partition1 = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, true, 100);
+        partitioner.OnBatchComplete("topic", 100);
+        var partition2 = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, true, 100);
+
+        await Assert.That(partition1).IsGreaterThanOrEqualTo(0);
+        await Assert.That(partition2).IsGreaterThanOrEqualTo(0);
         await Assert.That(partition1).IsNotEqualTo(partition2);
     }
 

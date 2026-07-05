@@ -493,7 +493,7 @@ public enum Acks
 public enum PartitionerType
 {
     /// <summary>
-    /// Default partitioner (hash key or round-robin).
+    /// Default partitioner (hash key or sticky null keys).
     /// </summary>
     Default,
 

@@ -12,7 +12,7 @@ When you send a message, Dekaf determines which partition it goes to:
 
 1. **Explicit partition** - If you specify a partition, that's where it goes
 2. **Key-based** - If you provide a key, it's hashed to determine the partition
-3. **Round-robin** - If no key, messages are distributed across partitions
+3. **Sticky null-key partitioning** - If no key, messages stick to one partition until the current batch completes, then rotate
 
 ## Key-Based Partitioning
 
@@ -55,10 +55,10 @@ Using explicit partitions couples your code to the topic's partition count. If t
 
 ## Null Keys
 
-When you don't provide a key (or it's null), the partitioner distributes messages across partitions:
+When you don't provide a key (or it's null), the default partitioner sticks to one partition while the current batch is open, then rotates after the batch completes:
 
 ```csharp
-// These messages may go to different partitions
+// These messages can batch together on the same partition
 await producer.ProduceAsync("events", null, "event1");
 await producer.ProduceAsync("events", null, "event2");
 await producer.ProduceAsync("events", null, "event3");
@@ -79,13 +79,13 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 | Partitioner | Behavior |
 |-------------|----------|
-| `Default` | Hash key for keyed messages, round-robin for null keys |
-| `Sticky` | Sticks to one partition for null keys until batch is full |
+| `Default` | Hash key for keyed messages, sticks null keys until batch completion |
+| `Sticky` | Sticks to one partition for null keys until batch completion |
 | `RoundRobin` | Distributes all messages evenly |
 
-### Sticky Partitioner
+### Default and Sticky Partitioners
 
-The sticky partitioner improves batching efficiency for null-key messages:
+The default partitioner uses sticky null-key partitioning to improve batching efficiency. You can also select `Sticky` explicitly:
 
 ```csharp
 using Dekaf;
