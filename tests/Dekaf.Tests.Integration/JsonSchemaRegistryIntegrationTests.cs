@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
@@ -23,13 +24,6 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             "required": ["OrderId", "CustomerName", "Amount"]
         }
         """;
-
-    private sealed class TestOrder
-    {
-        public int OrderId { get; set; }
-        public string CustomerName { get; set; } = string.Empty;
-        public decimal Amount { get; set; }
-    }
 
     [Test]
     public async Task JsonSchemaRegistry_ProduceAndConsume_RoundTrips()
@@ -83,6 +77,65 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(consumed!.OrderId).IsEqualTo(1001);
         await Assert.That(consumed.CustomerName).IsEqualTo("Alice");
         await Assert.That(consumed.Amount).IsEqualTo(99.99m);
+    }
+
+    [Test]
+    public async Task JsonSchemaRegistry_ProduceAndConsume_WithJsonTypeInfo_RoundTrips()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+
+        var order = new TestOrder
+        {
+            OrderId = 3003,
+            CustomerName = "Clara",
+            Amount = 42.50m
+        };
+
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .UseJsonSchemaRegistry(
+                registryClient,
+                TestOrderSchema,
+                JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
+        {
+            Topic = topic,
+            Key = "order-3003",
+            Value = order
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"json-sr-aot-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .UseJsonSchemaRegistry(
+                registryClient,
+                JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        TestOrder? consumed = null;
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            consumed = msg.Value;
+            break;
+        }
+
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.OrderId).IsEqualTo(3003);
+        await Assert.That(consumed.CustomerName).IsEqualTo("Clara");
+        await Assert.That(consumed.Amount).IsEqualTo(42.50m);
     }
 
     [Test]
@@ -232,3 +285,14 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(consumed.CustomerName).IsEqualTo("Bob");
     }
 }
+
+internal sealed class TestOrder
+{
+    public int OrderId { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+}
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(TestOrder))]
+internal sealed partial class JsonSchemaRegistryIntegrationJsonContext : JsonSerializerContext;
