@@ -23,7 +23,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private bool _disposed;
 
     public SchemaRegistryClient(SchemaRegistryConfig config)
-        : this(config, CreateHttpHandler(config?.ClientCertificate))
+        : this(config, CreateConfiguredHttpHandler(config))
     {
     }
 
@@ -69,6 +69,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         }
 
         return handler;
+    }
+
+    private static SocketsHttpHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return CreateHttpHandler(config.ClientCertificate);
     }
 
     public async Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)

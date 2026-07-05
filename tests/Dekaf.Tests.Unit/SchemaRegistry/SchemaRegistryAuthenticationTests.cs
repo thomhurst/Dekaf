@@ -62,6 +62,51 @@ public sealed class SchemaRegistryAuthenticationTests
     }
 
     [Test]
+    public async Task Client_CustomBearerTokenProvider_TakesPrecedenceOverStaticBearerToken()
+    {
+        var handler = new CapturingSchemaRegistryHandler();
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local",
+            BearerAuthToken = "static-token",
+            OAuthBearerTokenProvider = _ => ValueTask.FromResult(NewToken("provider-token"))
+        }, handler);
+
+        _ = await client.GetAllSubjectsAsync();
+
+        var authorization = handler.AuthorizationHeaders[0];
+        await Assert.That(authorization?.Scheme).IsEqualTo("Bearer");
+        await Assert.That(authorization?.Parameter).IsEqualTo("provider-token");
+    }
+
+    [Test]
+    public async Task Client_BearerToken_TakesPrecedenceOverOAuthConfig()
+    {
+        OAuthBearerConfig? capturedConfig = null;
+        var handler = new CapturingSchemaRegistryHandler();
+        using var client = new SchemaRegistryClient(
+            new SchemaRegistryConfig
+            {
+                Url = "http://schema-registry.local",
+                BearerAuthToken = "static-token",
+                OAuthBearerConfig = NewOAuthConfig()
+            },
+            handler,
+            oauthBearerTokenProviderFactory: oauthConfig =>
+            {
+                capturedConfig = oauthConfig;
+                return _ => ValueTask.FromResult(NewToken("oidc-token"));
+            });
+
+        _ = await client.GetAllSubjectsAsync();
+
+        await Assert.That(capturedConfig).IsNull();
+        var authorization = handler.AuthorizationHeaders[0];
+        await Assert.That(authorization?.Scheme).IsEqualTo("Bearer");
+        await Assert.That(authorization?.Parameter).IsEqualTo("static-token");
+    }
+
+    [Test]
     public async Task Client_UsesCustomBearerTokenProvider_WhenConfigured()
     {
         var providerCalls = 0;
@@ -96,12 +141,7 @@ public sealed class SchemaRegistryAuthenticationTests
         var config = new SchemaRegistryConfig
         {
             Url = "http://schema-registry.local",
-            OAuthBearerConfig = new OAuthBearerConfig
-            {
-                TokenEndpointUrl = "https://auth.local/token",
-                ClientId = "schema-registry-client",
-                ClientSecret = "secret"
-            }
+            OAuthBearerConfig = NewOAuthConfig()
         };
 
         using var client = new SchemaRegistryClient(
@@ -116,6 +156,27 @@ public sealed class SchemaRegistryAuthenticationTests
         _ = await client.GetAllSubjectsAsync();
 
         await Assert.That(capturedConfig).IsSameReferenceAs(config.OAuthBearerConfig);
+        var authorization = handler.AuthorizationHeaders[0];
+        await Assert.That(authorization?.Scheme).IsEqualTo("Bearer");
+        await Assert.That(authorization?.Parameter).IsEqualTo("oidc-token");
+    }
+
+    [Test]
+    public async Task Client_OAuthConfig_TakesPrecedenceOverBasicAuth()
+    {
+        var handler = new CapturingSchemaRegistryHandler();
+        using var client = new SchemaRegistryClient(
+            new SchemaRegistryConfig
+            {
+                Url = "http://schema-registry.local",
+                BasicAuthUserInfo = "user:secret",
+                OAuthBearerConfig = NewOAuthConfig()
+            },
+            handler,
+            oauthBearerTokenProviderFactory: _ => _ => ValueTask.FromResult(NewToken("oidc-token")));
+
+        _ = await client.GetAllSubjectsAsync();
+
         var authorization = handler.AuthorizationHeaders[0];
         await Assert.That(authorization?.Scheme).IsEqualTo("Bearer");
         await Assert.That(authorization?.Parameter).IsEqualTo("oidc-token");
@@ -138,6 +199,13 @@ public sealed class SchemaRegistryAuthenticationTests
         TokenValue = tokenValue,
         Expiration = DateTimeOffset.UtcNow.AddHours(1),
         PrincipalName = "schema-registry"
+    };
+
+    private static OAuthBearerConfig NewOAuthConfig() => new()
+    {
+        TokenEndpointUrl = "https://auth.local/token",
+        ClientId = "schema-registry-client",
+        ClientSecret = "secret"
     };
 
     private static X509Certificate2 CreateSelfSignedCertificate()
