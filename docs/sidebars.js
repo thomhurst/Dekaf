@@ -23,6 +23,7 @@ const sidebars = {
         'consumer/basics',
         'consumer/offset-management',
         'consumer/consumer-groups',
+        'consumer/partitioned-processing-api',
         'consumer/linq-extensions',
         'consumer/manual-assignment',
       ],
