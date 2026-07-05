@@ -328,6 +328,54 @@ builder.Services.AddDekaf(dekaf =>
 
 The section keys match `ProducerOptions`, `ConsumerOptions`, and `AdminClientOptions` property names. Configuration is applied first; the optional fluent callback runs after binding, so it can override values or attach objects that cannot be represented in JSON, such as serializers, deserializers, interceptors, retry policies, and rebalance listeners.
 
+## NativeAOT Registration
+
+NativeAOT apps should avoid the `IConfiguration` overloads because `Microsoft.Extensions.Configuration.Binder` uses dynamic binding for complex option graphs. Use fluent configuration or typed options instead:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, Order>(
+        new ProducerOptions
+        {
+            BootstrapServers = ["broker1:9092", "broker2:9092"],
+            ClientId = "orders-producer"
+        },
+        producer => producer.WithValueSerializer(new JsonSerializer<Order>()));
+
+    dekaf.AddConsumer<string, Order>(
+        new ConsumerOptions
+        {
+            BootstrapServers = ["broker1:9092", "broker2:9092"],
+            ClientId = "orders-consumer",
+            GroupId = "orders"
+        },
+        consumer => consumer
+            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .SubscribeTo("orders"));
+
+    dekaf.AddAdminClient(
+        new AdminClientOptions
+        {
+            BootstrapServers = ["broker1:9092", "broker2:9092"],
+            ClientId = "orders-admin"
+        });
+});
+```
+
+Type-based global interceptors support open generic registrations, but they rely on dynamic activation. NativeAOT apps should register closed interceptor factories or instances for each producer/consumer key and value pair:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddGlobalProducerInterceptor<string, Order>(serviceProvider =>
+        serviceProvider.GetRequiredService<OrderProducerInterceptor>());
+
+    dekaf.AddGlobalConsumerInterceptor<string, Order>(
+        new OrderConsumerInterceptor());
+});
+```
+
 ## Lifetime Management
 
 Both producers and consumers are registered as singletons. This is intentional—they're expensive to create, thread-safe, and meant to be reused. They'll be disposed automatically when your app shuts down.

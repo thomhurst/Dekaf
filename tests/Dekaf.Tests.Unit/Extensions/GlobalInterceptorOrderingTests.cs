@@ -51,6 +51,42 @@ public sealed class GlobalInterceptorOrderingTests
     }
 
     [Test]
+    public async Task GlobalProducerInterceptorFactory_ExecuteBeforePerInstance()
+    {
+        var callOrder = new List<string>();
+
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            builder.AddGlobalProducerInterceptor<string, string>(_ =>
+                new NamedProducerInterceptor("global", callOrder));
+            builder.AddProducer<string, string>(p =>
+            {
+                p.WithBootstrapServers("localhost:9092");
+                p.AddInterceptor(new NamedProducerInterceptor("per-instance", callOrder));
+            });
+        });
+
+        var sp = services.BuildServiceProvider();
+        var producer = sp.GetRequiredService<IKafkaProducer<string, string>>();
+
+        var interceptors = GetProducerInterceptors<string, string>(producer);
+
+        await Assert.That(interceptors).IsNotNull();
+        await Assert.That(interceptors!).Count().IsEqualTo(2);
+
+        var message = new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" };
+        foreach (var interceptor in interceptors)
+        {
+            message = interceptor.OnSend(message);
+        }
+
+        await Assert.That(callOrder).Count().IsEqualTo(2);
+        await Assert.That(callOrder[0]).IsEqualTo("global");
+        await Assert.That(callOrder[1]).IsEqualTo("per-instance");
+    }
+
+    [Test]
     public async Task MultipleGlobalProducerInterceptors_ExecuteInRegistrationOrder()
     {
         var callOrder = new List<string>();
@@ -181,6 +217,43 @@ public sealed class GlobalInterceptorOrderingTests
         await Assert.That(interceptors!).Count().IsEqualTo(2);
 
         // Simulate interceptor invocation
+        var result = default(ConsumeResult<string, string>);
+        foreach (var interceptor in interceptors)
+        {
+            result = interceptor.OnConsume(result);
+        }
+
+        await Assert.That(callOrder).Count().IsEqualTo(2);
+        await Assert.That(callOrder[0]).IsEqualTo("global");
+        await Assert.That(callOrder[1]).IsEqualTo("per-instance");
+    }
+
+    [Test]
+    public async Task GlobalConsumerInterceptorFactory_ExecuteBeforePerInstance()
+    {
+        var callOrder = new List<string>();
+
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            builder.AddGlobalConsumerInterceptor<string, string>(_ =>
+                new NamedConsumerInterceptor("global", callOrder));
+            builder.AddConsumer<string, string>(c =>
+            {
+                c.WithBootstrapServers("localhost:9092")
+                    .WithGroupId("test-group");
+                c.AddInterceptor(new NamedConsumerInterceptor("per-instance", callOrder));
+            });
+        });
+
+        var sp = services.BuildServiceProvider();
+        var consumer = sp.GetRequiredService<IKafkaConsumer<string, string>>();
+
+        var interceptors = GetConsumerInterceptors<string, string>(consumer);
+
+        await Assert.That(interceptors).IsNotNull();
+        await Assert.That(interceptors!).Count().IsEqualTo(2);
+
         var result = default(ConsumeResult<string, string>);
         foreach (var interceptor in interceptors)
         {

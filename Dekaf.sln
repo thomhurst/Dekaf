@@ -50,6 +50,7 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Testing", "src\Dekaf.Testing\Dekaf.Testing.csproj", "{63412BB7-06F4-4BA8-96C2-4ACC4FE8D57B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Tests.Aot", "tests\Dekaf.Tests.Aot\Dekaf.Tests.Aot.csproj", "{297DF785-1A36-4A2A-9335-B71EED7D1D26}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Tests.Aot.DependencyInjection", "tests\Dekaf.Tests.Aot.DependencyInjection\Dekaf.Tests.Aot.DependencyInjection.csproj", "{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -301,6 +302,18 @@ Global
 		{297DF785-1A36-4A2A-9335-B71EED7D1D26}.Release|x64.Build.0 = Release|Any CPU
 		{297DF785-1A36-4A2A-9335-B71EED7D1D26}.Release|x86.ActiveCfg = Release|Any CPU
 		{297DF785-1A36-4A2A-9335-B71EED7D1D26}.Release|x86.Build.0 = Release|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Debug|x64.Build.0 = Debug|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Debug|x86.Build.0 = Debug|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Release|x64.ActiveCfg = Release|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Release|x64.Build.0 = Release|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Release|x86.ActiveCfg = Release|Any CPU
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -326,5 +339,6 @@ Global
 		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{63412BB7-06F4-4BA8-96C2-4ACC4FE8D57B} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{297DF785-1A36-4A2A-9335-B71EED7D1D26} = {B2C3D4E5-F6A7-8901-BCDE-F12345678901}
+		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8} = {B2C3D4E5-F6A7-8901-BCDE-F12345678901}
 	EndGlobalSection
 EndGlobal

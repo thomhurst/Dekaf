@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Xml;
 
@@ -45,9 +46,18 @@ public static class ServiceCollectionExtensions
 /// </summary>
 public sealed class DekafBuilder
 {
+    private const string ConfigurationBindingRequiresDynamicCode =
+        "IConfiguration binding uses Microsoft.Extensions.Configuration.Binder. Use typed options overloads for NativeAOT.";
+    private const string ConfigurationBindingRequiresUnreferencedCode =
+        "IConfiguration binding may require members that are trimmed. Use typed options overloads for NativeAOT.";
+    private const string DynamicInterceptorRequiresDynamicCode =
+        "Type-based global interceptors can close generic types and activate them dynamically. Use closed factory overloads for NativeAOT.";
+    private const string DynamicInterceptorRequiresUnreferencedCode =
+        "Type-based global interceptor activation may require constructors that are trimmed. Use closed factory overloads for NativeAOT.";
+
     private readonly IServiceCollection _services;
-    private readonly List<Type> _globalProducerInterceptorTypes = [];
-    private readonly List<Type> _globalConsumerInterceptorTypes = [];
+    private readonly List<Func<IServiceProvider, Type, Type, object?>> _globalProducerInterceptorFactories = [];
+    private readonly List<Func<IServiceProvider, Type, Type, object?>> _globalConsumerInterceptorFactories = [];
 
     internal DekafBuilder(IServiceCollection services)
     {
@@ -65,11 +75,66 @@ public sealed class DekafBuilder
     /// <see cref="IProducerInterceptor{TKey, TValue}"/> for specific type combinations.
     /// </param>
     /// <returns>The builder instance for method chaining.</returns>
+    [RequiresDynamicCode(DynamicInterceptorRequiresDynamicCode)]
+    [RequiresUnreferencedCode(DynamicInterceptorRequiresUnreferencedCode)]
     public DekafBuilder AddGlobalProducerInterceptor(Type interceptorType)
     {
         ArgumentNullException.ThrowIfNull(interceptorType);
-        _globalProducerInterceptorTypes.Add(interceptorType);
+        _globalProducerInterceptorFactories.Add((serviceProvider, keyType, valueType) =>
+        {
+            var closedType = interceptorType.IsGenericTypeDefinition
+                ? interceptorType.MakeGenericType(keyType, valueType)
+                : interceptorType;
+            return ActivatorUtilities.CreateInstance(serviceProvider, closedType);
+        });
         return this;
+    }
+
+    /// <summary>
+    /// Registers a global producer interceptor instance for one closed producer key/value pair.
+    /// </summary>
+    /// <typeparam name="TKey">Producer key type.</typeparam>
+    /// <typeparam name="TValue">Producer value type.</typeparam>
+    /// <param name="interceptor">The interceptor instance to apply.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DekafBuilder AddGlobalProducerInterceptor<TKey, TValue>(
+        IProducerInterceptor<TKey, TValue> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        return AddGlobalProducerInterceptor<TKey, TValue>(_ => interceptor);
+    }
+
+    /// <summary>
+    /// Registers a global producer interceptor factory for one closed producer key/value pair.
+    /// </summary>
+    /// <typeparam name="TKey">Producer key type.</typeparam>
+    /// <typeparam name="TValue">Producer value type.</typeparam>
+    /// <param name="factory">Factory used to create the interceptor from the service provider.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DekafBuilder AddGlobalProducerInterceptor<TKey, TValue>(
+        Func<IServiceProvider, IProducerInterceptor<TKey, TValue>> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        _globalProducerInterceptorFactories.Add((serviceProvider, keyType, valueType) =>
+            keyType == typeof(TKey) && valueType == typeof(TValue)
+                ? factory(serviceProvider)
+                : null);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers a global producer interceptor type for one closed producer key/value pair.
+    /// The interceptor is resolved from the service provider.
+    /// </summary>
+    /// <typeparam name="TKey">Producer key type.</typeparam>
+    /// <typeparam name="TValue">Producer value type.</typeparam>
+    /// <typeparam name="TInterceptor">The registered interceptor service type.</typeparam>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DekafBuilder AddGlobalProducerInterceptor<TKey, TValue, TInterceptor>()
+        where TInterceptor : class, IProducerInterceptor<TKey, TValue>
+    {
+        return AddGlobalProducerInterceptor<TKey, TValue>(static serviceProvider =>
+            serviceProvider.GetRequiredService<TInterceptor>());
     }
 
     /// <summary>
@@ -77,6 +142,8 @@ public sealed class DekafBuilder
     /// </summary>
     /// <typeparam name="T">The concrete interceptor type.</typeparam>
     /// <returns>The builder instance for method chaining.</returns>
+    [RequiresDynamicCode(DynamicInterceptorRequiresDynamicCode)]
+    [RequiresUnreferencedCode(DynamicInterceptorRequiresUnreferencedCode)]
     public DekafBuilder AddGlobalProducerInterceptor<T>()
     {
         return AddGlobalProducerInterceptor(typeof(T));
@@ -93,11 +160,66 @@ public sealed class DekafBuilder
     /// <see cref="IConsumerInterceptor{TKey, TValue}"/> for specific type combinations.
     /// </param>
     /// <returns>The builder instance for method chaining.</returns>
+    [RequiresDynamicCode(DynamicInterceptorRequiresDynamicCode)]
+    [RequiresUnreferencedCode(DynamicInterceptorRequiresUnreferencedCode)]
     public DekafBuilder AddGlobalConsumerInterceptor(Type interceptorType)
     {
         ArgumentNullException.ThrowIfNull(interceptorType);
-        _globalConsumerInterceptorTypes.Add(interceptorType);
+        _globalConsumerInterceptorFactories.Add((serviceProvider, keyType, valueType) =>
+        {
+            var closedType = interceptorType.IsGenericTypeDefinition
+                ? interceptorType.MakeGenericType(keyType, valueType)
+                : interceptorType;
+            return ActivatorUtilities.CreateInstance(serviceProvider, closedType);
+        });
         return this;
+    }
+
+    /// <summary>
+    /// Registers a global consumer interceptor instance for one closed consumer key/value pair.
+    /// </summary>
+    /// <typeparam name="TKey">Consumer key type.</typeparam>
+    /// <typeparam name="TValue">Consumer value type.</typeparam>
+    /// <param name="interceptor">The interceptor instance to apply.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DekafBuilder AddGlobalConsumerInterceptor<TKey, TValue>(
+        IConsumerInterceptor<TKey, TValue> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        return AddGlobalConsumerInterceptor<TKey, TValue>(_ => interceptor);
+    }
+
+    /// <summary>
+    /// Registers a global consumer interceptor factory for one closed consumer key/value pair.
+    /// </summary>
+    /// <typeparam name="TKey">Consumer key type.</typeparam>
+    /// <typeparam name="TValue">Consumer value type.</typeparam>
+    /// <param name="factory">Factory used to create the interceptor from the service provider.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DekafBuilder AddGlobalConsumerInterceptor<TKey, TValue>(
+        Func<IServiceProvider, IConsumerInterceptor<TKey, TValue>> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        _globalConsumerInterceptorFactories.Add((serviceProvider, keyType, valueType) =>
+            keyType == typeof(TKey) && valueType == typeof(TValue)
+                ? factory(serviceProvider)
+                : null);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers a global consumer interceptor type for one closed consumer key/value pair.
+    /// The interceptor is resolved from the service provider.
+    /// </summary>
+    /// <typeparam name="TKey">Consumer key type.</typeparam>
+    /// <typeparam name="TValue">Consumer value type.</typeparam>
+    /// <typeparam name="TInterceptor">The registered interceptor service type.</typeparam>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DekafBuilder AddGlobalConsumerInterceptor<TKey, TValue, TInterceptor>()
+        where TInterceptor : class, IConsumerInterceptor<TKey, TValue>
+    {
+        return AddGlobalConsumerInterceptor<TKey, TValue>(static serviceProvider =>
+            serviceProvider.GetRequiredService<TInterceptor>());
     }
 
     /// <summary>
@@ -105,6 +227,8 @@ public sealed class DekafBuilder
     /// </summary>
     /// <typeparam name="T">The concrete interceptor type.</typeparam>
     /// <returns>The builder instance for method chaining.</returns>
+    [RequiresDynamicCode(DynamicInterceptorRequiresDynamicCode)]
+    [RequiresUnreferencedCode(DynamicInterceptorRequiresUnreferencedCode)]
     public DekafBuilder AddGlobalConsumerInterceptor<T>()
     {
         return AddGlobalConsumerInterceptor(typeof(T));
@@ -121,6 +245,24 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds a producer configured from typed options.
+    /// </summary>
+    /// <param name="options">Producer options to apply.</param>
+    /// <param name="configure">Optional additional producer configuration.</param>
+    public DekafBuilder AddProducer<TKey, TValue>(
+        ProducerOptions options,
+        Action<ProducerBuilder<TKey, TValue>>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return AddProducer<TKey, TValue>(producer =>
+        {
+            DekafOptionsBinding.ApplyProducer(options, producer);
+            configure?.Invoke(producer);
+        });
+    }
+
+    /// <summary>
     /// Adds a keyed producer to the service collection.
     /// </summary>
     /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
@@ -134,6 +276,27 @@ public sealed class DekafBuilder
         return AddProducerCore(serviceKey, isKeyed: true, configure);
     }
 
+    /// <summary>
+    /// Adds a keyed producer configured from typed options.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
+    /// <param name="options">Producer options to apply.</param>
+    /// <param name="configure">Optional additional producer configuration.</param>
+    public DekafBuilder AddProducer<TKey, TValue>(
+        object serviceKey,
+        ProducerOptions options,
+        Action<ProducerBuilder<TKey, TValue>>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return AddProducer<TKey, TValue>(serviceKey, producer =>
+        {
+            DekafOptionsBinding.ApplyProducer(options, producer);
+            configure?.Invoke(producer);
+        });
+    }
+
     private DekafBuilder AddProducerCore<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,
@@ -142,13 +305,13 @@ public sealed class DekafBuilder
         var builder = new ProducerBuilder<TKey, TValue>();
         configure(builder);
 
-        var globalTypes = _globalProducerInterceptorTypes;
+        var globalFactories = _globalProducerInterceptorFactories;
 
         if (isKeyed)
         {
             _services.AddKeyedSingleton<IKafkaProducer<TKey, TValue>>(
                 serviceKey!,
-                (sp, _) => BuildProducer(sp, builder, globalTypes));
+                (sp, _) => BuildProducer(sp, builder, globalFactories));
 
             // Register as IInitializableKafkaClient (resolves the same keyed singleton instance).
             _services.AddSingleton<IInitializableKafkaClient>(sp =>
@@ -157,7 +320,7 @@ public sealed class DekafBuilder
         else
         {
             _services.AddSingleton<IKafkaProducer<TKey, TValue>>(sp =>
-                BuildProducer(sp, builder, globalTypes));
+                BuildProducer(sp, builder, globalFactories));
 
             // Register as IInitializableKafkaClient (resolves the same singleton instance).
             _services.AddSingleton<IInitializableKafkaClient>(sp =>
@@ -173,6 +336,8 @@ public sealed class DekafBuilder
     /// </summary>
     /// <param name="configuration">Configuration section using <see cref="ProducerOptions"/> property names.</param>
     /// <param name="configure">Optional additional producer configuration.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
     public DekafBuilder AddProducer<TKey, TValue>(
         IConfiguration configuration,
         Action<ProducerBuilder<TKey, TValue>>? configure = null)
@@ -193,6 +358,8 @@ public sealed class DekafBuilder
     /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
     /// <param name="configuration">Configuration section using <see cref="ProducerOptions"/> property names.</param>
     /// <param name="configure">Optional additional producer configuration.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
     public DekafBuilder AddProducer<TKey, TValue>(
         object serviceKey,
         IConfiguration configuration,
@@ -222,6 +389,28 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds a consumer configured from typed options.
+    /// </summary>
+    /// <param name="options">Consumer options to apply.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    public DekafBuilder AddConsumer<TKey, TValue>(
+        ConsumerOptions options,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return AddConsumer<TKey, TValue>(
+            consumer =>
+            {
+                DekafOptionsBinding.ApplyConsumer(options, consumer);
+                configure?.Invoke(consumer);
+            },
+            configureDeadLetterQueue);
+    }
+
+    /// <summary>
     /// Adds a keyed consumer to the service collection.
     /// </summary>
     /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
@@ -237,6 +426,32 @@ public sealed class DekafBuilder
         return AddConsumerCore(serviceKey, isKeyed: true, configure, configureDeadLetterQueue);
     }
 
+    /// <summary>
+    /// Adds a keyed consumer configured from typed options.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
+    /// <param name="options">Consumer options to apply.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    public DekafBuilder AddConsumer<TKey, TValue>(
+        object serviceKey,
+        ConsumerOptions options,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return AddConsumer<TKey, TValue>(
+            serviceKey,
+            consumer =>
+            {
+                DekafOptionsBinding.ApplyConsumer(options, consumer);
+                configure?.Invoke(consumer);
+            },
+            configureDeadLetterQueue);
+    }
+
     private DekafBuilder AddConsumerCore<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,
@@ -246,13 +461,13 @@ public sealed class DekafBuilder
         var builder = new ConsumerBuilder<TKey, TValue>();
         configure(builder);
 
-        var globalTypes = _globalConsumerInterceptorTypes;
+        var globalFactories = _globalConsumerInterceptorFactories;
 
         if (isKeyed)
         {
             _services.AddKeyedSingleton<IKafkaConsumer<TKey, TValue>>(
                 serviceKey!,
-                (sp, _) => BuildConsumer(sp, builder, globalTypes));
+                (sp, _) => BuildConsumer(sp, builder, globalFactories));
 
             // Register as IInitializableKafkaClient (resolves the same keyed singleton instance).
             _services.AddSingleton<IInitializableKafkaClient>(sp =>
@@ -261,7 +476,7 @@ public sealed class DekafBuilder
         else
         {
             _services.AddSingleton<IKafkaConsumer<TKey, TValue>>(sp =>
-                BuildConsumer(sp, builder, globalTypes));
+                BuildConsumer(sp, builder, globalFactories));
 
             // Register as IInitializableKafkaClient (resolves the same singleton instance).
             _services.AddSingleton<IInitializableKafkaClient>(sp =>
@@ -293,6 +508,8 @@ public sealed class DekafBuilder
     /// <param name="configuration">Configuration section using <see cref="ConsumerOptions"/> property names.</param>
     /// <param name="configure">Optional additional consumer configuration.</param>
     /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
     public DekafBuilder AddConsumer<TKey, TValue>(
         IConfiguration configuration,
         Action<ConsumerBuilder<TKey, TValue>>? configure = null,
@@ -317,6 +534,8 @@ public sealed class DekafBuilder
     /// <param name="configuration">Configuration section using <see cref="ConsumerOptions"/> property names.</param>
     /// <param name="configure">Optional additional consumer configuration.</param>
     /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
     public DekafBuilder AddConsumer<TKey, TValue>(
         object serviceKey,
         IConfiguration configuration,
@@ -354,11 +573,31 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds an admin client configured from typed options.
+    /// </summary>
+    /// <param name="options">Admin client options to apply.</param>
+    /// <param name="configure">Optional additional admin client configuration.</param>
+    public DekafBuilder AddAdminClient(
+        AdminClientOptions options,
+        Action<AdminClientServiceBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return AddAdminClient(admin =>
+        {
+            admin.ApplyOptions(options);
+            configure?.Invoke(admin);
+        });
+    }
+
+    /// <summary>
     /// Adds an admin client configured from an <see cref="IConfiguration"/> section.
     /// Fluent configuration runs after binding, so it can override config values.
     /// </summary>
     /// <param name="configuration">Configuration section using <see cref="AdminClientOptions"/> property names.</param>
     /// <param name="configure">Optional additional admin client configuration.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
     public DekafBuilder AddAdminClient(
         IConfiguration configuration,
         Action<AdminClientServiceBuilder>? configure = null)
@@ -375,24 +614,34 @@ public sealed class DekafBuilder
     private static IKafkaProducer<TKey, TValue> BuildProducer<TKey, TValue>(
         IServiceProvider serviceProvider,
         ProducerBuilder<TKey, TValue> builder,
-        IReadOnlyList<Type> globalTypes)
+        IReadOnlyList<Func<IServiceProvider, Type, Type, object?>> globalFactories)
     {
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
 
-        if (globalTypes.Count > 0)
+        if (globalFactories.Count > 0)
         {
-            var globalInterceptors = new List<IProducerInterceptor<TKey, TValue>>(globalTypes.Count);
-            foreach (var type in globalTypes)
+            var globalInterceptors = new List<IProducerInterceptor<TKey, TValue>>(globalFactories.Count);
+            foreach (var factory in globalFactories)
             {
-                var closedType = type.IsGenericTypeDefinition
-                    ? type.MakeGenericType(typeof(TKey), typeof(TValue))
-                    : type;
-                var interceptor = (IProducerInterceptor<TKey, TValue>)
-                    ActivatorUtilities.CreateInstance(serviceProvider, closedType);
-                globalInterceptors.Add(interceptor);
+                var interceptor = factory(serviceProvider, typeof(TKey), typeof(TValue));
+                if (interceptor is null)
+                {
+                    continue;
+                }
+
+                if (interceptor is not IProducerInterceptor<TKey, TValue> typedInterceptor)
+                {
+                    throw new InvalidOperationException(
+                        $"Global producer interceptor '{interceptor.GetType().FullName}' does not implement IProducerInterceptor<{typeof(TKey).Name}, {typeof(TValue).Name}>.");
+                }
+
+                globalInterceptors.Add(typedInterceptor);
             }
 
-            builder.AddInterceptorsFirst(globalInterceptors);
+            if (globalInterceptors.Count > 0)
+            {
+                builder.AddInterceptorsFirst(globalInterceptors);
+            }
         }
 
         if (loggerFactory is not null)
@@ -406,24 +655,34 @@ public sealed class DekafBuilder
     private static IKafkaConsumer<TKey, TValue> BuildConsumer<TKey, TValue>(
         IServiceProvider serviceProvider,
         ConsumerBuilder<TKey, TValue> builder,
-        IReadOnlyList<Type> globalTypes)
+        IReadOnlyList<Func<IServiceProvider, Type, Type, object?>> globalFactories)
     {
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
 
-        if (globalTypes.Count > 0)
+        if (globalFactories.Count > 0)
         {
-            var globalInterceptors = new List<IConsumerInterceptor<TKey, TValue>>(globalTypes.Count);
-            foreach (var type in globalTypes)
+            var globalInterceptors = new List<IConsumerInterceptor<TKey, TValue>>(globalFactories.Count);
+            foreach (var factory in globalFactories)
             {
-                var closedType = type.IsGenericTypeDefinition
-                    ? type.MakeGenericType(typeof(TKey), typeof(TValue))
-                    : type;
-                var interceptor = (IConsumerInterceptor<TKey, TValue>)
-                    ActivatorUtilities.CreateInstance(serviceProvider, closedType);
-                globalInterceptors.Add(interceptor);
+                var interceptor = factory(serviceProvider, typeof(TKey), typeof(TValue));
+                if (interceptor is null)
+                {
+                    continue;
+                }
+
+                if (interceptor is not IConsumerInterceptor<TKey, TValue> typedInterceptor)
+                {
+                    throw new InvalidOperationException(
+                        $"Global consumer interceptor '{interceptor.GetType().FullName}' does not implement IConsumerInterceptor<{typeof(TKey).Name}, {typeof(TValue).Name}>.");
+                }
+
+                globalInterceptors.Add(typedInterceptor);
             }
 
-            builder.AddInterceptorsFirst(globalInterceptors);
+            if (globalInterceptors.Count > 0)
+            {
+                builder.AddInterceptorsFirst(globalInterceptors);
+            }
         }
 
         if (loggerFactory is not null)
@@ -484,6 +743,12 @@ public sealed class AdminClientServiceBuilder
         return this;
     }
 
+    internal AdminClientServiceBuilder ApplyOptions(AdminClientOptions options)
+    {
+        DekafOptionsBinding.ApplyAdmin(options, _builder);
+        return this;
+    }
+
     internal IAdminClient Build(Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory)
     {
         if (loggerFactory is not null)
@@ -491,6 +756,279 @@ public sealed class AdminClientServiceBuilder
             _builder.WithLoggerFactory(loggerFactory);
         }
         return _builder.Build();
+    }
+}
+
+internal static class DekafOptionsBinding
+{
+    public static void ApplyProducer<TKey, TValue>(
+        ProducerOptions options,
+        ProducerBuilder<TKey, TValue> builder)
+    {
+        builder.WithBootstrapServers(options.BootstrapServers.ToArray());
+        if (options.ClientId is not null)
+            builder.WithClientId(options.ClientId);
+        builder.WithAcks(options.Acks);
+        builder.WithLinger(TimeSpan.FromMilliseconds(options.LingerMs));
+        builder.WithBatchSize(options.BatchSize);
+        builder.WithBufferMemory(options.BufferMemory);
+        builder.WithMaxInFlightRequestsPerConnection(options.MaxInFlightRequestsPerConnection);
+        builder.WithRetries(options.Retries);
+        builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
+        builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
+        builder.WithMaxBlock(TimeSpan.FromMilliseconds(options.MaxBlockMs));
+        builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(options.DeliveryTimeoutMs));
+        builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
+        builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
+        builder.WithIdempotence(options.EnableIdempotence);
+        builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
+        if (options.TransactionalId is not null)
+            builder.WithTransactionalId(options.TransactionalId);
+        builder.WithTransactionTimeout(TimeSpan.FromMilliseconds(options.TransactionTimeoutMs));
+        builder.WithCloseTimeout(TimeSpan.FromMilliseconds(options.CloseTimeoutMs));
+        builder.WithMaxRequestSize(options.MaxRequestSize);
+        builder.UseCompression(options.CompressionType);
+        if (options.CompressionLevel is { } compressionLevel)
+            builder.WithCompressionLevel(compressionLevel);
+        if (options.CustomPartitioner is not null)
+            builder.WithCustomPartitioner(options.CustomPartitioner);
+        else
+            builder.WithPartitioner(options.Partitioner);
+        ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        ApplySasl(
+            options.SaslMechanism,
+            options.SaslUsername,
+            options.SaslPassword,
+            options.SaslScramTokenAuth,
+            options.GssapiConfig,
+            options.OAuthBearerConfig,
+            options.OAuthBearerTokenProvider,
+            options.AwsMskIamConfig,
+            builder.WithSaslOptions,
+            builder.WithOAuthBearer);
+        builder.WithSocketSendBufferBytes(options.SocketSendBufferBytes);
+        builder.WithSocketReceiveBufferBytes(options.SocketReceiveBufferBytes);
+        builder.WithValueTaskSourcePoolSize(options.ValueTaskSourcePoolSize);
+        builder.WithArenaCapacity(options.ArenaCapacity);
+        builder.WithInitialBatchRecordCapacity(options.InitialBatchRecordCapacity);
+        builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
+        builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
+        builder.WithClientDnsLookup(options.ClientDnsLookup);
+        if (options.EnableAdaptiveConnections)
+            builder.WithAdaptiveConnections(options.MaxConnectionsPerBroker);
+        else
+            builder.WithoutAdaptiveConnections();
+        if (options.RetryPolicy is not null)
+            builder.WithRetryPolicy(options.RetryPolicy);
+        foreach (var metric in options.ApplicationMetrics)
+            builder.RegisterMetricForSubscription(metric);
+        AddProducerInterceptors(options.Interceptors, builder);
+    }
+
+    public static void ApplyConsumer<TKey, TValue>(
+        ConsumerOptions options,
+        ConsumerBuilder<TKey, TValue> builder)
+    {
+        builder.WithBootstrapServers(options.BootstrapServers.ToArray());
+        if (options.ClientId is not null)
+            builder.WithClientId(options.ClientId);
+        if (options.GroupId is not null)
+            builder.WithGroupId(options.GroupId);
+        if (options.GroupInstanceId is not null)
+            builder.WithGroupInstanceId(options.GroupInstanceId);
+        if (options.GroupRemoteAssignor is not null)
+            builder.WithGroupRemoteAssignor(options.GroupRemoteAssignor);
+        if (options.ClientRack is not null)
+            builder.WithClientRack(options.ClientRack);
+        builder.WithOffsetCommitMode(options.OffsetCommitMode);
+        builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(options.AutoCommitIntervalMs));
+        if (options.AutoOffsetReset == AutoOffsetReset.ByDuration)
+            builder.WithAutoOffsetResetByDuration(options.AutoOffsetResetDuration ?? TimeSpan.Zero);
+        else
+            builder.WithAutoOffsetReset(options.AutoOffsetReset);
+        builder.WithFetchMinBytes(options.FetchMinBytes);
+        builder.WithFetchMaxBytes(options.FetchMaxBytes);
+        builder.WithMaxPartitionFetchBytes(options.MaxPartitionFetchBytes);
+        builder.WithFetchMaxWait(TimeSpan.FromMilliseconds(options.FetchMaxWaitMs));
+        builder.WithFetchSessions(options.EnableFetchSessions);
+        builder.WithMaxPollRecords(options.MaxPollRecords);
+        builder.WithMaxPollInterval(TimeSpan.FromMilliseconds(options.MaxPollIntervalMs));
+        builder.WithSessionTimeout(TimeSpan.FromMilliseconds(options.SessionTimeoutMs));
+        builder.WithHeartbeatInterval(TimeSpan.FromMilliseconds(options.HeartbeatIntervalMs));
+        builder.WithRebalanceTimeout(TimeSpan.FromMilliseconds(options.RebalanceTimeoutMs));
+        builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
+        builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
+        builder.WithCheckCrcs(options.CheckCrcs);
+        ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        ApplySasl(
+            options.SaslMechanism,
+            options.SaslUsername,
+            options.SaslPassword,
+            options.SaslScramTokenAuth,
+            options.GssapiConfig,
+            options.OAuthBearerConfig,
+            options.OAuthBearerTokenProvider,
+            options.AwsMskIamConfig,
+            builder.WithSaslOptions,
+            builder.WithOAuthBearer);
+        if (options.RebalanceListener is not null)
+            builder.WithRebalanceListener(options.RebalanceListener);
+        builder.WithPartitionEof(options.EnablePartitionEof);
+        builder.WithSocketSendBufferBytes(options.SocketSendBufferBytes);
+        builder.WithSocketReceiveBufferBytes(options.SocketReceiveBufferBytes);
+        builder.WithQueuedMinMessages(options.QueuedMinMessages);
+        builder.WithQueuedMaxMessagesKbytes(options.QueuedMaxMessagesKbytes);
+        builder.WithIsolationLevel(options.IsolationLevel);
+        builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
+        builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
+        builder.WithClientDnsLookup(options.ClientDnsLookup);
+        builder.WithPrefetchPipelineDepth(options.PrefetchPipelineDepth);
+        builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
+        if (options.EnableAdaptiveConnections)
+            builder.WithAdaptiveConnections(options.MaxConnectionsPerBroker);
+        else
+            builder.WithoutAdaptiveConnections();
+        if (options.EnableAdaptiveFetchSizing)
+            builder.WithAdaptiveFetchSizing(options.AdaptiveFetchSizingOptions);
+        if (options.RetryPolicy is not null)
+            builder.WithRetryPolicy(options.RetryPolicy);
+        foreach (var metric in options.ApplicationMetrics)
+            builder.RegisterMetricForSubscription(metric);
+        AddConsumerInterceptors(options.Interceptors, builder);
+    }
+
+    public static void ApplyAdmin(AdminClientOptions options, AdminClientBuilder builder)
+    {
+        builder.WithBootstrapServers(options.BootstrapServers.ToArray());
+        if (options.ClientId is not null)
+            builder.WithClientId(options.ClientId);
+        builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
+        builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
+        ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
+        if (options.OAuthBearerTokenProvider is not null)
+        {
+            builder.WithOAuthBearer(options.OAuthBearerTokenProvider);
+        }
+        else if (options.OAuthBearerToken is not null)
+        {
+            builder.WithOAuthBearer(_ => ValueTask.FromResult(options.OAuthBearerToken));
+        }
+        else
+        {
+            builder.WithSaslOptions(
+                options.SaslMechanism,
+                options.SaslUsername,
+                options.SaslPassword,
+                options.GssapiConfig,
+                options.OAuthBearerConfig,
+                options.AwsMskIamConfig,
+                options.SaslScramTokenAuth);
+        }
+
+        builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
+        builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
+        builder.WithClientDnsLookup(options.ClientDnsLookup);
+        foreach (var metric in options.ApplicationMetrics)
+            builder.RegisterMetricForSubscription(metric);
+    }
+
+    private static void ApplyTls<TBuilder>(
+        bool useTls,
+        TlsConfig? tlsConfig,
+        Func<TBuilder> useTlsBuilder,
+        Func<TlsConfig, TBuilder> useTlsConfigBuilder)
+    {
+        if (tlsConfig is not null)
+        {
+            useTlsConfigBuilder(tlsConfig);
+            return;
+        }
+
+        if (useTls)
+        {
+            useTlsBuilder();
+        }
+    }
+
+    private static TimeSpan ToTimeout(int milliseconds) =>
+        milliseconds < 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(milliseconds);
+
+    private static void ApplySasl<TBuilder>(
+        SaslMechanism mechanism,
+        string? username,
+        string? password,
+        bool saslScramTokenAuth,
+        GssapiConfig? gssapiConfig,
+        OAuthBearerConfig? oauthConfig,
+        Func<CancellationToken, ValueTask<OAuthBearerToken>>? oauthTokenProvider,
+        AwsMskIamConfig? awsMskIamConfig,
+        Func<SaslMechanism, string?, string?, GssapiConfig?, OAuthBearerConfig?, AwsMskIamConfig?, bool, TBuilder> withSaslOptions,
+        Func<Func<CancellationToken, ValueTask<OAuthBearerToken>>, TBuilder> withOAuthBearer)
+    {
+        if (oauthTokenProvider is not null)
+        {
+            withOAuthBearer(oauthTokenProvider);
+            return;
+        }
+
+        withSaslOptions(
+            mechanism,
+            username,
+            password,
+            gssapiConfig,
+            oauthConfig,
+            awsMskIamConfig,
+            saslScramTokenAuth);
+    }
+
+    private static void AddProducerInterceptors<TKey, TValue>(
+        IReadOnlyList<object>? interceptors,
+        ProducerBuilder<TKey, TValue> builder)
+    {
+        if (interceptors is null)
+        {
+            return;
+        }
+
+        foreach (var interceptor in interceptors)
+        {
+            if (interceptor is IProducerInterceptor<TKey, TValue> typedInterceptor)
+            {
+                builder.AddInterceptor(typedInterceptor);
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Configured producer interceptor '{interceptor.GetType().FullName}' does not implement IProducerInterceptor<{typeof(TKey).Name}, {typeof(TValue).Name}>.");
+        }
+    }
+
+    private static void AddConsumerInterceptors<TKey, TValue>(
+        IReadOnlyList<object>? interceptors,
+        ConsumerBuilder<TKey, TValue> builder)
+    {
+        if (interceptors is null)
+        {
+            return;
+        }
+
+        foreach (var interceptor in interceptors)
+        {
+            if (interceptor is IConsumerInterceptor<TKey, TValue> typedInterceptor)
+            {
+                builder.AddInterceptor(typedInterceptor);
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Configured consumer interceptor '{interceptor.GetType().FullName}' does not implement IConsumerInterceptor<{typeof(TKey).Name}, {typeof(TValue).Name}>.");
+        }
     }
 }
 
