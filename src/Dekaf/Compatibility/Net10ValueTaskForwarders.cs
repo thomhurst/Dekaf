@@ -5,6 +5,12 @@ internal static class ValueTaskCompatibility
 {
     public static ValueTask CompletedTask => ValueTask.CompletedTask;
 
+    public static ValueTask FromCanceled(System.Threading.CancellationToken cancellationToken)
+        => ValueTask.FromCanceled(cancellationToken);
+
+    public static ValueTask FromException(Exception exception)
+        => ValueTask.FromException(exception);
+
     public static ValueTask<T> FromException<T>(Exception exception)
         => ValueTask.FromException<T>(exception);
 }

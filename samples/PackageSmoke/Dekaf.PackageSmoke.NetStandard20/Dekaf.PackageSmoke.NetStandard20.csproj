@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">0.0.1-local</DekafPackageVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dekaf" Version="$(DekafPackageVersion)" />
+  </ItemGroup>
+
+</Project>

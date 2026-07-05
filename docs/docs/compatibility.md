@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Compatibility
 
-Dekaf currently targets `net10.0`.
+Dekaf's core package targets `net10.0` and `netstandard2.0`. The extension, serialization, compression, Schema Registry, testing, and tool packages still target `net10.0`.
 
 The project is open to broader target-framework support when it does not regress the `net10.0` performance path. `netstandard2.0` support is tracked by #1224 and split into staged child issues so compatibility work can land without weakening the current package.
 
@@ -12,7 +12,7 @@ The project is open to broader target-framework support when it does not regress
 
 | Area | Status |
 | --- | --- |
-| Core package (`Dekaf`) | `net10.0` |
+| Core package (`Dekaf`) | `net10.0`, `netstandard2.0` |
 | Compression packages | `net10.0` |
 | Serialization packages | `net10.0` |
 | Schema Registry packages | `net10.0` |
@@ -79,7 +79,7 @@ This pass includes:
 - TLS authentication uses the older `SslStream.AuthenticateAsClientAsync` overload on `netstandard2.0`.
 - GSSAPI remains part of the API surface, but using it on `netstandard2.0` throws `PlatformNotSupportedException` because `NegotiateAuthentication` is unavailable there.
 
-This baseline does not declare package support for `netstandard2.0`; it makes the core compile state clean so packaging and runtime validation can proceed separately.
+The #1301 package pass declares `netstandard2.0` support for the core `Dekaf` package only. CI packs the package with both `lib/net10.0/Dekaf.dll` and `lib/netstandard2.0/Dekaf.dll`, then restores a sample `netstandard2.0` library from the local `.nupkg` and runs it through a `net10.0` console host.
 
 ## Blocker Categories
 
@@ -120,9 +120,9 @@ Each replacement needs performance review. The `net10.0` hot path should keep mo
 
 ### Package Matrix
 
-Not every package has to multi-target at the same time. The likely sequence is:
+Not every package has to multi-target at the same time. The current sequence is:
 
-1. `Dekaf`
+1. `Dekaf` - shipped as `net10.0` and `netstandard2.0`
 2. serialization and compression packages that can compile without framework-specific hosting dependencies
 3. Schema Registry packages
 4. extensions packages where their `Microsoft.Extensions.*` dependencies support the chosen older target
@@ -141,6 +141,12 @@ Compatibility support is not complete until these checks exist:
 - Any compatibility helper has focused tests or compile canaries.
 
 Integration tests should keep using the existing runtime target unless a specific compatibility runtime issue requires a separate run.
+
+Run the package smoke locally after packing:
+
+```powershell
+./scripts/RunNetStandardPackageSmoke.ps1
+```
 
 ## Non-goals
 
