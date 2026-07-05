@@ -10,16 +10,37 @@ function Get-ActionableReviewBodyReason {
 
     $previouslyResolvedHeading =
         'previously[- ]flagged\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun\w+\b).)*\b(?:fixed|resolved|addressed|verified)\b\s*$'
+    $resolvedFindingHeading =
+        '(?:fix|change|commit|follow[- ]up)\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun\w+\b).)*\b(?:fix(?:es|ed)?|resolves?|resolved|addresses?|addressed)\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun\w+\b).)*\b(?:issues?|bugs?|findings?|concerns?|regressions?)\b\s*$'
     $nonActionableHeading =
-        '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
-        "|$previouslyResolvedHeading"
+        '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking|not\s+a\s+regression)\b' +
+        "|$previouslyResolvedHeading" +
+        "|$resolvedFindingHeading"
     $actionableHeadingWord = 'Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Design|Leak|Leaks|Gap|Gaps|Silently|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix'
-    $categoryOnlyHeading = '(?:correctness|design|architecture)(?:\s*/\s*(?:correctness|design|architecture))*'
-    $positiveCategorySection =
+    $horizontalWhitespace = '[^\S\r\n]'
+    $categoryHeadingTerm = "(?:correctness|security|design|architecture|claude\.md$horizontalWhitespace+(?:compliance|conventions))"
+    $categoryOnlyHeading = "$categoryHeadingTerm(?:$horizontalWhitespace*/$horizontalWhitespace*$categoryHeadingTerm)*"
+    $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
+    $positiveCategoryVerdict =
+        "$noCategoryFindings|\b(?:looks?\s+(?:right|good)|core\s+fix\s+is\s+(?:sound|correct)|genuine\s+improvement|not\s+just\s+churn|fix\s+is\s+scoped|allocation[- ]free\s+helper)\b"
+    $positiveCategoryHeadingVerdict = "$positiveCategoryVerdict|\bverified\b"
+    $positiveCategorySection = $positiveCategoryVerdict
 
-    $categoryHeadingPattern = "(?im)^\s*#{2,4}\s+($categoryOnlyHeading)\s*:?\s*$"
+    $categoryHeadingWithOptionalVerdict = "$categoryOnlyHeading(?:(?:$horizontalWhitespace*(?:[-:]|\p{Pd})$horizontalWhitespace*\S[^\r\n#]*)|(?:$horizontalWhitespace*\([^\r\n#)]*\))|(?:$horizontalWhitespace+\S[^\r\n#]*))?:?"
+    $categoryHeadingPattern = "(?im)^$horizontalWhitespace*#{2,4}$horizontalWhitespace+($categoryOnlyHeading)(?:(?:$horizontalWhitespace*(?:[-:]|\p{Pd})$horizontalWhitespace*(?<verdict>\S[^\r\n#]*))|(?:$horizontalWhitespace*\((?<parentheticalVerdict>[^)\r\n#]+)\))|(?:$horizontalWhitespace+(?<bareVerdict>\S[^\r\n#]*)))?:?$horizontalWhitespace*\r?$"
     foreach ($heading in [regex]::Matches($Body, $categoryHeadingPattern)) {
+        $headingVerdict = if ($heading.Groups['verdict'].Success) {
+            $heading.Groups['verdict'].Value
+        } elseif ($heading.Groups['bareVerdict'].Success) {
+            $heading.Groups['bareVerdict'].Value
+        } else {
+            $heading.Groups['parentheticalVerdict'].Value
+        }
+        if ($headingVerdict -and $headingVerdict -notmatch $positiveCategoryHeadingVerdict) {
+            return "actionable category heading: $($heading.Value.Trim())"
+        }
+
         $sectionStart = $heading.Index + $heading.Length
         $sectionRemainder = $Body.Substring($sectionStart)
         $nextHeading = [regex]::Match($sectionRemainder, '(?m)^\s*#{2,4}\s+')
@@ -30,7 +51,7 @@ function Get-ActionableReviewBodyReason {
         }
         $firstParagraph = [regex]::Match($sectionBody, '(?ms)\S.*?(?:\r?\n\s*\r?\n|$)').Value
 
-        if ($firstParagraph -notmatch $positiveCategorySection) {
+        if (-not $headingVerdict -and $firstParagraph -notmatch $positiveCategorySection) {
             return "actionable category heading: $($heading.Value.Trim())"
         }
     }
@@ -38,7 +59,7 @@ function Get-ActionableReviewBodyReason {
     $patterns = @(
         @{
             Reason = 'actionable heading'
-            Pattern = "(?im)^\s*#{2,4}\s+(?!$nonActionableHeading)(?!$categoryOnlyHeading\s*:?\s*$).*\b($actionableHeadingWord)\b"
+            Pattern = "(?im)^\s*#{2,4}\s+(?!$nonActionableHeading)(?!$categoryHeadingWithOptionalVerdict\s*$).*\b($actionableHeadingWord)\b"
         },
         @{
             Reason = 'numbered finding heading'

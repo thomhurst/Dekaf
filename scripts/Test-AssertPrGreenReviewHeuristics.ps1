@@ -85,6 +85,30 @@ No blocking issues.
         Blocks = $false
     },
     @{
+        Name = 'allows positive category heading verdict'
+        Body = @"
+## Review
+
+### Correctness $([char]0x2014) looks right
+- The core fix is correct.
+
+No blocking issues found.
+"@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows verified category heading parenthetical'
+        Body = @'
+## Review
+
+### Correctness (verified against code, not just description)
+- Confirmed the fix runs outside the lock.
+
+No blocking issues found.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'allows positive category section heading with colon'
         Body = @'
 ## Review
@@ -93,6 +117,114 @@ No blocking issues.
 No issues found.
 '@
         Blocks = $false
+    },
+    @{
+        Name = 'allows positive correctness section with sound fix'
+        Body = @'
+## Review
+
+### Correctness
+The core fix is sound: the guard now checks the right invariant.
+
+No blocking issues.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows positive category heading verdict with colon'
+        Body = @'
+## Review
+
+### Correctness: No issues found.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows positive category heading bare verdict'
+        Body = @'
+## Review
+
+### Correctness / Security No bugs found.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows positive design architecture paragraph'
+        Body = @'
+## Review
+
+### Design / Architecture
+Genuine improvement, not just churn: this removes duplicate shim code.
+
+No blocking issues.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows positive design conventions paragraph'
+        Body = @'
+## Review
+
+### Design / CLAUDE.md conventions
+- Fix is scoped to only the paths that needed it.
+
+No blocking issues.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows positive design compliance paragraph'
+        Body = @'
+## Review
+
+### Design / CLAUDE.md compliance
+- Fix is scoped to only the paths that needed it.
+
+No blocking issues.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows allocation-free design compliance paragraph'
+        Body = @'
+## Review
+
+### Design / CLAUDE.md compliance
+`ValidateReadableLength` is a small, allocation-free helper reused consistently.
+
+No outstanding issues.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'blocks category parenthetical finding'
+        Body = @'
+## Review
+
+### Correctness (pool resize drops cached items)
+This needs a fix.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks category bare finding'
+        Body = @'
+## Review
+
+### Correctness / Security leaks buffers
+This needs a fix.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks design conventions finding'
+        Body = @'
+## Review
+
+### Design / CLAUDE.md conventions
+This introduces a broad abstraction that should be fixed.
+'@
+        Blocks = $true
     },
     @{
         Name = 'blocks category section heading with finding body'
@@ -134,6 +266,17 @@ Minor/optional, not blocking:
         Blocks = $false
     },
     @{
+        Name = 'allows not a regression heading'
+        Body = @'
+## Review
+
+### Not a regression, just noting scope
+
+This matches pre-PR behavior.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'allows numbered non-blocking heading'
         Body = @'
 ## Review
@@ -155,11 +298,33 @@ The prior findings are now resolved.
         Blocks = $false
     },
     @{
+        Name = 'allows fix resolves issue heading'
+        Body = @'
+## Review
+
+### Fix in `62546f5` resolves the concurrency issue
+
+The new commit avoids the unsafe queue path.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'blocks previously flagged issue still not fixed'
         Body = @'
 ## Review
 
 ### Previously-flagged issue - still not fixed
+
+The finding remains open.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks fix still not resolving issue heading'
+        Body = @'
+## Review
+
+### Fix still does not resolve the concurrency issue
 
 The finding remains open.
 '@
