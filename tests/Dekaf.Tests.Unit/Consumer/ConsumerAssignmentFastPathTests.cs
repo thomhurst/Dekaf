@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
@@ -174,6 +175,34 @@ public sealed class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.Assignment).Contains(retainedPartition);
         await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
         await Assert.That(GetPendingFetches(consumer).Any(p => p.TopicPartition == revokedPartition)).IsFalse();
+    }
+
+    [Test]
+    public async Task CoordinatorRevocationFetchClear_ConcurrentQueueAndDrain_KeepsPendingFlagConsistent()
+    {
+        await using var consumer = CreateConsumer();
+        var tasks = new List<Task>();
+
+        for (var i = 0; i < 500; i++)
+        {
+            var partition = new TopicPartition("test-topic", i);
+            tasks.Add(Task.Run(() => QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition])));
+            tasks.Add(Task.Run(() => ClearFetchBufferForPendingCoordinatorRevocations(consumer)));
+        }
+
+        await Task.WhenAll(tasks);
+
+        var pendingRevocations = GetCoordinatorRevokedPartitionsPendingFetchClear(consumer);
+        var pendingFlag = GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer);
+
+        await Assert.That(pendingFlag == 1 || pendingRevocations.IsEmpty).IsTrue();
+
+        while (ClearFetchBufferForPendingCoordinatorRevocations(consumer))
+        {
+        }
+
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
     }
 
     private static KafkaConsumer<string, string> CreateConsumer()
@@ -431,6 +460,50 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_prefetchedBytes field not found.");
 
         return (long)field.GetValue(consumer)!;
+    }
+
+    private static ConcurrentDictionary<TopicPartition, byte> GetCoordinatorRevokedPartitionsPendingFetchClear(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinatorRevokedPartitionsPendingFetchClear",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClear field not found.");
+
+        return (ConcurrentDictionary<TopicPartition, byte>)field.GetValue(consumer)!;
+    }
+
+    private static int GetCoordinatorRevokedPartitionsPendingFetchClearPending(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinatorRevokedPartitionsPendingFetchClearPending",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearPending field not found.");
+
+        return (int)field.GetValue(consumer)!;
+    }
+
+    private static void QueueCoordinatorRevokedPartitionsForFetchClear(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition[] partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "QueueCoordinatorRevokedPartitionsForFetchClear",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("QueueCoordinatorRevokedPartitionsForFetchClear method not found.");
+
+        method.Invoke(consumer, [partitions]);
+    }
+
+    private static bool ClearFetchBufferForPendingCoordinatorRevocations(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "ClearFetchBufferForPendingCoordinatorRevocations",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ClearFetchBufferForPendingCoordinatorRevocations method not found.");
+
+        return (bool)method.Invoke(consumer, [])!;
     }
 
     private static void SetPrefetchedBytes(KafkaConsumer<string, string> consumer, long bytes)

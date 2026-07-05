@@ -639,6 +639,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // user code at the yield point can trigger such a clear; the version check lets the
     // iterator detect that its current fetch was disposed underneath it.
     private int _pendingFetchesVersion;
+    // Keeps the pending flag and dictionary in sync while preserving the volatile hot-path check.
+    private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
     private readonly ConcurrentDictionary<TopicPartition, byte> _coordinatorRevokedPartitionsPendingFetchClear = new();
     private int _coordinatorRevokedPartitionsPendingFetchClearPending;
 
@@ -3002,12 +3004,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions)
     {
-        foreach (var partition in partitions)
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
-        }
+            foreach (var partition in partitions)
+            {
+                _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+            }
 
-        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+        }
     }
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
@@ -3015,20 +3020,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
             return false;
 
-        HashSet<TopicPartition>? partitionsToRemove = null;
-        foreach (var partition in _coordinatorRevokedPartitionsPendingFetchClear.Keys)
+        HashSet<TopicPartition>? partitionsToRemove;
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            if (!_coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _))
-                continue;
+            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+                return false;
+            }
 
-            partitionsToRemove ??= [];
-            partitionsToRemove.Add(partition);
+            partitionsToRemove = [];
+            foreach (var partition in _coordinatorRevokedPartitionsPendingFetchClear.Keys)
+            {
+                if (_coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _))
+                    partitionsToRemove.Add(partition);
+            }
+
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
         }
 
-        if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
-
-        if (partitionsToRemove is null || partitionsToRemove.Count == 0)
+        if (partitionsToRemove.Count == 0)
             return false;
 
         ClearFetchBufferForPartitions(partitionsToRemove);
