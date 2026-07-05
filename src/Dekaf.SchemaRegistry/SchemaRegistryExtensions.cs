@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -20,6 +22,8 @@ public static class SchemaRegistryExtensions
     /// <param name="subjectNameStrategy">Subject name strategy.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <returns>The builder for chaining.</returns>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
@@ -39,6 +43,36 @@ public static class SchemaRegistryExtensions
     }
 
     /// <summary>
+    /// Configures the producer to use NativeAOT-safe JSON Schema Registry serialization for values.
+    /// </summary>
+    /// <typeparam name="TKey">Key type.</typeparam>
+    /// <typeparam name="TValue">Value type.</typeparam>
+    /// <param name="builder">The producer builder.</param>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonSchema">The JSON schema for the value type.</param>
+    /// <param name="jsonTypeInfo">Source-generated metadata for the value type.</param>
+    /// <param name="subjectNameStrategy">Subject name strategy.</param>
+    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<TValue> jsonTypeInfo,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+    {
+        var serializer = new JsonSchemaRegistrySerializer<TValue>(
+            schemaRegistry,
+            jsonSchema,
+            jsonTypeInfo,
+            subjectNameStrategy,
+            autoRegisterSchemas);
+
+        return builder.WithValueSerializer(serializer);
+    }
+
+    /// <summary>
     /// Configures the consumer to use JSON Schema Registry deserialization for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -47,6 +81,8 @@ public static class SchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="jsonOptions">Optional JSON serializer options.</param>
     /// <returns>The builder for chaining.</returns>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
@@ -55,6 +91,27 @@ public static class SchemaRegistryExtensions
         var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
             schemaRegistry,
             jsonOptions);
+
+        return builder.WithValueDeserializer(deserializer);
+    }
+
+    /// <summary>
+    /// Configures the consumer to use NativeAOT-safe JSON Schema Registry deserialization for values.
+    /// </summary>
+    /// <typeparam name="TKey">Key type.</typeparam>
+    /// <typeparam name="TValue">Value type.</typeparam>
+    /// <param name="builder">The consumer builder.</param>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonTypeInfo">Source-generated metadata for the value type.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        JsonTypeInfo<TValue> jsonTypeInfo)
+    {
+        var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
+            schemaRegistry,
+            jsonTypeInfo);
 
         return builder.WithValueDeserializer(deserializer);
     }

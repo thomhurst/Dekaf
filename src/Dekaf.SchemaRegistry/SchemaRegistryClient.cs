@@ -3,8 +3,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -20,7 +18,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
     private readonly ConcurrentDictionary<(string Subject, Schema Schema), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
-    private readonly JsonSerializerOptions _jsonOptions;
     private readonly int _maxCachedSchemas;
     private bool _disposed;
 
@@ -44,12 +41,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Basic", Convert.ToBase64String(authBytes));
         }
-
-        _jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        };
     }
 
     internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
@@ -81,13 +72,13 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
             request,
-            _jsonOptions,
+            SchemaRegistryJsonTypeInfo.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
 
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var result = await response.Content.ReadFromJsonAsync<RegisterSchemaResponse>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false);
+            SchemaRegistryJsonTypeInfo.RegisterSchemaResponse, cancellationToken).ConfigureAwait(false);
 
         var id = result!.Id;
 
@@ -108,7 +99,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false);
+            SchemaRegistryJsonTypeInfo.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
 
         var schema = new Schema
         {
@@ -138,7 +129,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false);
+            SchemaRegistryJsonTypeInfo.GetSubjectVersionResponse, cancellationToken).ConfigureAwait(false);
 
         var schema = new Schema
         {
@@ -185,7 +176,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}",
             request,
-            _jsonOptions,
+            SchemaRegistryJsonTypeInfo.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
@@ -197,7 +188,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false);
+            SchemaRegistryJsonTypeInfo.GetSubjectVersionResponse, cancellationToken).ConfigureAwait(false);
 
         var id = result!.Id;
 
@@ -233,7 +224,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<string>>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+            SchemaRegistryJsonTypeInfo.StringList, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
     public async Task<IReadOnlyList<int>> GetVersionsAsync(string subject, CancellationToken cancellationToken = default)
@@ -245,7 +236,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<int>>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+            SchemaRegistryJsonTypeInfo.Int32List, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
     public async Task<bool> IsCompatibleAsync(string subject, Schema schema, string version = "latest", CancellationToken cancellationToken = default)
@@ -265,7 +256,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var response = await _httpClient.PostAsJsonAsync(
             $"compatibility/subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
             request,
-            _jsonOptions,
+            SchemaRegistryJsonTypeInfo.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
@@ -274,7 +265,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var result = await response.Content.ReadFromJsonAsync<CompatibilityResponse>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false);
+            SchemaRegistryJsonTypeInfo.CompatibilityResponse, cancellationToken).ConfigureAwait(false);
 
         return result?.IsCompatible ?? true;
     }
@@ -289,7 +280,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<int>>(
-            _jsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+            SchemaRegistryJsonTypeInfo.Int32List, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
     private static SchemaType ParseSchemaType(string? schemaType)
@@ -313,7 +304,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         try
         {
             var errorResponse = await response.Content.ReadFromJsonAsync<ErrorResponse>(
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                SchemaRegistryJsonTypeInfo.ErrorResponse, cancellationToken).ConfigureAwait(false);
             errorMessage = errorResponse?.Message;
             errorCode = errorResponse?.ErrorCode;
         }
@@ -334,55 +325,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         _httpClient.Dispose();
     }
 
-    // DTOs for JSON serialization
-    private sealed class RegisterSchemaRequest
-    {
-        public required string Schema { get; init; }
-        public string? SchemaType { get; init; }
-        public List<SchemaReferenceDto>? References { get; init; }
-    }
-
-    private sealed class RegisterSchemaResponse
-    {
-        public int Id { get; init; }
-    }
-
-    private sealed class GetSchemaResponse
-    {
-        public required string Schema { get; init; }
-        public string? SchemaType { get; init; }
-        public List<SchemaReferenceDto>? References { get; init; }
-    }
-
-    private sealed class GetSubjectVersionResponse
-    {
-        public required string Subject { get; init; }
-        public int Version { get; init; }
-        public int Id { get; init; }
-        public required string Schema { get; init; }
-        public string? SchemaType { get; init; }
-        public List<SchemaReferenceDto>? References { get; init; }
-    }
-
-    private sealed class SchemaReferenceDto
-    {
-        public required string Name { get; init; }
-        public required string Subject { get; init; }
-        public int Version { get; init; }
-    }
-
-    private sealed class CompatibilityResponse
-    {
-        [JsonPropertyName("is_compatible")]
-        public bool IsCompatible { get; init; }
-    }
-
-    private sealed class ErrorResponse
-    {
-        [JsonPropertyName("error_code")]
-        public int ErrorCode { get; init; }
-        public string? Message { get; init; }
-    }
 }
 
 /// <summary>

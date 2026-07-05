@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -29,8 +31,12 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     [ThreadStatic]
     private static Utf8JsonWriter? t_jsonWriter;
 
+    private delegate void JsonPayloadSerializer(Utf8JsonWriter writer, T value);
+
     private readonly ISchemaRegistryClient _schemaRegistry;
-    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly JsonPayloadSerializer _serializePayload;
+    private readonly JsonSerializerOptions? _jsonOptions;
+    private readonly JsonTypeInfo<T>? _jsonTypeInfo;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
@@ -49,6 +55,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -58,10 +66,38 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
-        _jsonOptions = jsonOptions ?? new JsonSerializerOptions
+        _jsonOptions = CreateJsonOptions(jsonOptions);
+        _serializePayload = SerializeWithOptions;
+        _subjectNameStrategy = subjectNameStrategy;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _ownsClient = ownsClient;
+        _schema = new Schema
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
         };
+    }
+
+    /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry serializer.
+    /// </summary>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonSchema">The JSON schema string for type T.</param>
+    /// <param name="jsonTypeInfo">Source-generated metadata for type T.</param>
+    /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
+    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<T> jsonTypeInfo,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
+        _serializePayload = SerializeWithTypeInfo;
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
@@ -81,6 +117,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="jsonOptions">JSON serializer options.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -91,10 +129,38 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
-        _jsonOptions = jsonOptions ?? new JsonSerializerOptions
+        _jsonOptions = CreateJsonOptions(jsonOptions);
+        _serializePayload = SerializeWithOptions;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _ownsClient = ownsClient;
+        _schema = new Schema
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
         };
+    }
+
+    /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry serializer with a custom subject name strategy.
+    /// </summary>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonSchema">The JSON schema string for type T.</param>
+    /// <param name="customSubjectNameStrategy">Custom strategy for determining subject names.</param>
+    /// <param name="jsonTypeInfo">Source-generated metadata for type T.</param>
+    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        ISubjectNameStrategy customSubjectNameStrategy,
+        JsonTypeInfo<T> jsonTypeInfo,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
+        _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
+        _serializePayload = SerializeWithTypeInfo;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
         _schema = new Schema
@@ -125,7 +191,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
 
         try
         {
-            JsonSerializer.Serialize(jsonWriter, value, _jsonOptions);
+            _serializePayload(jsonWriter, value);
             jsonWriter.Flush();
         }
         catch
@@ -197,6 +263,26 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
     }
+
+    private static JsonSerializerOptions CreateJsonOptions(JsonSerializerOptions? jsonOptions)
+    {
+        return jsonOptions ?? new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+    }
+
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    private void SerializeWithOptions(Utf8JsonWriter writer, T value)
+    {
+        JsonSerializer.Serialize(writer, value, _jsonOptions);
+    }
+
+    private void SerializeWithTypeInfo(Utf8JsonWriter writer, T value)
+    {
+        JsonSerializer.Serialize(writer, value, _jsonTypeInfo!);
+    }
 }
 
 /// <summary>
@@ -218,8 +304,12 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
+    private delegate T JsonPayloadDeserializer(ReadOnlySpan<byte> payload);
+
     private readonly ISchemaRegistryClient _schemaRegistry;
-    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly JsonPayloadDeserializer _deserializePayload;
+    private readonly JsonSerializerOptions? _jsonOptions;
+    private readonly JsonTypeInfo<T>? _jsonTypeInfo;
     private readonly bool _ownsClient;
 
     /// <summary>
@@ -228,16 +318,33 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="jsonOptions">JSON serializer options.</param>
     /// <param name="ownsClient">Whether this deserializer owns the client and should dispose it.</param>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions = null,
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
-        _jsonOptions = jsonOptions ?? new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        };
+        _jsonOptions = CreateJsonOptions(jsonOptions);
+        _deserializePayload = DeserializeWithOptions;
+        _ownsClient = ownsClient;
+    }
+
+    /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry deserializer.
+    /// </summary>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonTypeInfo">Source-generated metadata for type T.</param>
+    /// <param name="ownsClient">Whether this deserializer owns the client and should dispose it.</param>
+    public JsonSchemaRegistryDeserializer(
+        ISchemaRegistryClient schemaRegistry,
+        JsonTypeInfo<T> jsonTypeInfo,
+        bool ownsClient = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
+        _deserializePayload = DeserializeWithTypeInfo;
         _ownsClient = ownsClient;
     }
 
@@ -257,7 +364,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         _ = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
 
         // Extract JSON payload and deserialize
-        return JsonSerializer.Deserialize<T>(span.Slice(5), _jsonOptions)!;
+        return _deserializePayload(span.Slice(5));
     }
 
     public ValueTask DisposeAsync()
@@ -265,5 +372,25 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         if (_ownsClient)
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private static JsonSerializerOptions CreateJsonOptions(JsonSerializerOptions? jsonOptions)
+    {
+        return jsonOptions ?? new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+    }
+
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    private T DeserializeWithOptions(ReadOnlySpan<byte> payload)
+    {
+        return JsonSerializer.Deserialize<T>(payload, _jsonOptions)!;
+    }
+
+    private T DeserializeWithTypeInfo(ReadOnlySpan<byte> payload)
+    {
+        return JsonSerializer.Deserialize(payload, _jsonTypeInfo!)!;
     }
 }
