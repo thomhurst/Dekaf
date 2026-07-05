@@ -7,7 +7,8 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel("PartitionedConsumerRuntime")]
+// Full isolation: these tests assert timing-sensitive partition runtime scheduling.
+[NotInParallel]
 public sealed class PartitionedConsumerRuntimeTests
 {
     [Test]
