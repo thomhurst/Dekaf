@@ -3,6 +3,7 @@ const sidebars = {
   tutorialSidebar: [
     'intro',
     'getting-started',
+    'compatibility',
     {
       type: 'category',
       label: 'Producer',
