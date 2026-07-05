@@ -33,7 +33,9 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// </remarks>
 /// <typeparam name="T">The type to deserialize. Must be either an Avro ISpecificRecord or GenericRecord.</typeparam>
 public sealed class AvroSchemaRegistryDeserializer<
-    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] T>
+    [DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>
     : IDeserializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;

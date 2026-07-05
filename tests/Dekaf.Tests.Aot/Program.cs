@@ -389,6 +389,10 @@ internal sealed class AotAvroRecord : ISpecificRecord
     public string Name { get; set; } = string.Empty;
     public AvroSchema Schema => _SCHEMA;
 
+    public AotAvroRecord()
+    {
+    }
+
     public object Get(int fieldPos) => fieldPos switch
     {
         0 => Id,

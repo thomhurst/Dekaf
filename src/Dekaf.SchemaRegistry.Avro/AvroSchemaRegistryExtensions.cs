@@ -64,7 +64,9 @@ public static class AvroSchemaRegistryExtensions
     /// <returns>The builder for chaining.</returns>
     public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistry<
         TKey,
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TValue>(
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroDeserializerConfig? config = null)
@@ -85,7 +87,9 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="config">Optional Avro deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
     public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TKey,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] TKey,
         TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
