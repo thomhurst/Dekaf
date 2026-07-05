@@ -255,6 +255,53 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task RunPartitionedAsync_RapidReassignRestartsPartitionLane()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.AssignFromCoordinator(partition);
+
+        var starts = 0;
+        var secondLaneStarted = NewCompletionSource();
+        var processedAfterReassign = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref starts) == 2)
+                    secondLaneStarted.SetResult();
+
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    processedAfterReassign.SetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.UserManaged,
+                StopPolicy = PartitionStopPolicy.Drain
+            },
+            cts.Token).AsTask();
+
+        await Assert.That(() => Volatile.Read(ref starts))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        consumer.RevokeFromCoordinator(partition);
+        consumer.AssignFromCoordinator(partition);
+
+        await secondLaneStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        consumer.Enqueue(CreateResult(partition, 1));
+        await processedAfterReassign.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        await Assert.That(Volatile.Read(ref starts)).IsEqualTo(2);
+        await Assert.That(consumer.CommitCalls).IsEmpty();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_StopPartitionPausesUntilPartitionLeavesAssignment()
     {
         var partition = new TopicPartition("topic-a", 0);
