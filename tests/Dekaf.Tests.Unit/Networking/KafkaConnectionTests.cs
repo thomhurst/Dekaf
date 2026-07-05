@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 
@@ -391,6 +392,25 @@ public sealed class KafkaConnectionTests
         }
     }
 
+    [Test]
+    [Arguments(-1)]
+    [Arguments(1_048_577)]
+    public async Task SendSaslMessageAsync_InvalidResponseFrameSize_ThrowsKafkaExceptionBeforeRent(int responseSize)
+    {
+        await using var connection = new KafkaConnection("localhost", 9092);
+        await using var stream = new SaslResponseStream(responseSize);
+        SetPrivateField(connection, "_stream", stream);
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+        {
+            await InvokeSaslHandshakeAsync(connection, CancellationToken.None).ConfigureAwait(false);
+        });
+
+        await Assert.That(exception!.Message).Contains($"Invalid response frame size {responseSize}");
+        await Assert.That(stream.BytesWritten).IsGreaterThan(0);
+        await Assert.That(stream.ReadCalls).IsEqualTo(1);
+    }
+
     private static async Task<byte[]> ReadRequestFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var lengthBuffer = new byte[4];
@@ -434,6 +454,25 @@ public sealed class KafkaConnectionTests
         field.SetValue(connection, value);
     }
 
+    private static async ValueTask InvokeSaslHandshakeAsync(KafkaConnection connection, CancellationToken cancellationToken)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "SendSaslMessageAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("SendSaslMessageAsync was not found.");
+
+        var genericMethod = method.MakeGenericMethod(typeof(SaslHandshakeRequest), typeof(SaslHandshakeResponse));
+        var result = genericMethod.Invoke(connection,
+        [
+            new SaslHandshakeRequest { Mechanism = "PLAIN" },
+            (short)1,
+            cancellationToken
+        ]);
+
+        await ((ValueTask<SaslHandshakeResponse>)result!).ConfigureAwait(false);
+    }
+
     private static T GetPrivateField<T>(KafkaConnection connection, string name)
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
@@ -454,5 +493,67 @@ public sealed class KafkaConnectionTests
             byte[] bytes when bytes.Length > 0 => bytes[0] != 0,
             _ => false
         };
+    }
+
+    private sealed class SaslResponseStream(int responseSize) : Stream
+    {
+        private readonly MemoryStream _response = CreateSizePrefixStream(responseSize);
+
+        public int BytesWritten { get; private set; }
+        public int ReadCalls { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => _response.Length;
+
+        public override long Position
+        {
+            get => _response.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ReadCalls++;
+            return _response.Read(buffer, offset, count);
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            ReadCalls++;
+            return _response.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            BytesWritten += count;
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            BytesWritten += buffer.Length;
+            return ValueTask.CompletedTask;
+        }
+
+        private static MemoryStream CreateSizePrefixStream(int responseSize)
+        {
+            var buffer = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(buffer, responseSize);
+            return new MemoryStream(buffer);
+        }
     }
 }
