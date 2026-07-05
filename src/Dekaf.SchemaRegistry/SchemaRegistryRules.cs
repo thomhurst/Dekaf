@@ -54,7 +54,8 @@ public sealed class SchemaRegistryRuleContext
     public string? Subject { get; init; }
 
     /// <summary>
-    /// Gets the Schema Registry schema when available.
+    /// Gets the Schema Registry schema when available. This can be <see langword="null" />
+    /// when a deserializer skips schema validation or when the subject is unknown.
     /// </summary>
     public Schema? Schema { get; init; }
 
@@ -76,6 +77,10 @@ public interface ISchemaRegistryRuleExecutor
     /// <summary>
     /// Transforms the codec payload immediately before it is written to the Schema Registry wire envelope.
     /// </summary>
+    /// <remarks>
+    /// The <paramref name="payload" /> memory is valid only for the synchronous duration of this call.
+    /// Implementations that retain the bytes or use them after returning must copy the payload.
+    /// </remarks>
     ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context);
@@ -83,6 +88,12 @@ public interface ISchemaRegistryRuleExecutor
     /// <summary>
     /// Transforms the codec payload immediately after it is read from the Schema Registry wire envelope.
     /// </summary>
+    /// <remarks>
+    /// The <paramref name="payload" /> memory is valid only for the synchronous duration of this call.
+    /// Implementations that retain the bytes or use them after returning must copy the payload.
+    /// The <see cref="SchemaRegistryRuleContext.Schema" /> property can be <see langword="null" />
+    /// when deserializer schema validation is skipped.
+    /// </remarks>
     ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context);

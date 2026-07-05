@@ -100,7 +100,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
 
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
         payloadBuffer.ResetWrittenCount();
@@ -112,8 +113,6 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         var payload = payloadBuffer.WrittenMemory;
         if (_ruleExecutor is not null)
         {
-            var isKey = context.Component == SerializationComponent.Key;
-            var subject = GetSubjectName(context.Topic, isKey);
             payload = _ruleExecutor.TransformSerializedPayload(
                 payload,
                 new SchemaRegistryRuleContext
@@ -121,8 +120,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
                     Topic = context.Topic,
                     Component = context.Component,
                     SchemaId = schemaId,
-                    Subject = subject,
-                    Schema = _getSchema(subject),
+                    Subject = schemaEntry.Subject,
+                    Schema = schemaEntry.Schema,
                     PayloadFormat = SchemaRegistryPayloadFormat.Custom
                 });
         }
@@ -138,7 +137,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         destination.Advance(totalSize);
     }
 
-    private int GetSchemaIdForContext(string topic, bool isKey)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
         => _subjectSchemaIdCache.GetOrAdd(
             topic,
             isKey,
@@ -147,7 +146,9 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
             static (serializer, subject) =>
             {
                 var schema = serializer._getSchema(subject);
-                return serializer.GetSchemaIdSync(subject, schema);
+                return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+                    serializer.GetSchemaIdSync(subject, schema),
+                    schema);
             });
 
     private int GetSchemaIdSync(string subject, Schema schema)

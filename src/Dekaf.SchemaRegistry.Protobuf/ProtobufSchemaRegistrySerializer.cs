@@ -78,7 +78,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
 
         var protoSize = value.CalculateSize();
         ReadOnlyMemory<byte> transformedPayload = default;
@@ -91,8 +92,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     Topic = context.Topic,
                     Component = context.Component,
                     SchemaId = schemaId,
-                    Subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key),
-                    Schema = _schema,
+                    Subject = schemaEntry.Subject,
+                    Schema = schemaEntry.Schema,
                     PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
                 });
         }
@@ -121,13 +122,15 @@ public sealed class ProtobufSchemaRegistrySerializer<
         destination.Advance(totalSize);
     }
 
-    private int GetSchemaIdForContext(string topic, bool isKey)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
         => _subjectSchemaIdCache.GetOrAdd(
             topic,
             isKey,
             this,
             static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
-            static (serializer, subject) => serializer.GetSchemaIdSync(subject));
+            static (serializer, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+                serializer.GetSchemaIdSync(subject),
+                serializer._schema));
 
     private int GetSchemaIdSync(string subject)
     {
