@@ -1,5 +1,6 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PublishAot">
 
+  <!-- CI AOT publishes pass PublishAot globally; let netstandard2.0 inner builds override it. -->
   <PropertyGroup>
     <!-- Directory.Build.props sets a default TargetFramework before project properties; clear it so TargetFrameworks drives package assets. -->
     <TargetFramework></TargetFramework>
@@ -29,6 +30,7 @@
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+    <PublishAot>false</PublishAot>
   </PropertyGroup>
 
   <!-- Compatibility dependencies for the package's netstandard2.0 asset. -->
