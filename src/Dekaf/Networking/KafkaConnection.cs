@@ -1890,9 +1890,6 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         // If the only error is an untrusted root, validate against our custom CA
         if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chain is not null)
         {
-#if NETSTANDARD2_0
-            return false;
-#else
             // Track if we created a new certificate to dispose it later
             X509Certificate2? ownedCert = null;
             try
@@ -1903,39 +1900,55 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 using var customChain = new X509Chain();
                 customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                 customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+#if NETSTANDARD2_0
+                foreach (var caCert in trustedCaCertificates)
+                {
+                    customChain.ChainPolicy.ExtraStore.Add(caCert);
+                }
+#else
                 customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
 
                 foreach (var caCert in trustedCaCertificates)
                 {
                     customChain.ChainPolicy.CustomTrustStore.Add(caCert);
                 }
+#endif
 
                 if (customChain.Build(cert2))
                 {
-                    // Check chain status for errors other than UntrustedRoot
-                    foreach (var status in customChain.ChainStatus)
-                    {
-                        if (status.Status != X509ChainStatusFlags.UntrustedRoot &&
-                            status.Status != X509ChainStatusFlags.NoError)
-                        {
-                            return false;
-                        }
-                    }
-
-                    // Verify the chain ends with one of our trusted CAs
-                    var rootCert = customChain.ChainElements[^1].Certificate;
-                    foreach (var caCert in trustedCaCertificates)
-                    {
-                        if (rootCert.Thumbprint == caCert.Thumbprint)
-                            return true;
-                    }
+                    return IsChainRootedInTrustedCa(customChain, trustedCaCertificates);
                 }
             }
             finally
             {
                 ownedCert?.Dispose();
             }
-#endif
+        }
+
+        return false;
+    }
+
+    private static bool IsChainRootedInTrustedCa(
+        X509Chain chain,
+        X509Certificate2Collection trustedCaCertificates)
+    {
+        foreach (var status in chain.ChainStatus)
+        {
+            if (status.Status != X509ChainStatusFlags.UntrustedRoot &&
+                status.Status != X509ChainStatusFlags.NoError)
+            {
+                return false;
+            }
+        }
+
+        if (chain.ChainElements.Count == 0)
+            return false;
+
+        var rootCert = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
+        foreach (var caCert in trustedCaCertificates)
+        {
+            if (string.Equals(rootCert.Thumbprint, caCert.Thumbprint, StringComparison.OrdinalIgnoreCase))
+                return true;
         }
 
         return false;

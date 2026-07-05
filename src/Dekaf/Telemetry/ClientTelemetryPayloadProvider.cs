@@ -12,6 +12,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
     private const int WireLengthDelimited = 2;
     private const int AggregationTemporalityDelta = 1;
     private const int AggregationTemporalityCumulative = 2;
+    private const long UnixEpochTicks = 621355968000000000L;
 
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly Func<long> _unixNanoClock;
@@ -201,7 +202,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
 
     private static long GetUnixTimeNanoseconds()
     {
-        var ticksSinceUnixEpoch = DateTimeOffset.UtcNow.UtcTicks - 621355968000000000L;
+        var ticksSinceUnixEpoch = DateTimeOffset.UtcNow.UtcTicks - UnixEpochTicks;
         return checked(ticksSinceUnixEpoch * 100);
     }
 }
