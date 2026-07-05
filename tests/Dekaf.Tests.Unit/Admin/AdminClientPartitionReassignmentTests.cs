@@ -107,6 +107,32 @@ public sealed class AdminClientPartitionReassignmentTests
     }
 
     [Test]
+    public async Task AlterPartitionReassignmentsAsync_AlreadyAppliedAfterNonAmbiguousRetry_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection();
+        var sendCalls = 0;
+
+        connection.SendAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
+                Arg.Any<AlterPartitionReassignmentsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(CreateAlterResponse(
+                Interlocked.Increment(ref sendCalls) == 1
+                    ? ErrorCode.NotController
+                    : ErrorCode.ReassignmentInProgress)));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.AlterPartitionReassignmentsAsync(
+                new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
+                {
+                    [new("test-topic", 0)] = NewPartitionReassignment.ToReplicas(1, 2)
+                }));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ReassignmentInProgress);
+        await Assert.That(sendCalls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ListPartitionReassignmentsAsync_MapsResponseToResult()
     {
         var (admin, connection) = CreateAdminWithMockConnection();

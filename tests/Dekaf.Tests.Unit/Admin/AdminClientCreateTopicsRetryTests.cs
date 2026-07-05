@@ -96,6 +96,37 @@ public sealed class AdminClientCreateTopicsRetryTests
     }
 
     [Test]
+    public async Task CreateTopicsAsync_TopicAlreadyExistsAfterNonAmbiguousRetry_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection();
+        var createCalls = 0;
+
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                Arg.Any<CreateTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new CreateTopicsResponse
+            {
+                Topics =
+                [
+                    new CreateTopicsResponseTopic
+                    {
+                        Name = TopicName,
+                        ErrorCode = Interlocked.Increment(ref createCalls) == 1
+                            ? ErrorCode.NotController
+                            : ErrorCode.TopicAlreadyExists
+                    }
+                ]
+            }));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.CreateTopicsAsync([new NewTopic { Name = TopicName, NumPartitions = 1 }]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TopicAlreadyExists);
+        await Assert.That(createCalls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CreateTopicsAsync_TopicAlreadyExistsOnFirstAttempt_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection();

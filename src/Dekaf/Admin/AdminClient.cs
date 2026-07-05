@@ -170,11 +170,20 @@ public sealed class AdminClient : IAdminClient
                 CreateTopicsRequest.LowestSupportedVersion,
                 CreateTopicsRequest.HighestSupportedVersion);
 
-            createMayHaveApplied = !opts.ValidateOnly;
-            var response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            CreateTopicsResponse response;
+            try
+            {
+                response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (!opts.ValidateOnly)
+                    createMayHaveApplied = true;
+                throw;
+            }
 
             // Check for errors
             var createdTopicNames = new List<string>(response.Topics.Count);
@@ -197,6 +206,7 @@ public sealed class AdminClient : IAdminClient
             // MetadataManager.GetTopicMetadataSlowAsync.
             if (!opts.ValidateOnly)
             {
+                createMayHaveApplied = true;
                 await WaitForTopicLeadersAsync(createdTopicNames, cancellationToken).ConfigureAwait(false);
             }
         }, cancellationToken).ConfigureAwait(false);
@@ -1164,11 +1174,19 @@ public sealed class AdminClient : IAdminClient
                     GroupsNames = groups
                 };
 
-                deleteMayHaveApplied = true;
-                var response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
-                    request,
-                    apiVersion,
-                    cancellationToken).ConfigureAwait(false);
+                DeleteGroupsResponse response;
+                try
+                {
+                    response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        request,
+                        apiVersion,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    deleteMayHaveApplied = true;
+                    throw;
+                }
 
                 foreach (var groupResult in response.Results)
                 {
@@ -1419,11 +1437,19 @@ public sealed class AdminClient : IAdminClient
                 CreatePartitionsRequest.LowestSupportedVersion,
                 CreatePartitionsRequest.HighestSupportedVersion);
 
-            createPartitionsMayHaveApplied = true;
-            var response = await controller.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            CreatePartitionsResponse response;
+            try
+            {
+                response = await controller.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                createPartitionsMayHaveApplied = true;
+                throw;
+            }
 
             foreach (var topicResult in response.Results)
             {
@@ -1484,11 +1510,19 @@ public sealed class AdminClient : IAdminClient
                 AlterPartitionReassignmentsRequest.LowestSupportedVersion,
                 AlterPartitionReassignmentsRequest.HighestSupportedVersion);
 
-            alterMayHaveApplied = true;
-            var response = await controller.SendAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            AlterPartitionReassignmentsResponse response;
+            try
+            {
+                response = await controller.SendAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                alterMayHaveApplied = true;
+                throw;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
@@ -2644,11 +2678,19 @@ public sealed class AdminClient : IAdminClient
                 OffsetDeleteRequest.LowestSupportedVersion,
                 OffsetDeleteRequest.HighestSupportedVersion);
 
-            deleteMayHaveApplied = true;
-            var response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            OffsetDeleteResponse response;
+            try
+            {
+                response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                deleteMayHaveApplied = true;
+                throw;
+            }
 
             // Check for top-level error
             if (response.ErrorCode != Protocol.ErrorCode.None)
@@ -2821,11 +2863,8 @@ public sealed class AdminClient : IAdminClient
             }
         }
 
-        var electionMayHaveApplied = false;
-
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(async () =>
         {
-            var isRetryAttempt = electionMayHaveApplied;
             var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
             var request = new ElectLeadersRequest
@@ -2840,7 +2879,6 @@ public sealed class AdminClient : IAdminClient
                 ElectLeadersRequest.LowestSupportedVersion,
                 ElectLeadersRequest.HighestSupportedVersion);
 
-            electionMayHaveApplied = true;
             var response = await controller.SendAsync<ElectLeadersRequest, ElectLeadersResponse>(
                 request,
                 apiVersion,
@@ -2859,7 +2897,7 @@ public sealed class AdminClient : IAdminClient
                 foreach (var partition in topic.PartitionResult)
                 {
                     var tp = new TopicPartition(topic.Topic, partition.PartitionId);
-                    var errorCode = isRetryAttempt && partition.ErrorCode == Protocol.ErrorCode.ElectionNotNeeded
+                    var errorCode = partition.ErrorCode == Protocol.ErrorCode.ElectionNotNeeded
                         ? Protocol.ErrorCode.None
                         : partition.ErrorCode;
 
@@ -3490,11 +3528,19 @@ public sealed class AdminClient : IAdminClient
                 DeleteShareGroupOffsetsRequest.LowestSupportedVersion,
                 DeleteShareGroupOffsetsRequest.HighestSupportedVersion);
 
-            deleteMayHaveApplied = true;
-            var response = await connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            DeleteShareGroupOffsetsResponse response;
+            try
+            {
+                response = await connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                deleteMayHaveApplied = true;
+                throw;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {

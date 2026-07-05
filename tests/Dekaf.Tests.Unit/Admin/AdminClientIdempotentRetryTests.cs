@@ -94,6 +94,38 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupsAsync_GroupIdNotFoundAfterNonAmbiguousRetry_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteGroups);
+        SetupFindCoordinator(connection);
+        var calls = 0;
+
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results =
+                [
+                    new DeleteGroupsResponseResult
+                    {
+                        GroupId = GroupId,
+                        ErrorCode = Interlocked.Increment(ref calls) == 1
+                            ? ErrorCode.NotCoordinator
+                            : ErrorCode.GroupIdNotFound
+                    }
+                ]
+            }));
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync([GroupId]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CreatePartitionsAsync_InvalidPartitionsOnRetry_WhenMetadataShowsTarget_TreatedAsSuccess()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.CreatePartitions);
@@ -130,6 +162,40 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task CreatePartitionsAsync_InvalidPartitionsAfterNonAmbiguousRetry_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.CreatePartitions);
+        var calls = 0;
+
+        connection.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
+                Arg.Any<CreatePartitionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new CreatePartitionsResponse
+            {
+                Results =
+                [
+                    new CreatePartitionsResponseResult
+                    {
+                        Name = TopicName,
+                        ErrorCode = Interlocked.Increment(ref calls) == 1
+                            ? ErrorCode.NotController
+                            : ErrorCode.InvalidPartitions
+                    }
+                ]
+            }));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.CreatePartitionsAsync(new Dictionary<string, int>
+            {
+                [TopicName] = 3
+            }));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidPartitions);
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task DeleteConsumerGroupOffsetsAsync_GroupIdNotFoundOnRetry_TreatedAsSuccess()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.OffsetDelete);
@@ -158,6 +224,32 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupOffsetsAsync_GroupIdNotFoundAfterNonAmbiguousRetry_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.OffsetDelete);
+        SetupFindCoordinator(connection);
+        var calls = 0;
+
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new OffsetDeleteResponse
+            {
+                ErrorCode = Interlocked.Increment(ref calls) == 1
+                    ? ErrorCode.NotCoordinator
+                    : ErrorCode.GroupIdNotFound,
+                Topics = []
+            }));
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupOffsetsAsync(GroupId, [new TopicPartition(TopicName, 0)]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task DeleteShareGroupOffsetsAsync_GroupIdNotFoundOnRetry_TreatedAsSuccess()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteShareGroupOffsets);
@@ -182,6 +274,32 @@ public sealed class AdminClientIdempotentRetryTests
 
         await admin.DeleteShareGroupOffsetsAsync(GroupId, [TopicName]);
 
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeleteShareGroupOffsetsAsync_GroupIdNotFoundAfterNonAmbiguousRetry_Throws()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteShareGroupOffsets);
+        SetupFindCoordinator(connection);
+        var calls = 0;
+
+        connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(
+                Arg.Any<DeleteShareGroupOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new DeleteShareGroupOffsetsResponse
+            {
+                ErrorCode = Interlocked.Increment(ref calls) == 1
+                    ? ErrorCode.NotCoordinator
+                    : ErrorCode.GroupIdNotFound,
+                Responses = []
+            }));
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteShareGroupOffsetsAsync(GroupId, [TopicName]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
         await Assert.That(calls).IsEqualTo(2);
     }
 
@@ -227,6 +345,44 @@ public sealed class AdminClientIdempotentRetryTests
             [new TopicPartition(TopicName, 0)]);
 
         await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(results[new TopicPartition(TopicName, 0)].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[new TopicPartition(TopicName, 0)].ErrorMessage).IsNull();
+    }
+
+    [Test]
+    public async Task ElectLeadersAsync_ElectionNotNeededWithoutPriorRetry_TreatedAsSuccess()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.ElectLeaders);
+
+        connection.SendAsync<ElectLeadersRequest, ElectLeadersResponse>(
+                Arg.Any<ElectLeadersRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ElectLeadersResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ReplicaElectionResults =
+                [
+                    new ElectLeadersResponseTopic
+                    {
+                        Topic = TopicName,
+                        PartitionResult =
+                        [
+                            new ElectLeadersResponsePartition
+                            {
+                                PartitionId = 0,
+                                ErrorCode = ErrorCode.ElectionNotNeeded,
+                                ErrorMessage = "already leader"
+                            }
+                        ]
+                    }
+                ]
+            }));
+
+        var results = await admin.ElectLeadersAsync(
+            ElectionType.Preferred,
+            [new TopicPartition(TopicName, 0)]);
+
         await Assert.That(results[new TopicPartition(TopicName, 0)].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(results[new TopicPartition(TopicName, 0)].ErrorMessage).IsNull();
     }
