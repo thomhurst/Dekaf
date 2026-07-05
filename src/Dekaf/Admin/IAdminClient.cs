@@ -703,14 +703,13 @@ public sealed class FenceProducersResultInfo
 public sealed class AbortTransactionSpec
 {
     public required TopicPartition TopicPartition { get; init; }
-    public long ProducerId { get; init; }
-    public short ProducerEpoch { get; init; }
+    public required long ProducerId { get; init; }
+    public required short ProducerEpoch { get; init; }
 
     /// <summary>
-    /// Transaction coordinator epoch. The default -1 matches admin abort semantics when
-    /// the caller wants the broker to validate producer state without coordinator fencing.
+    /// Transaction coordinator epoch returned by DescribeProducers for the active producer.
     /// </summary>
-    public int CoordinatorEpoch { get; init; } = -1;
+    public required int CoordinatorEpoch { get; init; }
 }
 
 /// <summary>

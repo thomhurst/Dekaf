@@ -558,7 +558,8 @@ public sealed class AdminClientTransactionIntrospectionTests
             {
                 TopicPartition = new TopicPartition("orders", 0),
                 ProducerId = 101,
-                ProducerEpoch = 3
+                ProducerEpoch = 3,
+                CoordinatorEpoch = 5
             });
         }).Throws<BrokerVersionException>();
     }
