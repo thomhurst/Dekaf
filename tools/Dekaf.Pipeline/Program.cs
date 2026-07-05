@@ -15,6 +15,8 @@ builder.Options.ExecutionMode = ExecutionMode.WaitForAllModules;
 
 var skipUnitTests = string.Equals(
     Environment.GetEnvironmentVariable("SKIP_UNIT_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
+var skipAotSmokeTests = string.Equals(
+    Environment.GetEnvironmentVariable("SKIP_AOT_SMOKE_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
 var skipIntegrationTests = string.Equals(
     Environment.GetEnvironmentVariable("SKIP_INTEGRATION_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
 var integrationTestCategory = Environment.GetEnvironmentVariable("INTEGRATION_TEST_CATEGORY");
@@ -28,6 +30,11 @@ builder.Services.AddModule<BuildModule>();
 if (!skipUnitTests)
 {
     builder.Services.AddModule<RunUnitTestsModule>();
+    if (!skipAotSmokeTests)
+    {
+        builder.Services.AddModule<RunAotSmokeTestsModule>();
+    }
+
     builder.Services.AddModule<PackModule>();
     builder.Services.AddModule<UploadToNuGetModule>();
     builder.Services.AddModule<RunBenchmarksModule>();

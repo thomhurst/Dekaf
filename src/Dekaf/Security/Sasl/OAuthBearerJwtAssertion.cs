@@ -2,6 +2,7 @@ namespace Dekaf.Security.Sasl;
 
 using System.Buffers;
 using System.Buffers.Text;
+using System.Collections;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -58,8 +59,7 @@ internal static class OAuthBearerJwtAssertion
             {
                 foreach (var (name, value) in options.AdditionalClaims)
                 {
-                    writer.WritePropertyName(name);
-                    JsonSerializer.Serialize(writer, value, value?.GetType() ?? typeof(object));
+                    WriteAdditionalClaim(writer, name, value);
                 }
             }
         });
@@ -86,6 +86,129 @@ internal static class OAuthBearerJwtAssertion
             if (ReservedClaims.Contains(name))
                 throw new InvalidOperationException($"JWT-bearer additional claim '{name}' conflicts with a reserved assertion claim");
         }
+    }
+
+    private static void WriteAdditionalClaim(Utf8JsonWriter writer, string name, object? value)
+    {
+        writer.WritePropertyName(name);
+        WriteAdditionalClaimValue(writer, name, value);
+    }
+
+    private static void WriteAdditionalClaimValue(Utf8JsonWriter writer, string claimName, object? value)
+    {
+        switch (value)
+        {
+            case null:
+                writer.WriteNullValue();
+                break;
+            case string stringValue:
+                writer.WriteStringValue(stringValue);
+                break;
+            case bool boolValue:
+                writer.WriteBooleanValue(boolValue);
+                break;
+            case byte byteValue:
+                writer.WriteNumberValue(byteValue);
+                break;
+            case sbyte sbyteValue:
+                writer.WriteNumberValue(sbyteValue);
+                break;
+            case short shortValue:
+                writer.WriteNumberValue(shortValue);
+                break;
+            case ushort ushortValue:
+                writer.WriteNumberValue(ushortValue);
+                break;
+            case int intValue:
+                writer.WriteNumberValue(intValue);
+                break;
+            case uint uintValue:
+                writer.WriteNumberValue(uintValue);
+                break;
+            case long longValue:
+                writer.WriteNumberValue(longValue);
+                break;
+            case ulong ulongValue:
+                writer.WriteNumberValue(ulongValue);
+                break;
+            case float floatValue:
+                WriteAdditionalClaimNumberValue(writer, claimName, floatValue);
+                break;
+            case double doubleValue:
+                WriteAdditionalClaimNumberValue(writer, claimName, doubleValue);
+                break;
+            case decimal decimalValue:
+                writer.WriteNumberValue(decimalValue);
+                break;
+            case DateTime dateTimeValue:
+                writer.WriteStringValue(dateTimeValue);
+                break;
+            case DateTimeOffset dateTimeOffsetValue:
+                writer.WriteStringValue(dateTimeOffsetValue);
+                break;
+            case Guid guidValue:
+                writer.WriteStringValue(guidValue);
+                break;
+            case byte[] bytes:
+                writer.WriteBase64StringValue(bytes);
+                break;
+            case JsonElement jsonElement:
+                jsonElement.WriteTo(writer);
+                break;
+            case JsonDocument jsonDocument:
+                jsonDocument.RootElement.WriteTo(writer);
+                break;
+            case IReadOnlyDictionary<string, object?> objectDictionary:
+                WriteAdditionalClaimObject(writer, claimName, objectDictionary);
+                break;
+            case IEnumerable enumerable:
+                writer.WriteStartArray();
+                foreach (var item in enumerable)
+                {
+                    WriteAdditionalClaimValue(writer, claimName, item);
+                }
+                writer.WriteEndArray();
+                break;
+            default:
+                throw UnsupportedAdditionalClaimValue(claimName, value);
+        }
+    }
+
+    private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, float value)
+    {
+        if (!float.IsFinite(value))
+            throw UnsupportedAdditionalClaimValue(claimName, value);
+
+        writer.WriteNumberValue(value);
+    }
+
+    private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, double value)
+    {
+        if (!double.IsFinite(value))
+            throw UnsupportedAdditionalClaimValue(claimName, value);
+
+        writer.WriteNumberValue(value);
+    }
+
+    private static InvalidOperationException UnsupportedAdditionalClaimValue(string claimName, object value)
+    {
+        return new InvalidOperationException(
+            $"JWT-bearer additional claim '{claimName}' has unsupported value type '{value.GetType().FullName}'. " +
+            "Use primitive values, JsonElement, byte arrays, arrays, or dictionaries.");
+    }
+
+    private static void WriteAdditionalClaimObject(
+        Utf8JsonWriter writer,
+        string claimName,
+        IReadOnlyDictionary<string, object?> value)
+    {
+        writer.WriteStartObject();
+        foreach (var (propertyName, propertyValue) in value)
+        {
+            writer.WritePropertyName(propertyName);
+            WriteAdditionalClaimValue(writer, claimName, propertyValue);
+        }
+        writer.WriteEndObject();
     }
 
     private static string Base64UrlJson(Action<Utf8JsonWriter> writeProperties)
