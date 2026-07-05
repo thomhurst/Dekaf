@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Dekaf;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Json;
@@ -150,6 +151,14 @@ public class JsonSerializerTests
 
         await Assert.That(configuredProducerBuilder).IsSameReferenceAs(producerBuilder);
         await Assert.That(configuredConsumerBuilder).IsSameReferenceAs(consumerBuilder);
+    }
+
+    [Test]
+    public async Task Constructor_NullTypeInfo_ThrowsArgumentNullException()
+    {
+        var act = () => new JsonSerializer<SourceGeneratedPerson>((JsonTypeInfo<SourceGeneratedPerson>)null!);
+
+        await Assert.That(act).Throws<ArgumentNullException>();
     }
 
     #endregion

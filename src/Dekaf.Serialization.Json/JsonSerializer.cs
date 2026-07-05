@@ -42,6 +42,8 @@ public sealed class JsonSerializer<T> : ISerde<T>
         };
     }
 
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
@@ -89,6 +91,8 @@ public sealed class JsonSerializer<T> : ISerde<T>
         destination.Advance(written.Length);
     }
 
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         return _typeInfo is not null
@@ -196,4 +200,8 @@ internal static class JsonSerializerAotMessages
     public const string ReflectionSerializationMessage =
         "JsonSerializerOptions-based JSON serialization can require runtime reflection. " +
         "Use the JsonTypeInfo<T> overload for NativeAOT-safe serialization.";
+
+    public const string ReflectionBranchJustification =
+        "The reflection-based System.Text.Json overload is reachable only from the annotated " +
+        "JsonSerializerOptions constructor; JsonTypeInfo construction stays NativeAOT-safe.";
 }

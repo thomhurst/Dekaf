@@ -4,6 +4,7 @@
     <PackageId>Dekaf.Serialization.Json</PackageId>
     <Description>System.Text.Json serialization for Dekaf Kafka client</Description>
     <PackageTags>kafka;serialization;json</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
