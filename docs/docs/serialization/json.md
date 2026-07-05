@@ -43,7 +43,7 @@ using Dekaf.Serialization.Json;
 var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
-    .WithValueDeserializer(new JsonDeserializer<Order>())
+    .WithValueDeserializer(new JsonSerializer<Order>())
     .SubscribeTo("orders")
     .BuildAsync();
 
@@ -73,6 +73,47 @@ var producer = await Kafka.CreateProducer<string, Order>()
     .WithValueSerializer(new JsonSerializer<Order>(options))
     .BuildAsync();
 ```
+
+## NativeAOT
+
+For NativeAOT, use System.Text.Json source-generated metadata instead of reflection-based `JsonSerializerOptions`:
+
+```csharp
+using System.Text.Json.Serialization;
+using Dekaf.Serialization.Json;
+
+[JsonSerializable(typeof(Order))]
+[JsonSerializable(typeof(OrderKey))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+public partial class OrderJsonContext : JsonSerializerContext { }
+
+var serializer = new JsonSerializer<Order>(OrderJsonContext.Default.Order);
+
+await using var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .WithValueSerializer(serializer)
+    .BuildAsync();
+```
+
+The fluent helpers also accept source-generated metadata:
+
+```csharp
+await using var producer = await Kafka.CreateProducer<OrderKey, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .UseJsonKeySerializer(OrderJsonContext.Default.OrderKey)
+    .UseJsonSerializer(OrderJsonContext.Default.Order)
+    .BuildAsync();
+
+await using var consumer = await Kafka.CreateConsumer<OrderKey, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-processors")
+    .UseJsonKeyDeserializer(OrderJsonContext.Default.OrderKey)
+    .UseJsonDeserializer(OrderJsonContext.Default.Order)
+    .SubscribeTo("orders")
+    .BuildAsync();
+```
+
+`JsonSerializerOptions` overloads remain available for non-AOT applications, but they can require runtime reflection depending on the configured converters and payload types.
 
 ## Both Key and Value
 
@@ -134,18 +175,13 @@ public class OrderShipped : OrderEvent { public string TrackingId { get; set; } 
 ## Performance Considerations
 
 - JSON serialization adds overhead compared to binary formats
-- Consider using source generators for better performance:
+- Use source generators for NativeAOT and better performance:
 
 ```csharp
 [JsonSerializable(typeof(Order))]
 public partial class OrderJsonContext : JsonSerializerContext { }
 
-var options = new JsonSerializerOptions
-{
-    TypeInfoResolver = OrderJsonContext.Default
-};
-
-var serializer = new JsonSerializer<Order>(options);
+var serializer = new JsonSerializer<Order>(OrderJsonContext.Default.Order);
 ```
 
 ## Complete Example
@@ -192,7 +228,7 @@ await producer.ProduceAsync("orders", order.Id, order);
 await using var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
-    .WithValueDeserializer(new JsonDeserializer<Order>(jsonOptions))
+    .WithValueDeserializer(new JsonSerializer<Order>(jsonOptions))
     .SubscribeTo("orders")
     .BuildAsync();
 
