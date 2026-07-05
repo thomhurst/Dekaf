@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 6
 ---
 
 # Partitioned Async Processing API Proposal
@@ -8,7 +8,7 @@ sidebar_position: 4
 This is the proposed API contract for first-class partitioned async processing. It is not implemented yet. The runtime work is tracked by #1268.
 :::
 
-Dekaf already exposes the low-level pieces needed for partition-aware consumers: `ConsumeAsync`, manual commits, `Pause` / `Resume`, and `IRebalanceListener`. The proposed partitioned processing API should make the common advanced model first-class:
+Dekaf already exposes the low-level pieces needed for partition-aware consumers: `ConsumeAsync`, manual commits, `consumer.Partitions.Pause` / `consumer.Partitions.Resume`, and `IRebalanceListener`. The proposed partitioned processing API should make the common advanced model first-class:
 
 - one ordered async lane per assigned `TopicPartition`
 - parallel processing across partitions
@@ -45,7 +45,7 @@ static async ValueTask ProcessPartitionAsync(
 }
 ```
 
-The method owns the consume loop while it runs. Applications should not call `ConsumeAsync`, `ConsumeBatchAsync`, `ConsumeRawBatchAsync`, `Assign`, `Unassign`, `Pause`, or `Resume` concurrently with `RunPartitionedAsync` on the same consumer.
+The method owns the consume loop while it runs. Applications should not call `ConsumeAsync`, `ConsumeBatchAsync`, `ConsumeRawBatchAsync`, `consumer.Partitions.Assign`, `consumer.Partitions.Unassign`, `consumer.Partitions.Pause`, or `consumer.Partitions.Resume` concurrently with `RunPartitionedAsync` on the same consumer.
 
 ## Proposed Public Types
 
