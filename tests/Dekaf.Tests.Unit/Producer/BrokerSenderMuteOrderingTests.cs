@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -21,6 +22,14 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderMuteOrderingTests
 {
+    private static readonly MethodInfo CoalesceBatchMethod = typeof(BrokerSender).GetMethod(
+        "CoalesceBatch",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static readonly Type PartitionCarryOverType = typeof(BrokerSender).GetNestedType(
+        "PartitionCarryOver",
+        BindingFlags.NonPublic)!;
+
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
@@ -205,6 +214,120 @@ public sealed class BrokerSenderMuteOrderingTests
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: null);
+
+    private static object CreateCarryOver()
+    {
+        return Activator.CreateInstance(PartitionCarryOverType)!;
+    }
+
+    private static int GetCarryOverCount(object carryOver)
+    {
+        return (int)PartitionCarryOverType.GetProperty("Count")!.GetValue(carryOver)!;
+    }
+
+    private static void InvokeCoalesceBatch(
+        BrokerSender sender,
+        ReadyBatch batch,
+        ReadyBatch[] coalescedBatches,
+        ref int coalescedCount,
+        HashSet<TopicPartition> coalescedPartitions,
+        object carryOver)
+    {
+        var args = new object?[]
+        {
+            batch,
+            coalescedBatches,
+            coalescedCount,
+            coalescedPartitions,
+            carryOver
+        };
+
+        CoalesceBatchMethod.Invoke(sender, args);
+        coalescedCount = (int)args[2]!;
+    }
+
+    [Test]
+    public async Task CoalesceBatch_WhenFull_CarriesOverNormalBatch()
+    {
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var firstBatch = CreateTestBatch(vtPool, "test-topic", 0);
+            var overflowBatch = CreateTestBatch(vtPool, "test-topic", 1);
+            var coalescedBatches = new[] { firstBatch };
+            var coalescedCount = 1;
+            var coalescedPartitions = new HashSet<TopicPartition> { firstBatch.TopicPartition };
+            var carryOver = CreateCarryOver();
+
+            InvokeCoalesceBatch(
+                sender,
+                overflowBatch,
+                coalescedBatches,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver);
+
+            await Assert.That(coalescedCount).IsEqualTo(1);
+            await Assert.That(coalescedBatches[0]).IsSameReferenceAs(firstBatch);
+            await Assert.That(GetCarryOverCount(carryOver)).IsEqualTo(1);
+            await Assert.That(coalescedPartitions.Contains(overflowBatch.TopicPartition)).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CoalesceBatch_WhenFull_CarriesOverRetryBatchWithoutClearingRetryState()
+    {
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var firstBatch = CreateTestBatch(vtPool, "test-topic", 0);
+            var overflowBatch = CreateTestBatch(vtPool, "test-topic", 1);
+            overflowBatch.IsRetry = true;
+
+            var coalescedBatches = new[] { firstBatch };
+            var coalescedCount = 1;
+            var coalescedPartitions = new HashSet<TopicPartition> { firstBatch.TopicPartition };
+            var carryOver = CreateCarryOver();
+
+            InvokeCoalesceBatch(
+                sender,
+                overflowBatch,
+                coalescedBatches,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver);
+
+            await Assert.That(coalescedCount).IsEqualTo(1);
+            await Assert.That(coalescedBatches[0]).IsSameReferenceAs(firstBatch);
+            await Assert.That(GetCarryOverCount(carryOver)).IsEqualTo(1);
+            await Assert.That(overflowBatch.IsRetry).IsTrue();
+            await Assert.That(coalescedPartitions.Contains(overflowBatch.TopicPartition)).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
 
     [Test]
     [Timeout(60_000)]
