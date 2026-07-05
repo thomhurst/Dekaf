@@ -14,11 +14,31 @@ function Get-ActionableReviewBodyReason {
         '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
         "|$previouslyResolvedHeading"
     $actionableHeadingWord = 'Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Design|Leak|Leaks|Gap|Gaps|Silently|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix'
+    $categoryOnlyHeading = '(?:correctness|design|architecture)(?:\s*/\s*(?:correctness|design|architecture))*'
+    $positiveCategorySection =
+        '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
+
+    $categoryHeadingPattern = "(?im)^\s*#{2,4}\s+($categoryOnlyHeading)\s*:?\s*$"
+    foreach ($heading in [regex]::Matches($Body, $categoryHeadingPattern)) {
+        $sectionStart = $heading.Index + $heading.Length
+        $sectionRemainder = $Body.Substring($sectionStart)
+        $nextHeading = [regex]::Match($sectionRemainder, '(?m)^\s*#{2,4}\s+')
+        $sectionBody = if ($nextHeading.Success) {
+            $sectionRemainder.Substring(0, $nextHeading.Index)
+        } else {
+            $sectionRemainder
+        }
+        $firstParagraph = [regex]::Match($sectionBody, '(?ms)\S.*?(?:\r?\n\s*\r?\n|$)').Value
+
+        if ($firstParagraph -notmatch $positiveCategorySection) {
+            return "actionable category heading: $($heading.Value.Trim())"
+        }
+    }
 
     $patterns = @(
         @{
             Reason = 'actionable heading'
-            Pattern = "(?im)^\s*#{2,4}\s+(?!$nonActionableHeading).*\b($actionableHeadingWord)\b"
+            Pattern = "(?im)^\s*#{2,4}\s+(?!$nonActionableHeading)(?!$categoryOnlyHeading\s*:?\s*$).*\b($actionableHeadingWord)\b"
         },
         @{
             Reason = 'numbered finding heading'
