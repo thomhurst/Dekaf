@@ -135,7 +135,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 
     /// <summary>
     /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
-    /// commits pending offsets, leaves the consumer group, and releases resources.
+    /// notifies <see cref="IPartitionStopListener"/> when configured, commits pending offsets,
+    /// leaves the consumer group, and releases resources.
     /// </summary>
     /// <remarks>
     /// <para><b>Optional:</b> Calling <c>CloseAsync</c> explicitly is not required.

@@ -82,6 +82,47 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
+    public async Task GracefulShutdown_CloseAsync_FiresPartitionStopCallbackBeforeLeavingGroup()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var groupId = $"stop-callback-{Guid.NewGuid():N}";
+        var listener = new StopTrackingRebalanceListener();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var message = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(message).IsNotNull();
+
+        var assignmentBeforeClose = consumer.Assignment.ToArray();
+
+        await consumer.CloseAsync(cts.Token);
+
+        await Assert.That(listener.StoppedPartitions).Count().IsEqualTo(1);
+        await Assert.That(listener.StoppedPartitions[0]).IsEquivalentTo(assignmentBeforeClose);
+        await Assert.That(consumer.Assignment).IsEmpty();
+    }
+
+    [Test]
     public async Task GracefulShutdown_AtLeastOnceProcessing_NoMessageLoss()
     {
         // Simulate at-least-once: commit only after successful processing
@@ -422,5 +463,30 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         await Assert.That(secondPass).Count().IsEqualTo(5);
         await Assert.That(secondPass).IsEquivalentTo(firstPass);
+    }
+
+    private sealed class StopTrackingRebalanceListener : IRebalanceListener, IPartitionStopListener
+    {
+        public List<List<TopicPartition>> StoppedPartitions { get; } = [];
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsStoppedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            StoppedPartitions.Add(partitions.ToList());
+            return ValueTask.CompletedTask;
+        }
     }
 }

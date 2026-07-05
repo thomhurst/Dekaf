@@ -77,12 +77,12 @@ When the group membership changes, Kafka rebalances partitions:
 
 ### Rebalance Listener
 
-Get notified when partitions are assigned or revoked:
+Get notified when partitions are assigned, revoked, lost, or stopped during graceful close:
 
 ```csharp
 using Dekaf;
 
-public class MyRebalanceListener : IRebalanceListener
+public class MyRebalanceListener : IRebalanceListener, IPartitionStopListener
 {
     public async ValueTask OnPartitionsAssignedAsync(
         IEnumerable<TopicPartition> partitions,
@@ -107,6 +107,14 @@ public class MyRebalanceListener : IRebalanceListener
         Console.WriteLine($"Lost: {string.Join(", ", partitions)}");
         // Partitions were taken away (e.g., due to timeout)
     }
+
+    public async ValueTask OnPartitionsStoppedAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        Console.WriteLine($"Stopped: {string.Join(", ", partitions)}");
+        // Normal shutdown: drain and dispose partition-scoped resources
+    }
 }
 
 var consumer = await Kafka.CreateConsumer<string, string>()
@@ -115,6 +123,14 @@ var consumer = await Kafka.CreateConsumer<string, string>()
     .WithRebalanceListener(new MyRebalanceListener())
     .BuildAsync();
 ```
+
+Callback semantics:
+
+- `OnPartitionsAssignedAsync` runs after the group assigns partitions to this consumer.
+- `OnPartitionsRevokedAsync` runs during cooperative rebalance before ownership is transferred.
+- `OnPartitionsLostAsync` runs when ownership was lost involuntarily, such as heartbeat timeout; do not commit offsets for lost partitions unless you know they are still owned.
+- `OnPartitionsStoppedAsync` runs only for graceful `CloseAsync` or `DisposeAsync`, after heartbeat, leader-refresh, auto-commit, and prefetch tasks stop and before final auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal.
+- Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
 
 ### Cooperative Rebalancing
 
@@ -207,8 +223,11 @@ When you add consumers to a group:
 ### Removing Consumers
 
 When a consumer leaves gracefully (`await using` or `CloseAsync`):
-1. Consumer commits offsets and leaves group
-2. Remaining consumers get its partitions
+1. Heartbeat, leader-refresh, auto-commit, and prefetch tasks stop
+2. `IPartitionStopListener.OnPartitionsStoppedAsync` runs with the current assignment, if implemented by the configured rebalance listener
+3. Final auto-commit runs when auto-commit mode has dirty offsets
+4. Consumer sends `LeaveGroup` and releases resources
+5. Remaining consumers get its partitions
 
 Cancel the token passed to `ConsumeAsync` before closing when you need to stop a pending fetch promptly during shutdown.
 

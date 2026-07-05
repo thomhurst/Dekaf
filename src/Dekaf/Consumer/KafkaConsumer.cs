@@ -4839,7 +4839,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Step 5: Commit pending offsets (if auto-commit enabled and we have a coordinator)
+        // Step 5: Notify partition-scoped resources of normal stop before final commit/leave.
+        await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
+
+        // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_dirtyPositions.IsEmpty)
         {
             for (var attempt = 0; attempt < 3; attempt++)
@@ -4863,7 +4866,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Step 5: Send LeaveGroup request to coordinator
+        // Step 7: Send LeaveGroup request to coordinator
         if (_coordinator is not null)
         {
             try
@@ -4877,10 +4880,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Step 6: Cancel any blocked fetch operations
+        // Step 8: Cancel any blocked fetch operations
         CancelActiveConsumeOperations();
 
-        // Step 7: Clear pending fetch data and dispose to release pooled memory
+        // Step 9: Clear local assignment and per-partition state
+        ClearAssignmentAfterClose();
+
+        // Step 10: Clear pending fetch data and dispose to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
             pending.Dispose();
@@ -4894,6 +4900,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         await _telemetryManager.StopAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
 
         LogConsumerClosed();
+    }
+
+    private async ValueTask InvokePartitionStopListenerAsync(CancellationToken cancellationToken)
+    {
+        if (_options.RebalanceListener is not IPartitionStopListener listener)
+            return;
+
+        var partitions = _assignmentSnapshot.ToArray();
+        if (partitions.Length == 0)
+            return;
+
+        LogPartitionStopListenerCall(partitions.Length);
+        try
+        {
+            await listener.OnPartitionsStoppedAsync(partitions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogPartitionStopListenerCallbackError(ex);
+        }
+    }
+
+    private void ClearAssignmentAfterClose()
+    {
+        var partitions = _assignmentSnapshot;
+        if (partitions.Count == 0)
+            return;
+
+        var hadPaused = false;
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
+        try
+        {
+            _assignment.Clear();
+            hadPaused = RemovePartitionState(partitions);
+            PublishAssignmentSnapshot();
+        }
+        finally
+        {
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
+        }
+
+        if (hadPaused)
+            PublishPausedSnapshot();
+
+        InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
@@ -5218,6 +5270,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Closing consumer gracefully")]
     private partial void LogClosingConsumer();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Calling OnPartitionsStopped for {PartitionCount} partitions")]
+    private partial void LogPartitionStopListenerCall(int partitionCount);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "OnPartitionsStopped partition stop listener callback threw an exception")]
+    private partial void LogPartitionStopListenerCallbackError(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Committed pending offsets during close")]
     private partial void LogCommittedPendingOffsets();

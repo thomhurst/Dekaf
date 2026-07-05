@@ -433,9 +433,10 @@ public enum AutoOffsetReset
 /// <summary>
 /// Interface for rebalance callbacks.
 /// <para>
-/// Exceptions thrown by these callbacks are caught and logged at <c>Error</c> level;
-/// they do not abort the rebalance or crash the consume loop. If your callback cannot
-/// set up required state, throw and monitor logs for the
+/// Non-cancellation exceptions thrown by these callbacks are caught and logged at
+/// <c>Error</c> level; they do not abort the rebalance or crash the consume loop.
+/// <see cref="OperationCanceledException"/> follows the supplied cancellation token.
+/// If your callback cannot set up required state, throw and monitor logs for the
 /// <c>{CallbackName} rebalance listener callback threw an exception</c> message,
 /// or handle the failure inside the callback itself.
 /// </para>
@@ -456,4 +457,31 @@ public interface IRebalanceListener
     /// Called when partitions are lost due to an involuntary group removal (e.g., heartbeat timeout).
     /// </summary>
     ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Optional companion interface for observing graceful partition stop during
+/// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> or
+/// <see cref="IAsyncDisposable.DisposeAsync"/>.
+/// </summary>
+/// <remarks>
+/// Implement this on the same object passed to
+/// <see cref="ConsumerBuilder{TKey,TValue}.WithRebalanceListener(IRebalanceListener)"/>
+/// when partition-scoped resources need a normal-shutdown hook in addition to
+/// assign/revoke/lost callbacks. Dekaf calls <see cref="OnPartitionsStoppedAsync"/>
+/// after heartbeat, leader-refresh, auto-commit, and prefetch tasks have stopped,
+/// and before the final auto-commit, <c>LeaveGroup</c>, assignment/resource cleanup,
+/// and disposal. The callback receives the current assigned partitions.
+///
+/// Non-cancellation exceptions follow the rebalance listener policy: they are caught
+/// and logged at <c>Error</c> level. <see cref="OperationCanceledException"/> follows
+/// the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> token or internal
+/// disposal shutdown token.
+/// </remarks>
+public interface IPartitionStopListener
+{
+    /// <summary>
+    /// Called once during graceful close/disposal while the consumer still owns its current assignment.
+    /// </summary>
+    ValueTask OnPartitionsStoppedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 }
