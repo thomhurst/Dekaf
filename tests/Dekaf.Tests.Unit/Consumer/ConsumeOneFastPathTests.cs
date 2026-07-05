@@ -72,6 +72,53 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task CommitAsync_InAutoMode_FlushesActivePositionWithoutPendingQueue()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        var positions = GetPositions(consumer);
+        var pendingFetches = GetPendingFetches(consumer);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        var activeFetch = pendingFetches.Peek();
+        pendingFetches.Clear();
+        activeFetch.Dispose();
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(positions[tp]).IsEqualTo(21L);
+    }
+
+    [Test]
+    public async Task GetPosition_InAutoMode_ReadsActiveSnapshotWithoutPendingQueue()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        var pendingFetches = GetPendingFetches(consumer);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        var activeFetch = pendingFetches.Peek();
+        pendingFetches.Clear();
+        activeFetch.Dispose();
+
+        await Assert.That(consumer.GetPosition(tp)).IsEqualTo(21L);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_WithPrefetchBuffer_ReturnsRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -219,6 +266,13 @@ public sealed class ConsumeOneFastPathTests
     }
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        OffsetCommitMode offsetCommitMode,
+        params PendingFetchData[] fetches)
+    {
+        return CreateInitializedConsumer(null, queuedMinMessages: 1, fetchMaxWaitMs: 200, offsetCommitMode, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
         int queuedMinMessages,
         params PendingFetchData[] fetches)
     {
@@ -246,11 +300,21 @@ public sealed class ConsumeOneFastPathTests
         int fetchMaxWaitMs,
         params PendingFetchData[] fetches)
     {
+        return CreateInitializedConsumer(loggerFactory, queuedMinMessages, fetchMaxWaitMs, OffsetCommitMode.Manual, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        ILoggerFactory? loggerFactory,
+        int queuedMinMessages,
+        int fetchMaxWaitMs,
+        OffsetCommitMode offsetCommitMode,
+        params PendingFetchData[] fetches)
+    {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
-                OffsetCommitMode = OffsetCommitMode.Manual,
+                OffsetCommitMode = offsetCommitMode,
                 QueuedMinMessages = queuedMinMessages,
                 FetchMaxWaitMs = fetchMaxWaitMs
             },
