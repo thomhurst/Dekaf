@@ -18,7 +18,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private readonly HttpClient _httpClient;
     private readonly SchemaRegistryConfig _config;
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
-    private readonly ConcurrentDictionary<(string Subject, Schema Schema), int> _idBySchemaCache = new();
+    private readonly ConcurrentDictionary<(string Subject, Schema Schema, bool Normalize), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
     private readonly int _maxCachedSchemas;
     private readonly Uri[] _baseUris;
@@ -145,7 +145,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
                 response.Dispose();
             }
-            catch (Exception ex) when (IsRetriableException(ex, cancellationToken) && attempt < _baseUris.Length - 1)
+            catch (Exception ex) when (IsRetriableException(ex, cancellationToken))
             {
                 lastException = ex;
             }
@@ -177,7 +177,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         bool normalize,
         CancellationToken cancellationToken = default)
     {
-        var cacheKey = (subject, schema);
+        var effectiveNormalize = normalize || _config.NormalizeSchemas;
+        var cacheKey = (subject, schema, effectiveNormalize);
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
             return cachedId;
 
@@ -194,7 +195,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         };
 
         using var response = await PostAsJsonWithFailoverAsync(
-            WithNormalizeQuery($"subjects/{Uri.EscapeDataString(subject)}/versions", normalize || _config.NormalizeSchemas),
+            WithNormalizeQuery($"subjects/{Uri.EscapeDataString(subject)}/versions", effectiveNormalize),
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
@@ -206,7 +207,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         var id = result!.Id;
 
-        CacheSchema(id, subject, schema);
+        CacheSchema(id, subject, schema, effectiveNormalize);
 
         return id;
     }
@@ -290,7 +291,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         bool normalize,
         CancellationToken cancellationToken = default)
     {
-        var cacheKey = (subject, schema);
+        var effectiveNormalize = normalize || _config.NormalizeSchemas;
+        var cacheKey = (subject, schema, effectiveNormalize);
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
             return cachedId;
 
@@ -308,7 +310,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         };
 
         using var response = await PostAsJsonWithFailoverAsync(
-            WithNormalizeQuery($"subjects/{Uri.EscapeDataString(subject)}", normalize || _config.NormalizeSchemas),
+            WithNormalizeQuery($"subjects/{Uri.EscapeDataString(subject)}", effectiveNormalize),
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
@@ -319,7 +321,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             return await RegisterSchemaAsync(
                 subject,
                 schema,
-                normalize,
+                effectiveNormalize,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -330,12 +332,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         var id = result!.Id;
 
-        CacheSchema(id, subject, schema);
+        CacheSchema(id, subject, schema, effectiveNormalize);
 
         return id;
     }
 
-    internal void CacheSchema(int id, string? subject, Schema schema)
+    internal void CacheSchema(int id, string? subject, Schema schema, bool normalize = false)
     {
         if (_maxCachedSchemas == 0)
             return;
@@ -351,7 +353,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             _schemaByIdCache.TryAdd(id, schema);
             if (subject is not null)
             {
-                _idBySchemaCache.TryAdd((subject, schema), id);
+                _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
         }
     }
