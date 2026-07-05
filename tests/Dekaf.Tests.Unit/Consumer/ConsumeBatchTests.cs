@@ -114,6 +114,26 @@ public class ConsumeBatchTests
         }
     }
 
+    [Test]
+    public async Task ConsumeBatch_StopsEnumerationWhenPartitionIsNoLongerAssigned()
+    {
+        using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 3);
+        var assigned = true;
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            _ => assigned);
+
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        assigned = false;
+
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(batch.Count).IsEqualTo(1);
+    }
+
     /// <summary>
     /// Creates a PendingFetchData with a single RecordBatch containing the specified number of records.
     /// </summary>

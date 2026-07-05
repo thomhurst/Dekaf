@@ -205,6 +205,52 @@ public sealed class ConsumerAssignmentFastPathTests
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task CancelCoordinatorRevokedPartitionsFetchClear_ReassignedPartitionRemovesPendingClear()
+    {
+        await using var consumer = CreateConsumer();
+        var reassignedPartition = new TopicPartition("test-topic", 0);
+        var stillRevokedPartition = new TopicPartition("test-topic", 1);
+
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [reassignedPartition, stillRevokedPartition]);
+
+        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [reassignedPartition]);
+
+        var pendingRevocations = GetCoordinatorRevokedPartitionsPendingFetchClear(consumer);
+        await Assert.That(pendingRevocations.ContainsKey(reassignedPartition)).IsFalse();
+        await Assert.That(pendingRevocations.ContainsKey(stillRevokedPartition)).IsTrue();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
+
+        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [stillRevokedPartition]);
+
+        await Assert.That(pendingRevocations).IsEmpty();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task WritePrefetchedItemsAsync_DropsUnassignedPartitionsBeforeAdvancingFetchPosition()
+    {
+        await using var consumer = CreateConsumer();
+        var revokedPartition = new TopicPartition("test-topic", 0);
+        var retainedPartition = new TopicPartition("test-topic", 1);
+        var revokedFetch = CreateFetch(partition: 0, baseOffset: 10, value: "revoked-prefetch");
+        var retainedFetch = CreateFetch(partition: 1, baseOffset: 20, value: "retained-prefetch");
+
+        consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 1, 20)]);
+
+        await WritePrefetchedItemsAsync(consumer, [revokedFetch, retainedFetch]);
+
+        var fetchPositions = GetFetchPositions(consumer);
+        await Assert.That(fetchPositions.ContainsKey(revokedPartition)).IsFalse();
+        await Assert.That(fetchPositions[retainedPartition]).IsEqualTo(21L);
+        await Assert.That(GetPrefetchBuffer(consumer).TryRead(out var prefetched)).IsTrue();
+        await Assert.That(prefetched!.TopicPartition).IsEqualTo(retainedPartition);
+        await Assert.That(GetPrefetchBuffer(consumer).TryRead(out _)).IsFalse();
+
+        prefetched.Dispose();
+        SetPrefetchedBytes(consumer, 0);
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer()
     {
         return new KafkaConsumer<string, string>(
@@ -484,6 +530,17 @@ public sealed class ConsumerAssignmentFastPathTests
         return (int)field.GetValue(consumer)!;
     }
 
+    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_fetchPositions",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fetchPositions field not found.");
+
+        return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
+    }
+
     private static void QueueCoordinatorRevokedPartitionsForFetchClear(
         KafkaConsumer<string, string> consumer,
         TopicPartition[] partitions)
@@ -496,6 +553,18 @@ public sealed class ConsumerAssignmentFastPathTests
         method.Invoke(consumer, [partitions]);
     }
 
+    private static void CancelCoordinatorRevokedPartitionsFetchClear(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition[] partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CancelCoordinatorRevokedPartitionsFetchClear",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CancelCoordinatorRevokedPartitionsFetchClear method not found.");
+
+        method.Invoke(consumer, [partitions]);
+    }
+
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(KafkaConsumer<string, string> consumer)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
@@ -504,6 +573,19 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("ClearFetchBufferForPendingCoordinatorRevocations method not found.");
 
         return (bool)method.Invoke(consumer, [])!;
+    }
+
+    private static async ValueTask WritePrefetchedItemsAsync(
+        KafkaConsumer<string, string> consumer,
+        IReadOnlyList<PendingFetchData> pendingItems)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "WritePrefetchedItemsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("WritePrefetchedItemsAsync method not found.");
+
+        var valueTask = (ValueTask)method.Invoke(consumer, [pendingItems, CancellationToken.None])!;
+        await valueTask;
     }
 
     private static void SetPrefetchedBytes(KafkaConsumer<string, string> consumer, long bytes)

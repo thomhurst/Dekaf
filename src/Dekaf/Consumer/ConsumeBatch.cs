@@ -16,14 +16,17 @@ namespace Dekaf.Consumer
         private readonly PendingFetchData _pendingFetchData;
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
+        private readonly Func<TopicPartition, bool>? _isPartitionStillAssigned;
 
         internal ConsumeBatch(PendingFetchData pendingFetchData,
             IDeserializer<TKey>? keyDeserializer,
-            IDeserializer<TValue>? valueDeserializer)
+            IDeserializer<TValue>? valueDeserializer,
+            Func<TopicPartition, bool>? isPartitionStillAssigned = null)
         {
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
+            _isPartitionStillAssigned = isPartitionStillAssigned;
         }
 
         /// <summary>
@@ -96,6 +99,12 @@ namespace Dekaf.Consumer
             public bool MoveNext()
             {
                 PendingFetchData pending = _batch._pendingFetchData;
+
+                if (_batch._isPartitionStillAssigned is not null
+                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
+                {
+                    return false;
+                }
 
                 if (!pending.MoveNext())
                 {

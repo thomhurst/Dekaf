@@ -41,10 +41,14 @@ namespace Dekaf.Consumer
     public sealed class ConsumeRawBatch : IEnumerable<ConsumeRawRecord>
     {
         private readonly PendingFetchData _pendingFetchData;
+        private readonly Func<TopicPartition, bool>? _isPartitionStillAssigned;
 
-        internal ConsumeRawBatch(PendingFetchData pendingFetchData)
+        internal ConsumeRawBatch(
+            PendingFetchData pendingFetchData,
+            Func<TopicPartition, bool>? isPartitionStillAssigned = null)
         {
             _pendingFetchData = pendingFetchData;
+            _isPartitionStillAssigned = isPartitionStillAssigned;
         }
 
         /// <summary>
@@ -116,6 +120,12 @@ namespace Dekaf.Consumer
             public bool MoveNext()
             {
                 PendingFetchData pending = _batch._pendingFetchData;
+
+                if (_batch._isPartitionStillAssigned is not null
+                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
+                {
+                    return false;
+                }
 
                 if (!pending.MoveNext())
                 {

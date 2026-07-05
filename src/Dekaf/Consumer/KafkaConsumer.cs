@@ -638,6 +638,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // ConsumeAsync iterates the front of _pendingFetches while it is still queued, and
     // user code at the yield point can trigger such a clear; the version check lets the
     // iterator detect that its current fetch was disposed underneath it.
+    // Coarse-grained by design: unrelated partition clears may restart the current
+    // iteration, avoiding per-partition tracking on the per-message hot path.
     private int _pendingFetchesVersion;
     // Keeps the pending flag and dictionary in sync while preserving the volatile hot-path check.
     private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
@@ -1603,7 +1605,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the batch to the caller for synchronous iteration
-                    ConsumeBatch<TKey, TValue> batch = new(pending, _keyDeserializer, _valueDeserializer);
+                    ConsumeBatch<TKey, TValue> batch = new(
+                        pending,
+                        _keyDeserializer,
+                        _valueDeserializer,
+                        IsCurrentlyAssigned);
                     yield return batch;
 
                     // After caller finishes iterating: update positions once per batch
@@ -1746,7 +1752,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
-                    ConsumeRawBatch batch = new(pending);
+                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned);
                     yield return batch;
 
                     // After caller finishes iterating: update positions once per batch
@@ -2186,12 +2192,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 partitionResponse.AbortedTransactions,
                                 activityName: activityName);
 
-                            // Track memory before adding to channel
-                            TrackPrefetchedBytes(pending, release: false);
-
-                            // Update fetch positions for next prefetch
-                            UpdateFetchPositionsFromPrefetch(pending);
-
                             // Collect for later - we'll assign memory owner to the last one
                             pendingItems.Add(pending);
                         }
@@ -2226,14 +2226,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     memoryOwner = null; // Transferred
                 }
 
-                for (var i = 0; i < pendingItems.Count; i++)
-                {
-                    while (!_prefetchBuffer.TryWrite(pendingItems[i]))
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                }
+                await WritePrefetchedItemsAsync(pendingItems, cancellationToken).ConfigureAwait(false);
             }
 
             // If no pending items were created but we have a memory owner, dispose it
@@ -3015,6 +3008,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    private void CancelCoordinatorRevokedPartitionsFetchClear(IReadOnlyList<TopicPartition> partitions)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            foreach (var partition in partitions)
+            {
+                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+            }
+
+            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+        }
+    }
+
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
@@ -3044,6 +3051,37 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         ClearFetchBufferForPartitions(partitionsToRemove);
         return true;
+    }
+
+    private bool IsCurrentlyAssigned(TopicPartition partition)
+    {
+        return _assignmentSnapshot.Contains(partition);
+    }
+
+    private async ValueTask WritePrefetchedItemsAsync(
+        IReadOnlyList<PendingFetchData> pendingItems,
+        CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < pendingItems.Count; i++)
+        {
+            var pending = pendingItems[i];
+            if (!IsCurrentlyAssigned(pending.TopicPartition))
+            {
+                pending.Dispose();
+                continue;
+            }
+
+            // Track memory and advance fetch positions only after confirming
+            // this pipelined response still belongs to the current assignment.
+            TrackPrefetchedBytes(pending, release: false);
+            UpdateFetchPositionsFromPrefetch(pending);
+
+            while (!_prefetchBuffer.TryWrite(pending))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     private void DrainPrefetchBufferForPartitions(HashSet<TopicPartition> partitionsToRemove)
@@ -3464,6 +3502,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Initialize positions for new partitions
                 if (newPartitions is { Count: > 0 })
                 {
+                    CancelCoordinatorRevokedPartitionsFetchClear(newPartitions);
                     await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
                 }
 
