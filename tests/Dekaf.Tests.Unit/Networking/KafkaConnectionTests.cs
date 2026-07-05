@@ -201,6 +201,79 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task ReceiveLoop_IdleLongerThanRequestTimeout_RemainsConnected(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(100) });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+
+            await Assert.That(connection.IsConnected).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task SendAsync_CallerCanceledRequest_DoesNotFailIdleConnectionAfterRequestTimeout(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(100) });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            using var callerCancellation = new CancellationTokenSource();
+
+            var sendTask = connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                apiVersion: 3,
+                callerCancellation.Token).AsTask();
+
+            await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            await callerCancellation.CancelAsync();
+
+            var thrown = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            {
+                await sendTask.ConfigureAwait(false);
+            });
+            await Assert.That(thrown!.CancellationToken).IsEqualTo(callerCancellation.Token);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+
+            await Assert.That(connection.IsConnected).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task IsConnected_StreamAssignedBeforeConnectionReady_ReturnsFalse(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
