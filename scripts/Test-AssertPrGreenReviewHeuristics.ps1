@@ -72,7 +72,7 @@ Scope check passed.
 No bugs found. This is a faithful refactor.
 
 ### Design / architecture
-This is a genuine improvement, not just churn.
+No design issues found. This is a genuine improvement, not just churn.
 
 ### Zero-allocation / hot path
 No concerns.
@@ -83,6 +83,43 @@ Existing tests cover the behavior.
 No blocking issues.
 '@
         Blocks = $false
+    },
+    @{
+        Name = 'allows positive category section heading with colon'
+        Body = @'
+## Review
+
+### Correctness:
+No issues found.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'blocks category section heading with finding body'
+        Body = @'
+## Review
+
+### Correctness
+`MetadataManager.RefreshAsync` leaks the cached `Task` when the request is
+cancelled, causing a slow unbounded memory leak in long-running consumers.
+
+### Design
+The retry loop duplicates logic already present in `BackoffPolicy` and
+should be consolidated.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks category section when all-clear is not first paragraph'
+        Body = @'
+## Review
+
+### Correctness
+This leaks cached tasks under cancellation.
+
+No issues found after that.
+'@
+        Blocks = $true
     },
     @{
         Name = 'allows optional follow-up'
