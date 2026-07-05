@@ -166,7 +166,12 @@ public class DependencyInjectionTests
             BootstrapServers = ["broker1:9092"],
             ClientId = "typed-producer",
             LingerMs = 7,
-            EnableAdaptiveConnections = false
+            EnableAdaptiveConnections = false,
+            UseTls = true,
+            SaslMechanism = SaslMechanism.ScramSha512,
+            SaslUsername = "producer-user",
+            SaslPassword = "producer-password",
+            SaslScramTokenAuth = true
         };
 
         services.AddDekaf(builder =>
@@ -182,6 +187,29 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.ClientId).IsEqualTo("override-producer");
         await Assert.That(boundOptions.LingerMs).IsEqualTo(7);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
+        await Assert.That(boundOptions.UseTls).IsTrue();
+        await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
+        await Assert.That(boundOptions.SaslUsername).IsEqualTo("producer-user");
+        await Assert.That(boundOptions.SaslPassword).IsEqualTo("producer-password");
+        await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+    }
+
+    [Test]
+    public async Task AddProducer_WithTypedOptionsAndMismatchedInterceptor_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            Interceptors = [new TestConsumerInterceptor()]
+        };
+
+        await Assert.That(() => services.AddDekaf(builder =>
+            {
+                builder.AddProducer<string, string>(options);
+            }))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not implement IProducerInterceptor<String, String>");
     }
 
     #endregion
@@ -240,7 +268,12 @@ public class DependencyInjectionTests
             ClientId = "typed-consumer",
             GroupId = "typed-group",
             FetchMinBytes = 4096,
-            EnableAdaptiveConnections = false
+            EnableAdaptiveConnections = false,
+            UseTls = true,
+            SaslMechanism = SaslMechanism.ScramSha256,
+            SaslUsername = "consumer-user",
+            SaslPassword = "consumer-password",
+            SaslScramTokenAuth = true
         };
 
         services.AddDekaf(builder =>
@@ -257,6 +290,30 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.GroupId).IsEqualTo("override-group");
         await Assert.That(boundOptions.FetchMinBytes).IsEqualTo(4096);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
+        await Assert.That(boundOptions.UseTls).IsTrue();
+        await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha256);
+        await Assert.That(boundOptions.SaslUsername).IsEqualTo("consumer-user");
+        await Assert.That(boundOptions.SaslPassword).IsEqualTo("consumer-password");
+        await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+    }
+
+    [Test]
+    public async Task AddConsumer_WithTypedOptionsAndMismatchedInterceptor_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            GroupId = "typed-group",
+            Interceptors = [new TestProducerInterceptor()]
+        };
+
+        await Assert.That(() => services.AddDekaf(builder =>
+            {
+                builder.AddConsumer<string, string>(options);
+            }))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not implement IConsumerInterceptor<String, String>");
     }
 
     [Test]
@@ -311,7 +368,12 @@ public class DependencyInjectionTests
         {
             BootstrapServers = ["broker1:9092"],
             ClientId = "typed-admin",
-            RequestTimeoutMs = 12345
+            RequestTimeoutMs = 12345,
+            UseTls = true,
+            SaslMechanism = SaslMechanism.ScramSha512,
+            SaslUsername = "admin-user",
+            SaslPassword = "admin-password",
+            SaslScramTokenAuth = true
         };
 
         services.AddDekaf(builder =>
@@ -326,6 +388,11 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.BootstrapServers[0]).IsEqualTo("broker1:9092");
         await Assert.That(boundOptions.ClientId).IsEqualTo("override-admin");
         await Assert.That(boundOptions.RequestTimeoutMs).IsEqualTo(12345);
+        await Assert.That(boundOptions.UseTls).IsTrue();
+        await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
+        await Assert.That(boundOptions.SaslUsername).IsEqualTo("admin-user");
+        await Assert.That(boundOptions.SaslPassword).IsEqualTo("admin-password");
+        await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
     }
 
     #endregion

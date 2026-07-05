@@ -824,6 +824,7 @@ internal static class DekafOptionsBinding
             builder.WithRetryPolicy(options.RetryPolicy);
         foreach (var metric in options.ApplicationMetrics)
             builder.RegisterMetricForSubscription(metric);
+        // Internal snapshots can carry interceptors when rebinding options produced by a builder.
         AddProducerInterceptors(options.Interceptors, builder);
     }
 
@@ -898,6 +899,7 @@ internal static class DekafOptionsBinding
             builder.WithRetryPolicy(options.RetryPolicy);
         foreach (var metric in options.ApplicationMetrics)
             builder.RegisterMetricForSubscription(metric);
+        // Internal snapshots can carry interceptors when rebinding options produced by a builder.
         AddConsumerInterceptors(options.Interceptors, builder);
     }
 
