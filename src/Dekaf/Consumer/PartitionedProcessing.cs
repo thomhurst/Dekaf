@@ -3,6 +3,11 @@ using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+#if NETSTANDARD2_0
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
 
 namespace Dekaf.Consumer;
 
@@ -389,16 +394,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             {
                 consumeCancellation.Cancel();
 
-                if (pendingBatchMove is not null)
-                {
-                    try
-                    {
-                        await pendingBatchMove.ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (consumeCancellation.IsCancellationRequested)
-                    {
-                    }
-                }
+                await ObserveAbandonedTaskAsync(pendingBatchMove).ConfigureAwait(false);
+                if (pendingCommandWait is { IsCompleted: true })
+                    await ObserveAbandonedTaskAsync(pendingCommandWait).ConfigureAwait(false);
 
                 await batchEnumerator.DisposeAsync().ConfigureAwait(false);
             }
@@ -424,6 +422,21 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         }
 
         ThrowIfFailed();
+    }
+
+    private static async ValueTask ObserveAbandonedTaskAsync(Task<bool>? task)
+    {
+        if (task is null)
+            return;
+
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Cleanup only observes abandoned work; preserve the exception already leaving RunAsync.
+        }
     }
 
     private IDisposable? RegisterRebalanceListener()
@@ -506,7 +519,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _partitionsToStop.Clear();
         foreach (var partition in _lanes.Keys)
         {
-            if (!AssignmentContains(assignment, partition))
+            if (!assignment.Contains(partition))
                 _partitionsToStop.Add(partition);
         }
 
@@ -524,13 +537,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private void RemoveUnassigned(
         HashSet<TopicPartition> partitions,
-        IEnumerable<TopicPartition> assignment,
+        TopicPartitionSet assignment,
         bool removePause)
     {
         _partitionsToStop.Clear();
         foreach (var partition in partitions)
         {
-            if (!AssignmentContains(assignment, partition))
+            if (!assignment.Contains(partition))
                 _partitionsToStop.Add(partition);
         }
 
@@ -543,15 +556,6 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             _ignoreRestartFailures.Remove(partition);
         }
         _partitionsToStop.Clear();
-    }
-
-    private static bool AssignmentContains(
-        IEnumerable<TopicPartition> assignment,
-        TopicPartition partition)
-    {
-        return assignment is ICollection<TopicPartition> collection
-            ? collection.Contains(partition)
-            : assignment.Contains(partition);
     }
 
     private async ValueTask RouteBatchAsync(
