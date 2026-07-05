@@ -184,7 +184,7 @@ public enum PartitionWorkerErrorPolicy
     StopPartition,
 
     /// <summary>
-    /// Stop the failed partition and keep the rest of the run active.
+    /// Restart the failed partition lane and keep the rest of the run active.
     /// </summary>
     Ignore
 }
@@ -213,6 +213,7 @@ public enum PartitionCommitPolicy
 internal enum PartitionStopReason
 {
     Revoke,
+    Lost,
     Shutdown,
     Failure
 }
@@ -252,6 +253,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     public async ValueTask RunAsync(CancellationToken cancellationToken)
     {
+        using var rebalanceRegistration = RegisterRebalanceListener();
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _failureCancellation.Token);
@@ -285,13 +287,75 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         }
         finally
         {
-            await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
-            _commands.Writer.TryComplete();
-            CompletePendingCommands();
+            try
+            {
+                await StopAllBoundedAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_failure is not null)
+            {
+            }
+            finally
+            {
+                _commands.Writer.TryComplete();
+                CompletePendingCommands();
+            }
         }
 
         ThrowIfFailed();
-        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private IDisposable? RegisterRebalanceListener()
+    {
+        return _consumer is IConsumerRebalanceEventSource eventSource
+            ? eventSource.RegisterRuntimeRebalanceListener(new RuntimeRebalanceListener(this))
+            : null;
+    }
+
+    private void QueueAssignedPartitions(IEnumerable<TopicPartition> partitions)
+    {
+        var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
+        if (partitionArray.Length > 0)
+            _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.AssignPartitions(partitionArray));
+    }
+
+    private void QueueStoppedPartitions(
+        IEnumerable<TopicPartition> partitions,
+        PartitionStopReason stopReason)
+    {
+        var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
+        if (partitionArray.Length > 0)
+            _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, stopReason));
+    }
+
+    private sealed class RuntimeRebalanceListener(
+        PartitionedConsumerRuntime<TKey, TValue> runtime) : IRebalanceListener
+    {
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            runtime.QueueAssignedPartitions(partitions);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            runtime.QueueStoppedPartitions(partitions, PartitionStopReason.Revoke);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            runtime.QueueStoppedPartitions(partitions, PartitionStopReason.Lost);
+            return ValueTask.CompletedTask;
+        }
     }
 
     public ValueTask CommitProcessedAsync(
@@ -314,25 +378,21 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         var assignment = _consumer.Partitions.Assignment;
 
+        foreach (var partition in _stoppedByFailure.Where(partition => !assignment.Contains(partition)).ToArray())
+        {
+            _stoppedByFailure.Remove(partition);
+            _pausedByRuntime.Remove(partition);
+        }
+
         foreach (var partition in _lanes.Keys.Where(partition => !assignment.Contains(partition)).ToArray())
         {
-            var lane = _lanes[partition];
-            _lanes.Remove(partition);
-            _pausedByRuntime.Remove(partition);
-            await StopLaneAsync(
-                lane,
+            await StopPartitionAsync(
+                partition,
                 PartitionStopReason.Revoke,
-                commitProcessed: ShouldCommitOnPartitionStop(),
                 cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (var partition in assignment)
-        {
-            if (_lanes.ContainsKey(partition) || _stoppedByFailure.Contains(partition))
-                continue;
-
-            StartLane(partition);
-        }
+        StartAssignedPartitions(assignment);
     }
 
     private async ValueTask RouteAsync(
@@ -368,6 +428,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         _lanes.Add(partition, lane);
         lane.Start(_processor);
+    }
+
+    private void StartAssignedPartitions(IEnumerable<TopicPartition> partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            if (_lanes.ContainsKey(partition) || _stoppedByFailure.Contains(partition))
+                continue;
+
+            StartLane(partition);
+        }
     }
 
     private void PauseIfNeeded(PartitionLane<TKey, TValue> lane)
@@ -412,7 +483,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             switch (command.Kind)
             {
                 case RuntimeCommandKind.Resume:
-                    if (_lanes.TryGetValue(command.Lane.TopicPartition, out var lane))
+                    if (_lanes.TryGetValue(command.Lane!.TopicPartition, out var lane))
                         ResumeIfNeeded(lane);
 
                     break;
@@ -422,7 +493,18 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
 
                 case RuntimeCommandKind.StopFailed:
-                    await StopFailedLaneAsync(command.Lane, command.Exception!, cancellationToken).ConfigureAwait(false);
+                    await StopFailedLaneAsync(command.Lane!, command.Exception!, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case RuntimeCommandKind.AssignPartitions:
+                    StartAssignedPartitions(command.Partitions!);
+                    break;
+
+                case RuntimeCommandKind.StopPartitions:
+                    await StopPartitionsAsync(
+                        command.Partitions!,
+                        command.StopReason,
+                        cancellationToken).ConfigureAwait(false);
                     break;
             }
         }
@@ -438,7 +520,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 cancellationToken,
                 command.CancellationToken);
 
-            await CommitLaneAsync(command.Lane, linkedCancellation.Token).ConfigureAwait(false);
+            await CommitLaneAsync(command.Lane!, linkedCancellation.Token).ConfigureAwait(false);
             command.Completion!.TrySetResult();
         }
         catch (OperationCanceledException ex)
@@ -459,9 +541,16 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         if (!_lanes.Remove(lane.TopicPartition))
             return;
 
-        _stoppedByFailure.Add(lane.TopicPartition);
-        if (_pausedByRuntime.Add(lane.TopicPartition))
-            _consumer.Partitions.Pause(lane.TopicPartition);
+        if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopPartition)
+        {
+            _stoppedByFailure.Add(lane.TopicPartition);
+            if (_pausedByRuntime.Add(lane.TopicPartition))
+                _consumer.Partitions.Pause(lane.TopicPartition);
+        }
+        else if (_pausedByRuntime.Remove(lane.TopicPartition))
+        {
+            _consumer.Partitions.Resume(lane.TopicPartition);
+        }
 
         await StopLaneAsync(
             lane,
@@ -469,10 +558,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             commitProcessed: false,
             cancellationToken).ConfigureAwait(false);
 
-        if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer)
+        if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.Ignore
+            && !_failureCancellation.IsCancellationRequested
+            && _consumer.Partitions.Assignment.Contains(lane.TopicPartition)
+            && !_lanes.ContainsKey(lane.TopicPartition))
         {
-            _failure ??= ExceptionDispatchInfo.Capture(exception);
-            _failureCancellation.Cancel();
+            StartLane(lane.TopicPartition);
         }
     }
 
@@ -483,36 +574,89 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         CancellationToken cancellationToken)
     {
         var exception = await lane.StopAsync(
-            reason == PartitionStopReason.Failure ? PartitionStopPolicy.Cancel : _options.StopPolicy,
+            reason is PartitionStopReason.Failure or PartitionStopReason.Lost
+                ? PartitionStopPolicy.Cancel
+                : _options.StopPolicy,
             _options.StopTimeout).ConfigureAwait(false);
 
         if (commitProcessed)
             await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
 
-        if (exception is not null && _options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer)
+        if (exception is not null
+            && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
         {
             CaptureFailure(exception);
             _failureCancellation.Cancel();
         }
     }
 
-    private async ValueTask StopAllAsync(CancellationToken cancellationToken)
+    private async ValueTask StopPartitionsAsync(
+        TopicPartition[] partitions,
+        PartitionStopReason reason,
+        CancellationToken cancellationToken)
     {
-        foreach (var lane in _lanes.Values.ToArray())
+        foreach (var partition in partitions)
         {
-            _lanes.Remove(lane.TopicPartition);
-            await StopLaneAsync(
-                lane,
-                PartitionStopReason.Shutdown,
-                commitProcessed: ShouldCommitOnPartitionStop(),
-                cancellationToken).ConfigureAwait(false);
+            _stoppedByFailure.Remove(partition);
+            await StopPartitionAsync(partition, reason, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask StopPartitionAsync(
+        TopicPartition partition,
+        PartitionStopReason reason,
+        CancellationToken cancellationToken)
+    {
+        if (!_lanes.TryGetValue(partition, out var lane))
+        {
+            _pausedByRuntime.Remove(partition);
+            return;
         }
 
-        if (_pausedByRuntime.Count > 0)
+        _lanes.Remove(partition);
+        _pausedByRuntime.Remove(partition);
+
+        await StopLaneAsync(
+            lane,
+            reason,
+            commitProcessed: reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop(),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask StopAllAsync(CancellationToken cancellationToken)
+    {
+        try
         {
-            _consumer.Partitions.Resume(_pausedByRuntime.ToArray());
-            _pausedByRuntime.Clear();
+            foreach (var lane in _lanes.Values.ToArray())
+            {
+                _lanes.Remove(lane.TopicPartition);
+                await StopLaneAsync(
+                    lane,
+                    PartitionStopReason.Shutdown,
+                    commitProcessed: ShouldCommitOnPartitionStop(),
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
+        finally
+        {
+            if (_pausedByRuntime.Count > 0)
+            {
+                _consumer.Partitions.Resume(_pausedByRuntime.ToArray());
+                _pausedByRuntime.Clear();
+            }
+        }
+    }
+
+    private async ValueTask StopAllBoundedAsync()
+    {
+        if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
+        {
+            await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        using var stopCancellation = new CancellationTokenSource(_options.StopTimeout);
+        await StopAllAsync(stopCancellation.Token).ConfigureAwait(false);
     }
 
     private async ValueTask CommitPeriodicallyAsync(CancellationToken cancellationToken)
@@ -746,7 +890,9 @@ internal sealed class PartitionLane<TKey, TValue>
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
-            return null;
+
+            return new TimeoutException(
+                $"Partition processor for {TopicPartition.Topic}:{TopicPartition.Partition} did not stop within {timeout}.");
         }
         catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
         {
@@ -789,27 +935,39 @@ internal enum RuntimeCommandKind
 {
     Resume,
     Commit,
-    StopFailed
+    StopFailed,
+    AssignPartitions,
+    StopPartitions
 }
 
 internal readonly record struct RuntimeCommand<TKey, TValue>(
     RuntimeCommandKind Kind,
-    PartitionLane<TKey, TValue> Lane,
+    PartitionLane<TKey, TValue>? Lane,
+    TopicPartition[]? Partitions,
+    PartitionStopReason StopReason,
     TaskCompletionSource? Completion,
     Exception? Exception,
     CancellationToken CancellationToken)
 {
     public static RuntimeCommand<TKey, TValue> Resume(PartitionLane<TKey, TValue> lane)
-        => new(RuntimeCommandKind.Resume, lane, null, null, CancellationToken.None);
+        => new(RuntimeCommandKind.Resume, lane, null, default, null, null, CancellationToken.None);
 
     public static RuntimeCommand<TKey, TValue> Commit(
         PartitionLane<TKey, TValue> lane,
         TaskCompletionSource completion,
         CancellationToken cancellationToken)
-        => new(RuntimeCommandKind.Commit, lane, completion, null, cancellationToken);
+        => new(RuntimeCommandKind.Commit, lane, null, default, completion, null, cancellationToken);
 
     public static RuntimeCommand<TKey, TValue> StopFailed(
         PartitionLane<TKey, TValue> lane,
         Exception exception)
-        => new(RuntimeCommandKind.StopFailed, lane, null, exception, CancellationToken.None);
+        => new(RuntimeCommandKind.StopFailed, lane, null, default, null, exception, CancellationToken.None);
+
+    public static RuntimeCommand<TKey, TValue> AssignPartitions(TopicPartition[] partitions)
+        => new(RuntimeCommandKind.AssignPartitions, null, partitions, default, null, null, CancellationToken.None);
+
+    public static RuntimeCommand<TKey, TValue> StopPartitions(
+        TopicPartition[] partitions,
+        PartitionStopReason stopReason)
+        => new(RuntimeCommandKind.StopPartitions, null, partitions, stopReason, null, null, CancellationToken.None);
 }

@@ -563,6 +563,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerPositions,
     IConsumerPartitions,
     IConsumerOffsets,
+    IConsumerRebalanceEventSource,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
@@ -580,6 +581,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private long _currentQueuedMaxBytes;
 
     internal ulong CurrentQueuedMaxBytes => (ulong)Volatile.Read(ref _currentQueuedMaxBytes);
+
+    private sealed class NoopDisposable : IDisposable
+    {
+        public static readonly NoopDisposable Instance = new();
+
+        private NoopDisposable()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
 
     void IBudgetedInstance.OnBudgetChanged(ulong newLimit)
     {
@@ -945,6 +959,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
     public IConsumerOffsets Offsets => this;
+
+    IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
+    {
+        return _coordinator?.RegisterRuntimeRebalanceListener(listener) ?? NoopDisposable.Instance;
+    }
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)

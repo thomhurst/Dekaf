@@ -459,6 +459,11 @@ public interface IRebalanceListener
     ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 }
 
+internal interface IConsumerRebalanceEventSource
+{
+    IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener);
+}
+
 /// <summary>
 /// Optional companion interface for observing graceful partition stop during
 /// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> or

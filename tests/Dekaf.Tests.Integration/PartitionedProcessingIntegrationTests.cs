@@ -67,7 +67,7 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
                     context.MarkProcessed(message);
 
                     if (message.Partition == 1 && !releaseFirstPartition.Task.IsCompleted)
-                        secondPartitionProcessedWhileFirstBlocked.SetResult();
+                        secondPartitionProcessedWhileFirstBlocked.TrySetResult();
 
                     if (processed.Values.Sum(static values =>
                         {

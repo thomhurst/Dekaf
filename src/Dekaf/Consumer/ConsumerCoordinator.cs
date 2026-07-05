@@ -20,6 +20,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
+    private IRebalanceListener? _runtimeRebalanceListener;
     private readonly ILogger _logger;
 
     private volatile int _coordinatorId = -1;
@@ -77,6 +78,34 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
+
+    internal IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener)
+    {
+        ArgumentNullException.ThrowIfNull(listener);
+
+        if (Interlocked.CompareExchange(ref _runtimeRebalanceListener, listener, null) is not null)
+            throw new InvalidOperationException("A partitioned runtime rebalance listener is already registered.");
+
+        return new RuntimeRebalanceListenerRegistration(this, listener);
+    }
+
+    private void UnregisterRuntimeRebalanceListener(IRebalanceListener listener)
+    {
+        Interlocked.CompareExchange(ref _runtimeRebalanceListener, null, listener);
+    }
+
+    private sealed class RuntimeRebalanceListenerRegistration(
+        ConsumerCoordinator coordinator,
+        IRebalanceListener listener) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                coordinator.UnregisterRuntimeRebalanceListener(listener);
+        }
+    }
 
     private static void RemoveEmptyTopicGroups<TItem>(Dictionary<string, List<TItem>> topicGroups)
     {
@@ -324,6 +353,33 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LogRebalanceListenerCallbackError(callbackName, ex);
+        }
+    }
+
+    private async ValueTask InvokeRebalanceListenersAsync(
+        string callbackName,
+        IReadOnlyList<TopicPartition> partitions,
+        Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
+        CancellationToken cancellationToken)
+    {
+        var configuredListener = _rebalanceListener;
+        if (configuredListener is not null)
+        {
+            await InvokeRebalanceListenerAsync(
+                callbackName,
+                partitions,
+                (items, token) => callback(configuredListener, items, token),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var runtimeListener = Volatile.Read(ref _runtimeRebalanceListener);
+        if (runtimeListener is not null)
+        {
+            await InvokeRebalanceListenerAsync(
+                callbackName,
+                partitions,
+                (items, token) => callback(runtimeListener, items, token),
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -627,22 +683,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ConsumerHeartbeatResult result,
         CancellationToken cancellationToken)
     {
-        if (!result.AssignmentChanged || _rebalanceListener is null)
+        if (!result.AssignmentChanged)
             return;
 
         if (result.Revoked is { Count: > 0 })
-        {
-            await InvokeRebalanceListenerAsync(
-                "OnPartitionsRevoked", result.Revoked,
-                _rebalanceListener.OnPartitionsRevokedAsync, cancellationToken).ConfigureAwait(false);
-        }
+            await InvokeRebalanceListenersAsync(
+                "OnPartitionsRevoked",
+                result.Revoked,
+                static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
+                cancellationToken).ConfigureAwait(false);
 
         if (result.Assigned is { Count: > 0 })
-        {
-            await InvokeRebalanceListenerAsync(
-                "OnPartitionsAssigned", result.Assigned,
-                _rebalanceListener.OnPartitionsAssignedAsync, cancellationToken).ConfigureAwait(false);
-        }
+            await InvokeRebalanceListenersAsync(
+                "OnPartitionsAssigned",
+                result.Assigned,
+                static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
+                cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1036,16 +1092,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             break;
 
                         case ErrorCode.UnknownMemberId:
-                            if (_rebalanceListener is not null)
+                            var lost = _assignedPartitions.ToList();
+                            if (lost.Count > 0)
                             {
-                                var lost = _assignedPartitions.ToList();
-                                if (lost.Count > 0)
-                                {
-                                    await InvokeRebalanceListenerAsync(
-                                        "OnPartitionsLost", lost,
-                                        _rebalanceListener.OnPartitionsLostAsync,
-                                        CancellationToken.None).ConfigureAwait(false);
-                                }
+                                await InvokeRebalanceListenersAsync(
+                                    "OnPartitionsLost",
+                                    lost,
+                                    static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                                    CancellationToken.None).ConfigureAwait(false);
                             }
 
                             ResetMemberState();

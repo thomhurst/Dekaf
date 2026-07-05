@@ -226,7 +226,9 @@ The runtime must never commit offsets for records that were fetched but not mark
 
 ## Lost Lifecycle
 
-When partitions are lost involuntarily, the runtime cancels those partition lanes and completes their streams. It must not commit offsets for lost partitions by default because ownership is no longer guaranteed.
+When Dekaf's built-in `KafkaConsumer` reports partitions lost involuntarily through the coordinator rebalance callback, the runtime cancels those partition lanes and completes their streams. It does not commit offsets for lost partitions because ownership is no longer guaranteed.
+
+Manual assignment changes and custom `IKafkaConsumer` implementations that do not expose coordinator rebalance events cannot identify involuntary loss separately from ordinary assignment removal.
 
 Applications that write idempotently may still persist their own external offsets, but the runtime-managed Kafka commit policy should remain conservative.
 
@@ -252,7 +254,11 @@ Default behavior is fail-fast:
 
 `StopPartition` is available for advanced users, but it needs careful operational handling because a stopped partition that remains assigned can cause lag.
 
-`Ignore` is opt-in only. Prefer handling retries and dead-letter routing inside the processor so unexpected exceptions remain visible.
+When `StopPartition` stops a failed partition, the runtime pauses it while it remains assigned. A later revoke/lost event clears that stopped state so a legitimate reassignment can start a fresh lane.
+
+`Ignore` is opt-in only. It restarts the partition lane and keeps the rest of the run active. Prefer handling retries and dead-letter routing inside the processor so unexpected exceptions remain visible.
+
+If a processor does not stop within `StopTimeout`, the runtime treats that timeout as fatal because it can no longer guarantee one active processor per partition.
 
 ## Commit Semantics
 

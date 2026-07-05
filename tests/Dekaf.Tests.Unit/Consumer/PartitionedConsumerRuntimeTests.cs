@@ -205,6 +205,207 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task RunPartitionedAsync_LostPartitionCancelsWithoutCommit()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.AssignFromCoordinator(partition);
+
+        var processorStarted = NewCompletionSource();
+        var processed = NewCompletionSource();
+        var stopped = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                processorStarted.SetResult();
+                try
+                {
+                    await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                    {
+                        context.MarkProcessed(message);
+                        processed.SetResult();
+                    }
+                }
+                finally
+                {
+                    stopped.SetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke,
+                StopPolicy = PartitionStopPolicy.Drain
+            },
+            cts.Token).AsTask();
+
+        await processorStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        consumer.LoseFromCoordinator(partition);
+
+        await stopped.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(consumer.CommitCalls).IsEmpty();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_StopPartitionPausesUntilPartitionLeavesAssignment()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.AssignFromCoordinator(partition);
+
+        var attempts = 0;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync<string, string>(
+            (_, _) =>
+            {
+                Interlocked.Increment(ref attempts);
+                throw new InvalidOperationException("partition failed");
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.StopPartition
+            },
+            cts.Token).AsTask();
+
+        await Assert.That(() => Volatile.Read(ref attempts))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await Assert.That(() => consumer.Paused.Contains(partition))
+            .Eventually(paused => paused.IsTrue(), TimeSpan.FromSeconds(5));
+
+        consumer.RevokeFromCoordinator(partition);
+        consumer.AssignFromCoordinator(partition);
+
+        await Assert.That(() => Volatile.Read(ref attempts))
+            .Eventually(count => count.IsEqualTo(2), TimeSpan.FromSeconds(5));
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_IgnoreRestartsPartitionLane()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.AssignFromCoordinator(partition);
+
+        var attempts = 0;
+        var processed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                    throw new InvalidOperationException("ignored failure");
+
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    processed.SetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore
+            },
+            cts.Token).AsTask();
+
+        await Assert.That(() => Volatile.Read(ref attempts))
+            .Eventually(count => count.IsEqualTo(2), TimeSpan.FromSeconds(5));
+
+        consumer.Enqueue(CreateResult(partition, 0));
+
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(consumer.PauseCalls).IsEmpty();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_StopTimeoutOnRevokePropagates()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+
+        var started = NewCompletionSource();
+        var release = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (_, _) =>
+            {
+                started.SetResult();
+                await release.Task.ConfigureAwait(false);
+            },
+            new PartitionedProcessingOptions
+            {
+                StopTimeout = TimeSpan.FromMilliseconds(50)
+            },
+            cts.Token).AsTask();
+
+        await started.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        consumer.SetAssignment();
+
+        await Assert.ThrowsAsync<TimeoutException>(async () => await runTask.ConfigureAwait(false));
+        release.SetResult();
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_ShutdownCommitUsesStopTimeout()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer
+        {
+            CommitStarted = NewCompletionSource(),
+            ReleaseCommit = NewCompletionSource()
+        };
+        consumer.SetAssignment(partition);
+
+        var processorStarted = NewCompletionSource();
+        var processed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                processorStarted.SetResult();
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    processed.SetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke,
+                StopTimeout = TimeSpan.FromMilliseconds(50)
+            },
+            cts.Token).AsTask();
+
+        await processorStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        await cts.CancelAsync().ConfigureAwait(false);
+
+        await consumer.CommitStarted!.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await runTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+        consumer.ReleaseCommit!.SetResult();
+    }
+
+    [Test]
     public async Task CommitProcessedAsync_CommitsCurrentPartitionOffset()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -299,12 +500,14 @@ public sealed class PartitionedConsumerRuntimeTests
         IKafkaConsumer<string, string>,
         IConsumerPositions,
         IConsumerPartitions,
-        IConsumerOffsets
+        IConsumerOffsets,
+        IConsumerRebalanceEventSource
     {
         private readonly object _gate = new();
         private readonly Queue<ConsumeResult<string, string>> _records = [];
         private readonly HashSet<TopicPartition> _assignment = [];
         private readonly HashSet<TopicPartition> _paused = [];
+        private readonly List<IRebalanceListener> _rebalanceListeners = [];
         private readonly SemaphoreSlim _changed = new(0);
 
         public IReadOnlySet<string> Subscription => new HashSet<string>(StringComparer.Ordinal);
@@ -350,9 +553,21 @@ public sealed class PartitionedConsumerRuntimeTests
 
         public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
 
+        public TaskCompletionSource? CommitStarted { get; init; }
+
+        public TaskCompletionSource? ReleaseCommit { get; init; }
+
         IReadOnlySet<TopicPartition> IConsumerPartitions.Assignment => Assignment;
 
         IReadOnlySet<TopicPartition> IConsumerPartitions.Paused => Paused;
+
+        IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
+        {
+            lock (_gate)
+                _rebalanceListeners.Add(listener);
+
+            return new RebalanceRegistration(this, listener);
+        }
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
             => ValueTask.CompletedTask;
@@ -449,17 +664,19 @@ public sealed class PartitionedConsumerRuntimeTests
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask CommitAsync(
+        public async ValueTask CommitAsync(
             IEnumerable<TopicPartitionOffset> offsets,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(offsets);
             cancellationToken.ThrowIfCancellationRequested();
 
+            CommitStarted?.TrySetResult();
+            if (ReleaseCommit is not null)
+                await ReleaseCommit.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
             lock (_gate)
                 CommitCalls.Add(offsets.ToArray());
-
-            return ValueTask.CompletedTask;
         }
 
         public ValueTask CloseAsync(CancellationToken cancellationToken = default)
@@ -574,6 +791,24 @@ public sealed class PartitionedConsumerRuntimeTests
             _changed.Release();
         }
 
+        public void AssignFromCoordinator(params TopicPartition[] partitions)
+        {
+            SetAssignment(partitions);
+            FireRebalanceListener(listener => listener.OnPartitionsAssignedAsync(partitions, CancellationToken.None));
+        }
+
+        public void RevokeFromCoordinator(params TopicPartition[] partitions)
+        {
+            RemoveAssignment(partitions);
+            FireRebalanceListener(listener => listener.OnPartitionsRevokedAsync(partitions, CancellationToken.None));
+        }
+
+        public void LoseFromCoordinator(params TopicPartition[] partitions)
+        {
+            RemoveAssignment(partitions);
+            FireRebalanceListener(listener => listener.OnPartitionsLostAsync(partitions, CancellationToken.None));
+        }
+
         public void Enqueue(params ConsumeResult<string, string>[] results)
         {
             lock (_gate)
@@ -606,6 +841,49 @@ public sealed class PartitionedConsumerRuntimeTests
 
             result = default;
             return false;
+        }
+
+        private void RemoveAssignment(params TopicPartition[] partitions)
+        {
+            lock (_gate)
+            {
+                foreach (var partition in partitions)
+                {
+                    _assignment.Remove(partition);
+                    _paused.Remove(partition);
+                }
+            }
+
+            _changed.Release();
+        }
+
+        private void RemoveRebalanceListener(IRebalanceListener listener)
+        {
+            lock (_gate)
+                _rebalanceListeners.Remove(listener);
+        }
+
+        private void FireRebalanceListener(Func<IRebalanceListener, ValueTask> callback)
+        {
+            IRebalanceListener[] listeners;
+            lock (_gate)
+                listeners = _rebalanceListeners.ToArray();
+
+            foreach (var listener in listeners)
+                callback(listener).AsTask().GetAwaiter().GetResult();
+        }
+
+        private sealed class RebalanceRegistration(
+            TestConsumer consumer,
+            IRebalanceListener listener) : IDisposable
+        {
+            private int _disposed;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                    consumer.RemoveRebalanceListener(listener);
+            }
         }
     }
 }
