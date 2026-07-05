@@ -44,6 +44,55 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task JwtBearerAssertion_WithAdditionalClaimValues_WritesAotSafeJson()
+    {
+        using var rsa = RSA.Create(2048);
+        var config = CreateJwtBearerConfig(rsa, additionalClaims: new Dictionary<string, object?>
+        {
+            ["tenant"] = "alpha",
+            ["enabled"] = true,
+            ["retries"] = 3,
+            ["scopes"] = new List<string> { "read", "write" },
+            ["metadata"] = new Dictionary<string, object?>
+            {
+                ["region"] = "eu",
+                ["level"] = 2
+            },
+            ["optional"] = null
+        });
+
+        var assertion = OAuthBearerJwtAssertion.Create(
+            config,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+
+        var payload = DecodeJwtPart(assertion.Split('.')[1]);
+        await Assert.That(payload.GetProperty("tenant").GetString()).IsEqualTo("alpha");
+        await Assert.That(payload.GetProperty("enabled").GetBoolean()).IsTrue();
+        await Assert.That(payload.GetProperty("retries").GetInt32()).IsEqualTo(3);
+        await Assert.That(payload.GetProperty("scopes")[0].GetString()).IsEqualTo("read");
+        await Assert.That(payload.GetProperty("scopes")[1].GetString()).IsEqualTo("write");
+        await Assert.That(payload.GetProperty("metadata").GetProperty("region").GetString()).IsEqualTo("eu");
+        await Assert.That(payload.GetProperty("metadata").GetProperty("level").GetInt32()).IsEqualTo(2);
+        await Assert.That(payload.GetProperty("optional").ValueKind).IsEqualTo(JsonValueKind.Null);
+    }
+
+    [Test]
+    public async Task JwtBearerAssertion_WithUnsupportedAdditionalClaimValue_ThrowsInvalidOperationException()
+    {
+        using var rsa = RSA.Create(2048);
+        var config = CreateJwtBearerConfig(rsa, additionalClaims: new Dictionary<string, object?>
+        {
+            ["custom"] = new UnsupportedClaimValue("alpha")
+        });
+
+        await Assert.That(() => OAuthBearerJwtAssertion.Create(
+                config,
+                DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("unsupported value type");
+    }
+
+    [Test]
     public async Task JwtBearerAssertion_WithEcdsaKey_SignsAssertion()
     {
         using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -296,6 +345,8 @@ public sealed class OAuthBearerTokenProviderTests
 
         return Convert.FromBase64String(base64);
     }
+
+    private sealed record UnsupportedClaimValue(string Value);
 
     private sealed class CapturingTokenEndpointHandler : HttpMessageHandler
     {

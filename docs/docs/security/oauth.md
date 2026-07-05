@@ -81,6 +81,11 @@ and `assertion=<jwt>` to the token endpoint, then caches the returned access tok
 Keep the `PrivateKey` object alive until every client configured with it has been disposed; token refreshes reuse
 the same key object to sign new assertions.
 
+`AdditionalClaims` supports AOT-safe JSON values: strings, numbers, booleans,
+`null`, `DateTime`, `DateTimeOffset`, `Guid`, `JsonElement`, `JsonDocument`,
+`byte[]`, nested `IReadOnlyDictionary<string, object?>`, and arrays/enumerables
+of those values. Use `JsonElement` when you need to pass a custom object shape.
+
 ## Azure AD Example
 
 ```csharp

@@ -1,6 +1,7 @@
 namespace Dekaf.Security.Sasl;
 
 using System.Security.Cryptography;
+using System.Text.Json;
 
 /// <summary>
 /// Configuration for OAuth 2.0 JWT-bearer assertion grants used with SASL/OAUTHBEARER.
@@ -51,6 +52,14 @@ public sealed class OAuthBearerJwtBearerOptions
     /// <summary>
     /// Additional JWT claims to include in the assertion.
     /// </summary>
+    /// <remarks>
+    /// Supported values are <c>null</c>, primitive JSON values, <see cref="DateTime"/>,
+    /// <see cref="DateTimeOffset"/>, <see cref="Guid"/>, <see cref="JsonElement"/>,
+    /// <see cref="JsonDocument"/>, <c>byte[]</c>, nested
+    /// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> values, and arrays/enumerables
+    /// of supported values. Arbitrary POCO serialization is not used so JWT assertions
+    /// remain compatible with NativeAOT.
+    /// </remarks>
     public IReadOnlyDictionary<string, object?>? AdditionalClaims { get; set; }
 
     /// <summary>
