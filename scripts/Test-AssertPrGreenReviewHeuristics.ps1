@@ -330,6 +330,39 @@ Genuine improvement, not just churn. However this violates the zero-allocation r
         Blocks = $true
     },
     @{
+        Name = 'blocks multiline bullet after no-bugs opener'
+        Body = @'
+## Review
+
+### Correctness
+- No bugs found.
+- However, this hangs forever if the queue is empty.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks later paragraph after positive opener'
+        Body = @'
+## Review
+
+### Design / Architecture
+Genuine improvement, not just churn.
+
+But this introduces a new race condition when two threads call Dispose concurrently.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks vulnerable adjective'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found, but this code is vulnerable to a timing attack.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'blocks category parenthetical finding'
         Body = @'
 ## Review

@@ -23,8 +23,11 @@ function Get-ActionableReviewBodyReason {
     $categoryOnlyHeading = "$categoryHeadingTerm(?:$horizontalWhitespace*/$horizontalWhitespace*$categoryHeadingTerm)*"
     $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
-    $positiveVerdictBlocker =
-        '\b(?:though|that\s+said|still|incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|unsafe|vulnerabilit(?:y|ies)|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped))\b'
+    $positiveVerdictDefect =
+        'incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|unsafe|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
+    $positiveVerdictBlocker = '\b(?:' + $positiveVerdictDefect + ')\b'
+    $positiveVerdictContinuationBlocker =
+        '\b(?:but|however|although|though|that\s+said|still)\b[\s\S]{0,400}\b(?:' + $positiveVerdictDefect + ')\b'
     $positiveVerdictAlternatives = @(
         "$noCategoryFindings(?:[\s\S]*)?"
         'looks?\s+(?:right|good)'
@@ -64,9 +67,10 @@ function Get-ActionableReviewBodyReason {
         } else {
             $sectionRemainder
         }
-        $firstParagraph = [regex]::Match($sectionBody, '(?ms)\S.*?(?:\r?\n\s*\r?\n|$)').Value
+        $firstVerdictMatch = [regex]::Match($sectionBody, '(?m)\S[^\r\n]*')
+        $firstVerdict = $firstVerdictMatch.Value.Trim()
 
-        if ([string]::IsNullOrWhiteSpace($firstParagraph)) {
+        if ([string]::IsNullOrWhiteSpace($firstVerdict)) {
             if ($headingVerdict) {
                 continue
             }
@@ -74,7 +78,13 @@ function Get-ActionableReviewBodyReason {
             return "actionable category heading: $($heading.Value.Trim())"
         }
 
-        if ($firstParagraph -notmatch $positiveCategorySection) {
+        if ($firstVerdict -notmatch $positiveCategorySection) {
+            return "actionable category heading: $($heading.Value.Trim())"
+        }
+
+        $sectionTailStart = $firstVerdictMatch.Index + $firstVerdictMatch.Length
+        $sectionTail = $sectionBody.Substring($sectionTailStart)
+        if ($sectionTail -match $positiveVerdictContinuationBlocker) {
             return "actionable category heading: $($heading.Value.Trim())"
         }
     }
