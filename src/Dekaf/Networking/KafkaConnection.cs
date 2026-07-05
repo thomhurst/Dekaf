@@ -168,6 +168,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private const int MaxCancelledCorrelationIds = 10_000;
     private const int PendingRequestShardCount = 16;
     private const int MinimumResponseFrameSize = 4; // Correlation ID is always first in the response header.
+    // SASL handshake/auth responses are small; this pre-auth path must not honor untrusted large frame claims.
+    private const int MaxSaslResponseFrameSize = 1024 * 1024;
     private static int s_globalCorrelationId;
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
@@ -2375,6 +2377,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         {
             await ReadExactlyAsync(_stream, sizeBuffer.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
             var responseSize = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
+            ValidateResponseFrameSize(responseSize, MaxSaslResponseFrameSize);
 
             var responseBuffer = ArrayPool<byte>.Shared.Rent(responseSize);
             try
