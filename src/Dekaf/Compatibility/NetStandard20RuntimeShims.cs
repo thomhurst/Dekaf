@@ -61,10 +61,10 @@ namespace System.Threading
     internal static class CancellationTokenSourceCompatibilityExtensions
     {
         public static Task CancelAsync(this CancellationTokenSource source)
-        {
-            source.Cancel();
-            return Task.CompletedTask;
-        }
+            => Task.Factory.StartNew(static state =>
+            {
+                ((CancellationTokenSource)state!).Cancel();
+            }, source, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
     }
 }
 

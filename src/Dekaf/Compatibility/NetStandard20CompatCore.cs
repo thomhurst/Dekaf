@@ -362,8 +362,9 @@ internal static class GCCompat
 {
     public static T[] AllocateUninitializedArray<T>(int length, bool pinned = false) => new T[length];
 
+    // No portable netstandard2.0 cgroup/system-memory API exists; report unknown so callers use fixed fallback budgets.
     public static GCMemoryInfoCompat GetGCMemoryInfo()
-        => new((long)System.Math.Min(long.MaxValue, (double)System.Environment.WorkingSet + (1024.0 * 1024.0 * 1024.0)));
+        => new(0);
 }
 
 internal readonly struct GCMemoryInfoCompat

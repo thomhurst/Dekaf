@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Tests.Unit;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -153,6 +154,26 @@ public sealed class ConsumerConnectionScalerTests
         scaler.ReportPipelineUtilization(3, 3);
         scaler.MaybeScale();
         await Assert.That(scaleUpCount).IsEqualTo(0); // Cannot scale
+    }
+
+    [Test]
+    public async Task MaybeScale_SynchronousScaleFailure_LogsError()
+    {
+        var exception = new InvalidOperationException("scale failed");
+        Exception? logged = null;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => ValueTask.FromException(exception),
+            scaleDownAsync: _ => ValueTask.CompletedTask,
+            logError: ex => logged = ex);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        await TestWait.UntilAsync(() => logged is not null, TimeSpan.FromSeconds(5));
+        await Assert.That(logged).IsSameReferenceAs(exception);
     }
 
     [Test]

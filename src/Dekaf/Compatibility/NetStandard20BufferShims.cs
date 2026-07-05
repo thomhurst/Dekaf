@@ -67,7 +67,7 @@ namespace System.Buffers
 
             var currentLength = _buffer.Length;
             var growBy = Math.Max(sizeHint, currentLength);
-            var newSize = currentLength == 0 ? growBy : currentLength + growBy;
+            var newSize = currentLength == 0 ? Math.Max(growBy, DefaultInitialBufferSize) : currentLength + growBy;
             if ((uint)newSize > ArrayMaxLength)
             {
                 newSize = Math.Max(currentLength + sizeHint, ArrayMaxLength);
@@ -97,7 +97,7 @@ namespace System.Buffers
         public readonly long Remaining => _sequence.Length - _consumed;
         public readonly bool End => Remaining == 0;
         public readonly ReadOnlySequence<T> UnreadSequence => _sequence.Slice(_position);
-        public readonly ReadOnlySpan<T> UnreadSpan => UnreadSequence.First.Span;
+        public readonly ReadOnlySpan<T> UnreadSpan => GetUnreadSpan(_sequence, _position);
 
         public bool TryRead(out T value)
         {
@@ -107,8 +107,7 @@ namespace System.Buffers
                 return false;
             }
 
-            var span = UnreadSpan;
-            if (span.Length == 0)
+            if (!TryMoveToNonEmptySpan(out var span))
             {
                 value = default!;
                 return false;
@@ -135,6 +134,37 @@ namespace System.Buffers
 
             _position = _sequence.GetPosition(count, _position);
             _consumed += count;
+        }
+
+        private bool TryMoveToNonEmptySpan(out ReadOnlySpan<T> span)
+        {
+            var current = _position;
+            var next = current;
+            while (_sequence.TryGet(ref next, out var memory))
+            {
+                if (memory.Length != 0)
+                {
+                    span = memory.Span;
+                    _position = current;
+                    return true;
+                }
+
+                current = next;
+            }
+
+            span = default;
+            return false;
+        }
+
+        private static ReadOnlySpan<T> GetUnreadSpan(ReadOnlySequence<T> sequence, SequencePosition position)
+        {
+            while (sequence.TryGet(ref position, out var memory))
+            {
+                if (memory.Length != 0)
+                    return memory.Span;
+            }
+
+            return default;
         }
     }
 }
