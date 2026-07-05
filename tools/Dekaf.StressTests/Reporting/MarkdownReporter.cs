@@ -34,6 +34,12 @@ internal static class MarkdownReporter
             GenerateGcTable(sb, groupResults, $"GC Statistics - {label}");
         }
 
+        if (results.Results.Any(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase)))
+        {
+            sb.AppendLine("*Confluent.Kafka uses native librdkafka; .NET GC allocation counters exclude unmanaged allocations.*");
+            sb.AppendLine();
+        }
+
         return sb.ToString();
     }
 
@@ -126,12 +132,15 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## {title}");
         sb.AppendLine();
-        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Gen0 | Gen1 | Gen2 | Total Allocated |");
-        sb.AppendLine($"|{new string('-', clientWidth + 2)}|------|------|------|-----------------|");
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Gen0 | Gen1 | Gen2 | Total Allocated | Alloc/msg |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|------|------|------|-----------------|-----------|");
 
         foreach (var result in results.OrderBy(r => r.Client))
         {
-            sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {result.GcStats.Gen0Collections,4} | {result.GcStats.Gen1Collections,4} | {result.GcStats.Gen2Collections,4} | {result.GcStats.FormatAllocatedBytes(),9} |");
+            var allocatedPerMessage = result.AllocatedBytesPerMessage is { } bytes
+                ? FormatBytes((long)Math.Round(bytes))
+                : "N/A";
+            sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {result.GcStats.Gen0Collections,4} | {result.GcStats.Gen1Collections,4} | {result.GcStats.Gen2Collections,4} | {result.GcStats.FormatAllocatedBytes(),9} | {allocatedPerMessage,9} |");
         }
 
         sb.AppendLine();
@@ -144,6 +153,9 @@ internal static class MarkdownReporter
         "producer-async" => "Producer (Async) Throughput",
         "producer-async-idempotent" => "Producer (Async, Idempotent) Throughput",
         "consumer" => "Consumer Throughput",
+        "consumer-batch" => "Consumer (Batch) Throughput",
+        "consumer-raw" => "Consumer (Raw Bytes) Throughput",
+        "consumer-raw-batch" => "Consumer (Raw Batch) Throughput",
         _ => $"{scenario} Throughput"
     };
 
@@ -154,7 +166,18 @@ internal static class MarkdownReporter
         "producer-async" => "Async",
         "producer-async-idempotent" => "Async (Idempotent)",
         "consumer" => "Consumer",
+        "consumer-batch" => "Consumer (Batch)",
+        "consumer-raw" => "Consumer (Raw Bytes)",
+        "consumer-raw-batch" => "Consumer (Raw Batch)",
         _ => scenario
+    };
+
+    private static string FormatBytes(long numBytes) => numBytes switch
+    {
+        < 1024 => $"{numBytes} B",
+        < 1024 * 1024 => $"{numBytes / 1024.0:F2} KB",
+        < 1024 * 1024 * 1024 => $"{numBytes / (1024.0 * 1024):F2} MB",
+        _ => $"{numBytes / (1024.0 * 1024 * 1024):F2} GB"
     };
 
     private static string FormatLatencyUs(double us)

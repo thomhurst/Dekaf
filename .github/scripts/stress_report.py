@@ -8,6 +8,9 @@ SCENARIO_TITLES = {
     'producer-async': 'Producer (Async)',
     'producer-async-idempotent': 'Producer (Async, Idempotent)',
     'consumer': 'Consumer',
+    'consumer-batch': 'Consumer (Batch)',
+    'consumer-raw': 'Consumer (Raw Bytes)',
+    'consumer-raw-batch': 'Consumer (Raw Batch)',
 }
 
 
@@ -35,6 +38,8 @@ def scenario_title(scenario_key, fallback_prefix=''):
 
 def format_bytes(num_bytes):
     """Format a byte count as a human-readable string."""
+    if num_bytes is None:
+        return 'N/A'
     if num_bytes < 1024:
         return f"{num_bytes} B"
     elif num_bytes < 1024 * 1024:
@@ -71,6 +76,20 @@ def effective_mb_rate(result):
     if rate is not None:
         return rate
     return result.get('throughput', {}).get('averageMegabytesPerSecond', 0)
+
+
+def allocated_per_message(result):
+    """Heap allocation per application message, or None when unavailable."""
+    serialized = result.get('allocatedBytesPerMessage')
+    if serialized is not None:
+        return serialized
+
+    gc = result.get('gcStats', {})
+    allocated = gc.get('allocatedBytes')
+    total_messages = result.get('throughput', {}).get('totalMessages', 0)
+    if allocated is None or not total_messages:
+        return None
+    return allocated / total_messages
 
 
 def find_confluent_baseline(results):
@@ -174,18 +193,24 @@ def format_gc_table(results, title="GC Statistics"):
     lines = []
     lines.append(f"## {title}")
     lines.append("")
-    lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
-    lines.append("|--------|----------|------|------|------|-----------------|")
+    lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated | Alloc/msg |")
+    lines.append("|--------|----------|------|------|------|-----------------|-----------|")
 
     for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''), x.get('brokerCount', 1))):
         client = r.get('client', 'Unknown')
         scenario_key = (r.get('scenario', 'Unknown'), r.get('brokerCount', 1))
         label = scenario_title(scenario_key)
         gc = r.get('gcStats', {})
-        alloc_str = format_bytes(gc.get('allocatedBytes', 0))
-        lines.append(f"| {client} | {label} | {gc.get('gen0Collections', 0)} | {gc.get('gen1Collections', 0)} | {gc.get('gen2Collections', 0)} | {alloc_str} |")
+        allocated = gc.get('allocatedBytes')
+        alloc_str = format_bytes(allocated)
+        alloc_msg = allocated_per_message(r)
+        alloc_msg_str = format_bytes(round(alloc_msg)) if alloc_msg is not None else 'N/A'
+        lines.append(f"| {client} | {label} | {gc.get('gen0Collections', 0)} | {gc.get('gen1Collections', 0)} | {gc.get('gen2Collections', 0)} | {alloc_str} | {alloc_msg_str} |")
 
     lines.append("")
+    if any(r.get('client', '').lower() == 'confluent' for r in results):
+        lines.append("*Confluent.Kafka uses native librdkafka; .NET GC allocation counters exclude unmanaged allocations.*")
+        lines.append("")
     return lines
 
 
