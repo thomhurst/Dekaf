@@ -3,6 +3,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
+using Avro.Specific;
+using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Compression.Brotli;
 using Dekaf.Compression.Lz4;
@@ -14,6 +16,9 @@ using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Json;
+using Google.Protobuf;
+using Google.Protobuf.Reflection;
+using AvroSchema = Avro.Schema;
 using DekafJsonSerializer = Dekaf.Serialization.Json.JsonSerializer<AotPayload>;
 
 await AotSmoke.RunAsync();
@@ -31,7 +36,7 @@ internal static class AotSmoke
         RunCompressionSmoke();
         RunJsonSmoke();
         await RunSchemaRegistrySmokeAsync();
-        RunSchemaRegistryPackageSmoke();
+        await RunSchemaRegistryPackageSmokeAsync();
         await RunCoreSmokeAsync();
     }
 
@@ -105,7 +110,7 @@ internal static class AotSmoke
         Require(roundTrip == payload, "Schema Registry JSON round-trip failed.");
     }
 
-    private static void RunSchemaRegistryPackageSmoke()
+    private static async Task RunSchemaRegistryPackageSmokeAsync()
     {
         var avroSerializerConfig = new AvroSerializerConfig { AutoRegisterSchemas = false };
         var avroDeserializerConfig = new AvroDeserializerConfig();
@@ -123,6 +128,76 @@ internal static class AotSmoke
         Require(avroDeserializerConfig.ReaderSchema is null, "Avro deserializer config smoke failed.");
         Require(!protobufSerializerConfig.AutoRegisterSchemas, "Protobuf config smoke failed.");
         Require(protobufDeserializerConfig.SkipSchemaValidation, "Protobuf deserializer config smoke failed.");
+
+        using var avroRegistry = new InMemorySchemaRegistry();
+        using var protobufRegistry = new InMemorySchemaRegistry();
+        using var builderRegistry = new InMemorySchemaRegistry();
+
+        await RunAvroSchemaRegistryPackageSmokeAsync(avroRegistry);
+        await RunProtobufSchemaRegistryPackageSmokeAsync(protobufRegistry);
+        RunSchemaRegistryBuilderExtensionSmoke(builderRegistry);
+    }
+
+    private static async Task RunAvroSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
+    {
+        await using var serializer = new AvroSchemaRegistrySerializer<AotAvroRecord>(registry);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<AotAvroRecord>(registry);
+
+        var payload = new AotAvroRecord { Id = 9, Name = "avro" };
+        var buffer = new ArrayBufferWriter<byte>();
+
+        await serializer.WarmupAsync(ValueContext.Topic, payload);
+        serializer.Serialize(payload, ref buffer, ValueContext);
+
+        var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
+        Require(roundTrip.Id == payload.Id, "Avro Schema Registry ID mismatch.");
+        Require(roundTrip.Name == payload.Name, "Avro Schema Registry name mismatch.");
+    }
+
+    private static async Task RunProtobufSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
+    {
+        await using var serializer = new ProtobufSchemaRegistrySerializer<AotProtobufMessage>(registry);
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<AotProtobufMessage>(registry);
+
+        var payload = new AotProtobufMessage { Id = 10, Name = "protobuf", Value = 11.5 };
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(payload, ref buffer, ValueContext);
+
+        var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
+        Require(roundTrip.Id == payload.Id, "Protobuf Schema Registry ID mismatch.");
+        Require(roundTrip.Name == payload.Name, "Protobuf Schema Registry name mismatch.");
+        Require(Math.Abs(roundTrip.Value - payload.Value) < 0.0001, "Protobuf Schema Registry value mismatch.");
+    }
+
+    private static void RunSchemaRegistryBuilderExtensionSmoke(InMemorySchemaRegistry registry)
+    {
+        var avroProducer = Kafka.CreateProducer<string, AotAvroRecord>()
+            .UseAvroSchemaRegistry(registry);
+        var avroKeyProducer = Kafka.CreateProducer<AotAvroRecord, string>()
+            .UseAvroSchemaRegistryKey(registry);
+        var avroConsumer = Kafka.CreateConsumer<string, AotAvroRecord>()
+            .UseAvroSchemaRegistry(registry);
+        var avroKeyConsumer = Kafka.CreateConsumer<AotAvroRecord, string>()
+            .UseAvroSchemaRegistryKey(registry);
+
+        var protobufProducer = Kafka.CreateProducer<string, AotProtobufMessage>()
+            .UseProtobufSchemaRegistry(registry);
+        var protobufKeyValueProducer = Kafka.CreateProducer<AotProtobufMessage, AotProtobufMessage>()
+            .UseProtobufSchemaRegistryForKeyAndValue(registry);
+        var protobufConsumer = Kafka.CreateConsumer<string, AotProtobufMessage>()
+            .UseProtobufSchemaRegistry(registry);
+        var protobufKeyValueConsumer = Kafka.CreateConsumer<AotProtobufMessage, AotProtobufMessage>()
+            .UseProtobufSchemaRegistryForKeyAndValue(registry);
+
+        GC.KeepAlive(avroProducer);
+        GC.KeepAlive(avroKeyProducer);
+        GC.KeepAlive(avroConsumer);
+        GC.KeepAlive(avroKeyConsumer);
+        GC.KeepAlive(protobufProducer);
+        GC.KeepAlive(protobufKeyValueProducer);
+        GC.KeepAlive(protobufConsumer);
+        GC.KeepAlive(protobufKeyValueConsumer);
     }
 
     private static OAuthBearerConfig CreateJwtBearerConfig(RSA rsa) =>
@@ -296,6 +371,227 @@ internal static class AotSmoke
 }
 
 internal sealed record AotPayload(int Id, string Name);
+
+internal sealed class AotAvroRecord : ISpecificRecord
+{
+    public static readonly AvroSchema _SCHEMA = AvroSchema.Parse("""
+        {
+          "type": "record",
+          "name": "AotAvroRecord",
+          "fields": [
+            { "name": "id", "type": "int" },
+            { "name": "name", "type": "string" }
+          ]
+        }
+        """);
+
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public AvroSchema Schema => _SCHEMA;
+
+    public object Get(int fieldPos) => fieldPos switch
+    {
+        0 => Id,
+        1 => Name,
+        _ => throw new ArgumentOutOfRangeException(nameof(fieldPos), fieldPos, "Invalid field position.")
+    };
+
+    public void Put(int fieldPos, object fieldValue)
+    {
+        switch (fieldPos)
+        {
+            case 0:
+                Id = (int)fieldValue;
+                break;
+            case 1:
+                Name = fieldValue.ToString() ?? string.Empty;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(fieldPos), fieldPos, "Invalid field position.");
+        }
+    }
+}
+
+internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBufferMessage
+{
+    private static readonly MessageParser<AotProtobufMessage> ParserInstance = new(() => new AotProtobufMessage());
+    private static readonly MessageDescriptor DescriptorInstance;
+    private UnknownFieldSet? _unknownFields;
+
+    static AotProtobufMessage()
+    {
+        var fileDescriptorProto = new FileDescriptorProto
+        {
+            Name = "aot_message.proto",
+            Package = "dekaf.tests.aot",
+            Syntax = "proto3"
+        };
+
+        fileDescriptorProto.MessageType.Add(new DescriptorProto
+        {
+            Name = "AotProtobufMessage",
+            Field =
+            {
+                new FieldDescriptorProto
+                {
+                    Name = "id",
+                    Number = 1,
+                    Type = FieldDescriptorProto.Types.Type.Int32,
+                    Label = FieldDescriptorProto.Types.Label.Optional
+                },
+                new FieldDescriptorProto
+                {
+                    Name = "name",
+                    Number = 2,
+                    Type = FieldDescriptorProto.Types.Type.String,
+                    Label = FieldDescriptorProto.Types.Label.Optional
+                },
+                new FieldDescriptorProto
+                {
+                    Name = "value",
+                    Number = 3,
+                    Type = FieldDescriptorProto.Types.Type.Double,
+                    Label = FieldDescriptorProto.Types.Label.Optional
+                }
+            }
+        });
+
+        DescriptorInstance = FileDescriptor.BuildFromByteStrings([fileDescriptorProto.ToByteString()])
+            .Single()
+            .MessageTypes[0];
+    }
+
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public double Value { get; set; }
+    public static MessageParser<AotProtobufMessage> Parser => ParserInstance;
+    public static MessageDescriptor Descriptor => DescriptorInstance;
+    MessageDescriptor IMessage.Descriptor => DescriptorInstance;
+
+    public int CalculateSize()
+    {
+        var size = 0;
+        if (Id != 0)
+            size += 1 + CodedOutputStream.ComputeInt32Size(Id);
+        if (!string.IsNullOrEmpty(Name))
+            size += 1 + CodedOutputStream.ComputeStringSize(Name);
+        if (Value != 0)
+            size += 1 + 8;
+        return size;
+    }
+
+    public AotProtobufMessage Clone() => new()
+    {
+        Id = Id,
+        Name = Name,
+        Value = Value
+    };
+
+    public bool Equals(AotProtobufMessage? other)
+        => other is not null && Id == other.Id && Name == other.Name && Value.Equals(other.Value);
+
+    public override bool Equals(object? obj) => Equals(obj as AotProtobufMessage);
+
+    public override int GetHashCode() => HashCode.Combine(Id, Name, Value);
+
+    public void MergeFrom(AotProtobufMessage message)
+    {
+        if (message.Id != 0)
+            Id = message.Id;
+        if (!string.IsNullOrEmpty(message.Name))
+            Name = message.Name;
+        if (message.Value != 0)
+            Value = message.Value;
+    }
+
+    public void MergeFrom(CodedInputStream input)
+    {
+        uint tag;
+        while ((tag = input.ReadTag()) != 0)
+        {
+            switch (tag)
+            {
+                case 8:
+                    Id = input.ReadInt32();
+                    break;
+                case 18:
+                    Name = input.ReadString();
+                    break;
+                case 25:
+                    Value = input.ReadDouble();
+                    break;
+                default:
+                    input.SkipLastField();
+                    break;
+            }
+        }
+    }
+
+    public void WriteTo(CodedOutputStream output)
+    {
+        if (Id != 0)
+        {
+            output.WriteRawTag(8);
+            output.WriteInt32(Id);
+        }
+
+        if (!string.IsNullOrEmpty(Name))
+        {
+            output.WriteRawTag(18);
+            output.WriteString(Name);
+        }
+
+        if (Value != 0)
+        {
+            output.WriteRawTag(25);
+            output.WriteDouble(Value);
+        }
+    }
+
+    void IBufferMessage.InternalMergeFrom(ref ParseContext input)
+    {
+        uint tag;
+        while ((tag = input.ReadTag()) != 0)
+        {
+            switch (tag)
+            {
+                case 8:
+                    Id = input.ReadInt32();
+                    break;
+                case 18:
+                    Name = input.ReadString();
+                    break;
+                case 25:
+                    Value = input.ReadDouble();
+                    break;
+                default:
+                    _unknownFields = UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+                    break;
+            }
+        }
+    }
+
+    void IBufferMessage.InternalWriteTo(ref WriteContext output)
+    {
+        if (Id != 0)
+        {
+            output.WriteRawTag(8);
+            output.WriteInt32(Id);
+        }
+
+        if (!string.IsNullOrEmpty(Name))
+        {
+            output.WriteRawTag(18);
+            output.WriteString(Name);
+        }
+
+        if (Value != 0)
+        {
+            output.WriteRawTag(25);
+            output.WriteDouble(Value);
+        }
+    }
+}
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(AotPayload))]
