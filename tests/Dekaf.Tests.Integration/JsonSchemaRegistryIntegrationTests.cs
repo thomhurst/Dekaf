@@ -293,5 +293,6 @@ internal sealed class TestOrder
     public decimal Amount { get; set; }
 }
 
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(TestOrder))]
 internal sealed partial class JsonSchemaRegistryIntegrationJsonContext : JsonSerializerContext;
