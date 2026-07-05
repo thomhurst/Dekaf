@@ -211,7 +211,7 @@ public sealed class PartitionedConsumerRuntimeTests
     {
         var partition = new TopicPartition("topic-a", 0);
         var consumer = new TestConsumer();
-        consumer.AssignFromCoordinator(partition);
+        consumer.SetAssignment(partition);
 
         var processorStarted = NewCompletionSource();
         var processed = NewCompletionSource();
@@ -260,7 +260,7 @@ public sealed class PartitionedConsumerRuntimeTests
     {
         var partition = new TopicPartition("topic-a", 0);
         var consumer = new TestConsumer();
-        consumer.AssignFromCoordinator(partition);
+        consumer.SetAssignment(partition);
 
         var starts = 0;
         var secondLaneStarted = NewCompletionSource();
@@ -308,7 +308,7 @@ public sealed class PartitionedConsumerRuntimeTests
         var partition = new TopicPartition("topic-a", 0);
         var loggerFactory = new CapturingLoggerFactory();
         var consumer = new TestConsumer { LoggerFactory = loggerFactory };
-        consumer.AssignFromCoordinator(partition);
+        consumer.SetAssignment(partition);
 
         var attempts = 0;
 
@@ -349,7 +349,7 @@ public sealed class PartitionedConsumerRuntimeTests
     {
         var partition = new TopicPartition("topic-a", 0);
         var consumer = new TestConsumer();
-        consumer.AssignFromCoordinator(partition);
+        consumer.SetAssignment(partition);
 
         var attempts = 0;
         var processed = NewCompletionSource();
@@ -390,7 +390,7 @@ public sealed class PartitionedConsumerRuntimeTests
         var partition = new TopicPartition("topic-a", 0);
         var loggerFactory = new CapturingLoggerFactory();
         var consumer = new TestConsumer { LoggerFactory = loggerFactory };
-        consumer.AssignFromCoordinator(partition);
+        consumer.SetAssignment(partition);
 
         var attempts = 0;
 
@@ -431,7 +431,7 @@ public sealed class PartitionedConsumerRuntimeTests
         var healthyPartition = new TopicPartition("topic-a", 1);
         var loggerFactory = new CapturingLoggerFactory();
         var consumer = new TestConsumer { LoggerFactory = loggerFactory };
-        consumer.AssignFromCoordinator(failingPartition, healthyPartition);
+        consumer.SetAssignment(failingPartition, healthyPartition);
 
         var failingAttempts = 0;
         var healthyProcessed = NewCompletionSource();
