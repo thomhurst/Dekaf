@@ -283,6 +283,53 @@ This introduces a deadlock when Flush and Dispose run concurrently, since both t
         Blocks = $true
     },
     @{
+        Name = 'blocks confirmed heading followed by security vulnerability'
+        Body = @'
+## Review
+
+### Correctness - confirmed, but this exposes a SQL injection vulnerability in the query builder.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks no-problems paragraph with hardcoded token'
+        Body = @'
+## Review
+
+### Correctness
+No problems found here, although this uses a hardcoded, guessable session token.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks confirmed correct with stack overflow'
+        Body = @'
+## Review
+
+### Correctness - confirmed correct, but there is a stack overflow with deeply nested input.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks no-issues heading with hangs forever'
+        Body = @'
+## Review
+
+### Correctness - no issues found, however this hangs forever if the queue is empty.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks allocation noun in positive design section'
+        Body = @'
+## Review
+
+### Design
+Genuine improvement, not just churn. However this violates the zero-allocation rule with a per-message array allocation.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'blocks category parenthetical finding'
         Body = @'
 ## Review

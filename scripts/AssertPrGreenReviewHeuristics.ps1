@@ -24,7 +24,7 @@ function Get-ActionableReviewBodyReason {
     $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
     $positiveVerdictBlocker =
-        '\b(?:though|that\s+said|still|incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|unsafe|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped))\b'
+        '\b(?:though|that\s+said|still|incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|unsafe|vulnerabilit(?:y|ies)|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped))\b'
     $positiveVerdictAlternatives = @(
         "$noCategoryFindings(?:[\s\S]*)?"
         'looks?\s+(?:right|good)'
