@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
@@ -32,7 +33,9 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The type to serialize. Must be either an Avro ISpecificRecord or GenericRecord.</typeparam>
-public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposable
+public sealed class AvroSchemaRegistrySerializer<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] T>
+    : ISerializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);

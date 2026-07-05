@@ -14,10 +14,16 @@ namespace Dekaf.Pipeline.Modules;
 [DependsOn<BuildModule>]
 public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<CommandResult>>
 {
+    private static readonly AotSmokeProject[] Projects =
+    [
+        new("Dekaf.Tests.Aot.csproj", "core"),
+        new("Dekaf.Tests.Aot.DependencyInjection.csproj", "dependency-injection")
+    ];
+
     protected override ModuleConfiguration Configure()
     {
         return new ModuleConfigurationBuilder()
-            .WithTimeout(TimeSpan.FromMinutes(10))
+            .WithTimeout(TimeSpan.FromMinutes(20))
             .Build();
     }
 
@@ -32,46 +38,58 @@ public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<Com
         }
 
         var rootDirectory = context.Git().RootDirectory;
-        var project = rootDirectory.FindFile(x => x.Name == "Dekaf.Tests.Aot.csproj");
-        if (project is null)
+        var results = new List<CommandResult>(Projects.Length * 2);
+
+        foreach (var smokeProject in Projects)
         {
-            throw new InvalidOperationException("Dekaf.Tests.Aot.csproj not found");
+            var project = rootDirectory.FindFile(x => x.Name == smokeProject.ProjectFileName);
+            if (project is null)
+            {
+                throw new InvalidOperationException($"{smokeProject.ProjectFileName} not found");
+            }
+
+            var outputDirectory = Path.Combine(
+                rootDirectory.Path,
+                "artifacts",
+                "aot",
+                smokeProject.OutputName);
+
+            var publishResult = await context.DotNet().Publish(
+                new DotNetPublishOptions
+                {
+                    ProjectSolution = project.Path,
+                    Configuration = "Release",
+                    Framework = "net10.0",
+                    Runtime = "linux-x64",
+                    NoRestore = true,
+                    Output = outputDirectory,
+                    Properties =
+                    [
+                        new KeyValue("PublishAot", "true"),
+                        new KeyValue("SelfContained", "true"),
+                        new KeyValue("ContinuousIntegrationBuild", "true"),
+                        new KeyValue("TreatWarningsAsErrors", "true")
+                    ]
+                },
+                null,
+                cancellationToken);
+            results.Add(publishResult);
+
+            var executablePath = Path.Combine(
+                outputDirectory,
+                Path.GetFileNameWithoutExtension(smokeProject.ProjectFileName));
+            var runResult = await command.ExecuteCommandLineTool(
+                new GenericCommandLineToolOptions(executablePath),
+                new CommandExecutionOptions
+                {
+                    WorkingDirectory = outputDirectory
+                },
+                cancellationToken);
+            results.Add(runResult);
         }
 
-        var outputDirectory = Path.Combine(
-            rootDirectory.Path,
-            "artifacts",
-            "aot",
-            "core");
-
-        var publishResult = await context.DotNet().Publish(
-            new DotNetPublishOptions
-            {
-                ProjectSolution = project.Path,
-                Configuration = "Release",
-                Framework = "net10.0",
-                Runtime = "linux-x64",
-                NoRestore = true,
-                Output = outputDirectory,
-                Properties =
-                [
-                    new KeyValue("PublishAot", "true"),
-                    new KeyValue("SelfContained", "true"),
-                    new KeyValue("ContinuousIntegrationBuild", "true"),
-                    new KeyValue("TreatWarningsAsErrors", "true")
-                ]
-            },
-            null,
-            cancellationToken);
-
-        var runResult = await command.ExecuteCommandLineTool(
-            new GenericCommandLineToolOptions(Path.Combine(outputDirectory, "Dekaf.Tests.Aot")),
-            new CommandExecutionOptions
-            {
-                WorkingDirectory = outputDirectory
-            },
-            cancellationToken);
-
-        return [publishResult, runResult];
+        return results;
     }
+
+    private sealed record AotSmokeProject(string ProjectFileName, string OutputName);
 }

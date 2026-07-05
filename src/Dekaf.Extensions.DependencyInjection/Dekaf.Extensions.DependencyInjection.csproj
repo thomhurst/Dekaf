@@ -4,6 +4,7 @@
     <PackageId>Dekaf.Extensions.DependencyInjection</PackageId>
     <Description>Microsoft.Extensions.DependencyInjection integration for Dekaf Kafka client</Description>
     <PackageTags>kafka;dependency-injection;di</PackageTags>
+    <NoWarn>$(NoWarn);SYSLIB1104</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

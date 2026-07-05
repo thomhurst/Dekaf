@@ -64,3 +64,38 @@ Register `ISerializer<T>` and `IDeserializer<T>` in DI when your application use
 `InMemoryAdminClient` supports common unit-test operations such as creating, deleting, listing, and describing topics, altering/listing group offsets, deleting records, creating partitions, and listing offsets. Broker-only APIs such as ACL, SCRAM, and config mutation are accepted as no-ops or return empty results.
 
 Use Testcontainers or another real broker for protocol compatibility and integration coverage.
+
+## NativeAOT smoke validation
+
+CI runs a `NativeAOT Smoke` pull-request job for the supported `linux-x64`
+runtime. It publishes each smoke executable with `PublishAot=true` and
+`TreatWarningsAsErrors=true`, then runs the published binary.
+
+Run the same validation locally on Linux after installing the NativeAOT
+toolchain:
+
+```bash
+sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj \
+  --configuration Release \
+  --framework net10.0 \
+  --runtime linux-x64 \
+  --self-contained true \
+  --output artifacts/aot/core \
+  -p:PublishAot=true \
+  -p:ContinuousIntegrationBuild=true \
+  -p:TreatWarningsAsErrors=true
+./artifacts/aot/core/Dekaf.Tests.Aot
+
+dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj \
+  --configuration Release \
+  --framework net10.0 \
+  --runtime linux-x64 \
+  --self-contained true \
+  --output artifacts/aot/dependency-injection \
+  -p:PublishAot=true \
+  -p:ContinuousIntegrationBuild=true \
+  -p:TreatWarningsAsErrors=true
+./artifacts/aot/dependency-injection/Dekaf.Tests.Aot.DependencyInjection
+```

@@ -6,10 +6,20 @@
     <IsAotCompatible>true</IsAotCompatible>
     <PublishAot>true</PublishAot>
     <SelfContained>true</SelfContained>
+    <!-- Avro/Newtonsoft emit assembly-level summaries when schema-registry smoke paths are rooted. Keep warnings visible. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf.Compression.Brotli\Dekaf.Compression.Brotli.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Compression.Snappy\Dekaf.Compression.Snappy.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
   </ItemGroup>
 
 </Project>
