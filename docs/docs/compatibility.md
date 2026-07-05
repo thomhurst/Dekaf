@@ -45,6 +45,32 @@ dotnet build src/Dekaf/Dekaf.csproj --configuration Release `
 
 That probe confirmed the work is cross-cutting and should not be shipped as one large PR.
 
+## netstandard2.0 Restore Baseline
+
+The #1299 baseline keeps `Dekaf` defaulting to `net10.0`, but adds the conditional project structure needed for an explicit `netstandard2.0` probe:
+
+- `System.IO.Pipelines`, `System.Threading.Channels`, and `System.Text.Json` package references are included only when `$(TargetFramework)` is `netstandard2.0`.
+- Modern compiler-support shims are included only for `netstandard2.0`, including `IsExternalInit`, required-member attributes, nullable flow annotation support, and `SkipLocalsInitAttribute`.
+- The forced probe now restores successfully and gets past the missing package-reference and required-member compiler-support errors.
+
+Run the current probe with:
+
+```powershell
+dotnet build src/Dekaf/Dekaf.csproj --configuration Release `
+  -p:TargetFrameworks=netstandard2.0 `
+  -p:TargetFramework=netstandard2.0
+```
+
+The probe is still expected to fail until #1300 removes or isolates the remaining core API blockers. Current blocker categories:
+
+- Runtime intrinsics: `System.Runtime.Intrinsics` is not available as a `netstandard2.0` package, so the CRC/vectorized record batch paths need conditional fallbacks.
+- Modern collection and threading APIs: `IReadOnlySet<T>`, `System.Threading.Lock`, `PeriodicTimer`, non-generic `TaskCompletionSource`, and `Task.WaitAsync`.
+- Runtime feature constraints: static abstract interface members, by-ref-like generics, and ref fields are not supported by the `netstandard2.0` target runtime.
+- Buffer and stream APIs: `SequenceReader<T>`, `ArrayBufferWriter<T>`, and span-based `Stream.Write(ReadOnlySpan<byte>)` need compatibility paths.
+- TLS/GSSAPI APIs: `SslClientAuthenticationOptions`, `NegotiateAuthentication`, and `NegotiateAuthenticationClientOptions` need target-specific handling.
+
+This baseline does not declare package support for `netstandard2.0`; it only makes the next compile-blocker work measurable.
+
 ## Blocker Categories
 
 ### Missing Package References
