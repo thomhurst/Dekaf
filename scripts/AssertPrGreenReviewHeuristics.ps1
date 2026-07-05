@@ -14,11 +14,12 @@ function Get-ActionableReviewBodyReason {
         '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
         "|$previouslyResolvedHeading"
     $actionableHeadingWord = 'Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Design|Leak|Leaks|Gap|Gaps|Silently|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix'
+    $categoryOnlyHeading = '(?:correctness|design|architecture)(?:\s*/\s*(?:correctness|design|architecture))*'
 
     $patterns = @(
         @{
             Reason = 'actionable heading'
-            Pattern = "(?im)^\s*#{2,4}\s+(?!$nonActionableHeading).*\b($actionableHeadingWord)\b"
+            Pattern = "(?im)^\s*#{2,4}\s+(?!$nonActionableHeading)(?!$categoryOnlyHeading\s*$).*\b($actionableHeadingWord)\b"
         },
         @{
             Reason = 'numbered finding heading'

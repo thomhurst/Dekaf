@@ -64,6 +64,27 @@ Scope check passed.
         Blocks = $false
     },
     @{
+        Name = 'allows positive category section headings'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found. This is a faithful refactor.
+
+### Design / architecture
+This is a genuine improvement, not just churn.
+
+### Zero-allocation / hot path
+No concerns.
+
+### Test coverage
+Existing tests cover the behavior.
+
+No blocking issues.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'allows optional follow-up'
         Body = @'
 ## Review
