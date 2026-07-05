@@ -82,38 +82,42 @@ Get notified when partitions are assigned, revoked, lost, or stopped during grac
 ```csharp
 using Dekaf;
 
-public class MyRebalanceListener : IRebalanceListener, IPartitionStopListener
+public sealed class MyRebalanceListener : IRebalanceListener, IPartitionStopListener
 {
-    public async ValueTask OnPartitionsAssignedAsync(
+    public ValueTask OnPartitionsAssignedAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken ct)
     {
         Console.WriteLine($"Assigned: {string.Join(", ", partitions)}");
         // Initialize resources for these partitions
+        return ValueTask.CompletedTask;
     }
 
-    public async ValueTask OnPartitionsRevokedAsync(
+    public ValueTask OnPartitionsRevokedAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken ct)
     {
         Console.WriteLine($"Revoked: {string.Join(", ", partitions)}");
-        // Commit offsets, clean up resources
+        // Commit completed offsets, clean up resources
+        return ValueTask.CompletedTask;
     }
 
-    public async ValueTask OnPartitionsLostAsync(
+    public ValueTask OnPartitionsLostAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken ct)
     {
         Console.WriteLine($"Lost: {string.Join(", ", partitions)}");
-        // Partitions were taken away (e.g., due to timeout)
+        // Partitions were taken away. Do not commit offsets here.
+        return ValueTask.CompletedTask;
     }
 
-    public async ValueTask OnPartitionsStoppedAsync(
+    public ValueTask OnPartitionsStoppedAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken ct)
     {
         Console.WriteLine($"Stopped: {string.Join(", ", partitions)}");
         // Normal shutdown: drain and dispose partition-scoped resources
+        return ValueTask.CompletedTask;
     }
 }
 
@@ -126,11 +130,95 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 
 Callback semantics:
 
-- `OnPartitionsAssignedAsync` runs after the group assigns partitions to this consumer.
-- `OnPartitionsRevokedAsync` runs during cooperative rebalance before ownership is transferred.
-- `OnPartitionsLostAsync` runs when ownership was lost involuntarily, such as heartbeat timeout; do not commit offsets for lost partitions unless you know they are still owned.
-- `OnPartitionsStoppedAsync` runs only for graceful `CloseAsync` or `DisposeAsync`, after heartbeat, leader-refresh, auto-commit, and prefetch tasks stop and before final auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal.
-- Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
+| Callback | When it runs | Offset rule |
+| --- | --- | --- |
+| `OnPartitionsAssignedAsync` | After the group assigns partitions to this consumer. | Initialize partition-scoped state before records are processed. |
+| `OnPartitionsRevokedAsync` | During cooperative rebalance before ownership is transferred. | Commit only offsets for records that have completed processing, then dispose partition-scoped state. |
+| `OnPartitionsLostAsync` | After ownership was lost involuntarily, such as heartbeat timeout or unknown member recovery. | Do not commit offsets for lost partitions unless your application has a separate ownership guarantee. |
+| `OnPartitionsStoppedAsync` | During graceful `CloseAsync` or `DisposeAsync`, after heartbeat, leader-refresh, auto-commit, and prefetch tasks stop and before final auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal. | Drain local work if needed, commit completed offsets, then release resources. |
+
+Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
+
+For low-level consumers, track completed offsets only after durable processing.
+On revoke or graceful stop, commit those completed offsets. On lost, remove local
+state without committing:
+
+```csharp
+using System.Collections.Concurrent;
+using Dekaf;
+
+public sealed class RebalanceCommitListener(
+    ConcurrentDictionary<TopicPartition, TopicPartitionOffset> completedOffsets,
+    Func<IReadOnlyCollection<TopicPartitionOffset>, CancellationToken, ValueTask> commitCompletedAsync)
+    : IRebalanceListener, IPartitionStopListener
+{
+    public ValueTask OnPartitionsAssignedAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        foreach (var partition in partitions)
+            completedOffsets.TryRemove(partition, out _);
+
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask OnPartitionsRevokedAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        await CommitCompletedForAsync(partitions, ct);
+    }
+
+    public ValueTask OnPartitionsLostAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        foreach (var partition in partitions)
+            completedOffsets.TryRemove(partition, out _);
+
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask OnPartitionsStoppedAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        await CommitCompletedForAsync(partitions, ct);
+    }
+
+    private async ValueTask CommitCompletedForAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        var offsets = new List<TopicPartitionOffset>();
+
+        foreach (var partition in partitions)
+        {
+            if (completedOffsets.TryRemove(partition, out var offset))
+                offsets.Add(offset);
+        }
+
+        if (offsets.Count > 0)
+            await commitCompletedAsync(offsets, ct);
+    }
+}
+```
+
+Update the tracker from the consume loop after work succeeds:
+
+```csharp
+completedOffsets[new TopicPartition(message.Topic, message.Partition)] =
+    new TopicPartitionOffset(
+        message.Topic,
+        message.Partition,
+        message.Offset + 1,
+        message.LeaderEpoch ?? -1);
+```
+
+For the built-in partitioned runtime, prefer
+[`RunPartitionedAsync`](./partitioned-processing-api.md). It owns the
+channel-per-partition pattern, bounded queues, pause/resume backpressure, and
+revoke/lost/shutdown commits for you.
 
 ### Cooperative Rebalancing
 
