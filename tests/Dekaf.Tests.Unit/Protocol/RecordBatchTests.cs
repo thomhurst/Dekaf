@@ -1091,7 +1091,10 @@ public class RecordBatchTests
         var buffer = new ArrayBufferWriter<byte>();
         var batch = new RecordBatch
         {
-            BaseOffset = 0, PartitionLeaderEpoch = -1, BaseTimestamp = 1000, MaxTimestamp = 1000,
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
             Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "v"u8.ToArray() }]
         };
         batch.Write(buffer);
@@ -1119,7 +1122,10 @@ public class RecordBatchTests
         var buffer = new ArrayBufferWriter<byte>();
         var batch = new RecordBatch
         {
-            BaseOffset = 0, PartitionLeaderEpoch = -1, BaseTimestamp = 1000, MaxTimestamp = 1000,
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
             Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "value"u8.ToArray() }]
         };
         batch.Write(buffer);
@@ -1148,7 +1154,10 @@ public class RecordBatchTests
         var buffer = new ArrayBufferWriter<byte>();
         var batch = new RecordBatch
         {
-            BaseOffset = 0, PartitionLeaderEpoch = -1, BaseTimestamp = 1000, MaxTimestamp = 1000,
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
             Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "value"u8.ToArray() }]
         };
         batch.Write(buffer);

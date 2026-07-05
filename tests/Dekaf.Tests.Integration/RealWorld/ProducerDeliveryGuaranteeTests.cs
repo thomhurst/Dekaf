@@ -366,15 +366,21 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic1, Key = $"t1-key-{i}", Value = $"t1-value-{i}"
+                Topic = topic1,
+                Key = $"t1-key-{i}",
+                Value = $"t1-value-{i}"
             }, CancellationToken.None);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic2, Key = $"t2-key-{i}", Value = $"t2-value-{i}"
+                Topic = topic2,
+                Key = $"t2-key-{i}",
+                Value = $"t2-value-{i}"
             }, CancellationToken.None);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic3, Key = $"t3-key-{i}", Value = $"t3-value-{i}"
+                Topic = topic3,
+                Key = $"t3-key-{i}",
+                Value = $"t3-value-{i}"
             }, CancellationToken.None);
         }
 

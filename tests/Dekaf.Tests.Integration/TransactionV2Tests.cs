@@ -31,7 +31,9 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "k1", Value = "v1"
+                Topic = topic,
+                Key = "k1",
+                Value = "v1"
             }, CancellationToken.None);
 
             await txn.CommitAsync();
@@ -42,7 +44,9 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "k2", Value = "v2"
+                Topic = topic,
+                Key = "k2",
+                Value = "v2"
             }, CancellationToken.None);
 
             await txn.CommitAsync();
@@ -84,7 +88,9 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "aborted-key", Value = "aborted-value"
+                Topic = topic,
+                Key = "aborted-key",
+                Value = "aborted-value"
             }, CancellationToken.None);
 
             await txn.AbortAsync();
@@ -96,7 +102,9 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "committed-key", Value = "committed-value"
+                Topic = topic,
+                Key = "committed-key",
+                Value = "committed-value"
             }, CancellationToken.None);
 
             await txn.CommitAsync();
@@ -140,7 +148,9 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
             await using var txn = producer.BeginTransaction();
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = $"aborted-{i}", Value = $"aborted-{i}"
+                Topic = topic,
+                Key = $"aborted-{i}",
+                Value = $"aborted-{i}"
             }, CancellationToken.None);
             await txn.AbortAsync();
         }
@@ -150,7 +160,9 @@ public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "final", Value = "final-value"
+                Topic = topic,
+                Key = "final",
+                Value = "final-value"
             }, CancellationToken.None);
             await txn.CommitAsync();
         }

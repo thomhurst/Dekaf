@@ -493,7 +493,9 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 // Fire-and-forget
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
-                    Topic = topic, Key = "mixed", Value = $"seq-{i:D4}"
+                    Topic = topic,
+                    Key = "mixed",
+                    Value = $"seq-{i:D4}"
                 }, CancellationToken.None);
             }
             else
@@ -501,7 +503,9 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 // Awaited
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
-                    Topic = topic, Key = "mixed", Value = $"seq-{i:D4}"
+                    Topic = topic,
+                    Key = "mixed",
+                    Value = $"seq-{i:D4}"
                 }, CancellationToken.None);
             }
         }

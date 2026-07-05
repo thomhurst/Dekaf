@@ -260,7 +260,9 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Warm up: establish connection and metadata cache
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Key = "warmup", Value = "warmup"
+            Topic = topic,
+            Key = "warmup",
+            Value = "warmup"
         }, CancellationToken.None);
 
         // Act - Produce with a cancellation token, wait for delivery to complete,

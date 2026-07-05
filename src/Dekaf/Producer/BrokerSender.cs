@@ -1626,8 +1626,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             catch (Exception batchEx)
             {
-                try { FailAndCleanupBatch(batch, new InvalidOperationException(
-                    "Unexpected exception during response processing", batchEx)); }
+                try
+                {
+                    FailAndCleanupBatch(batch, new InvalidOperationException(
+                    "Unexpected exception during response processing", batchEx));
+                }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                 batches[j] = null!;
             }
@@ -2715,8 +2718,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
         try { batch.Fail(ex); }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
-        try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-            batch.CompletionSourcesCount, ex); }
+        try
+        {
+            _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
+            batch.CompletionSourcesCount, ex);
+        }
         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
         try { CleanupBatch(batch); }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }

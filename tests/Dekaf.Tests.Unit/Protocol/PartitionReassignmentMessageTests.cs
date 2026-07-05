@@ -167,10 +167,10 @@ public sealed class PartitionReassignmentMessageTests
     private static AlterPartitionReassignmentsRequest CreateAlterRequest(
         IReadOnlyList<int>? replicas,
         bool allowReplicationFactorChange) => new()
-    {
-        TimeoutMs = 60000,
-        AllowReplicationFactorChange = allowReplicationFactorChange,
-        Topics =
+        {
+            TimeoutMs = 60000,
+            AllowReplicationFactorChange = allowReplicationFactorChange,
+            Topics =
         [
             new AlterPartitionReassignmentsRequestTopic
             {
@@ -185,7 +185,7 @@ public sealed class PartitionReassignmentMessageTests
                 ]
             }
         ]
-    };
+        };
 
     private static byte[] BuildAlterResponse(short version, ErrorCode errorCode)
     {

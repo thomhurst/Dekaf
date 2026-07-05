@@ -89,7 +89,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         for (var p = 0; p < partitionCount; p++)
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {
-                Topic = topic, Key = -1, Value = "warmup", Partition = p
+                Topic = topic,
+                Key = -1,
+                Value = "warmup",
+                Partition = p
             }, CancellationToken.None);
 
         // Produce messages keyed by partition index
@@ -388,7 +391,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         for (var p = 0; p < partitionCount; p++)
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {
-                Topic = topic, Key = -1, Value = "warmup", Partition = p
+                Topic = topic,
+                Key = -1,
+                Value = "warmup",
+                Partition = p
             }, CancellationToken.None);
 
         // Produce to all partitions to trigger coalescing

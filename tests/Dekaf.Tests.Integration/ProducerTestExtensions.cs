@@ -39,7 +39,10 @@ internal static class ProducerTestExtensions
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+                Topic = topic,
+                Key = "warmup",
+                Value = "warmup",
+                Partition = p
             }, CancellationToken.None);
         }
     }

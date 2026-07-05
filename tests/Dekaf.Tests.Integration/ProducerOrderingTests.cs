@@ -78,7 +78,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     {
         // Fire many concurrent produces and verify per-partition ordering is preserved
         // even when multiple in-flight requests are pipelined.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 500;
 
@@ -137,7 +137,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     {
         // Verify that messages to a single partition always maintain order
         // even with small batch sizes that force many in-flight batches.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 200;
 
@@ -195,7 +195,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     {
         // With multiple partitions, verify that ordering is maintained within each partition
         // when messages are produced concurrently across partitions.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         const int messagesPerPartition = 50;
 
@@ -287,7 +287,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-concurrent-flush-{producerId}")
                 .WithAcks(Acks.All)
-    
+
                 .BuildAsync();
 
             await producer.WarmUpAllPartitionsAsync(topic, 3);
@@ -444,7 +444,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // With tiny batch size (256 bytes) and single partition, most batches are deferred
         // (gate-busy) and must be chained. The gate must be held for the entire chain
         // to prevent the sender loop's next drain from stealing it via non-blocking Wait(0).
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 1000;
 
@@ -502,7 +502,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Regression test: produces in waves to force multiple drain cycles, each with
         // deferred batches. Verifies that deferred chains from one drain don't race with
         // coalesced sends from the next drain on the same partition.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         const int wavesCount = 5;
         const int messagesPerWave = 200;
@@ -659,7 +659,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // batch size creates interleaved deferred chains for both partitions. Verifies that
         // deferred chains for different partitions run independently without cross-interference,
         // and that each partition's chain holds its own gate correctly.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         const int messagesPerPartition = 400;
 
@@ -740,7 +740,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Stress test: 16 partitions with concurrent produces forces complex broker grouping
         // and many deferred chains. With a single-broker test container, all partitions map
         // to the same broker, creating large coalesced requests.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 16);
         const int messagesPerPartition = 100;
 
@@ -816,7 +816,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     {
         // Regression test: rapid fire-and-forget with small batch size forces many batches
         // on a single partition, exercising deferred chains with the coalescing path.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 300;
 
@@ -874,7 +874,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // flushes between waves. Each wave fires concurrent produces while previous waves'
         // deferred chains may still be completing. This exercises the interaction between
         // active deferred chains and new drain cycles.
-    
+
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         const int waves = 10;
         const int messagesPerWave = 100;

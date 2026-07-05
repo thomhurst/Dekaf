@@ -271,21 +271,30 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = $"p0-{i}", Value = $"value", Partition = 0
+                Topic = topic,
+                Key = $"p0-{i}",
+                Value = $"value",
+                Partition = 0
             }, CancellationToken.None);
         }
         for (var i = 0; i < 5; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = $"p1-{i}", Value = $"value", Partition = 1
+                Topic = topic,
+                Key = $"p1-{i}",
+                Value = $"value",
+                Partition = 1
             }, CancellationToken.None);
         }
         for (var i = 0; i < 10; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = $"p2-{i}", Value = $"value", Partition = 2
+                Topic = topic,
+                Key = $"p2-{i}",
+                Value = $"value",
+                Partition = 2
             }, CancellationToken.None);
         }
 

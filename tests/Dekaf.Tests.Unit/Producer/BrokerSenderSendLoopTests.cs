@@ -26,16 +26,16 @@ public sealed class BrokerSenderSendLoopTests
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        MaxInFlightRequestsPerConnection = maxInFlight,
-        Acks = acks,
-        DeliveryTimeoutMs = deliveryTimeoutMs,
-        RetryBackoffMs = retryBackoffMs,
-        RetryBackoffMaxMs = retryBackoffMaxMs,
-        RequestTimeoutMs = requestTimeoutMs,
-        LingerMs = 0
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            MaxInFlightRequestsPerConnection = maxInFlight,
+            Acks = acks,
+            DeliveryTimeoutMs = deliveryTimeoutMs,
+            RetryBackoffMs = retryBackoffMs,
+            RetryBackoffMaxMs = retryBackoffMaxMs,
+            RequestTimeoutMs = requestTimeoutMs,
+            LingerMs = 0
+        };
 
     /// <summary>
     /// Creates a mock connection pool that returns a controllable mock connection.

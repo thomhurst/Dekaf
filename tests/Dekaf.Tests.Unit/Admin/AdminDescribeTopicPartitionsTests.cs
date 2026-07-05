@@ -198,9 +198,9 @@ public sealed class AdminDescribeTopicPartitionsTests
         string topicName,
         int partitionIndex,
         DescribeTopicPartitionsResponseCursor? nextCursor) => new()
-    {
-        ThrottleTimeMs = 0,
-        Topics =
+        {
+            ThrottleTimeMs = 0,
+            Topics =
         [
             new DescribeTopicPartitionsResponseTopic
             {
@@ -225,8 +225,8 @@ public sealed class AdminDescribeTopicPartitionsTests
                 ]
             }
         ],
-        NextCursor = nextCursor
-    };
+            NextCursor = nextCursor
+        };
 
     private sealed class AdminTestContext : IAsyncDisposable
     {

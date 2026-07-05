@@ -259,18 +259,18 @@ internal static class OAuthBearerJwtAssertion
         AsymmetricAlgorithm key,
         OAuthBearerJwtSigningAlgorithm algorithm,
         byte[] signingInput) => algorithm switch
-    {
-        OAuthBearerJwtSigningAlgorithm.Rs256 => SignRsa(key, signingInput, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1),
-        OAuthBearerJwtSigningAlgorithm.Rs384 => SignRsa(key, signingInput, HashAlgorithmName.SHA384, RSASignaturePadding.Pkcs1),
-        OAuthBearerJwtSigningAlgorithm.Rs512 => SignRsa(key, signingInput, HashAlgorithmName.SHA512, RSASignaturePadding.Pkcs1),
-        OAuthBearerJwtSigningAlgorithm.Ps256 => SignRsa(key, signingInput, HashAlgorithmName.SHA256, RSASignaturePadding.Pss),
-        OAuthBearerJwtSigningAlgorithm.Ps384 => SignRsa(key, signingInput, HashAlgorithmName.SHA384, RSASignaturePadding.Pss),
-        OAuthBearerJwtSigningAlgorithm.Ps512 => SignRsa(key, signingInput, HashAlgorithmName.SHA512, RSASignaturePadding.Pss),
-        OAuthBearerJwtSigningAlgorithm.Es256 => SignEcdsa(key, signingInput, HashAlgorithmName.SHA256),
-        OAuthBearerJwtSigningAlgorithm.Es384 => SignEcdsa(key, signingInput, HashAlgorithmName.SHA384),
-        OAuthBearerJwtSigningAlgorithm.Es512 => SignEcdsa(key, signingInput, HashAlgorithmName.SHA512),
-        _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, null)
-    };
+        {
+            OAuthBearerJwtSigningAlgorithm.Rs256 => SignRsa(key, signingInput, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1),
+            OAuthBearerJwtSigningAlgorithm.Rs384 => SignRsa(key, signingInput, HashAlgorithmName.SHA384, RSASignaturePadding.Pkcs1),
+            OAuthBearerJwtSigningAlgorithm.Rs512 => SignRsa(key, signingInput, HashAlgorithmName.SHA512, RSASignaturePadding.Pkcs1),
+            OAuthBearerJwtSigningAlgorithm.Ps256 => SignRsa(key, signingInput, HashAlgorithmName.SHA256, RSASignaturePadding.Pss),
+            OAuthBearerJwtSigningAlgorithm.Ps384 => SignRsa(key, signingInput, HashAlgorithmName.SHA384, RSASignaturePadding.Pss),
+            OAuthBearerJwtSigningAlgorithm.Ps512 => SignRsa(key, signingInput, HashAlgorithmName.SHA512, RSASignaturePadding.Pss),
+            OAuthBearerJwtSigningAlgorithm.Es256 => SignEcdsa(key, signingInput, HashAlgorithmName.SHA256),
+            OAuthBearerJwtSigningAlgorithm.Es384 => SignEcdsa(key, signingInput, HashAlgorithmName.SHA384),
+            OAuthBearerJwtSigningAlgorithm.Es512 => SignEcdsa(key, signingInput, HashAlgorithmName.SHA512),
+            _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, null)
+        };
 
     private static byte[] SignRsa(
         AsymmetricAlgorithm key,

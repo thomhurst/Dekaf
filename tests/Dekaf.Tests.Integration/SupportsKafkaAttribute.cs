@@ -12,7 +12,7 @@ public class SupportsKafkaAttribute(int supportedKafkaVersion) : SkipAttribute(s
     protected override string GetSkipReason(TestRegisteredContext context)
     {
         var kafkaVersionUsedInTest = GetKafkaVersionUsedInTest(context);
-        
+
         return $"The test requires Kafka {supportedKafkaVersion} or above, but this test is testing {kafkaVersionUsedInTest}";
     }
 

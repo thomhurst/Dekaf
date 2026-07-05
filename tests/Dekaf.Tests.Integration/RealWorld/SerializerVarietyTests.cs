@@ -308,15 +308,21 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var guidKey = Guid.NewGuid();
         var intTask = intProducer.ProduceAsync(new ProducerMessage<int, string>
         {
-            Topic = intTopic, Key = 100, Value = "int-event"
+            Topic = intTopic,
+            Key = 100,
+            Value = "int-event"
         }, CancellationToken.None);
         var guidTask = guidProducer.ProduceAsync(new ProducerMessage<Guid, string>
         {
-            Topic = guidTopic, Key = guidKey, Value = "guid-event"
+            Topic = guidTopic,
+            Key = guidKey,
+            Value = "guid-event"
         }, CancellationToken.None);
         var bytesTask = bytesProducer.ProduceAsync(new ProducerMessage<string, byte[]>
         {
-            Topic = bytesTopic, Key = "bytes-key", Value = [0xAB, 0xCD]
+            Topic = bytesTopic,
+            Key = "bytes-key",
+            Value = [0xAB, 0xCD]
         }, CancellationToken.None);
 
         await intTask;
