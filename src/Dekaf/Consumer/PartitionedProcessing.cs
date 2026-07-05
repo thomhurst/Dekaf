@@ -267,6 +267,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly HashSet<TopicPartition> _pendingIgnoreRestarts = [];
     private readonly Dictionary<TopicPartition, int> _ignoreRestartFailures = [];
     private readonly ConcurrentDictionary<Task, byte> _ignoreRestartTasks = [];
+    private readonly List<TopicPartition> _partitionsToStop = [];
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
     private readonly CancellationTokenSource _failureCancellation = new();
     private readonly CancellationTokenSource _restartCancellation = new();
@@ -303,25 +304,103 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         try
         {
             await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
+            using var consumeCancellation = CancellationTokenSource.CreateLinkedTokenSource(linkedCancellation.Token);
+            var batchEnumerator = _consumer
+                .ConsumeBatchAsync(consumeCancellation.Token)
+                .GetAsyncEnumerator(consumeCancellation.Token);
+            Task<bool>? pendingBatchMove = null;
+            Task<bool>? pendingCommandWait = null;
 
-            while (true)
+            try
             {
-                linkedCancellation.Token.ThrowIfCancellationRequested();
+                while (true)
+                {
+                    linkedCancellation.Token.ThrowIfCancellationRequested();
 
-                await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
-                ThrowIfFailed();
-                await CommitPeriodicallyAsync(linkedCancellation.Token).ConfigureAwait(false);
+                    await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
+                    ThrowIfFailed();
+                    await CommitPeriodicallyAsync(linkedCancellation.Token).ConfigureAwait(false);
 
-                var result = await _consumer.ConsumeOneAsync(
-                    ConsumePollTimeout,
-                    linkedCancellation.Token).ConfigureAwait(false);
+                    if (pendingBatchMove is null)
+                    {
+                        var moveNext = batchEnumerator.MoveNextAsync();
+                        if (moveNext.IsCompleted)
+                        {
+                            if (!await moveNext.ConfigureAwait(false))
+                                break;
 
-                await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
-                ThrowIfFailed();
-                await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
+                            await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
+                            ThrowIfFailed();
+                            await RouteBatchAsync(batchEnumerator.Current, linkedCancellation.Token).ConfigureAwait(false);
+                            continue;
+                        }
 
-                if (result.HasValue && !result.Value.IsPartitionEof)
-                    await RouteAsync(result.Value, linkedCancellation.Token).ConfigureAwait(false);
+                        pendingBatchMove = moveNext.AsTask();
+                    }
+
+                    if (pendingBatchMove.IsCompleted)
+                    {
+                        if (!await pendingBatchMove.ConfigureAwait(false))
+                            break;
+
+                        pendingBatchMove = null;
+                        await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
+                        ThrowIfFailed();
+                        await RouteBatchAsync(batchEnumerator.Current, linkedCancellation.Token).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (pendingCommandWait is null)
+                    {
+                        var waitToRead = _commands.Reader.WaitToReadAsync(linkedCancellation.Token);
+                        if (waitToRead.IsCompleted)
+                        {
+                            if (!await waitToRead.ConfigureAwait(false))
+                                break;
+
+                            continue;
+                        }
+
+                        pendingCommandWait = waitToRead.AsTask();
+                    }
+
+                    if (pendingCommandWait.IsCompleted)
+                    {
+                        if (!await pendingCommandWait.ConfigureAwait(false))
+                            break;
+
+                        pendingCommandWait = null;
+                        continue;
+                    }
+
+                    var delay = Task.Delay(ConsumePollTimeout, linkedCancellation.Token);
+                    var completed = await Task.WhenAny(
+                        pendingBatchMove,
+                        pendingCommandWait,
+                        delay).ConfigureAwait(false);
+
+                    if (completed == pendingBatchMove || completed == pendingCommandWait)
+                        continue;
+
+                    await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                consumeCancellation.Cancel();
+
+                if (pendingBatchMove is not null)
+                {
+                    try
+                    {
+                        await pendingBatchMove.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (consumeCancellation.IsCancellationRequested)
+                    {
+                    }
+                }
+
+                await batchEnumerator.DisposeAsync().ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (_failure is not null)
@@ -421,50 +500,83 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         var assignment = _consumer.Partitions.Assignment;
 
-        foreach (var partition in _stoppedByFailure.Where(partition => !assignment.Contains(partition)).ToArray())
+        RemoveUnassigned(_stoppedByFailure, assignment, removePause: true);
+        RemoveUnassigned(_pendingIgnoreRestarts, assignment, removePause: false);
+
+        _partitionsToStop.Clear();
+        foreach (var partition in _lanes.Keys)
         {
-            _stoppedByFailure.Remove(partition);
-            _pausedByRuntime.Remove(partition);
-            _ignoreRestartFailures.Remove(partition);
+            if (!AssignmentContains(assignment, partition))
+                _partitionsToStop.Add(partition);
         }
 
-        foreach (var partition in _pendingIgnoreRestarts.Where(partition => !assignment.Contains(partition)).ToArray())
-        {
-            _pendingIgnoreRestarts.Remove(partition);
-            _ignoreRestartFailures.Remove(partition);
-        }
-
-        foreach (var partition in _lanes.Keys.Where(partition => !assignment.Contains(partition)).ToArray())
+        for (var i = 0; i < _partitionsToStop.Count; i++)
         {
             await StopPartitionAsync(
-                partition,
+                _partitionsToStop[i],
                 PartitionStopReason.Revoke,
                 cancellationToken).ConfigureAwait(false);
         }
+        _partitionsToStop.Clear();
 
         StartAssignedPartitions(assignment);
     }
 
-    private async ValueTask RouteAsync(
-        ConsumeResult<TKey, TValue> result,
+    private void RemoveUnassigned(
+        HashSet<TopicPartition> partitions,
+        IEnumerable<TopicPartition> assignment,
+        bool removePause)
+    {
+        _partitionsToStop.Clear();
+        foreach (var partition in partitions)
+        {
+            if (!AssignmentContains(assignment, partition))
+                _partitionsToStop.Add(partition);
+        }
+
+        for (var i = 0; i < _partitionsToStop.Count; i++)
+        {
+            var partition = _partitionsToStop[i];
+            partitions.Remove(partition);
+            if (removePause)
+                _pausedByRuntime.Remove(partition);
+            _ignoreRestartFailures.Remove(partition);
+        }
+        _partitionsToStop.Clear();
+    }
+
+    private static bool AssignmentContains(
+        IEnumerable<TopicPartition> assignment,
+        TopicPartition partition)
+    {
+        return assignment is ICollection<TopicPartition> collection
+            ? collection.Contains(partition)
+            : assignment.Contains(partition);
+    }
+
+    private async ValueTask RouteBatchAsync(
+        ConsumeBatch<TKey, TValue> batch,
         CancellationToken cancellationToken)
     {
-        var partition = new TopicPartition(result.Topic, result.Partition);
+        var partition = batch.TopicPartition;
         if (!_lanes.TryGetValue(partition, out var lane))
             return;
 
-        while (!lane.TryEnqueue(result))
+        foreach (var result in batch)
         {
+            while (!lane.TryEnqueue(result))
+            {
+                PauseIfNeeded(lane);
+                var canWrite = await lane.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
+                ThrowIfFailed();
+
+                if (!canWrite || !_lanes.TryGetValue(partition, out lane))
+                    return;
+            }
+
             PauseIfNeeded(lane);
-            var canWrite = await lane.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
-            await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
-            ThrowIfFailed();
-
-            if (!canWrite || !_lanes.TryGetValue(partition, out lane))
-                return;
         }
-
-        PauseIfNeeded(lane);
     }
 
     private void StartLane(TopicPartition partition)
