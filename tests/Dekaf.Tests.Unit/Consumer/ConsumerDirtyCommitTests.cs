@@ -193,6 +193,36 @@ public sealed class ConsumerDirtyCommitTests
         ]);
     }
 
+    [Test]
+    [Arguments("Seek")]
+    [Arguments("SeekToBeginning")]
+    [Arguments("SeekToEnd")]
+    public async Task CommitAsync_WhenAutoOffsetStoreDisabled_DoesNotCommitSeekedPositionUntilStored(string seekOperation)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Manual,
+            enableAutoOffsetStore: false);
+        var partition = new TopicPartition("topic-a", 0);
+
+        ApplySeek(consumer, seekOperation, partition);
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(requests).IsEmpty();
+
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3));
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3)
+        ]);
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         ErrorCode responseError,
@@ -260,6 +290,27 @@ public sealed class ConsumerDirtyCommitTests
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         method.Invoke(consumer, [partition, position, dirty]);
+    }
+
+    private static void ApplySeek(
+        KafkaConsumer<string, string> consumer,
+        string seekOperation,
+        TopicPartition partition)
+    {
+        switch (seekOperation)
+        {
+            case "Seek":
+                consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 10, leaderEpoch: 3));
+                break;
+            case "SeekToBeginning":
+                consumer.SeekToBeginning(partition);
+                break;
+            case "SeekToEnd":
+                consumer.SeekToEnd(partition);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(seekOperation), seekOperation, null);
+        }
     }
 
     private static void RecordConsumedPosition(

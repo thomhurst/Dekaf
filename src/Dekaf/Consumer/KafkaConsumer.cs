@@ -642,8 +642,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //   a single fetch using a stale position before being updated by the next operation.
     //   Adding locks would defeat the purpose of lock-free consumption.
     private readonly ConcurrentDictionary<TopicPartition, long> _positions = new();      // Consumed position (what app has seen)
-    private readonly ConcurrentDictionary<TopicPartition, long> _dirtyPositions = new(); // Consumed positions changed since last successful commit
-    private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();  // Offsets staged for auto-commit
+    private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();  // Offsets staged for commit
     private readonly ConcurrentDictionary<TopicPartition, long> _dirtyStoredOffsets = new(); // Stored offsets changed since last successful commit
     private readonly ConcurrentDictionary<TopicPartition, int> _storedOffsetLeaderEpochs = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
@@ -2371,12 +2370,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _positions[partition] = position;
         if (dirty)
         {
-            _dirtyPositions[partition] = position;
-            StoreOffsetCore(partition, position, GetLastConsumedLeaderEpoch(partition));
+            if (_options.EnableAutoOffsetStore)
+                StoreOffsetCore(partition, position, GetLastConsumedLeaderEpoch(partition));
         }
         else
         {
-            _dirtyPositions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
         }
     }
@@ -2385,7 +2383,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         _positions[partition] = position;
         SetLastConsumedLeaderEpoch(partition, leaderEpoch);
-        _dirtyPositions[partition] = position;
         if (_options.EnableAutoOffsetStore)
             StoreOffsetCore(partition, position, leaderEpoch);
     }
@@ -2424,11 +2421,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _lastConsumedLeaderEpochs.TryRemove(partition, out _);
     }
 
-    private void ClearDirtyPositionIfCommitted(TopicPartition partition, long committedOffset)
-    {
-        _dirtyPositions.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
-    }
-
     private void ClearDirtyStoredOffsetIfCommitted(TopicPartition partition, long committedOffset)
     {
         _dirtyStoredOffsets.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
@@ -2437,7 +2429,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
     {
         _committed[partition] = committedOffset;
-        ClearDirtyPositionIfCommitted(partition, committedOffset);
         ClearDirtyStoredOffsetIfCommitted(partition, committedOffset);
     }
 
@@ -2813,15 +2804,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask CommitStoredOffsetsAsync(CancellationToken cancellationToken)
     {
-        await CommitDirtyOffsetsAsync(_dirtyStoredOffsets.ToArray(), GetStoredOffsetLeaderEpoch, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private async ValueTask CommitDirtyOffsetsAsync(
-        KeyValuePair<TopicPartition, long>[] dirtyOffsetsSnapshot,
-        Func<TopicPartition, int> getLeaderEpoch,
-        CancellationToken cancellationToken)
-    {
         if (_coordinator is null)
             return;
 
@@ -2831,6 +2813,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             // Commit only offsets that changed since the last successful commit.
             // Snapshot the concurrent dictionary to avoid race conditions during enumeration
+            var dirtyOffsetsSnapshot = _dirtyStoredOffsets.ToArray();
             offsetCount = dirtyOffsetsSnapshot.Length;
             if (offsetCount == 0)
                 return;
@@ -2848,7 +2831,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         kvp.Key.Topic,
                         kvp.Key.Partition,
                         kvp.Value,
-                        getLeaderEpoch(kvp.Key));
+                        GetStoredOffsetLeaderEpoch(kvp.Key));
                 }
 
                 // Create array segment to pass only the used portion
@@ -3038,7 +3021,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var partition in partitions)
         {
             _positions.TryRemove(partition, out _);
-            _dirtyPositions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);

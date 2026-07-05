@@ -301,7 +301,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         lock (_gate)
-            CommitCurrentOffsets();
+            CommitStoredOffsets();
 
         return ValueTask.CompletedTask;
     }
@@ -398,7 +398,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             _positions[partition] = offset.Offset;
-            _storedOffsets[partition] = offset.Offset;
+            if (_options.EnableAutoOffsetStore)
+                _storedOffsets[partition] = offset.Offset;
         }
     }
 
@@ -413,7 +414,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 var position = _cluster.GetWatermarks(partition).Low;
                 _positions[partition] = position;
-                _storedOffsets[partition] = position;
+                if (_options.EnableAutoOffsetStore)
+                    _storedOffsets[partition] = position;
             }
         }
     }
@@ -429,7 +431,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 var position = _cluster.GetWatermarks(partition).High;
                 _positions[partition] = position;
-                _storedOffsets[partition] = position;
+                if (_options.EnableAutoOffsetStore)
+                    _storedOffsets[partition] = position;
             }
         }
     }
@@ -662,9 +665,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private void CommitStoredOffsets()
         => CommitOffsetsFrom(_storedOffsets);
-
-    private void CommitCurrentOffsets()
-        => CommitOffsetsFrom(_positions);
 
     private void CommitOffsetsFrom(Dictionary<TopicPartition, long> positions)
     {
