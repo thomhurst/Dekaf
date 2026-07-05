@@ -162,7 +162,7 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     private AvroSchema GetWriterSchemaCached(int schemaId)
     {
-        var lazyTask = GetOrAddWriterSchemaLazy(schemaId, cancellationToken: default);
+        var lazyTask = GetOrAddWriterSchemaLazy(schemaId);
 
         // If the task is already completed, this returns immediately without blocking.
         // If this is the first access, it will block waiting for the schema fetch.
@@ -183,39 +183,45 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     private async Task<AvroSchema> GetOrFetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)
     {
-        var lazyTask = GetOrAddWriterSchemaLazy(schemaId, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return await lazyTask.Value.ConfigureAwait(false);
+        var lazyTask = GetOrAddWriterSchemaLazy(schemaId);
+
+        return await lazyTask.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private Lazy<Task<AvroSchema>> GetOrAddWriterSchemaLazy(int schemaId, CancellationToken cancellationToken)
+    private Lazy<Task<AvroSchema>> GetOrAddWriterSchemaLazy(int schemaId)
     {
         if (_schemaCache.TryGetValue(schemaId, out var cached))
             return cached;
 
         return _schemaCache.GetOrAdd(
             schemaId,
-            static (id, state) => state.Deserializer.CreateWriterSchemaLazy(id, state.CancellationToken),
-            new WriterSchemaFetchState(this, cancellationToken));
+            static (id, deserializer) => deserializer.CreateWriterSchemaLazy(id),
+            this);
     }
 
-    private Lazy<Task<AvroSchema>> CreateWriterSchemaLazy(int schemaId, CancellationToken cancellationToken) =>
-        new(() => FetchWriterSchemaAsync(schemaId, cancellationToken));
+    private Lazy<Task<AvroSchema>> CreateWriterSchemaLazy(int schemaId) =>
+        new(() => FetchWriterSchemaAsync(schemaId));
 
-    private readonly record struct WriterSchemaFetchState(
-        AvroSchemaRegistryDeserializer<T> Deserializer,
-        CancellationToken CancellationToken);
-
-    private async Task<AvroSchema> FetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)
+    private async Task<AvroSchema> FetchWriterSchemaAsync(int schemaId)
     {
-        var registrySchema = await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            var registrySchema = await _schemaRegistry.GetSchemaAsync(schemaId, CancellationToken.None)
+                .ConfigureAwait(false);
 
-        if (registrySchema.SchemaType != SchemaType.Avro)
-            throw new InvalidOperationException(
-                $"Schema with ID {schemaId} is not an Avro schema. Type: {registrySchema.SchemaType}");
+            if (registrySchema.SchemaType != SchemaType.Avro)
+                throw new InvalidOperationException(
+                    $"Schema with ID {schemaId} is not an Avro schema. Type: {registrySchema.SchemaType}");
 
-        return AvroSchema.Parse(registrySchema.SchemaString);
+            return AvroSchema.Parse(registrySchema.SchemaString);
+        }
+        catch
+        {
+            _schemaCache.TryRemove(schemaId, out _);
+            throw;
+        }
     }
 
     private AvroSchema? GetReaderSchema()

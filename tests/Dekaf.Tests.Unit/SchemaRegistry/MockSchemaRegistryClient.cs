@@ -14,7 +14,10 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     private bool _disposed;
 
     public int GetSchemaCallCount { get; private set; }
+    public int GetOrRegisterSchemaCallCount { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
+    public int GetSchemaFailuresRemaining { get; set; }
+    public int GetOrRegisterSchemaFailuresRemaining { get; set; }
 
     /// <summary>
     /// Normalizes a JSON schema string by parsing and re-serializing.
@@ -63,6 +66,12 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         ThrowIfDisposed();
         GetSchemaCallCount++;
 
+        if (GetSchemaFailuresRemaining > 0)
+        {
+            GetSchemaFailuresRemaining--;
+            throw new SchemaRegistryException(50001, "Transient schema fetch failure");
+        }
+
         if (_schemasById.TryGetValue(id, out var schema))
             return Task.FromResult(schema);
 
@@ -102,6 +111,13 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     public Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        GetOrRegisterSchemaCallCount++;
+
+        if (GetOrRegisterSchemaFailuresRemaining > 0)
+        {
+            GetOrRegisterSchemaFailuresRemaining--;
+            throw new SchemaRegistryException(50002, "Transient schema registration failure");
+        }
 
         // Check if schema already exists (using semantic comparison for JSON schemas)
         if (_schemasBySubject.TryGetValue(subject, out var list))
