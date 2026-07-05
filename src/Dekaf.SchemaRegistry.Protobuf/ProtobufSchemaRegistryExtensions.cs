@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Google.Protobuf;
 
 namespace Dekaf.SchemaRegistry.Protobuf;
@@ -16,7 +17,9 @@ public static class ProtobufSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistry<
+        TKey,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufSerializerConfig? config = null)
@@ -39,7 +42,9 @@ public static class ProtobufSchemaRegistryExtensions
     /// <param name="keyConfig">Optional key serializer configuration.</param>
     /// <param name="valueConfig">Optional value serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> UseProtobufSchemaRegistryForKeyAndValue<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TKey,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         ProtobufSerializerConfig? keyConfig = null,

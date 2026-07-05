@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Serialization;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
@@ -22,7 +23,9 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
-public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposable
+public sealed class ProtobufSchemaRegistrySerializer<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
+    : ISerializer<T>, IAsyncDisposable
     where T : IMessage<T>
 {
     private const byte MagicByte = 0x00;

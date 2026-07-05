@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Avro.Generic;
 using Avro.Specific;
 
@@ -17,7 +18,9 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistry<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistry<
+        TKey,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroSerializerConfig? config = null)
@@ -37,7 +40,9 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<TKey, TValue>(
+    public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TKey,
+        TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroSerializerConfig? config = null)
@@ -57,7 +62,9 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistry<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistry<
+        TKey,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroDeserializerConfig? config = null)
@@ -77,7 +84,9 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="schemaRegistry">The Schema Registry client.</param>
     /// <param name="config">Optional Avro deserializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
-    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<TKey, TValue>(
+    public static ConsumerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TKey,
+        TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroDeserializerConfig? config = null)
@@ -88,7 +97,8 @@ public static class AvroSchemaRegistryExtensions
         return builder.WithKeyDeserializer(deserializer);
     }
 
-    private static void ValidateAvroType<T>()
+    private static void ValidateAvroType<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] T>()
     {
         if (!typeof(ISpecificRecord).IsAssignableFrom(typeof(T)) &&
             !typeof(GenericRecord).IsAssignableFrom(typeof(T)))

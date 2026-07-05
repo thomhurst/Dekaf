@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
 namespace Dekaf.SchemaRegistry.Avro;
@@ -21,9 +22,13 @@ internal static class AvroSchemaFieldCache
     /// execute more than once; however, the reflection call is idempotent and only one result is
     /// stored and returned for subsequent lookups.
     /// </remarks>
-    internal static FieldInfo? GetSchemaField(Type type)
+    internal static FieldInfo? GetSchemaField(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] Type type)
     {
-        return s_schemaFieldCache.GetOrAdd(type, static t =>
-            t.GetField("_SCHEMA", BindingFlags.Public | BindingFlags.Static));
+        if (s_schemaFieldCache.TryGetValue(type, out var cached))
+            return cached;
+
+        var field = type.GetField("_SCHEMA", BindingFlags.Public | BindingFlags.Static);
+        return s_schemaFieldCache.GetOrAdd(type, field);
     }
 }

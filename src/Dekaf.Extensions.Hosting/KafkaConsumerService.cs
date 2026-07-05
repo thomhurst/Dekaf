@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
@@ -486,7 +487,10 @@ public static class HostingExtensions
     /// <summary>
     /// Adds a Kafka consumer hosted service.
     /// </summary>
-    public static IHostBuilder UseKafkaConsumer<TService, TKey, TValue>(this IHostBuilder builder)
+    public static IHostBuilder UseKafkaConsumer<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey,
+        TValue>(this IHostBuilder builder)
         where TService : KafkaConsumerService<TKey, TValue>
     {
         return builder.ConfigureServices((context, services) =>

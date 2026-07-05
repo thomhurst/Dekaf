@@ -54,12 +54,10 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
-      - name: Install NativeAOT prerequisites
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
-
       - name: Run Pipeline
         env:
           SKIP_INTEGRATION_TESTS: 'true'
+          SKIP_AOT_SMOKE_TESTS: 'true'
           NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
           NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
         run: dotnet run --project tools/Dekaf.Pipeline
@@ -93,6 +91,50 @@ jobs:
             **/*.dmp
           if-no-files-found: ignore
           retention-days: 7
+
+  native-aot-smoke:
+    name: NativeAOT Smoke (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            project: tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj
+            executable: Dekaf.Tests.Aot
+          - name: dependency-injection
+            project: tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj
+            executable: Dekaf.Tests.Aot.DependencyInjection
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Install NativeAOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish NativeAOT smoke executable
+        run: |
+          dotnet publish "${{ matrix.project }}" \
+            --configuration Release \
+            --framework net10.0 \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output "artifacts/aot/${{ matrix.name }}" \
+            -p:PublishAot=true \
+            -p:ContinuousIntegrationBuild=true \
+            -p:TreatWarningsAsErrors=true
+
+      - name: Run NativeAOT smoke executable
+        run: ./artifacts/aot/${{ matrix.name }}/${{ matrix.executable }}
 
   integration-tests:
     name: Integration Tests (${{ matrix.category }})
