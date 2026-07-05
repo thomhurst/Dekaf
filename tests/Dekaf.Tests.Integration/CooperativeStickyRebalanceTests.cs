@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -213,6 +214,133 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await cts2.CancelAsync();
         try { await Task.WhenAll(consumer1Task, consumer2Task); }
         catch (OperationCanceledException) { }
+    }
+
+    [Test]
+    public async Task CooperativeRebalance_WithPrefetch_DoesNotEmitRevokedPartitionRecordsAfterAssignmentChanges()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
+        var groupId = $"prefetch-revoke-{Guid.NewGuid():N}";
+        var afterRebalanceMessages = new ConcurrentQueue<ConsumeResult<string, string>>();
+        var collectAfterRebalance = 0;
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var partition = 0; partition < 4; partition++)
+        {
+            for (var i = 0; i < 80; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{partition}-{i}",
+                    Value = $"value-{partition}-{i}",
+                    Partition = partition
+                }, CancellationToken.None);
+            }
+        }
+
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(16)
+            .WithFetchMaxWait(TimeSpan.FromMilliseconds(100))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer1.Subscribe(topic);
+
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var consumer1Task = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var message in consumer1.ConsumeAsync(cts1.Token))
+                {
+                    if (Volatile.Read(ref collectAfterRebalance) != 0)
+                        afterRebalanceMessages.Enqueue(message);
+
+                    await Task.Delay(10, cts1.Token);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+
+        await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+            .Eventually(x => x.IsEqualTo(4), TimeSpan.FromSeconds(30));
+
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(16)
+            .WithFetchMaxWait(TimeSpan.FromMilliseconds(100))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer2.Subscribe(topic);
+
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var consumer2Task = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var _ in consumer2.ConsumeAsync(cts2.Token))
+                {
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+
+        try
+        {
+            await Assert.That(() => consumer1.Assignment.ToArray().Count(tp => tp.Topic == topic))
+                .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(45));
+            await Assert.That(() => consumer2.Assignment.ToArray().Count(tp => tp.Topic == topic))
+                .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(45));
+
+            var retainedPartitions = consumer1.Assignment
+                .Where(tp => tp.Topic == topic)
+                .Select(tp => tp.Partition)
+                .ToHashSet();
+            var revokedPartitions = Enumerable.Range(0, 4)
+                .Where(partition => !retainedPartitions.Contains(partition))
+                .ToHashSet();
+
+            Volatile.Write(ref collectAfterRebalance, 1);
+
+            foreach (var partition in retainedPartitions)
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    await producer.ProduceAsync(new ProducerMessage<string, string>
+                    {
+                        Topic = topic,
+                        Key = $"post-key-{partition}-{i}",
+                        Value = $"post-value-{partition}-{i}",
+                        Partition = partition
+                    }, CancellationToken.None);
+                }
+            }
+
+            await Assert.That(() => afterRebalanceMessages.Count)
+                .Eventually(x => x.IsGreaterThanOrEqualTo(10), TimeSpan.FromSeconds(30));
+
+            var revokedAfterRebalance = afterRebalanceMessages
+                .Where(message => revokedPartitions.Contains(message.Partition))
+                .ToList();
+
+            await Assert.That(revokedAfterRebalance).IsEmpty();
+        }
+        finally
+        {
+            await cts1.CancelAsync();
+            await cts2.CancelAsync();
+            try { await Task.WhenAll(consumer1Task, consumer2Task); }
+            catch (OperationCanceledException) { }
+        }
     }
 
     [Test]

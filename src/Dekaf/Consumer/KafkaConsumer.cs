@@ -639,6 +639,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // user code at the yield point can trigger such a clear; the version check lets the
     // iterator detect that its current fetch was disposed underneath it.
     private int _pendingFetchesVersion;
+    private readonly ConcurrentDictionary<TopicPartition, byte> _coordinatorRevokedPartitionsPendingFetchClear = new();
+    private int _coordinatorRevokedPartitionsPendingFetchClearPending;
 
     // Background prefetch support
     private readonly MpscFetchBuffer _prefetchBuffer;
@@ -1223,6 +1225,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ThrowPendingFetchException();
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+            ClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -1320,6 +1323,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     while (true)
                     {
+                        if (ClearFetchBufferForPendingCoordinatorRevocations()
+                            && Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+                        {
+                            break;
+                        }
+
                         // Wrap MoveNext + record parsing in try-catch so a corrupted fetch
                         // does not kill the consumer permanently. The yield must be outside
                         // the try block (CS1626), so we build the result first then yield below.
@@ -1512,6 +1521,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ThrowPendingFetchException();
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+            ClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -1578,6 +1588,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             while (_pendingFetches.Count > 0)
             {
+                if (ClearFetchBufferForPendingCoordinatorRevocations())
+                    continue;
+
                 PendingFetchData pending = _pendingFetches.Dequeue();
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
@@ -1651,6 +1664,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ThrowPendingFetchException();
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+            ClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -1717,6 +1731,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             while (_pendingFetches.Count > 0)
             {
+                if (ClearFetchBufferForPendingCoordinatorRevocations())
+                    continue;
+
                 PendingFetchData pending = _pendingFetches.Dequeue();
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
@@ -2505,6 +2522,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ThrowPendingFetchException();
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+            ClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -2596,6 +2614,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (_pendingFetches.Count > 0)
         {
+            if (ClearFetchBufferForPendingCoordinatorRevocations())
+                continue;
+
             var pending = _pendingFetches.Peek();
             long? batchProcessingStarted = _adaptiveFetchSizer is not null
                 ? System.Diagnostics.Stopwatch.GetTimestamp() : null;
@@ -2977,6 +2998,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // buffer would be consumed after an incremental unassign (cooperative rebalance),
         // causing data for partitions no longer owned by this consumer to be yielded.
         DrainPrefetchBufferForPartitions(removeSet);
+    }
+
+    private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+        }
+
+        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+    }
+
+    private bool ClearFetchBufferForPendingCoordinatorRevocations()
+    {
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
+            return false;
+
+        HashSet<TopicPartition>? partitionsToRemove = null;
+        foreach (var partition in _coordinatorRevokedPartitionsPendingFetchClear.Keys)
+        {
+            if (!_coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _))
+                continue;
+
+            partitionsToRemove ??= [];
+            partitionsToRemove.Add(partition);
+        }
+
+        if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+
+        if (partitionsToRemove is null || partitionsToRemove.Count == 0)
+            return false;
+
+        ClearFetchBufferForPartitions(partitionsToRemove);
+        return true;
     }
 
     private void DrainPrefetchBufferForPartitions(HashSet<TopicPartition> partitionsToRemove)
@@ -3389,6 +3445,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
+                    QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
                     if (RemovePartitionState(removedPartitions))
                         PublishPausedSnapshot();
                 }
