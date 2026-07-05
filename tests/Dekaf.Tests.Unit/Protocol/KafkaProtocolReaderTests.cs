@@ -140,7 +140,7 @@ public class KafkaProtocolReaderTests
     public async Task ReadBytes_MultiSegmentClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
     {
         var data = new byte[] { 0x00, 0x00, 0x00, 0x05, 0x01, 0x02 };
-        var sequence = CreateMultiSegmentSequence(data, splitAt: 2);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(data, splitAt: 2);
 
         var exception = ReadThrowsMalformed(sequence, static (ref KafkaProtocolReader reader) => reader.ReadBytes());
 
@@ -160,7 +160,7 @@ public class KafkaProtocolReaderTests
     [Test]
     public async Task ReadMemorySlice_MultiSegmentClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
     {
-        var sequence = CreateMultiSegmentSequence(new byte[] { 0x01, 0x02 }, splitAt: 1);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(new byte[] { 0x01, 0x02 }, splitAt: 1);
 
         var exception = ReadThrowsMalformed(sequence, static (ref KafkaProtocolReader reader) => reader.ReadMemorySlice(3));
 
@@ -265,32 +265,6 @@ public class KafkaProtocolReaderTests
         }
 
         throw new InvalidOperationException("Expected MalformedProtocolDataException");
-    }
-
-    private static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] data, int splitAt)
-    {
-        if (splitAt <= 0 || splitAt >= data.Length)
-            throw new ArgumentException("Split position must be within data bounds", nameof(splitAt));
-
-        var first = new TestSegment(data.AsMemory(0, splitAt));
-        var second = new TestSegment(data.AsMemory(splitAt));
-        first.SetNext(second);
-
-        return new ReadOnlySequence<byte>(first, 0, second, second.Memory.Length);
-    }
-
-    private sealed class TestSegment : ReadOnlySequenceSegment<byte>
-    {
-        public TestSegment(ReadOnlyMemory<byte> memory)
-        {
-            Memory = memory;
-        }
-
-        public void SetNext(TestSegment next)
-        {
-            Next = next;
-            next.RunningIndex = RunningIndex + Memory.Length;
-        }
     }
 
     private delegate void ReadAction(ref KafkaProtocolReader reader);

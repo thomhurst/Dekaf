@@ -264,39 +264,6 @@ public class PrimitiveEncodingTests
 
     #region Multi-Segment Sequence Tests (Slow Path)
 
-    /// <summary>
-    /// Creates a multi-segment ReadOnlySequence by splitting data at the specified position.
-    /// This forces the reader to use the slow path that handles data spanning multiple segments.
-    /// </summary>
-    private static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] data, int splitAt)
-    {
-        if (splitAt <= 0 || splitAt >= data.Length)
-            throw new ArgumentException("Split position must be within data bounds", nameof(splitAt));
-
-        var segment1 = new TestSegment(data.AsMemory(0, splitAt));
-        var segment2 = new TestSegment(data.AsMemory(splitAt));
-        segment1.SetNext(segment2);
-
-        return new ReadOnlySequence<byte>(segment1, 0, segment2, segment2.Memory.Length);
-    }
-
-    /// <summary>
-    /// Helper class to create a linked list of memory segments for multi-segment sequences.
-    /// </summary>
-    private sealed class TestSegment : ReadOnlySequenceSegment<byte>
-    {
-        public TestSegment(ReadOnlyMemory<byte> memory)
-        {
-            Memory = memory;
-        }
-
-        public void SetNext(TestSegment next)
-        {
-            Next = next;
-            next.RunningIndex = RunningIndex + Memory.Length;
-        }
-    }
-
     [Test]
     public async Task Int16_MultiSegment_ReadsCorrectly()
     {
@@ -306,7 +273,7 @@ public class PrimitiveEncodingTests
         writer.WriteInt16(0x1234);
 
         // Split after first byte to force slow path
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 1);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 1);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadInt16()).IsEqualTo((short)0x1234);
@@ -321,7 +288,7 @@ public class PrimitiveEncodingTests
         writer.WriteInt32(0x12345678);
 
         // Split in the middle to force slow path
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 2);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 2);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadInt32()).IsEqualTo(0x12345678);
@@ -336,7 +303,7 @@ public class PrimitiveEncodingTests
         writer.WriteInt64(0x123456789ABCDEF0);
 
         // Split in the middle to force slow path
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 4);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 4);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadInt64()).IsEqualTo(0x123456789ABCDEF0);
@@ -349,7 +316,7 @@ public class PrimitiveEncodingTests
         var writer = new KafkaProtocolWriter(buffer);
         writer.WriteUInt16(0xABCD);
 
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 1);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 1);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadUInt16()).IsEqualTo((ushort)0xABCD);
@@ -362,7 +329,7 @@ public class PrimitiveEncodingTests
         var writer = new KafkaProtocolWriter(buffer);
         writer.WriteUInt32(0xDEADBEEF);
 
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 2);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 2);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadUInt32()).IsEqualTo(0xDEADBEEF);
@@ -375,7 +342,7 @@ public class PrimitiveEncodingTests
         var writer = new KafkaProtocolWriter(buffer);
         writer.WriteFloat64(Math.E);
 
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 3);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 3);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadFloat64()).IsEqualTo(Math.E);
@@ -390,7 +357,7 @@ public class PrimitiveEncodingTests
         writer.WriteUuid(uuid);
 
         // Split in the middle of the 16-byte UUID
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 8);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 8);
         var reader = new KafkaProtocolReader(sequence);
 
         await Assert.That(reader.ReadUuid()).IsEqualTo(uuid);
@@ -407,7 +374,7 @@ public class PrimitiveEncodingTests
         writer.WriteInt64(0x0102030405060708);
 
         // Split at position 3 (middle of the Int32)
-        var sequence = CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 3);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), 3);
         var reader = new KafkaProtocolReader(sequence);
 
         // Read all values first (ref struct cannot be preserved across await)
