@@ -93,6 +93,23 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task JwtBearerAssertion_WithNonFiniteAdditionalClaimNumber_ThrowsInvalidOperationException()
+    {
+        using var rsa = RSA.Create(2048);
+        var config = CreateJwtBearerConfig(rsa, additionalClaims: new Dictionary<string, object?>
+        {
+            ["score"] = double.NaN
+        });
+
+        await Assert.That(() => OAuthBearerJwtAssertion.Create(
+                config,
+                DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("score")
+            .And.HasMessageContaining("unsupported value type");
+    }
+
+    [Test]
     public async Task JwtBearerAssertion_WithEcdsaKey_SignsAssertion()
     {
         using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);

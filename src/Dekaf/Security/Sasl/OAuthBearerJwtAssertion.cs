@@ -132,10 +132,10 @@ internal static class OAuthBearerJwtAssertion
                 writer.WriteNumberValue(ulongValue);
                 break;
             case float floatValue:
-                writer.WriteNumberValue(floatValue);
+                WriteAdditionalClaimNumberValue(writer, claimName, floatValue);
                 break;
             case double doubleValue:
-                writer.WriteNumberValue(doubleValue);
+                WriteAdditionalClaimNumberValue(writer, claimName, doubleValue);
                 break;
             case decimal decimalValue:
                 writer.WriteNumberValue(decimalValue);
@@ -170,10 +170,31 @@ internal static class OAuthBearerJwtAssertion
                 writer.WriteEndArray();
                 break;
             default:
-                throw new InvalidOperationException(
-                    $"JWT-bearer additional claim '{claimName}' has unsupported value type '{value.GetType().FullName}'. " +
-                    "Use primitive values, JsonElement, byte arrays, arrays, or dictionaries.");
+                throw UnsupportedAdditionalClaimValue(claimName, value);
         }
+    }
+
+    private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, float value)
+    {
+        if (!float.IsFinite(value))
+            throw UnsupportedAdditionalClaimValue(claimName, value);
+
+        writer.WriteNumberValue(value);
+    }
+
+    private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, double value)
+    {
+        if (!double.IsFinite(value))
+            throw UnsupportedAdditionalClaimValue(claimName, value);
+
+        writer.WriteNumberValue(value);
+    }
+
+    private static InvalidOperationException UnsupportedAdditionalClaimValue(string claimName, object value)
+    {
+        return new InvalidOperationException(
+            $"JWT-bearer additional claim '{claimName}' has unsupported value type '{value.GetType().FullName}'. " +
+            "Use primitive values, JsonElement, byte arrays, arrays, or dictionaries.");
     }
 
     private static void WriteAdditionalClaimObject(
