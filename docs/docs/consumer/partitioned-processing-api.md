@@ -258,7 +258,7 @@ Default behavior is fail-fast:
 
 When `StopPartition` stops a failed partition, the runtime logs the processor exception and pauses the partition while it remains assigned. A later revoke/lost event clears that stopped state so a legitimate reassignment can start a fresh lane.
 
-`Ignore` is opt-in only. It logs the processor exception, waits with exponential backoff between restarts, restarts the partition lane, and keeps the rest of the run active. `IgnoreRestartBackoff` controls the first delay and `IgnoreRestartBackoffMax` caps the delay. Prefer handling retries and dead-letter routing inside the processor so unexpected exceptions remain visible.
+`Ignore` is opt-in only. It logs the processor exception, waits with exponential backoff between restarts, restarts the partition lane, and keeps the rest of the run active. The restart wait is scheduled outside the shared poll/command loop, so healthy partitions continue to fetch and route while the failed partition backs off. `IgnoreRestartBackoff` controls the first delay and must be greater than zero; `IgnoreRestartBackoffMax` caps the delay. Prefer handling retries and dead-letter routing inside the processor so unexpected exceptions remain visible.
 
 If a processor does not stop within `StopTimeout`, the runtime treats that timeout as fatal because it can no longer guarantee one active processor per partition.
 

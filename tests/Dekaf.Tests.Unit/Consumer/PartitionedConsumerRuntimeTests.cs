@@ -377,6 +377,76 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task RunPartitionedAsync_IgnoreBackoffDoesNotStallHealthyPartitions()
+    {
+        var failingPartition = new TopicPartition("topic-a", 0);
+        var healthyPartition = new TopicPartition("topic-a", 1);
+        var loggerFactory = new CapturingLoggerFactory();
+        var consumer = new TestConsumer { LoggerFactory = loggerFactory };
+        consumer.AssignFromCoordinator(failingPartition, healthyPartition);
+
+        var failingAttempts = 0;
+        var healthyProcessed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                if (context.TopicPartition == failingPartition)
+                {
+                    Interlocked.Increment(ref failingAttempts);
+                    throw new InvalidOperationException("still failing");
+                }
+
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    healthyProcessed.TrySetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                IgnoreRestartBackoff = TimeSpan.FromSeconds(30),
+                IgnoreRestartBackoffMax = TimeSpan.FromSeconds(30)
+            },
+            cts.Token).AsTask();
+
+        await Assert.That(() => Volatile.Read(ref failingAttempts))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await Assert.That(() => loggerFactory.Entries.Any(
+                static entry => entry.LogLevel == LogLevel.Warning
+                    && entry.Message.Contains("restarting after", StringComparison.Ordinal)))
+            .Eventually(logged => logged.IsTrue(), TimeSpan.FromSeconds(5));
+
+        consumer.Enqueue(CreateResult(healthyPartition, 0));
+
+        await healthyProcessed.Task.WaitAsync(TimeSpan.FromSeconds(2), cts.Token).ConfigureAwait(false);
+        await Assert.That(Volatile.Read(ref failingAttempts)).IsEqualTo(1);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_RejectsZeroIgnoreRestartBackoff()
+    {
+        var consumer = new TestConsumer();
+
+        async Task Act()
+        {
+            await consumer.RunPartitionedAsync<string, string>(
+                static (_, _) => ValueTask.CompletedTask,
+                new PartitionedProcessingOptions
+                {
+                    ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                    IgnoreRestartBackoff = TimeSpan.Zero
+                });
+        }
+
+        await Assert.That(Act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_StopTimeoutOnRevokePropagates()
     {
         var partition = new TopicPartition("topic-a", 0);

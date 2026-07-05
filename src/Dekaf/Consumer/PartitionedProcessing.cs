@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -130,6 +131,7 @@ public sealed class PartitionedProcessingOptions
 
     /// <summary>
     /// Gets the first delay before restarting a failed lane when <see cref="ErrorPolicy"/> is <see cref="PartitionWorkerErrorPolicy.Ignore"/>.
+    /// The value must be greater than <see cref="TimeSpan.Zero"/>.
     /// </summary>
     public TimeSpan IgnoreRestartBackoff { get; init; } = TimeSpan.FromMilliseconds(100);
 
@@ -155,10 +157,10 @@ public sealed class PartitionedProcessingOptions
         if (StopTimeout < TimeSpan.Zero && StopTimeout != Timeout.InfiniteTimeSpan)
             throw new ArgumentOutOfRangeException(nameof(StopTimeout));
 
-        if (IgnoreRestartBackoff < TimeSpan.Zero)
+        if (IgnoreRestartBackoff <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoff));
 
-        if (IgnoreRestartBackoffMax < TimeSpan.Zero)
+        if (IgnoreRestartBackoffMax <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoffMax));
 
         if (IgnoreRestartBackoffMax < IgnoreRestartBackoff)
@@ -262,9 +264,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly Dictionary<TopicPartition, PartitionLane<TKey, TValue>> _lanes = [];
     private readonly HashSet<TopicPartition> _pausedByRuntime = [];
     private readonly HashSet<TopicPartition> _stoppedByFailure = [];
+    private readonly HashSet<TopicPartition> _pendingIgnoreRestarts = [];
     private readonly Dictionary<TopicPartition, int> _ignoreRestartFailures = [];
+    private readonly ConcurrentDictionary<Task, byte> _ignoreRestartTasks = [];
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
     private readonly CancellationTokenSource _failureCancellation = new();
+    private readonly CancellationTokenSource _restartCancellation = new();
     private readonly object _failureGate = new();
     private ExceptionDispatchInfo? _failure;
     private DateTimeOffset _nextPeriodicCommit;
@@ -333,6 +338,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             }
             finally
             {
+                await StopScheduledRestartsAsync().ConfigureAwait(false);
                 _commands.Writer.TryComplete();
                 CompletePendingCommands();
             }
@@ -422,6 +428,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             _ignoreRestartFailures.Remove(partition);
         }
 
+        foreach (var partition in _pendingIgnoreRestarts.Where(partition => !assignment.Contains(partition)).ToArray())
+        {
+            _pendingIgnoreRestarts.Remove(partition);
+            _ignoreRestartFailures.Remove(partition);
+        }
+
         foreach (var partition in _lanes.Keys.Where(partition => !assignment.Contains(partition)).ToArray())
         {
             await StopPartitionAsync(
@@ -473,6 +485,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         foreach (var partition in partitions)
         {
             if (_lanes.ContainsKey(partition) || _stoppedByFailure.Contains(partition))
+                continue;
+
+            if (_pendingIgnoreRestarts.Contains(partition))
                 continue;
 
             StartLane(partition);
@@ -535,6 +550,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
                 case RuntimeCommandKind.StopFailed:
                     await StopFailedLaneAsync(command.Lane!, command.Exception!, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case RuntimeCommandKind.RestartLane:
+                    RestartLaneIfStillAssigned(command.Partition);
                     break;
 
                 case RuntimeCommandKind.AssignPartitions:
@@ -619,18 +638,63 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 restartDelay,
                 exception);
 
-            if (restartDelay > TimeSpan.Zero)
-                await Task.Delay(restartDelay, cancellationToken).ConfigureAwait(false);
-
-            if (_failureCancellation.IsCancellationRequested
-                || !_consumer.Partitions.Assignment.Contains(lane.TopicPartition)
-                || _lanes.ContainsKey(lane.TopicPartition))
-            {
-                return;
-            }
-
-            StartLane(lane.TopicPartition);
+            _pendingIgnoreRestarts.Add(lane.TopicPartition);
+            ScheduleIgnoreRestart(lane.TopicPartition, restartDelay);
         }
+    }
+
+    private void RestartLaneIfStillAssigned(TopicPartition partition)
+    {
+        _pendingIgnoreRestarts.Remove(partition);
+
+        if (_failureCancellation.IsCancellationRequested
+            || !_consumer.Partitions.Assignment.Contains(partition)
+            || _stoppedByFailure.Contains(partition)
+            || _lanes.ContainsKey(partition))
+        {
+            return;
+        }
+
+        StartLane(partition);
+    }
+
+    private void ScheduleIgnoreRestart(TopicPartition partition, TimeSpan delay)
+    {
+        var task = ScheduleIgnoreRestartAsync(partition, delay);
+        _ignoreRestartTasks.TryAdd(task, 0);
+
+        _ = task.ContinueWith(
+            static (completedTask, state) =>
+            {
+                var runtime = (PartitionedConsumerRuntime<TKey, TValue>)state!;
+                runtime.CompleteIgnoreRestartTask(completedTask);
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task ScheduleIgnoreRestartAsync(
+        TopicPartition partition,
+        TimeSpan delay)
+    {
+        await Task.Delay(delay, _restartCancellation.Token).ConfigureAwait(false);
+        _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.RestartLane(partition));
+    }
+
+    private void CompleteIgnoreRestartTask(Task task)
+    {
+        _ignoreRestartTasks.TryRemove(task, out _);
+
+        if (!task.IsFaulted || task.Exception is null)
+            return;
+
+        var exception = task.Exception.InnerExceptions.Count == 1
+            ? task.Exception.InnerException!
+            : task.Exception;
+        CaptureFailure(exception);
+        _failureCancellation.Cancel();
     }
 
     private async ValueTask StopLaneAsync(
@@ -664,6 +728,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         foreach (var partition in partitions)
         {
             _stoppedByFailure.Remove(partition);
+            _pendingIgnoreRestarts.Remove(partition);
             _ignoreRestartFailures.Remove(partition);
             await StopPartitionAsync(partition, reason, cancellationToken).ConfigureAwait(false);
         }
@@ -677,12 +742,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         if (!_lanes.TryGetValue(partition, out var lane))
         {
             _pausedByRuntime.Remove(partition);
+            _pendingIgnoreRestarts.Remove(partition);
             _ignoreRestartFailures.Remove(partition);
             return;
         }
 
         _lanes.Remove(partition);
         _pausedByRuntime.Remove(partition);
+        _pendingIgnoreRestarts.Remove(partition);
         _ignoreRestartFailures.Remove(partition);
 
         await StopLaneAsync(
@@ -713,6 +780,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 _consumer.Partitions.Resume(_pausedByRuntime.ToArray());
                 _pausedByRuntime.Clear();
             }
+
+            _pendingIgnoreRestarts.Clear();
         }
     }
 
@@ -726,6 +795,24 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         using var stopCancellation = new CancellationTokenSource(_options.StopTimeout);
         await StopAllAsync(stopCancellation.Token).ConfigureAwait(false);
+    }
+
+    private async ValueTask StopScheduledRestartsAsync()
+    {
+        await _restartCancellation.CancelAsync().ConfigureAwait(false);
+
+        var tasks = _ignoreRestartTasks.Keys.ToArray();
+
+        if (tasks.Length == 0)
+            return;
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_restartCancellation.IsCancellationRequested)
+        {
+        }
     }
 
     private async ValueTask CommitPeriodicallyAsync(CancellationToken cancellationToken)
@@ -1069,6 +1156,7 @@ internal enum RuntimeCommandKind
     Resume,
     Commit,
     StopFailed,
+    RestartLane,
     AssignPartitions,
     StopPartitions
 }
@@ -1077,30 +1165,34 @@ internal readonly record struct RuntimeCommand<TKey, TValue>(
     RuntimeCommandKind Kind,
     PartitionLane<TKey, TValue>? Lane,
     TopicPartition[]? Partitions,
+    TopicPartition Partition,
     PartitionStopReason StopReason,
     TaskCompletionSource? Completion,
     Exception? Exception,
     CancellationToken CancellationToken)
 {
     public static RuntimeCommand<TKey, TValue> Resume(PartitionLane<TKey, TValue> lane)
-        => new(RuntimeCommandKind.Resume, lane, null, default, null, null, CancellationToken.None);
+        => new(RuntimeCommandKind.Resume, lane, null, default, default, null, null, CancellationToken.None);
 
     public static RuntimeCommand<TKey, TValue> Commit(
         PartitionLane<TKey, TValue> lane,
         TaskCompletionSource completion,
         CancellationToken cancellationToken)
-        => new(RuntimeCommandKind.Commit, lane, null, default, completion, null, cancellationToken);
+        => new(RuntimeCommandKind.Commit, lane, null, default, default, completion, null, cancellationToken);
 
     public static RuntimeCommand<TKey, TValue> StopFailed(
         PartitionLane<TKey, TValue> lane,
         Exception exception)
-        => new(RuntimeCommandKind.StopFailed, lane, null, default, null, exception, CancellationToken.None);
+        => new(RuntimeCommandKind.StopFailed, lane, null, default, default, null, exception, CancellationToken.None);
+
+    public static RuntimeCommand<TKey, TValue> RestartLane(TopicPartition partition)
+        => new(RuntimeCommandKind.RestartLane, null, null, partition, default, null, null, CancellationToken.None);
 
     public static RuntimeCommand<TKey, TValue> AssignPartitions(TopicPartition[] partitions)
-        => new(RuntimeCommandKind.AssignPartitions, null, partitions, default, null, null, CancellationToken.None);
+        => new(RuntimeCommandKind.AssignPartitions, null, partitions, default, default, null, null, CancellationToken.None);
 
     public static RuntimeCommand<TKey, TValue> StopPartitions(
         TopicPartition[] partitions,
         PartitionStopReason stopReason)
-        => new(RuntimeCommandKind.StopPartitions, null, partitions, stopReason, null, null, CancellationToken.None);
+        => new(RuntimeCommandKind.StopPartitions, null, partitions, default, stopReason, null, null, CancellationToken.None);
 }
