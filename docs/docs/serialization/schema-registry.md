@@ -83,13 +83,14 @@ var config = new SchemaRegistryConfig
 {
     Url = "http://localhost:8081",
 
-    // Authentication
+    // Choose one authentication source:
     BasicAuthUserInfo = "username:password",
+    BearerAuthToken = "eyJhbGciOi...",
+    OAuthBearerConfig = oauthConfig,
+    OAuthBearerTokenProvider = GetSchemaRegistryTokenAsync,
 
-    // SSL
-    SslCaLocation = "/path/to/ca.crt",
-    SslKeystoreLocation = "/path/to/keystore.p12",
-    SslKeystorePassword = "password"
+    // Optional mTLS client certificate
+    ClientCertificate = certificate
 };
 
 var schemaRegistry = new CachedSchemaRegistryClient(config);
