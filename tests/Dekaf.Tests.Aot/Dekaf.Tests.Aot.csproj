@@ -6,6 +6,8 @@
     <IsAotCompatible>true</IsAotCompatible>
     <PublishAot>true</PublishAot>
     <SelfContained>true</SelfContained>
+    <!-- Avro/Newtonsoft emit assembly-level summaries when schema-registry smoke paths are rooted. Keep warnings visible. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
