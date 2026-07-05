@@ -95,6 +95,28 @@ This is optional.
 The prior findings are now resolved.
 '@
         Blocks = $false
+    },
+    @{
+        Name = 'blocks previously flagged issue still not fixed'
+        Body = @'
+## Review
+
+### Previously-flagged issue - still not fixed
+
+The finding remains open.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks previously flagged concerns not yet resolved'
+        Body = @'
+## Review
+
+### Previously flagged concerns, not yet resolved
+
+The finding remains open.
+'@
+        Blocks = $true
     }
 )
 

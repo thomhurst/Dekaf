@@ -8,9 +8,11 @@ function Get-ActionableReviewBodyReason {
         return $null
     }
 
+    $previouslyResolvedHeading =
+        'previously[- ]flagged\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun\w+\b).)*\b(?:fixed|resolved|addressed|verified)\b\s*$'
     $nonActionableHeading =
         '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
-        '|previously[- ]flagged\b.*\b(?:fixed|resolved|addressed|verified)\b'
+        "|$previouslyResolvedHeading"
     $actionableHeadingWord = 'Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Design|Leak|Leaks|Gap|Gaps|Silently|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix'
 
     $patterns = @(
