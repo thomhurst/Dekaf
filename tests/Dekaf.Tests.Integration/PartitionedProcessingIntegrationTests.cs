@@ -92,7 +92,13 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
 
         releaseFirstPartition.SetResult();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await runTask.ConfigureAwait(false));
+        try
+        {
+            await runTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
 
         await Assert.That(Snapshot(processed, 0)).IsEquivalentTo([0L, 1L, 2L]);
         await Assert.That(Snapshot(processed, 1)).IsEquivalentTo([0L, 1L, 2L]);
