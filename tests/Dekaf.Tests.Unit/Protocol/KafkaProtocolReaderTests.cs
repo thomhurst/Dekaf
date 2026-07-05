@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Protocol;
@@ -136,11 +137,32 @@ public class KafkaProtocolReaderTests
     }
 
     [Test]
+    public async Task ReadBytes_MultiSegmentClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x00, 0x00, 0x00, 0x05, 0x01, 0x02 };
+        var sequence = CreateMultiSegmentSequence(data, splitAt: 2);
+
+        var exception = ReadThrowsMalformed(sequence, static (ref KafkaProtocolReader reader) => reader.ReadBytes());
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
     public async Task ReadRawBytes_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
     {
         var data = Array.Empty<byte>();
 
         var exception = ReadThrowsMalformed(data, static (ref KafkaProtocolReader reader) => reader.ReadRawBytes(int.MaxValue));
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadMemorySlice_MultiSegmentClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var sequence = CreateMultiSegmentSequence(new byte[] { 0x01, 0x02 }, splitAt: 1);
+
+        var exception = ReadThrowsMalformed(sequence, static (ref KafkaProtocolReader reader) => reader.ReadMemorySlice(3));
 
         await Assert.That(exception.Message).Contains("claimed length");
     }
@@ -153,6 +175,16 @@ public class KafkaProtocolReaderTests
         var exception = ReadThrowsMalformed(
             data,
             static (ref KafkaProtocolReader reader) => reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt8()));
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadString_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x00, 0x05, (byte)'a', (byte)'b' };
+
+        var exception = ReadThrowsMalformed(data, static (ref KafkaProtocolReader reader) => reader.ReadString());
 
         await Assert.That(exception.Message).Contains("claimed length");
     }
@@ -216,6 +248,49 @@ public class KafkaProtocolReaderTests
         }
 
         throw new InvalidOperationException("Expected MalformedProtocolDataException");
+    }
+
+    private static MalformedProtocolDataException ReadThrowsMalformed(
+        ReadOnlySequence<byte> data,
+        ReadAction read)
+    {
+        try
+        {
+            var reader = new KafkaProtocolReader(data);
+            read(ref reader);
+        }
+        catch (MalformedProtocolDataException exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Expected MalformedProtocolDataException");
+    }
+
+    private static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] data, int splitAt)
+    {
+        if (splitAt <= 0 || splitAt >= data.Length)
+            throw new ArgumentException("Split position must be within data bounds", nameof(splitAt));
+
+        var first = new TestSegment(data.AsMemory(0, splitAt));
+        var second = new TestSegment(data.AsMemory(splitAt));
+        first.SetNext(second);
+
+        return new ReadOnlySequence<byte>(first, 0, second, second.Memory.Length);
+    }
+
+    private sealed class TestSegment : ReadOnlySequenceSegment<byte>
+    {
+        public TestSegment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
+
+        public void SetNext(TestSegment next)
+        {
+            Next = next;
+            next.RunningIndex = RunningIndex + Memory.Length;
+        }
     }
 
     private delegate void ReadAction(ref KafkaProtocolReader reader);
