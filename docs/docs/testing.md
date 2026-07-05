@@ -64,3 +64,16 @@ Register `ISerializer<T>` and `IDeserializer<T>` in DI when your application use
 `InMemoryAdminClient` supports common unit-test operations such as creating, deleting, listing, and describing topics, altering/listing group offsets, deleting records, creating partitions, and listing offsets. Broker-only APIs such as ACL, SCRAM, and config mutation are accepted as no-ops or return empty results.
 
 Use Testcontainers or another real broker for protocol compatibility and integration coverage.
+
+## NativeAOT smoke
+
+CI publishes and runs the NativeAOT smoke executables on `linux-x64` for pull requests. Run the same checks locally with:
+
+```bash
+dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj --configuration Release --runtime linux-x64 --output artifacts/nativeaot/Dekaf.Tests.Aot
+dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj --configuration Release --runtime linux-x64 --output artifacts/nativeaot/Dekaf.Tests.Aot.DependencyInjection
+./artifacts/nativeaot/Dekaf.Tests.Aot/Dekaf.Tests.Aot
+./artifacts/nativeaot/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection
+```
+
+Use the matching RID and executable name for non-Linux hosts, for example `win-x64` and `Dekaf.Tests.Aot.exe` on Windows. NativeAOT publish requires the platform native toolchain.

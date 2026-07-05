@@ -94,6 +94,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  nativeaot-smoke:
+    name: NativeAOT Smoke
+    needs: build-and-unit-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Install NativeAOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish NativeAOT smoke apps
+        run: |
+          set -euo pipefail
+          dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj --configuration Release --runtime linux-x64 --output artifacts/nativeaot/Dekaf.Tests.Aot
+          dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj --configuration Release --runtime linux-x64 --output artifacts/nativeaot/Dekaf.Tests.Aot.DependencyInjection
+
+      - name: Run published NativeAOT smoke apps
+        run: |
+          set -euo pipefail
+          ./artifacts/nativeaot/Dekaf.Tests.Aot/Dekaf.Tests.Aot
+          ./artifacts/nativeaot/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection
+
   integration-tests:
     name: Integration Tests (${{ matrix.category }})
     needs: build-and-unit-test
