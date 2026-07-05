@@ -36,9 +36,10 @@ internal static class TraceContextPropagator
         var traceparent = $"00-{activity.TraceId}-{activity.SpanId}-{(activity.Recorded ? "01" : "00")}";
         headers.Add(TraceparentHeader, traceparent);
 
-        if (!string.IsNullOrEmpty(activity.TraceStateString))
+        var traceState = activity.TraceStateString;
+        if (!string.IsNullOrEmpty(traceState))
         {
-            headers.Add(TracestateHeader, activity.TraceStateString);
+            headers.Add(TracestateHeader, traceState!);
         }
 
         return headers;

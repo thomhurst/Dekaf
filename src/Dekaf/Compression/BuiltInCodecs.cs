@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Compression;
@@ -67,7 +68,12 @@ public sealed class GzipCompressionCodec : ICompressionCodec
             0 => CompressionLevel.NoCompression,
             >= 1 and <= 3 => CompressionLevel.Fastest,
             >= 4 and <= 6 => CompressionLevel.Optimal,
-            _ => CompressionLevel.SmallestSize
+            _ =>
+#if NETSTANDARD2_0
+                CompressionLevel.Optimal
+#else
+                CompressionLevel.SmallestSize
+#endif
         };
     }
 
@@ -80,7 +86,11 @@ public sealed class GzipCompressionCodec : ICompressionCodec
 
         foreach (var segment in source)
         {
+#if NETSTANDARD2_0
+            WriteSegment(gzipStream, segment);
+#else
             gzipStream.Write(segment.Span);
+#endif
         }
     }
 
@@ -91,6 +101,29 @@ public sealed class GzipCompressionCodec : ICompressionCodec
 
         CompressionStreamCopy.CopyToBufferWriter(gzipStream, destination);
     }
+
+#if NETSTANDARD2_0
+    private static void WriteSegment(Stream stream, ReadOnlyMemory<byte> segment)
+    {
+        if (MemoryMarshal.TryGetArray(segment, out var arraySegment) &&
+            arraySegment.Array is not null)
+        {
+            stream.Write(arraySegment.Array, arraySegment.Offset, arraySegment.Count);
+            return;
+        }
+
+        var rented = ArrayPool<byte>.Shared.Rent(segment.Length);
+        try
+        {
+            segment.Span.CopyTo(rented);
+            stream.Write(rented, 0, segment.Length);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+#endif
 }
 
 internal static class CompressionStreamCopy
@@ -99,6 +132,25 @@ internal static class CompressionStreamCopy
 
     internal static void CopyToBufferWriter(Stream source, IBufferWriter<byte> destination)
     {
+#if NETSTANDARD2_0
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            while (true)
+            {
+                var bytesRead = source.Read(buffer, 0, buffer.Length);
+                if (bytesRead == 0)
+                    break;
+
+                buffer.AsSpan(0, bytesRead).CopyTo(destination.GetSpan(bytesRead));
+                destination.Advance(bytesRead);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+#else
         while (true)
         {
             var span = destination.GetSpan(BufferSize);
@@ -108,6 +160,7 @@ internal static class CompressionStreamCopy
 
             destination.Advance(bytesRead);
         }
+#endif
     }
 }
 
@@ -151,12 +204,14 @@ internal sealed class BufferWriterStream : Stream
         _writer.Advance(count);
     }
 
+#if !NETSTANDARD2_0
     public override void Write(ReadOnlySpan<byte> buffer)
     {
         var span = _writer.GetSpan(buffer.Length);
         buffer.CopyTo(span);
         _writer.Advance(buffer.Length);
     }
+#endif
 }
 
 /// <summary>

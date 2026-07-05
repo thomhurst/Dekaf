@@ -126,9 +126,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
             var colonIndex = server.IndexOf(':');
             if (colonIndex > 0 && colonIndex < server.Length - 1)
             {
-                var host = server[..colonIndex];
-                // Use span-based parsing to avoid string allocation for port
+                var host = server.Substring(0, colonIndex);
+#if NETSTANDARD2_0
+                if (int.TryParse(server.Substring(colonIndex + 1), out var port))
+#else
                 if (int.TryParse(server.AsSpan(colonIndex + 1), out var port))
+#endif
                 {
                     _bootstrapEndpoints.Add((host, port));
                     _originalBootstrapHostnames.Add(server);
@@ -671,7 +674,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
-        var now = Environment.TickCount64;
+        var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
 
         // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
         if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
@@ -944,8 +947,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 currentBrokers.Count + _bootstrapEndpoints.Count);
 
             // First try known brokers, tracking seen endpoints for O(1) dedup
-            var seen = new HashSet<(string Host, int Port)>(
-                currentBrokers.Count + _bootstrapEndpoints.Count);
+            var seen = new HashSet<(string Host, int Port)>();
 
             foreach (var broker in currentBrokers)
             {

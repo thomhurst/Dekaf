@@ -104,7 +104,7 @@ public sealed class OAuthBearerJwtBearerOptions
             GrantType = OAuthBearerGrantType.JwtBearer,
             TokenEndpointUrl = options.TokenEndpoint!,
             ClientId = options.ClientId!,
-            Scope = options.Scopes is { Count: > 0 } ? string.Join(' ', options.Scopes) : null,
+            Scope = options.Scopes is { Count: > 0 } ? string.Join(" ", options.Scopes) : null,
             AdditionalParameters = options.AdditionalParameters,
             JwtBearer = options,
             TokenRefreshBufferSeconds = TokenRefreshBufferSeconds
@@ -121,8 +121,12 @@ public sealed class OAuthBearerJwtBearerOptions
         Subject = Subject,
         KeyId = KeyId,
         Scopes = Scopes is null ? null : Scopes.ToArray(),
-        AdditionalClaims = AdditionalClaims is null ? null : new Dictionary<string, object?>(AdditionalClaims, StringComparer.Ordinal),
-        AdditionalParameters = AdditionalParameters is null ? null : new Dictionary<string, string>(AdditionalParameters, StringComparer.Ordinal),
+        AdditionalClaims = AdditionalClaims is null
+            ? null
+            : AdditionalClaims.ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value, StringComparer.Ordinal),
+        AdditionalParameters = AdditionalParameters is null
+            ? null
+            : AdditionalParameters.ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value, StringComparer.Ordinal),
         AssertionLifetime = AssertionLifetime,
         TokenRefreshBufferSeconds = TokenRefreshBufferSeconds,
         SigningAlgorithm = SigningAlgorithm

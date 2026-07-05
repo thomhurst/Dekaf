@@ -2293,6 +2293,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
+#if NETSTANDARD2_0
+        private sealed class ReadyBatchTopicComparer : IComparer<ReadyBatch>
+        {
+            public static readonly ReadyBatchTopicComparer Instance = new();
+
+            public int Compare(ReadyBatch? x, ReadyBatch? y)
+                => string.Compare(x?.TopicPartition.Topic, y?.TopicPartition.Topic, StringComparison.Ordinal);
+        }
+#endif
+
         /// <summary>
         /// Populates the reusable request from the given batches. Returns the same
         /// ProduceRequest instance each time — callers must not hold references past
@@ -2330,8 +2340,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // batches are rare; the common case (single topic or already sorted) skips the sort.
             if (!alreadySorted)
             {
+#if NETSTANDARD2_0
+                System.Array.Sort(batches, 0, count, ReadyBatchTopicComparer.Instance);
+#else
                 batchesSpan.Sort(static (a, b) =>
                     string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
+#endif
 
                 // Discard the partial topicCount from the pre-scan and recount from scratch.
                 // Post-sort, topics are contiguous so simple != equality suffices (no need for
@@ -2775,7 +2789,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // After the send loop exits, these won't be polled by MaybeScaleConnections.
         if (_pendingShrinkTask is not null)
         {
-            if (_pendingShrinkTask.IsCompletedSuccessfully)
+            if (_pendingShrinkTask.Status == TaskStatus.RanToCompletion)
             {
                 var removedConn = _pendingShrinkTask.Result;
                 if (removedConn is not null)
@@ -2869,7 +2883,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var task = _pendingScaleTask;
             _pendingScaleTask = null;
 
-            if (task.IsCompletedSuccessfully)
+            if (task.Status == TaskStatus.RanToCompletion)
             {
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
@@ -2894,7 +2908,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var task = _pendingShrinkTask;
             _pendingShrinkTask = null;
 
-            if (task.IsCompletedSuccessfully)
+            if (task.Status == TaskStatus.RanToCompletion)
             {
                 var removedConnection = task.Result;
                 if (removedConnection is not null)
@@ -2910,7 +2924,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        var now = Environment.TickCount64;
+        var now = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
 
         // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < ScaleCooldownMs)

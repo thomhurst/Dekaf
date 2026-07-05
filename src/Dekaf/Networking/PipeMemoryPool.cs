@@ -81,7 +81,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
 
     public override IMemoryOwner<byte> Rent(int minBufferSize = -1)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        Dekaf.Compatibility.ObjectDisposedExceptionCompat.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         if (minBufferSize < 0)
             minBufferSize = 4096;
@@ -172,7 +172,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
             get
             {
                 var array = _array;
-                ObjectDisposedException.ThrowIf(array is null, this);
+                Dekaf.Compatibility.ObjectDisposedExceptionCompat.ThrowIf(array is null, this);
                 return array;
             }
         }

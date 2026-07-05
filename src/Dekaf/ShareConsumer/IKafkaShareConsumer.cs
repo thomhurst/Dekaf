@@ -1,3 +1,11 @@
+#if NETSTANDARD2_0
+using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using StringSet = System.Collections.Generic.IReadOnlySet<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
+
 namespace Dekaf.ShareConsumer;
 
 /// <summary>
@@ -17,12 +25,12 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// <summary>
     /// Gets the current topic subscription.
     /// </summary>
-    IReadOnlySet<string> Subscription { get; }
+    StringSet Subscription { get; }
 
     /// <summary>
     /// Gets the current partition assignment from the share group coordinator.
     /// </summary>
-    IReadOnlySet<TopicPartition> Assignment { get; }
+    TopicPartitionSet Assignment { get; }
 
     /// <summary>
     /// Gets the member ID (client-generated UUID) if part of a share group.

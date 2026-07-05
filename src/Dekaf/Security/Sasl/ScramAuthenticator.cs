@@ -210,7 +210,7 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
 
     private static string GenerateNonce()
     {
-        var bytes = RandomNumberGenerator.GetBytes(24);
+        var bytes = Dekaf.Compatibility.RandomNumberGeneratorCompat.GetBytes(24);
         return Convert.ToBase64String(bytes);
     }
 

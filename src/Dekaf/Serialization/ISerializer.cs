@@ -16,7 +16,11 @@ public interface ISerializer<in T>
     /// <param name="destination">The buffer to write serialized bytes to. Passed by ref to support ref struct writers.</param>
     /// <param name="context">Serialization context with topic and header information.</param>
     void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct;
+        where TWriter : IBufferWriter<byte>
+#if !NETSTANDARD2_0
+        , allows ref struct
+#endif
+        ;
 }
 
 /// <summary>

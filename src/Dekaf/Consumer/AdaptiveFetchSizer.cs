@@ -134,7 +134,7 @@ internal sealed class AdaptiveFetchSizer
         if (fetchDuration <= TimeSpan.Zero)
             return;
 
-        var ratio = processingDuration / fetchDuration;
+        var ratio = processingDuration.TotalSeconds / fetchDuration.TotalSeconds;
         EvaluateAndAdjust(ratio);
     }
 

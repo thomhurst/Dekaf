@@ -68,7 +68,7 @@ public ref struct KafkaProtocolReader
         if (buffer.IsSingleSegment)
         {
             // Fast path: Single segment - use direct span access
-            _span = buffer.FirstSpan;
+            _span = buffer.First.Span;
             _memory = buffer.First;
             _hasMemory = true;
             _position = 0;
@@ -302,7 +302,7 @@ public ref struct KafkaProtocolReader
         {
             if (_position + 16 > _span.Length)
                 ThrowInsufficientData();
-            var result = new Guid(_span.Slice(_position, 16), bigEndian: true);
+            var result = Dekaf.Compatibility.GuidCompatibility.ReadBigEndian(_span.Slice(_position, 16));
             _position += 16;
             return result;
         }
@@ -314,7 +314,7 @@ public ref struct KafkaProtocolReader
     {
         if (_reader.UnreadSpan.Length >= 16)
         {
-            var result = new Guid(_reader.UnreadSpan[..16], bigEndian: true);
+            var result = Dekaf.Compatibility.GuidCompatibility.ReadBigEndian(_reader.UnreadSpan[..16]);
             _reader.Advance(16);
             return result;
         }
@@ -322,7 +322,7 @@ public ref struct KafkaProtocolReader
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
         _reader.Advance(16);
-        return new Guid(buffer, bigEndian: true);
+        return Dekaf.Compatibility.GuidCompatibility.ReadBigEndian(buffer);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

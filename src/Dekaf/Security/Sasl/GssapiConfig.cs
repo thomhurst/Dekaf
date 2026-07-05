@@ -1,5 +1,7 @@
 using System.Net;
+#if !NETSTANDARD2_0
 using System.Net.Security;
+#endif
 using System.Security.Principal;
 
 namespace Dekaf.Security.Sasl;
@@ -94,6 +96,7 @@ public sealed class GssapiConfig
         }
     }
 
+#if !NETSTANDARD2_0
     internal NegotiateAuthenticationClientOptions CreateClientOptions(string targetHost)
     {
         Validate();
@@ -114,6 +117,7 @@ public sealed class GssapiConfig
 
         return options;
     }
+#endif
 
     internal void ApplyKeytabEnvironment()
     {

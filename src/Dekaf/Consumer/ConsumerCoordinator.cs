@@ -6,6 +6,13 @@ using Dekaf.Retry;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using StringSet = System.Collections.Generic.IReadOnlySet<string>;
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
 
 namespace Dekaf.Consumer;
 
@@ -48,7 +55,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // KIP-848 consumer protocol state
     private volatile int _heartbeatIntervalMs;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
-    private volatile IReadOnlySet<string>? _subscribedTopics;
+    private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
@@ -75,7 +82,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public string? MemberId => _memberId;
     public int GenerationId => _generationId;
     public CoordinatorState State => _state;
-    public IReadOnlySet<TopicPartition> Assignment => _assignedPartitions;
+    public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
 
     private static void RemoveEmptyTopicGroups<TItem>(Dictionary<string, List<TItem>> topicGroups)
@@ -114,12 +121,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Ensures the consumer has joined the group.
     /// </summary>
     public ValueTask EnsureActiveGroupAsync(
-        IReadOnlySet<string> topics,
+        StringSet topics,
         CancellationToken cancellationToken)
         => EnsureActiveGroupAsync(topics, null, cancellationToken);
 
     public async ValueTask EnsureActiveGroupAsync(
-        IReadOnlySet<string> topics,
+        StringSet topics,
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
@@ -152,7 +159,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
 
-    private static bool SetEquals(IReadOnlySet<string>? current, IReadOnlySet<string> next)
+    private static bool SetEquals(StringSet? current, StringSet next)
     {
         if (ReferenceEquals(current, next))
             return true;
@@ -169,11 +176,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return true;
     }
 
-    private bool SubscriptionMatches(IReadOnlySet<string> topics, string? subscribedTopicRegex)
+    private bool SubscriptionMatches(StringSet topics, string? subscribedTopicRegex)
         => string.Equals(_subscribedTopicRegex, subscribedTopicRegex, StringComparison.Ordinal) &&
            SetEquals(_subscribedTopics, topics);
 
-    private void UpdateSubscription(IReadOnlySet<string> topics, string? subscribedTopicRegex)
+    private void UpdateSubscription(StringSet topics, string? subscribedTopicRegex)
     {
         if (SubscriptionMatches(topics, subscribedTopicRegex))
             return;
@@ -385,7 +392,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 var request = new OffsetCommitRequest
                 {
-                    GroupId = _options.GroupId,
+                    GroupId = _options.GroupId!,
                     GenerationIdOrMemberEpoch = _generationId,
                     MemberId = _memberId,
                     GroupInstanceId = _options.GroupInstanceId,
@@ -482,7 +489,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 var request = new OffsetFetchRequest
                 {
-                    GroupId = _options.GroupId,
+                    GroupId = _options.GroupId!,
                     Topics = topicPartitions
                 };
 
@@ -873,7 +880,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// KIP-848 entry point: ensures the consumer has joined the group using the ConsumerGroupHeartbeat API.
     /// </summary>
     private async ValueTask EnsureActiveGroupConsumerProtocolAsync(
-        IReadOnlySet<string> topics,
+        StringSet topics,
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {

@@ -14,13 +14,61 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
+#if NETSTANDARD2_0
+using SpinLock = Dekaf.Producer.CompatibilitySpinLock;
+#endif
 
 namespace Dekaf.Producer;
+
+#if NETSTANDARD2_0
+internal sealed class CompatibilitySpinLock
+{
+    private readonly object _gate = new();
+
+    public CompatibilitySpinLock(bool enableThreadOwnerTracking = false)
+    {
+        _ = enableThreadOwnerTracking;
+    }
+
+    public void Enter(ref bool lockTaken)
+    {
+        Monitor.Enter(_gate);
+        lockTaken = true;
+    }
+
+    public void Exit()
+    {
+        Monitor.Exit(_gate);
+    }
+}
+#endif
 
 /// <summary>
 /// RAII guard for SpinLock that ensures Exit() is called on dispose.
 /// Must be used with <c>using var guard = new SpinLockGuard(ref spinLock);</c>.
 /// </summary>
+#if NETSTANDARD2_0
+internal readonly struct SpinLockGuard : IDisposable
+{
+    private readonly SpinLock _lock;
+    private readonly bool _taken;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public SpinLockGuard(ref SpinLock spinLock)
+    {
+        _lock = spinLock;
+        var taken = false;
+        _lock.Enter(ref taken);
+        _taken = taken;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Dispose()
+    {
+        if (_taken) _lock.Exit();
+    }
+}
+#else
 internal ref struct SpinLockGuard
 {
     private ref SpinLock _lock;
@@ -40,6 +88,7 @@ internal ref struct SpinLockGuard
         if (_taken) _lock.Exit();
     }
 }
+#endif
 
 
 /// <summary>
@@ -2280,7 +2329,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             key.Return();
             value.Return();
             ReturnPooledHeaders(headers);
-            return ValueTask.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
+            return ValueTaskCompatibility.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
 
         if (cancellationToken.IsCancellationRequested)
@@ -2288,7 +2337,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             key.Return();
             value.Return();
             ReturnPooledHeaders(headers);
-            return ValueTask.FromException<bool>(new OperationCanceledException(cancellationToken));
+            return ValueTaskCompatibility.FromException<bool>(new OperationCanceledException(cancellationToken));
         }
 
         var (startTicks, deadline) = BeginReservationWait(recordSize);
@@ -2310,7 +2359,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Caller gets a pre-built exception ValueTask, so nobody will call GetResult
                 // on this op. Manually return it to the pool to avoid leaking.
                 op.ReturnToPoolAfterTryFail();
-                return ValueTask.FromException<bool>(disposedException);
+                return ValueTaskCompatibility.FromException<bool>(disposedException);
             }
         }
 
@@ -2965,7 +3014,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
         var currentMaxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
         LogBufferMemoryWaiting(recordSize, currentBufferedBytes, currentMaxBufferMemory);
-        var currentTicks = Environment.TickCount64;
+        var currentTicks = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
@@ -2995,7 +3044,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            var remainingMs = deadline - Environment.TickCount64;
+            var remainingMs = deadline - Dekaf.Compatibility.EnvironmentCompat.TickCount64;
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, startTicks);
 
@@ -3074,7 +3123,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
     {
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startTicks);
+        var elapsed = TimeSpan.FromMilliseconds(Dekaf.Compatibility.EnvironmentCompat.TickCount64 - startTicks);
         throw new KafkaTimeoutException(
             TimeoutKind.MaxBlock,
             elapsed,
@@ -3195,7 +3244,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             // Reset oldest batch tracking since there are no batches
             Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
-            return ValueTask.CompletedTask;
+            return ValueTaskCompatibility.CompletedTask;
         }
 
         // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
@@ -3210,7 +3259,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (millisSinceOldest < _options.LingerMs)
                 {
                     // No batch is old enough to flush yet.
-                    return ValueTask.CompletedTask;
+                    return ValueTaskCompatibility.CompletedTask;
                 }
             }
         }
@@ -3894,7 +3943,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Fast path: no unsealed batches AND no in-flight batches - avoid async overhead entirely
         if (!HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0)
         {
-            return ValueTask.CompletedTask;
+            return ValueTaskCompatibility.CompletedTask;
         }
 
         return FlushAsyncCore(cancellationToken);

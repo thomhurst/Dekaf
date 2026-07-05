@@ -212,7 +212,7 @@ public sealed class Headers : IEnumerable<Header>
     {
         if (!string.IsNullOrEmpty(value))
         {
-            Add(key, value);
+            Add(key, value!);
         }
         return this;
     }

@@ -54,11 +54,12 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
             ?? throw new InvalidOperationException("AWS credentials are not available. Call GetCredentialsAsync before authentication.");
 
         var region = ResolveRegion();
+        var userAgent = string.IsNullOrWhiteSpace(_config.UserAgent) ? "dekaf" : _config.UserAgent!;
         var payload = AwsMskIamSignedPayload.Create(
             credentials,
             _host,
             region,
-            string.IsNullOrWhiteSpace(_config.UserAgent) ? "dekaf" : _config.UserAgent,
+            userAgent,
             DateTimeOffset.UtcNow,
             _config.AuthenticationPayloadExpiration);
 
@@ -108,7 +109,10 @@ internal static class AwsMskIamRegionResolver
 {
     public static string? TryResolveFromHost(string host)
     {
-        var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(static label => label.Trim())
+            .Where(static label => label.Length > 0)
+            .ToArray();
         for (var i = 0; i < labels.Length; i++)
         {
             if (!IsAmazonAwsSuffix(labels, i) || i < 2)

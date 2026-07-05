@@ -191,7 +191,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private int _disposed;
     private int _connected;
-    private long _lastUsedTimestampMs = Environment.TickCount64;
+    private long _lastUsedTimestampMs = Dekaf.Compatibility.EnvironmentCompat.TickCount64;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
@@ -377,11 +377,23 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         if (_options.UseTls || _options.TlsConfig is not null)
         {
+#if NETSTANDARD2_0
+            var sslStream = new SslStream(
+                networkStream,
+                leaveInnerStreamOpen: false,
+                BuildRemoteCertificateValidationCallback());
+#else
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
-            var sslOptions = BuildSslClientAuthenticationOptions(targetHost);
+#endif
             try
             {
+#if NETSTANDARD2_0
+                await AuthenticateAsClientNetStandardAsync(sslStream, targetHost, cancellationToken)
+                    .ConfigureAwait(false);
+#else
+                var sslOptions = BuildSslClientAuthenticationOptions(targetHost);
                 await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
+#endif
             }
             catch (System.Security.Authentication.AuthenticationException ex)
             {
@@ -548,8 +560,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+        var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
@@ -572,7 +584,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
 
             // Write phase
-            LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+            LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
             await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
                 .ConfigureAwait(false);
@@ -643,11 +655,11 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
 
         // Don't register a pending request - we won't receive a response
 
-        LogSendingFireAndForgetRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+        LogSendingFireAndForgetRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
         await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
             .ConfigureAwait(false);
@@ -699,8 +711,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         Touch();
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+        var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
@@ -772,7 +784,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
+                    throw CreateResponseTimeoutException(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId);
                 }
                 finally
                 {
@@ -798,7 +810,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
-                    throw CreateResponseTimeoutException(TRequest.ApiKey, correlationId);
+                    throw CreateResponseTimeoutException(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId);
                 }
                 finally
                 {
@@ -810,7 +822,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
             LogResponseReceived(correlationId);
 
-            var isFetchResponse = TRequest.ApiKey == ApiKey.Fetch;
+            var isFetchResponse = KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.Fetch;
 
             if (isFetchResponse)
             {
@@ -818,7 +830,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner);
 
                 var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                var response = (TResponse)TResponse.Read(ref reader, apiVersion);
+                var response = KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
 
                 if (ResponseParsingContext.WasMemoryUsed)
                 {
@@ -844,7 +856,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 try
                 {
                     var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                    return (TResponse)TResponse.Read(ref reader, apiVersion);
+                    return KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
                 }
                 finally
                 {
@@ -900,7 +912,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         var bodyWriter = new KafkaProtocolWriter(writer);
         var header = new RequestHeader
         {
-            ApiKey = TRequest.ApiKey,
+            ApiKey = KafkaMessageMetadata<TRequest, TResponse>.ApiKey,
             ApiVersion = apiVersion,
             CorrelationId = correlationId,
             ClientId = _clientId,
@@ -935,7 +947,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         where TResponse : IKafkaResponse
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
-        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
+        var clearSerializedArray = KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.SaslAuthenticate;
         byte[]? arrayToReturn = serializedArray;
         try
         {
@@ -1223,7 +1235,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             if (_pendingRequestSlots.Wait(0, cancellationToken))
             {
                 if (Volatile.Read(ref _disposed) == 0)
-                    return ValueTask.CompletedTask;
+                    return ValueTaskCompatibility.CompletedTask;
 
                 _pendingRequestSlots.Release();
                 throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -1415,7 +1427,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         return count;
     }
 
-    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Environment.TickCount64);
+    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Dekaf.Compatibility.EnvironmentCompat.TickCount64);
 
     private bool TryReadResponse(
         ref ReadOnlySequence<byte> buffer,
@@ -1473,7 +1485,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         correlationId = 0;
         responseData = default;
 
-        var span = buffer.FirstSpan;
+        var span = buffer.First.Span;
 
         // Read size prefix directly from span
         var size = BinaryPrimitives.ReadInt32BigEndian(span);
@@ -1590,13 +1602,36 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         ReleasePendingRequestSlots(releasedSlots);
     }
 
+#if NETSTANDARD2_0
+    private async ValueTask AuthenticateAsClientNetStandardAsync(
+        SslStream sslStream,
+        string targetHost,
+        CancellationToken cancellationToken)
+    {
+        var tlsConfig = _options.TlsConfig;
+        var clientCertificates = BuildClientCertificates(tlsConfig);
+        var enabledProtocols = tlsConfig?.EnabledSslProtocols ?? System.Security.Authentication.SslProtocols.None;
+        var checkCertificateRevocation = tlsConfig?.CheckCertificateRevocation ?? false;
+
+        await sslStream
+            .AuthenticateAsClientAsync(
+                tlsConfig?.TargetHost ?? targetHost,
+                clientCertificates,
+                enabledProtocols,
+                checkCertificateRevocation)
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+#endif
+
+#if !NETSTANDARD2_0
     private SslClientAuthenticationOptions BuildSslClientAuthenticationOptions(string targetHost)
     {
         var tlsConfig = _options.TlsConfig;
         var options = new SslClientAuthenticationOptions
         {
             TargetHost = tlsConfig?.TargetHost ?? targetHost,
-            RemoteCertificateValidationCallback = _options.RemoteCertificateValidationCallback
+            RemoteCertificateValidationCallback = BuildRemoteCertificateValidationCallback()
         };
 
         // Configure enabled SSL protocols if specified
@@ -1613,34 +1648,55 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 : X509RevocationMode.NoCheck;
         }
 
+        // Configure client certificate for mTLS
+        var clientCertificates = BuildClientCertificates(tlsConfig);
+        if (clientCertificates is not null)
+        {
+            options.ClientCertificates = clientCertificates;
+        }
+
+        return options;
+    }
+#endif
+
+    private RemoteCertificateValidationCallback? BuildRemoteCertificateValidationCallback()
+    {
+        var tlsConfig = _options.TlsConfig;
+        var callback = _options.RemoteCertificateValidationCallback;
+
         // Configure server certificate validation
         if (tlsConfig is not null && !tlsConfig.ValidateServerCertificate)
         {
             // Disable server certificate validation (not recommended for production)
             // This is intentional when user explicitly sets ValidateServerCertificate = false
 #pragma warning disable CA5359 // Do not disable certificate validation
-            options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            return (_, _, _, _) => true;
 #pragma warning restore CA5359
         }
-        else if (options.RemoteCertificateValidationCallback is null && HasCustomCaCertificate(tlsConfig))
+
+        if (callback is null && HasCustomCaCertificate(tlsConfig))
         {
             // Custom CA certificate validation
             var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
-            options.RemoteCertificateValidationCallback = (_, certificate, chain, sslPolicyErrors) =>
+            return (_, certificate, chain, sslPolicyErrors) =>
                 ValidateServerCertificate(certificate, chain, sslPolicyErrors, caCertificates);
         }
 
-        // Configure client certificate for mTLS
-        if (tlsConfig is not null)
-        {
-            var clientCert = LoadClientCertificateWithOwnership(tlsConfig);
-            if (clientCert is not null)
-            {
-                options.ClientCertificates = [clientCert];
-            }
-        }
+        return callback;
+    }
 
-        return options;
+    private X509CertificateCollection? BuildClientCertificates(TlsConfig? tlsConfig)
+    {
+        if (tlsConfig is null)
+            return null;
+
+        var clientCert = LoadClientCertificateWithOwnership(tlsConfig);
+        if (clientCert is null)
+            return null;
+
+        var certificates = new X509CertificateCollection();
+        certificates.Add(clientCert);
+        return certificates;
     }
 
     private void ConfigureTcpKeepAlive(Socket socket)
@@ -1650,6 +1706,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         TrySetSocketOption(socket, SocketOptionLevel.Socket, SocketOptionName.KeepAlive, 1);
 
+#if !NETSTANDARD2_0
         var keepAliveTimeSeconds = ToPositiveSeconds(_options.TcpKeepAliveTime);
         if (keepAliveTimeSeconds > 0)
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, keepAliveTimeSeconds);
@@ -1660,6 +1717,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         if (_options.TcpKeepAliveRetryCount > 0)
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, _options.TcpKeepAliveRetryCount);
+#endif
     }
 
     private static int ToPositiveSeconds(TimeSpan value)
@@ -1734,13 +1792,23 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         if (extension is ".pfx" or ".p12")
         {
+#if NETSTANDARD2_0
+#pragma warning disable SYSLIB0057
+            collection.Add(new X509Certificate2(path));
+#pragma warning restore SYSLIB0057
+#else
             // Load PFX/PKCS12 file using modern API
             collection.Add(X509CertificateLoader.LoadPkcs12FromFile(path, password: null));
+#endif
         }
         else
         {
+#if NETSTANDARD2_0
+            throw new PlatformNotSupportedException("PEM CA certificate files require net10.0 or later. Use a PFX/P12 CA file for netstandard2.0.");
+#else
             // Assume PEM format - can contain multiple certificates
             collection.ImportFromPemFile(path);
+#endif
         }
 
         return collection;
@@ -1768,13 +1836,24 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             X509Certificate2 cert;
             if (extension is ".pfx" or ".p12")
             {
+#if NETSTANDARD2_0
+#pragma warning disable SYSLIB0057
+                cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
+                    ? new X509Certificate2(certPath)
+                    : new X509Certificate2(certPath, tlsConfig.ClientKeyPassword);
+#pragma warning restore SYSLIB0057
+#else
                 // Load PFX/PKCS12 file (contains both certificate and private key) using modern API
                 cert = X509CertificateLoader.LoadPkcs12FromFile(
                     certPath,
                     string.IsNullOrEmpty(tlsConfig.ClientKeyPassword) ? null : tlsConfig.ClientKeyPassword);
+#endif
             }
             else
             {
+#if NETSTANDARD2_0
+                throw new PlatformNotSupportedException("PEM client certificates require net10.0 or later. Use a PFX/P12 client certificate for netstandard2.0.");
+#else
                 // PEM format - need separate key file
                 if (tlsConfig.ClientKeyPath is null)
                 {
@@ -1785,6 +1864,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
                     ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
+#endif
             }
 
             _loadedClientCertificate = cert;
@@ -1820,38 +1900,55 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 using var customChain = new X509Chain();
                 customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                 customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+#if NETSTANDARD2_0
+                foreach (var caCert in trustedCaCertificates)
+                {
+                    customChain.ChainPolicy.ExtraStore.Add(caCert);
+                }
+#else
                 customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
 
                 foreach (var caCert in trustedCaCertificates)
                 {
                     customChain.ChainPolicy.CustomTrustStore.Add(caCert);
                 }
+#endif
 
                 if (customChain.Build(cert2))
                 {
-                    // Check chain status for errors other than UntrustedRoot
-                    foreach (var status in customChain.ChainStatus)
-                    {
-                        if (status.Status != X509ChainStatusFlags.UntrustedRoot &&
-                            status.Status != X509ChainStatusFlags.NoError)
-                        {
-                            return false;
-                        }
-                    }
-
-                    // Verify the chain ends with one of our trusted CAs
-                    var rootCert = customChain.ChainElements[^1].Certificate;
-                    foreach (var caCert in trustedCaCertificates)
-                    {
-                        if (rootCert.Thumbprint == caCert.Thumbprint)
-                            return true;
-                    }
+                    return IsChainRootedInTrustedCa(customChain, trustedCaCertificates);
                 }
             }
             finally
             {
                 ownedCert?.Dispose();
             }
+        }
+
+        return false;
+    }
+
+    private static bool IsChainRootedInTrustedCa(
+        X509Chain chain,
+        X509Certificate2Collection trustedCaCertificates)
+    {
+        foreach (var status in chain.ChainStatus)
+        {
+            if (status.Status != X509ChainStatusFlags.UntrustedRoot &&
+                status.Status != X509ChainStatusFlags.NoError)
+            {
+                return false;
+            }
+        }
+
+        if (chain.ChainElements.Count == 0)
+            return false;
+
+        var rootCert = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
+        foreach (var caCert in trustedCaCertificates)
+        {
+            if (string.Equals(rootCert.Thumbprint, caCert.Thumbprint, StringComparison.OrdinalIgnoreCase))
+                return true;
         }
 
         return false;
@@ -2225,7 +2322,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             throw new InvalidOperationException("Not connected");
 
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
 
         // Write to stream directly (no pipe yet). Use the pooled serializer path instead
         // of the thread-local SASL buffer so credential-bearing requests can be cleared.
@@ -2234,7 +2331,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             correlationId,
             apiVersion,
             headerVersion);
-        var clearSerializedArray = TRequest.ApiKey == ApiKey.SaslAuthenticate;
+        var clearSerializedArray = KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.SaslAuthenticate;
         try
         {
             await _stream.WriteAsync(buffer.AsMemory(0, totalSize), cancellationToken).ConfigureAwait(false);
@@ -2266,7 +2363,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
 
                 // Skip response header and parse body
-                var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+                var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
                 var offset = 4; // Correlation ID
 
                 if (responseHeaderVersion >= 1)
@@ -2304,7 +2401,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
                 }
 
                 var reader = new KafkaProtocolReader(responseBuffer.AsMemory(offset, responseSize - offset));
-                return (TResponse)TResponse.Read(ref reader, apiVersion);
+                return KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
             }
             finally
             {
@@ -2627,7 +2724,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             var destination = context.Buffer.AsSpan(context.Offset, available);
 
             if (buffer.IsSingleSegment)
-                buffer.FirstSpan.Slice(0, available).CopyTo(destination);
+                buffer.First.Span.Slice(0, available).CopyTo(destination);
             else
                 buffer.Slice(0, available).CopyTo(destination);
 

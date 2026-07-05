@@ -262,7 +262,7 @@ internal sealed class ClientTelemetryMetricCollector
                 continue;
             }
 
-            if (!double.IsFinite(value))
+            if (double.IsNaN(value) || double.IsInfinity(value))
             {
                 continue;
             }
