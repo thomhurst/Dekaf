@@ -13,7 +13,25 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="schema">The schema to register.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The schema ID.</returns>
-    Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default);
+    Task<int> RegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Registers a schema under a subject, optionally requesting Schema Registry normalization.
+    /// </summary>
+    /// <param name="subject">The subject name (typically topic-key or topic-value).</param>
+    /// <param name="schema">The schema to register.</param>
+    /// <param name="normalize">Whether to request Schema Registry normalization.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema ID.</returns>
+    Task<int> RegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        bool normalize,
+        CancellationToken cancellationToken = default)
+        => RegisterSchemaAsync(subject, schema, cancellationToken);
 
     /// <summary>
     /// Gets a schema by its global ID.
@@ -40,7 +58,25 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="schema">The schema.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The schema ID.</returns>
-    Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default);
+    Task<int> GetOrRegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets or registers a schema, optionally requesting Schema Registry normalization.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="schema">The schema.</param>
+    /// <param name="normalize">Whether to request Schema Registry normalization.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema ID.</returns>
+    Task<int> GetOrRegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        bool normalize,
+        CancellationToken cancellationToken = default)
+        => GetOrRegisterSchemaAsync(subject, schema, cancellationToken);
 
     /// <summary>
     /// Lists all subjects.
@@ -65,7 +101,28 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="version">The version to check against (default: latest).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>True if compatible.</returns>
-    Task<bool> IsCompatibleAsync(string subject, Schema schema, string version = "latest", CancellationToken cancellationToken = default);
+    Task<bool> IsCompatibleAsync(
+        string subject,
+        Schema schema,
+        string version = "latest",
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks schema compatibility, optionally requesting Schema Registry normalization.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="schema">The schema to check.</param>
+    /// <param name="version">The version to check against.</param>
+    /// <param name="normalize">Whether to request Schema Registry normalization.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if compatible.</returns>
+    Task<bool> IsCompatibleAsync(
+        string subject,
+        Schema schema,
+        string version,
+        bool normalize,
+        CancellationToken cancellationToken = default)
+        => IsCompatibleAsync(subject, schema, version, cancellationToken);
 
     /// <summary>
     /// Deletes a subject and all associated schemas.

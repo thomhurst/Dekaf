@@ -145,7 +145,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         }
         else if (_config.AutoRegisterSchemas)
         {
-            task = _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema);
+            task = _config.NormalizeSchemas
+                ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema, normalize: true)
+                : _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema);
         }
         else
         {

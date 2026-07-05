@@ -37,6 +37,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
+    private readonly bool _normalizeSchemas;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
@@ -52,6 +53,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    /// <param name="ruleExecutor">Optional rule executor applied to payload bytes.</param>
+    /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         Action<T, IBufferWriter<byte>> serialize,
@@ -59,13 +62,15 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
     }
@@ -79,6 +84,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// <param name="customSubjectNameStrategy">Custom strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    /// <param name="ruleExecutor">Optional rule executor applied to payload bytes.</param>
+    /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         Action<T, IBufferWriter<byte>> serialize,
@@ -86,13 +93,15 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         ISubjectNameStrategy customSubjectNameStrategy,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
     }
@@ -158,10 +167,18 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
         // Cache miss — fetch from registry. May race under contention for a new subject;
         // this is safe because schema registration is idempotent (same subject always returns same ID).
-        var task = _autoRegisterSchemas
-            ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(
+        Task<int> task;
+        if (_autoRegisterSchemas)
+        {
+            task = _normalizeSchemas
+                ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema, normalize: true)
+                : _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema);
+        }
+        else
+        {
+            task = _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(
                 static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
+        }
 
         var fetchedId = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
         return _schemaIdCache.GetOrAdd(subject, fetchedId);

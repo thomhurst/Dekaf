@@ -254,6 +254,35 @@ public class ProtobufSchemaRegistrySerializerTests
     }
 
     [Test]
+    public async Task Serialize_NormalizeSchemas_PassesNormalizeToRegistry()
+    {
+        // Arrange
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetOrRegisterSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                true,
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(123));
+
+        var config = new ProtobufSerializerConfig { NormalizeSchemas = true };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var message = new TestMessage { Id = 1, Name = "Test", Value = 3.14 };
+
+        // Act
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(message, ref buffer, CreateContext());
+
+        // Assert
+        await schemaRegistry.Received(1).GetOrRegisterSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            true,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task Serialize_DisablesAutoRegisterSchemas_WhenLookupFaults_ThrowsSchemaRegistryException()
     {
         await AssertLookupFaultThrowsSchemaRegistryExceptionAsync(

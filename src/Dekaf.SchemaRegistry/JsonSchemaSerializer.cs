@@ -40,6 +40,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
+    private readonly bool _normalizeSchemas;
     private readonly Schema _schema;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
@@ -56,6 +57,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    /// <param name="ruleExecutor">Optional rule executor applied to JSON payload bytes.</param>
+    /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistrySerializer(
@@ -65,13 +68,15 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _jsonOptions = CreateJsonOptions(jsonOptions);
         _serializePayload = SerializeWithOptions;
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _schema = new Schema
@@ -90,6 +95,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="subjectNameStrategy">Strategy for determining subject names.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    /// <param name="ruleExecutor">Optional rule executor applied to JSON payload bytes.</param>
+    /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -97,13 +104,15 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
         _serializePayload = SerializeWithTypeInfo;
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _schema = new Schema
@@ -122,6 +131,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="jsonOptions">JSON serializer options.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    /// <param name="ruleExecutor">Optional rule executor applied to JSON payload bytes.</param>
+    /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistrySerializer(
@@ -131,13 +142,15 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         JsonSerializerOptions? jsonOptions = null,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _jsonOptions = CreateJsonOptions(jsonOptions);
         _serializePayload = SerializeWithOptions;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _schema = new Schema
@@ -156,6 +169,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="jsonTypeInfo">Source-generated metadata for type T.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    /// <param name="ruleExecutor">Optional rule executor applied to JSON payload bytes.</param>
+    /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -163,13 +178,15 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         JsonTypeInfo<T> jsonTypeInfo,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
         _serializePayload = SerializeWithTypeInfo;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _schema = new Schema
@@ -258,10 +275,18 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         if (_schemaIdCache.TryGetValue(subject, out var cachedId))
             return cachedId;
 
-        var task = _autoRegisterSchemas
-            ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(
+        Task<int> task;
+        if (_autoRegisterSchemas)
+        {
+            task = _normalizeSchemas
+                ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema, normalize: true)
+                : _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema);
+        }
+        else
+        {
+            task = _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(
                 static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
+        }
 
         // Add timeout to prevent indefinite blocking
         var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();

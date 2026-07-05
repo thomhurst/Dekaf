@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json.Serialization.Metadata;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.SchemaRegistry;
@@ -20,6 +21,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private readonly ConcurrentDictionary<(string Subject, Schema Schema), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
     private readonly int _maxCachedSchemas;
+    private readonly Uri[] _baseUris;
+    private int _activeBaseUriIndex;
     private bool _disposed;
 
     public SchemaRegistryClient(SchemaRegistryConfig config)
@@ -34,6 +37,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _maxCachedSchemas = Math.Max(0, config.MaxCachedSchemas);
+        _baseUris = ResolveBaseUris(config);
 
         var authHandler = new SchemaRegistryAuthenticationHandler(
             handler,
@@ -42,7 +46,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         _httpClient = new HttpClient(authHandler, disposeHandler: true)
         {
-            BaseAddress = new Uri(config.Url.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMilliseconds(config.RequestTimeoutMs)
         };
 
@@ -77,7 +80,102 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return CreateHttpHandler(config.ClientCertificate);
     }
 
-    public async Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
+    private static Uri[] ResolveBaseUris(SchemaRegistryConfig config)
+    {
+        var urls = config.Urls is { Count: > 0 }
+            ? config.Urls
+            : config.Url.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var baseUris = urls
+            .Select(static url => new Uri(url.TrimEnd('/') + "/", UriKind.Absolute))
+            .ToArray();
+
+        if (baseUris.Length == 0)
+            throw new ArgumentException("At least one Schema Registry URL is required.", nameof(config));
+
+        return baseUris;
+    }
+
+    private static string WithNormalizeQuery(string path, bool normalize)
+    {
+        if (!normalize)
+            return path;
+
+        return path.Contains('?', StringComparison.Ordinal)
+            ? path + "&normalize=true"
+            : path + "?normalize=true";
+    }
+
+    private Task<HttpResponseMessage> GetWithFailoverAsync(string path, CancellationToken cancellationToken) =>
+        SendWithFailoverAsync(baseUri => _httpClient.GetAsync(new Uri(baseUri, path), cancellationToken), cancellationToken);
+
+    private Task<HttpResponseMessage> DeleteWithFailoverAsync(string path, CancellationToken cancellationToken) =>
+        SendWithFailoverAsync(baseUri => _httpClient.DeleteAsync(new Uri(baseUri, path), cancellationToken), cancellationToken);
+
+    private Task<HttpResponseMessage> PostAsJsonWithFailoverAsync<T>(
+        string path,
+        T value,
+        JsonTypeInfo<T> jsonTypeInfo,
+        CancellationToken cancellationToken) =>
+        SendWithFailoverAsync(
+            baseUri => _httpClient.PostAsJsonAsync(new Uri(baseUri, path), value, jsonTypeInfo, cancellationToken),
+            cancellationToken);
+
+    private async Task<HttpResponseMessage> SendWithFailoverAsync(
+        Func<Uri, Task<HttpResponseMessage>> sendAsync,
+        CancellationToken cancellationToken)
+    {
+        var startIndex = Volatile.Read(ref _activeBaseUriIndex);
+        Exception? lastException = null;
+
+        for (var attempt = 0; attempt < _baseUris.Length; attempt++)
+        {
+            var index = (startIndex + attempt) % _baseUris.Length;
+            try
+            {
+                var response = await sendAsync(_baseUris[index]).ConfigureAwait(false);
+                if (!IsRetriableStatus(response.StatusCode))
+                {
+                    Volatile.Write(ref _activeBaseUriIndex, index);
+                    return response;
+                }
+
+                if (attempt == _baseUris.Length - 1)
+                    return response;
+
+                response.Dispose();
+            }
+            catch (Exception ex) when (IsRetriableException(ex, cancellationToken) && attempt < _baseUris.Length - 1)
+            {
+                lastException = ex;
+            }
+        }
+
+        if (lastException is not null)
+            throw lastException;
+
+        throw new SchemaRegistryException(0, "Schema Registry request failed before receiving a response.");
+    }
+
+    private static bool IsRetriableStatus(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout or (HttpStatusCode)429 ||
+        (int)statusCode >= 500;
+
+    private static bool IsRetriableException(Exception exception, CancellationToken cancellationToken) =>
+        exception is HttpRequestException ||
+        (exception is TaskCanceledException && !cancellationToken.IsCancellationRequested);
+
+    public Task<int> RegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken = default) =>
+        RegisterSchemaAsync(subject, schema, normalize: false, cancellationToken);
+
+    public async Task<int> RegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        bool normalize,
+        CancellationToken cancellationToken = default)
     {
         var cacheKey = (subject, schema);
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
@@ -95,8 +193,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            $"subjects/{Uri.EscapeDataString(subject)}/versions",
+        using var response = await PostAsJsonWithFailoverAsync(
+            WithNormalizeQuery($"subjects/{Uri.EscapeDataString(subject)}/versions", normalize || _config.NormalizeSchemas),
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
@@ -118,7 +216,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (_schemaByIdCache.TryGetValue(id, out var cached))
             return cached;
 
-        using var response = await _httpClient.GetAsync(
+        using var response = await GetWithFailoverAsync(
             $"schemas/ids/{id}",
             cancellationToken).ConfigureAwait(false);
 
@@ -148,7 +246,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
     {
-        using var response = await _httpClient.GetAsync(
+        using var response = await GetWithFailoverAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
             cancellationToken).ConfigureAwait(false);
 
@@ -180,7 +278,17 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         };
     }
 
-    public async Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
+    public Task<int> GetOrRegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken = default) =>
+        GetOrRegisterSchemaAsync(subject, schema, normalize: false, cancellationToken);
+
+    public async Task<int> GetOrRegisterSchemaAsync(
+        string subject,
+        Schema schema,
+        bool normalize,
+        CancellationToken cancellationToken = default)
     {
         var cacheKey = (subject, schema);
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
@@ -199,8 +307,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            $"subjects/{Uri.EscapeDataString(subject)}",
+        using var response = await PostAsJsonWithFailoverAsync(
+            WithNormalizeQuery($"subjects/{Uri.EscapeDataString(subject)}", normalize || _config.NormalizeSchemas),
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
@@ -208,7 +316,11 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             // Schema doesn't exist, register it
-            return await RegisterSchemaAsync(subject, schema, cancellationToken).ConfigureAwait(false);
+            return await RegisterSchemaAsync(
+                subject,
+                schema,
+                normalize,
+                cancellationToken).ConfigureAwait(false);
         }
 
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
@@ -246,7 +358,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
     {
-        using var response = await _httpClient.GetAsync("subjects", cancellationToken).ConfigureAwait(false);
+        using var response = await GetWithFailoverAsync("subjects", cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<string>>(
@@ -255,7 +367,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<IReadOnlyList<int>> GetVersionsAsync(string subject, CancellationToken cancellationToken = default)
     {
-        using var response = await _httpClient.GetAsync(
+        using var response = await GetWithFailoverAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
             cancellationToken).ConfigureAwait(false);
 
@@ -265,7 +377,19 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
-    public async Task<bool> IsCompatibleAsync(string subject, Schema schema, string version = "latest", CancellationToken cancellationToken = default)
+    public Task<bool> IsCompatibleAsync(
+        string subject,
+        Schema schema,
+        string version = "latest",
+        CancellationToken cancellationToken = default) =>
+        IsCompatibleAsync(subject, schema, version, normalize: false, cancellationToken);
+
+    public async Task<bool> IsCompatibleAsync(
+        string subject,
+        Schema schema,
+        string version,
+        bool normalize,
+        CancellationToken cancellationToken = default)
     {
         var request = new RegisterSchemaRequest
         {
@@ -279,8 +403,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            $"compatibility/subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+        using var response = await PostAsJsonWithFailoverAsync(
+            WithNormalizeQuery(
+                $"compatibility/subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+                normalize || _config.NormalizeSchemas),
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
@@ -302,7 +428,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (permanent)
             url += "?permanent=true";
 
-        using var response = await _httpClient.DeleteAsync(url, cancellationToken).ConfigureAwait(false);
+        using var response = await DeleteWithFailoverAsync(url, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<int>>(
@@ -359,9 +485,16 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 public sealed class SchemaRegistryConfig
 {
     /// <summary>
-    /// Schema Registry URL.
+    /// Schema Registry URL. Multiple failover URLs may be provided as a
+    /// comma-separated list.
     /// </summary>
     public required string Url { get; init; }
+
+    /// <summary>
+    /// Optional Schema Registry failover URLs. When set, this takes precedence
+    /// over <see cref="Url"/>.
+    /// </summary>
+    public IReadOnlyList<string>? Urls { get; init; }
 
     /// <summary>
     /// Basic auth credentials in format "username:password".
@@ -400,6 +533,12 @@ public sealed class SchemaRegistryConfig
     /// Maximum number of schemas to cache.
     /// </summary>
     public int MaxCachedSchemas { get; init; } = 1000;
+
+    /// <summary>
+    /// Whether schema registration, lookup, and compatibility requests should
+    /// include normalize=true.
+    /// </summary>
+    public bool NormalizeSchemas { get; init; }
 }
 
 /// <summary>
