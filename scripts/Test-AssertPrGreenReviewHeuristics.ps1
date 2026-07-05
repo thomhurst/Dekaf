@@ -84,6 +84,17 @@ Minor/optional, not blocking:
 This is optional.
 '@
         Blocks = $false
+    },
+    @{
+        Name = 'allows previously flagged issues verified fixed heading'
+        Body = @'
+## Review
+
+### Previously-flagged issues - verified fixed
+
+The prior findings are now resolved.
+'@
+        Blocks = $false
     }
 )
 
