@@ -1905,7 +1905,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
                         _options.PrefetchPipelineDepth);
                     var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
-                    if (currentPrefetchedBytes >= maxBytes)
+                    if (PrefetchLoopControl.ShouldWaitForMemory(currentPrefetchedBytes, maxBytes))
                     {
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1914,23 +1914,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     var (started, targetCount) = await DispatchReadyBrokerPrefetchesAsync(cancellationToken)
                         .ConfigureAwait(false);
+                    var decision = PrefetchLoopControl.DecideAfterDispatch(
+                        started,
+                        targetCount,
+                        _brokerPrefetchScheduler.HasInFlight);
 
-                    if (started == 0)
+                    if (decision.Action == PrefetchLoopAction.WaitForAny)
                     {
-                        if (_brokerPrefetchScheduler.HasInFlight)
-                        {
-                            var hasBacklog = targetCount > 0;
-                            ReportBrokerPrefetchBacklog(hasBacklog);
+                        ReportBrokerPrefetchBacklog(decision.ReportBacklog);
+                        if (decision.RecordFetchWait)
                             _adaptiveFetchSizer?.RecordFetchStart();
-                            await _brokerPrefetchScheduler.WaitForAnyAsync(cancellationToken).ConfigureAwait(false);
+                        await _brokerPrefetchScheduler.WaitForAnyAsync(cancellationToken).ConfigureAwait(false);
+                        if (decision.RecordFetchWait)
                             _adaptiveFetchSizer?.RecordFetchEnd();
-                            ReportBrokerPrefetchBacklog(hasBacklog);
-                        }
-                        else
-                        {
-                            ReportBrokerPrefetchBacklog(isBacklogged: false);
-                            await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
-                        }
+                        ReportBrokerPrefetchBacklog(decision.ReportBacklog);
+                    }
+                    else if (decision.Action == PrefetchLoopAction.DelayNoWork)
+                    {
+                        ReportBrokerPrefetchBacklog(isBacklogged: false);
+                        await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
@@ -1946,7 +1948,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     consecutiveErrors++;
                     LogPrefetchLoopError(ex);
 
-                    if (consecutiveErrors >= MaxConsecutivePrefetchErrors)
+                    if (PrefetchLoopControl.ShouldBreakOnConsecutiveError(
+                        consecutiveErrors,
+                        MaxConsecutivePrefetchErrors))
                     {
                         completionError = new KafkaException(
                             ErrorCode.UnknownServerError,
