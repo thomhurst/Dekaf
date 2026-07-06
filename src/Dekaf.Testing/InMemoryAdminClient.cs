@@ -533,6 +533,91 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(result);
     }
 
+    public ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.FromResult(new MetadataQuorumDescription
+        {
+            LeaderId = 0,
+            LeaderEpoch = 0,
+            HighWatermark = 0,
+            CurrentVoters =
+            [
+                new QuorumReplicaState
+                {
+                    ReplicaId = 0,
+                    LogEndOffset = 0
+                }
+            ],
+            Observers = [],
+            Nodes =
+            [
+                new QuorumNode
+                {
+                    NodeId = 0,
+                    Listeners =
+                    [
+                        new RaftVoterEndpoint
+                        {
+                            Name = "PLAINTEXT",
+                            Host = "in-memory",
+                            Port = 0
+                        }
+                    ]
+                }
+            ]
+        });
+    }
+
+    public ValueTask AddRaftVoterAsync(
+        int voterId,
+        Guid voterDirectoryId,
+        IEnumerable<RaftVoterEndpoint> endpoints,
+        AddRaftVoterOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(voterId);
+        if (voterDirectoryId == Guid.Empty)
+        {
+            throw new ArgumentException("Voter directory ID must not be empty.", nameof(voterDirectoryId));
+        }
+
+        ValidateRaftVoterEndpoints(endpoints);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask RemoveRaftVoterAsync(
+        int voterId,
+        Guid voterDirectoryId,
+        RemoveRaftVoterOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(voterId);
+        if (voterDirectoryId == Guid.Empty)
+        {
+            throw new ArgumentException("Voter directory ID must not be empty.", nameof(voterDirectoryId));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask UnregisterBrokerAsync(int brokerId, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
         ClientQuotaFilter filter,
         DescribeClientQuotasOptions? options = null,
@@ -986,6 +1071,29 @@ public sealed class InMemoryAdminClient : IAdminClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topicPartition.Topic);
         ArgumentOutOfRangeException.ThrowIfNegative(topicPartition.Partition);
+    }
+
+    private static void ValidateRaftVoterEndpoints(IEnumerable<RaftVoterEndpoint> endpoints)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+
+        var count = 0;
+        foreach (var endpoint in endpoints)
+        {
+            count++;
+            ArgumentNullException.ThrowIfNull(endpoint);
+            ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.Name);
+            ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.Host);
+            if (endpoint.Port is < 0 or > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endpoints), endpoint.Port, "Port must be between 0 and 65535.");
+            }
+        }
+
+        if (count == 0)
+        {
+            throw new ArgumentException("At least one listener endpoint is required.", nameof(endpoints));
+        }
     }
 
     private static TimeSpan ValidateDelegationTokenDuration(

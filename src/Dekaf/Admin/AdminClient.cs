@@ -22,6 +22,9 @@ namespace Dekaf.Admin;
 /// </summary>
 public sealed class AdminClient : IAdminClient
 {
+    private const string MetadataQuorumTopic = "__cluster_metadata";
+    private const int MetadataQuorumPartition = 0;
+
     private readonly AdminClientOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -3092,6 +3095,223 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeQuorum))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support DescribeQuorum (API key 55).");
+        }
+
+        return await WithRetryAsync(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeQuorum,
+                DescribeQuorumRequest.LowestSupportedVersion,
+                DescribeQuorumRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(
+                new DescribeQuorumRequest
+                {
+                    Topics =
+                    [
+                        new DescribeQuorumRequestTopic
+                        {
+                            TopicName = MetadataQuorumTopic,
+                            Partitions =
+                            [
+                                new DescribeQuorumRequestPartition
+                                {
+                                    PartitionIndex = MetadataQuorumPartition
+                                }
+                            ]
+                        }
+                    ]
+                },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    response.ErrorCode,
+                    response.ErrorMessage ?? $"DescribeQuorum failed: {response.ErrorCode}");
+            }
+
+            var topic = response.Topics.FirstOrDefault(static t => string.Equals(t.TopicName, MetadataQuorumTopic, StringComparison.Ordinal));
+            var partition = topic?.Partitions.FirstOrDefault(static p => p.PartitionIndex == MetadataQuorumPartition);
+            if (partition is null)
+            {
+                throw new KafkaException(
+                    Protocol.ErrorCode.UnknownServerError,
+                    "DescribeQuorum response did not include the metadata quorum partition.");
+            }
+
+            if (partition.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    partition.ErrorCode,
+                    partition.ErrorMessage ?? $"DescribeQuorum partition failed: {partition.ErrorCode}");
+            }
+
+            return new MetadataQuorumDescription
+            {
+                LeaderId = partition.LeaderId,
+                LeaderEpoch = partition.LeaderEpoch,
+                HighWatermark = partition.HighWatermark,
+                CurrentVoters = partition.CurrentVoters.Select(MapQuorumReplicaState).ToArray(),
+                Observers = partition.Observers.Select(MapQuorumReplicaState).ToArray(),
+                Nodes = response.Nodes.Select(MapQuorumNode).ToArray()
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask AddRaftVoterAsync(
+        int voterId,
+        Guid voterDirectoryId,
+        IEnumerable<RaftVoterEndpoint> endpoints,
+        AddRaftVoterOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(voterId);
+        if (voterDirectoryId == Guid.Empty)
+        {
+            throw new ArgumentException("Voter directory ID must not be empty.", nameof(voterDirectoryId));
+        }
+
+        var listenerData = BuildRaftVoterEndpoints(endpoints);
+        var opts = options ?? new AddRaftVoterOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.AddRaftVoter))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support AddRaftVoter (API key 80).");
+        }
+
+        await WithRetryAsync(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AddRaftVoter,
+                AddRaftVoterRequest.LowestSupportedVersion,
+                AddRaftVoterRequest.HighestSupportedVersion);
+
+            if (!opts.AckWhenCommitted && apiVersion < 1)
+            {
+                throw new Errors.BrokerVersionException(
+                    "Broker does not support AddRaftVoter AckWhenCommitted=false (API key 80 v1).");
+            }
+
+            var response = await controller.SendAsync<AddRaftVoterRequest, AddRaftVoterResponse>(
+                new AddRaftVoterRequest
+                {
+                    ClusterId = opts.ClusterId,
+                    TimeoutMs = opts.TimeoutMs,
+                    VoterId = voterId,
+                    VoterDirectoryId = voterDirectoryId,
+                    Listeners = listenerData,
+                    AckWhenCommitted = opts.AckWhenCommitted
+                },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    response.ErrorCode,
+                    response.ErrorMessage ?? $"AddRaftVoter failed: {response.ErrorCode}");
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask RemoveRaftVoterAsync(
+        int voterId,
+        Guid voterDirectoryId,
+        RemoveRaftVoterOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(voterId);
+        if (voterDirectoryId == Guid.Empty)
+        {
+            throw new ArgumentException("Voter directory ID must not be empty.", nameof(voterDirectoryId));
+        }
+
+        var opts = options ?? new RemoveRaftVoterOptions();
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.RemoveRaftVoter))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support RemoveRaftVoter (API key 81).");
+        }
+
+        await WithRetryAsync(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.RemoveRaftVoter,
+                RemoveRaftVoterRequest.LowestSupportedVersion,
+                RemoveRaftVoterRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
+                new RemoveRaftVoterRequest
+                {
+                    ClusterId = opts.ClusterId,
+                    VoterId = voterId,
+                    VoterDirectoryId = voterDirectoryId
+                },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    response.ErrorCode,
+                    response.ErrorMessage ?? $"RemoveRaftVoter failed: {response.ErrorCode}");
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask UnregisterBrokerAsync(
+        int brokerId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.UnregisterBroker))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support UnregisterBroker (API key 64).");
+        }
+
+        await WithRetryAsync(async () =>
+        {
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.UnregisterBroker,
+                UnregisterBrokerRequest.LowestSupportedVersion,
+                UnregisterBrokerRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<UnregisterBrokerRequest, UnregisterBrokerResponse>(
+                new UnregisterBrokerRequest { BrokerId = brokerId },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    response.ErrorCode,
+                    response.ErrorMessage ?? $"UnregisterBroker failed: {response.ErrorCode}");
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
         IEnumerable<int> brokerIds,
         IEnumerable<TopicPartition>? partitions = null,
@@ -4097,6 +4317,61 @@ public sealed class AdminClient : IAdminClient
         }
 
         return await _connectionPool.GetConnectionAsync(controllerId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static QuorumReplicaState MapQuorumReplicaState(DescribeQuorumReplicaState state) =>
+        new()
+        {
+            ReplicaId = state.ReplicaId,
+            ReplicaDirectoryId = state.ReplicaDirectoryId,
+            LogEndOffset = state.LogEndOffset,
+            LastFetchTimestamp = state.LastFetchTimestamp,
+            LastCaughtUpTimestamp = state.LastCaughtUpTimestamp
+        };
+
+    private static QuorumNode MapQuorumNode(DescribeQuorumResponseNode node) =>
+        new()
+        {
+            NodeId = node.NodeId,
+            Listeners = node.Listeners.Select(MapRaftVoterEndpoint).ToArray()
+        };
+
+    private static RaftVoterEndpoint MapRaftVoterEndpoint(RaftVoterEndpointData endpoint) =>
+        new()
+        {
+            Name = endpoint.Name,
+            Host = endpoint.Host,
+            Port = endpoint.Port
+        };
+
+    private static IReadOnlyList<RaftVoterEndpointData> BuildRaftVoterEndpoints(IEnumerable<RaftVoterEndpoint> endpoints)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+
+        var result = endpoints.Select(endpoint =>
+        {
+            ArgumentNullException.ThrowIfNull(endpoint);
+            ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.Name);
+            ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.Host);
+            if (endpoint.Port is < 0 or > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endpoints), endpoint.Port, "Port must be between 0 and 65535.");
+            }
+
+            return new RaftVoterEndpointData
+            {
+                Name = endpoint.Name,
+                Host = endpoint.Host,
+                Port = (ushort)endpoint.Port
+            };
+        }).ToArray();
+
+        if (result.Length == 0)
+        {
+            throw new ArgumentException("At least one listener endpoint is required.", nameof(endpoints));
+        }
+
+        return result;
     }
 
     private async ValueTask<int> FindGroupCoordinatorAsync(string groupId, CancellationToken cancellationToken)
