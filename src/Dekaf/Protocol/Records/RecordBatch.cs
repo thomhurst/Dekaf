@@ -199,6 +199,8 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
         _buffer = pool.Rent(Math.Max(MinimumInitialCapacity, initialCapacity));
     }
 
+    public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance(int count)
     {
@@ -446,10 +448,16 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal CompressionType PreCompressedType { get; private set; }
 
+    /// <summary>
+    /// CRC32C of the bytes in <see cref="PreCompressedRecords"/>.
+    /// </summary>
+    internal uint PreCompressedRecordsCrc { get; private set; }
+
     internal bool HasPreCompressedRecords => PreCompressedRecords is not null;
 
     private ReadOnlyMemory<byte> _preEncodedRecords;
     private bool _hasPreEncodedRecords;
+    private uint _preEncodedRecordsCrc;
 
     internal bool HasPreEncodedRecords => _hasPreEncodedRecords;
 
@@ -457,6 +465,7 @@ public sealed class RecordBatch : IDisposable
     {
         _preEncodedRecords = records;
         _hasPreEncodedRecords = true;
+        _preEncodedRecordsCrc = Crc32C.Compute(records.Span);
     }
 
     /// <summary>
@@ -483,6 +492,7 @@ public sealed class RecordBatch : IDisposable
             var writer = new KafkaProtocolWriter(encodedBuffer);
             WriteRecords(uncompressedRecords, ref writer);
 
+            PreCompressedRecordsCrc = Crc32C.Compute(encodedBuffer.WrittenSpan);
             PreCompressedRecords = encodedBuffer.DetachBuffer(out var encodedLength);
             PreCompressedLength = encodedLength;
             PreCompressedType = CompressionType.None;
@@ -495,6 +505,7 @@ public sealed class RecordBatch : IDisposable
         {
             using var compressedBuffer = new DetachableBufferWriter(ProducerDataPool.BytePool, _preEncodedRecords.Length);
             codec.Compress(new ReadOnlySequence<byte>(_preEncodedRecords), compressedBuffer);
+            PreCompressedRecordsCrc = Crc32C.Compute(compressedBuffer.WrittenSpan);
             PreCompressedRecords = compressedBuffer.DetachBuffer(out var compressedLength);
             PreCompressedLength = compressedLength;
             PreCompressedType = compression;
@@ -512,6 +523,7 @@ public sealed class RecordBatch : IDisposable
             WriteRecords(records, ref recordsWriter);
             using var serializedCompressedBuffer = new DetachableBufferWriter(ProducerDataPool.BytePool, recordsBuffer.WrittenCount);
             codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), serializedCompressedBuffer);
+            PreCompressedRecordsCrc = Crc32C.Compute(serializedCompressedBuffer.WrittenSpan);
             PreCompressedRecords = serializedCompressedBuffer.DetachBuffer(out var serializedCompressedLength);
             PreCompressedLength = serializedCompressedLength;
             PreCompressedType = compression;
@@ -534,6 +546,7 @@ public sealed class RecordBatch : IDisposable
             PreCompressedRecords = null;
             PreCompressedLength = 0;
             PreCompressedType = CompressionType.None;
+            PreCompressedRecordsCrc = 0;
             Producer.ProducerDataPool.BytePool.Return(array, clearArray: false);
         }
     }
@@ -582,8 +595,10 @@ public sealed class RecordBatch : IDisposable
             item.PreCompressedRecords = null;
             item.PreCompressedLength = 0;
             item.PreCompressedType = CompressionType.None;
+            item.PreCompressedRecordsCrc = 0;
             item._preEncodedRecords = default;
             item._hasPreEncodedRecords = false;
+            item._preEncodedRecordsCrc = 0;
 
             // Reset mutable state to defaults
             item.BaseOffset = 0;
@@ -658,6 +673,7 @@ public sealed class RecordBatch : IDisposable
         batch.Records = Records;
         batch._preEncodedRecords = _preEncodedRecords;
         batch._hasPreEncodedRecords = _hasPreEncodedRecords;
+        batch._preEncodedRecordsCrc = _preEncodedRecordsCrc;
 
         // Transfer pre-compressed data — records content is unchanged,
         // only header fields differ (CRC is recomputed in Write()).
@@ -666,11 +682,13 @@ public sealed class RecordBatch : IDisposable
             batch.PreCompressedRecords = PreCompressedRecords;
             batch.PreCompressedLength = PreCompressedLength;
             batch.PreCompressedType = PreCompressedType;
+            batch.PreCompressedRecordsCrc = PreCompressedRecordsCrc;
 
             // Clear from old batch to prevent double-return to ArrayPool
             PreCompressedRecords = null;
             PreCompressedLength = 0;
             PreCompressedType = CompressionType.None;
+            PreCompressedRecordsCrc = 0;
         }
 
         return batch;
@@ -695,6 +713,7 @@ public sealed class RecordBatch : IDisposable
         // If pre-compressed at seal time, use that data directly (skip CPU-bound compression
         // on the send loop thread). Otherwise, serialize and compress inline.
         ReadOnlySpan<byte> compressedRecords;
+        uint compressedRecordsCrc;
         CompressionType effectiveCompression;
 
         // Rent a scratch cache only when needed (no pre-compressed data available).
@@ -706,11 +725,13 @@ public sealed class RecordBatch : IDisposable
             {
                 // Pre-compressed at seal time — use the stored data directly
                 compressedRecords = PreCompressedRecords.AsSpan(0, PreCompressedLength);
+                compressedRecordsCrc = PreCompressedRecordsCrc;
                 effectiveCompression = PreCompressedType;
             }
             else if (_hasPreEncodedRecords)
             {
                 compressedRecords = _preEncodedRecords.Span;
+                compressedRecordsCrc = _preEncodedRecordsCrc;
                 effectiveCompression = CompressionType.None;
             }
             else
@@ -731,11 +752,13 @@ public sealed class RecordBatch : IDisposable
                     var compressedBuffer = GetCompressedBuffer(cache);
                     codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
                     compressedRecords = compressedBuffer.WrittenSpan;
+                    compressedRecordsCrc = Crc32C.Compute(compressedRecords);
                     effectiveCompression = compression;
                 }
                 else
                 {
                     compressedRecords = recordsBuffer.WrittenSpan;
+                    compressedRecordsCrc = Crc32C.Compute(compressedRecords);
                     effectiveCompression = CompressionType.None;
                 }
             }
@@ -786,9 +809,10 @@ public sealed class RecordBatch : IDisposable
             offset += 4;
             BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], records.Count);
             offset += 4;
+            var headerCrc = Crc32C.Compute(contentSpan[..crcContentFixedSize]);
             compressedRecords.CopyTo(contentSpan[offset..]);
 
-            var crc = Crc32C.Compute(contentSpan[..crcContentSize]);
+            var crc = Crc32C.Combine(headerCrc, compressedRecordsCrc, compressedRecords.Length);
 
             // Backpatch CRC at the beginning
             BinaryPrimitives.WriteInt32BigEndian(crcAndContentSpan, (int)crc);
@@ -1416,6 +1440,10 @@ internal static class Crc32C
 
         return ComputeSoftware(data);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static uint Combine(uint prefixCrc, uint suffixCrc, int suffixByteCount)
+        => ShiftCrc32C(prefixCrc, suffixByteCount) ^ suffixCrc;
 
 #if !NETSTANDARD2_0
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

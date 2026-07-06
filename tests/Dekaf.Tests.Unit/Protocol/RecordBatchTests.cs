@@ -512,6 +512,9 @@ public class RecordBatchTests
         await Assert.That(batch.PreCompressedRecords).IsNotNull();
         await Assert.That(batch.PreCompressedLength).IsGreaterThan(0);
         await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.Gzip);
+        var batchCrc = batch.PreCompressedRecordsCrc;
+        await Assert.That(batchCrc)
+            .IsEqualTo(Crc32C.Compute(batch.PreCompressedRecords!.AsSpan(0, batch.PreCompressedLength)));
 
         // Transfer to new batch via WithProducerState
         var newBatch = batch.WithProducerState(42, 1, 10);
@@ -520,6 +523,7 @@ public class RecordBatchTests
         await Assert.That(newBatch.PreCompressedRecords).IsNotNull();
         await Assert.That(newBatch.PreCompressedLength).IsGreaterThan(0);
         await Assert.That(newBatch.PreCompressedType).IsEqualTo(CompressionType.Gzip);
+        await Assert.That(newBatch.PreCompressedRecordsCrc).IsEqualTo(batchCrc);
         await Assert.That(newBatch.ProducerId).IsEqualTo(42L);
         await Assert.That(newBatch.ProducerEpoch).IsEqualTo((short)1);
         await Assert.That(newBatch.BaseSequence).IsEqualTo(10);
@@ -528,6 +532,7 @@ public class RecordBatchTests
         await Assert.That(batch.PreCompressedRecords).IsNull();
         await Assert.That(batch.PreCompressedLength).IsEqualTo(0);
         await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.None);
+        await Assert.That(batch.PreCompressedRecordsCrc).IsEqualTo(0u);
 
         // Clean up
         newBatch.Dispose();
@@ -543,6 +548,8 @@ public class RecordBatchTests
         await Assert.That(batch.PreCompressedRecords).IsNotNull();
         await Assert.That(batch.PreCompressedLength).IsGreaterThan(0);
         await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.None);
+        await Assert.That(batch.PreCompressedRecordsCrc)
+            .IsEqualTo(Crc32C.Compute(batch.PreCompressedRecords!.AsSpan(0, batch.PreCompressedLength)));
     }
 
     [Test]
