@@ -153,17 +153,66 @@ internal sealed class AcknowledgementTracker
             if (lastOffset < firstOffset)
                 return;
 
+            var incoming = new AckRange(firstOffset, lastOffset, type);
+
             if (_ranges.Count > 0)
             {
                 var last = _ranges[^1];
-                if (last.AcknowledgeType == type && firstOffset <= last.LastOffset + 1)
+                if (last.AcknowledgeType == type && TouchesOrOverlaps(last, incoming))
                 {
-                    _ranges[^1] = last with { LastOffset = Math.Max(last.LastOffset, lastOffset) };
+                    _ranges[^1] = Merge(last, incoming);
+                    return;
+                }
+
+                if (firstOffset > last.LastOffset)
+                {
+                    _ranges.Add(incoming);
                     return;
                 }
             }
 
-            _ranges.Add(new AckRange(firstOffset, lastOffset, type));
+            InsertRange(incoming);
+        }
+
+        private void InsertRange(AckRange incoming)
+        {
+            var index = 0;
+            while (index < _ranges.Count)
+            {
+                var current = _ranges[index];
+                if (current.AcknowledgeType == incoming.AcknowledgeType && TouchesOrOverlaps(current, incoming))
+                {
+                    incoming = Merge(current, incoming);
+                    _ranges.RemoveAt(index);
+                    continue;
+                }
+
+                if (incoming.FirstOffset < current.FirstOffset)
+                    break;
+
+                index++;
+            }
+
+            _ranges.Insert(index, incoming);
+        }
+
+        private static AckRange Merge(AckRange left, AckRange right)
+        {
+            return new AckRange(
+                Math.Min(left.FirstOffset, right.FirstOffset),
+                Math.Max(left.LastOffset, right.LastOffset),
+                left.AcknowledgeType);
+        }
+
+        private static bool TouchesOrOverlaps(AckRange left, AckRange right)
+        {
+            return !EndsBeforeWithGap(left.LastOffset, right.FirstOffset) &&
+                   !EndsBeforeWithGap(right.LastOffset, left.FirstOffset);
+        }
+
+        private static bool EndsBeforeWithGap(long lastOffset, long firstOffset)
+        {
+            return lastOffset < firstOffset && lastOffset + 1 < firstOffset;
         }
 
         internal bool ContainsOffset(long offset)
