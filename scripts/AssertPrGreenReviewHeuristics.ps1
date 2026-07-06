@@ -24,13 +24,15 @@ function Get-ActionableReviewBodyReason {
     $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
     $positiveVerdictDefect =
-        'incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|unsafe|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
+        'incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
     $positiveVerdictBlocker = '\b(?:' + $positiveVerdictDefect + ')\b'
+    $positiveVerdictContinuationDefect =
+        "$positiveVerdictDefect|(?<!not\s+a\s)(?<!no\s)regressions?|duplicat(?:ed|es|ing|ion)|swallow(?:s|ed|ing)?"
     $positiveVerdictContinuationBlocker =
-        '\b(?:but|however|although|though|that\s+said|still)\b[\s\S]{0,400}\b(?:' + $positiveVerdictDefect + ')\b'
+        '\b(?:but|however|although|though|that\s+said|still)\b[\s\S]{0,400}\b(?:' + $positiveVerdictContinuationDefect + ')\b'
     $positiveVerdictAlternatives = @(
         "$noCategoryFindings(?:[\s\S]*)?"
-        'looks?\s+(?:right|good)'
+        'looks?\s+(?:right|good)(?:[\s\S]*)?'
         'verified(?:\s+against\b[\s\S]*)?'
         'confirmed\b(?:[\s\S]*)?'
         '(?:[\s\S]*\b)?no\s+concerns\b(?:[\s\S]*)?'
@@ -38,10 +40,10 @@ function Get-ActionableReviewBodyReason {
         '(?:the\s+)?core\s+fix\s+is\s+(?:sound|correct)(?:[\s\S]*)?'
         'genuine\s+improvement,\s+not\s+just\s+churn(?:[\s\S]*)?'
         'fix\s+is\s+scoped(?:\s+to\b[\s\S]*)?'
-        '(?:[\s\S]*\b)?allocation[- ]free\s+helper(?:[\s\S]*)?'
+        '(?:[\s\S]*\b)?allocation[- ]free(?:[\s\S]*)?'
     ) -join '|'
     $positiveCategoryVerdict =
-        "(?is)^(?!.*$positiveVerdictBlocker)\s*(?:[-*]\s*)?(?:$positiveVerdictAlternatives)\.?\s*$"
+        "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:[-*]\s*)?(?:$positiveVerdictAlternatives)\.?\s*$"
     $positiveCategoryHeadingVerdict = $positiveCategoryVerdict
     $positiveCategorySection = $positiveCategoryVerdict
 

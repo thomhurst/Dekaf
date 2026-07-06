@@ -197,6 +197,19 @@ No outstanding issues.
         Blocks = $false
     },
     @{
+        Name = 'allows clean unsafe and allocation wording'
+        Body = @'
+## Review
+
+### Correctness
+Looks good. Verified the unsafe pointer arithmetic in KafkaProtocolReader does not allocate.
+
+### Design / CLAUDE.md compliance
+This is still allocation-free and keeps the existing unsafe fast path unchanged.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'blocks positive phrase followed by incorrect scope'
         Body = @'
 ## Review
@@ -359,6 +372,36 @@ But this introduces a new race condition when two threads call Dispose concurren
 
 ### Correctness
 No bugs found, but this code is vulnerable to a timing attack.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks regression after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No concerns here, but this is a regression from the previous behavior.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks duplicated logic after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found, but the retry logic is now duplicated across three call sites.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks swallowed exception after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No issues found, though this silently swallows the exception.
 '@
         Blocks = $true
     },
