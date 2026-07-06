@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks.Sources;
@@ -242,7 +243,9 @@ public class RecordAccumulatorTests
             await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
             var purgeTask = Task.Run(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
-            await Task.Delay(100);
+            await WaitUntilAsync(
+                () => purgeTask.Status == TaskStatus.Running || purgeTask.IsCompleted,
+                TimeSpan.FromSeconds(5));
             await Assert.That(purgeTask.IsCompleted).IsFalse();
 
             headerValue.Release();
@@ -288,7 +291,9 @@ public class RecordAccumulatorTests
             await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
             var disposeTask = Task.Run(async () => await accumulator.DisposeAsync());
-            await Task.Delay(100);
+            await WaitUntilAsync(
+                () => GetPrivateField<int>(accumulator, "_disposed") != 0 || disposeTask.IsCompleted,
+                TimeSpan.FromSeconds(5));
             await Assert.That(disposeTask.IsCompleted).IsFalse();
 
             headerValue.Release();
@@ -3029,6 +3034,18 @@ public class RecordAccumulatorTests
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
         return (T)field!.GetValue(instance)!;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (stopwatch.Elapsed >= timeout)
+                throw new TimeoutException("Condition was not met before timeout.");
+
+            await Task.Yield();
+        }
     }
 
     private sealed class LockAssertingReadOnlyMemoryManager(
