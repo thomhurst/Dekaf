@@ -1888,7 +1888,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
                     var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
-                    if (drained > 0)
+                    if (PrefetchLoopControl.ShouldResetConsecutiveErrors(drained))
                         consecutiveErrors = 0;
 
                     if (_assignmentSnapshot.Count == 0)

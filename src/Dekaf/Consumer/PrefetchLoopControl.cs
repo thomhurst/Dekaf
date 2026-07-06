@@ -20,6 +20,9 @@ internal static class PrefetchLoopControl
     public static bool ShouldBreakOnConsecutiveError(int consecutiveErrors, int threshold)
         => consecutiveErrors >= threshold;
 
+    public static bool ShouldResetConsecutiveErrors(int drained)
+        => drained > 0;
+
     public static PrefetchLoopDecision DecideAfterDispatch(
         int started,
         int targetCount,

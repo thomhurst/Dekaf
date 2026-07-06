@@ -69,4 +69,11 @@ public sealed class PrefetchLoopControlTests
         await Assert.That(PrefetchLoopControl.ShouldBreakOnConsecutiveError(49, 50)).IsFalse();
         await Assert.That(PrefetchLoopControl.ShouldBreakOnConsecutiveError(50, 50)).IsTrue();
     }
+
+    [Test]
+    public async Task ShouldResetConsecutiveErrors_OnlyWhenCompletedFetchesDrain()
+    {
+        await Assert.That(PrefetchLoopControl.ShouldResetConsecutiveErrors(0)).IsFalse();
+        await Assert.That(PrefetchLoopControl.ShouldResetConsecutiveErrors(1)).IsTrue();
+    }
 }
