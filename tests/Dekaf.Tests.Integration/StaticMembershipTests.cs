@@ -200,13 +200,13 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
-    public async Task StaticMember_ExceedsSessionTimeout_TriggersRebalance()
+    public async Task StaticMember_TemporaryLeave_DoesNotRebalanceToDynamicMember()
     {
-        // Arrange - use a very short session timeout so it expires while the static member is gone
+        // Arrange - static members leave with MemberEpoch=-2, so a graceful close keeps
+        // their assignment warm for the same instance to rejoin.
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
-        var groupId = $"static-timeout-{Guid.NewGuid():N}";
+        var groupId = $"static-temporary-leave-{Guid.NewGuid():N}";
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
-        var otherListener = new TrackingRebalanceListener();
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -243,23 +243,18 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             await Assert.That(result).IsNotNull();
         }
 
-        // Wait for the session timeout to expire (6 seconds + buffer)
-        await Task.Delay(TimeSpan.FromSeconds(10));
-
-        // Now a new dynamic consumer joining the same group should trigger a rebalance
-        // because the static member's session has expired
+        // A new dynamic consumer must not take over partitions retained for the static member.
         await using var dynamicConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("dynamic-consumer")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithRebalanceListener(otherListener)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         dynamicConsumer.Subscribe(topic);
 
-        // Produce more messages so the dynamic consumer has something to consume
+        // Produce more messages; a rebalance to the dynamic member would make these visible.
         for (var p = 0; p < 2; p++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -271,16 +266,10 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             }, CancellationToken.None);
         }
 
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result2 = await dynamicConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
-        await Assert.That(result2).IsNotNull();
-
-        // The dynamic consumer should have been assigned partitions through a rebalance
-        await Assert.That(otherListener.AssignedCallCount).IsGreaterThanOrEqualTo(1);
-
-        // The dynamic consumer should now own all partitions since the static member has timed out
-        var assignment = dynamicConsumer.Assignment.ToArray();
-        await Assert.That(assignment).Count().IsEqualTo(2);
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var result2 = await dynamicConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts2.Token);
+        await Assert.That(result2).IsNull();
+        await Assert.That(dynamicConsumer.Assignment.ToArray()).IsEmpty();
     }
 
     [Test]
@@ -311,7 +300,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             }, CancellationToken.None);
         }
 
-        // First consumer with static membership — consume, then dispose to release the instance ID
+        // First consumer with static membership - consume, then dispose so the same instance can rejoin.
         var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-1")
@@ -328,7 +317,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var result = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         await Assert.That(result).IsNotNull();
 
-        // Dispose consumer1 so the broker releases the instance ID
+        // Dispose consumer1 with a temporary static leave.
         await consumer1.DisposeAsync();
 
         // Produce more messages for consumer2
