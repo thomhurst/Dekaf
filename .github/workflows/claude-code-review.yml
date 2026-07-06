@@ -85,6 +85,7 @@ jobs:
             - When you do find an issue, suggest a concrete better approach and explain WHY it is better, not just WHAT to change.
             - Compare the current state of the PR against any previous PR comments to make sure they have been addressed.
             - Skip minor style/formatting issues unless they impact readability significantly.
+            - End the review body with exactly one literal verdict marker as the final line. Use `<!-- REVIEW_VERDICT: BLOCKING -->` if you reported any actionable issue that should block merge. Use `<!-- REVIEW_VERDICT: CLEAR -->` only when there are zero actionable findings. Do not put the marker in a code block.
             - ALWAYS post your review, even if no issues are found (acknowledge good code). You MUST post using `gh pr review --comment` before finishing, and ONLY that command. Do not also use `gh pr comment` — it posts a separate issue comment, which duplicates the review. Do not just output the review - actually post it to the PR.
 
             Use the code review skill to run this review: /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }}
