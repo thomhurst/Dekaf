@@ -67,8 +67,10 @@ public sealed class ClientDnsLookupTests
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var acceptTask = listener.AcceptSocketAsync();
+        // Listener is IPv4-only; IPv6 loopback fails quickly without depending on
+        // platform-specific routing for aliases like 127.0.0.2.
         var resolver = new ClientDnsEndpointResolver(new StubDnsLookup(
-            addresses: [IPAddress.Parse("127.0.0.2"), IPAddress.Loopback]));
+            addresses: [IPAddress.IPv6Loopback, IPAddress.Loopback]));
 
         await using var connection = new KafkaConnection(
             "multi.example",
