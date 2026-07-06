@@ -478,7 +478,7 @@ public sealed class OAuthBearerTokenProviderTests
                     : null,
                 ParseQuery(request.RequestUri!.Query)));
 
-            const string json = """{"access_token":"azure-access-token","expires_in":3600,"client_id":"managed-identity-client"}""";
+            const string json = """{"access_token":"azure-access-token","expires_in":"3600","client_id":"managed-identity-client"}""";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")

@@ -254,7 +254,8 @@ public sealed class OAuthBearerTokenProvider : IDisposable
 
         // Calculate expiration
         DateTimeOffset expiration;
-        if (root.TryGetProperty("expires_in", out var expiresInElement) && expiresInElement.TryGetInt32(out var expiresIn))
+        if (root.TryGetProperty("expires_in", out var expiresInElement)
+            && TryGetExpiresInSeconds(expiresInElement, out var expiresIn))
         {
             expiration = DateTimeOffset.UtcNow.AddSeconds(expiresIn);
         }
@@ -273,6 +274,22 @@ public sealed class OAuthBearerTokenProvider : IDisposable
             Expiration = expiration,
             PrincipalName = principalName
         };
+    }
+
+    private static bool TryGetExpiresInSeconds(JsonElement expiresInElement, out int expiresIn)
+    {
+        if (expiresInElement.ValueKind == JsonValueKind.Number)
+        {
+            return expiresInElement.TryGetInt32(out expiresIn);
+        }
+
+        if (expiresInElement.ValueKind == JsonValueKind.String)
+        {
+            return int.TryParse(expiresInElement.GetString(), out expiresIn);
+        }
+
+        expiresIn = 0;
+        return false;
     }
 
     private static string ExtractPrincipalName(string accessToken, JsonElement tokenResponse)
