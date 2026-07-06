@@ -8,6 +8,7 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Tests.Unit;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -137,8 +138,10 @@ public class RecordAccumulatorReadyTests
                     pooledKey, pooledValue, null, 0, completion);
             }
 
+            await TestWait.UntilAsync(
+                () => codec.CompressCount > 0,
+                TimeSpan.FromSeconds(5));
             var compressCountBeforeReady = codec.CompressCount;
-            await Assert.That(compressCountBeforeReady).IsGreaterThan(0);
 
             var readyNodes = new HashSet<int>();
             var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
@@ -149,6 +152,77 @@ public class RecordAccumulatorReadyTests
         }
         finally
         {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Append_SealedCompressedBatch_DoesNotWaitForCompressionWorker()
+    {
+        var options = CreateTestOptions(batchSize: 50, compressionType: CompressionType.Gzip);
+        var codec = new BlockingCompressionCodec(CompressionType.Gzip);
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(codec);
+
+        var accumulator = new RecordAccumulator(options, compressionCodecs);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            var fillTask = Task.Run(async () =>
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    var completion = pool.Rent();
+                    accumulator.TryAppendWithCompletion("test-topic", 0,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        pooledKey, pooledValue, null, 0, completion);
+                    await Task.Yield();
+                }
+            });
+
+            await codec.CompressStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await fillTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var appendWhileCompressionBlocked = accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                ReadOnlySpan<byte>.Empty,
+                valueIsNull: true,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None).AsTask();
+
+            await appendWhileCompressionBlocked.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var readyNodesWhileBlocked = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodesWhileBlocked);
+            await Assert.That(readyNodesWhileBlocked).IsEmpty();
+
+            codec.AllowCompression.SetResult();
+
+            await TestWait.UntilAsync(
+                () =>
+                {
+                    var readyNodes = new HashSet<int>();
+                    accumulator.Ready(metadataManager, readyNodes);
+                    return readyNodes.Contains(1);
+                },
+                TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            codec.AllowCompression.TrySetResult();
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
             await metadataManager.DisposeAsync();
@@ -1016,6 +1090,31 @@ public class RecordAccumulatorReadyTests
         public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             Interlocked.Increment(ref _compressCount);
+            foreach (var segment in source)
+                destination.Write(segment.Span);
+        }
+
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            foreach (var segment in source)
+                destination.Write(segment.Span);
+        }
+    }
+
+    private sealed class BlockingCompressionCodec(CompressionType type) : ICompressionCodec
+    {
+        public CompressionType Type { get; } = type;
+
+        public TaskCompletionSource CompressStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowCompression { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            CompressStarted.TrySetResult();
+            AllowCompression.Task.GetAwaiter().GetResult();
             foreach (var segment in source)
                 destination.Write(segment.Span);
         }
