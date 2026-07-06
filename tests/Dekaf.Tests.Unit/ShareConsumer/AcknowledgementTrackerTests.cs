@@ -405,4 +405,62 @@ public class AcknowledgementTrackerTests
         await Assert.That(newerBatch.FirstOffset).IsEqualTo(100);
         await Assert.That(newerBatch.LastOffset).IsEqualTo(110);
     }
+
+    [Test]
+    public async Task TrackDeliveredRecords_OverwritesRequeuedDifferentTypeRange()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 10, 10);
+        tracker.Acknowledge(tp, 10, AcknowledgeType.Reject);
+        var flushed = tracker.Flush();
+
+        tracker.RequeueAcks(flushed);
+        tracker.TrackDeliveredRecords(tp, 10, 10);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+        await Assert.That(result[tp].Count).IsEqualTo(1);
+
+        var batch = result[tp][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(10);
+        await Assert.That(batch.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+    }
+
+    [Test]
+    public async Task TrackDeliveredRecords_SplitsRequeuedDifferentTypeOverlap()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 10, 14);
+        for (var offset = 10; offset <= 14; offset++)
+        {
+            tracker.Acknowledge(tp, offset, AcknowledgeType.Reject);
+        }
+
+        var flushed = tracker.Flush();
+
+        tracker.RequeueAcks(flushed);
+        tracker.TrackDeliveredRecords(tp, 12, 16);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+        await Assert.That(result[tp].Count).IsEqualTo(1);
+
+        var batch = result[tp][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(16);
+        for (var i = 0; i < 2; i++)
+        {
+            await Assert.That(batch.AcknowledgeTypes[i]).IsEqualTo((byte)AcknowledgeType.Reject);
+        }
+
+        for (var i = 2; i < batch.AcknowledgeTypes.Length; i++)
+        {
+            await Assert.That(batch.AcknowledgeTypes[i]).IsEqualTo((byte)AcknowledgeType.Accept);
+        }
+    }
 }

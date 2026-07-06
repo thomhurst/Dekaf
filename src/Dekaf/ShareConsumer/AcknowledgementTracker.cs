@@ -187,11 +187,38 @@ internal sealed class AcknowledgementTracker
                     continue;
                 }
 
-                if (incoming.FirstOffset < current.FirstOffset)
+                if (Overlaps(current, incoming))
+                {
+                    _ranges.RemoveAt(index);
+
+                    if (current.FirstOffset < incoming.FirstOffset)
+                    {
+                        _ranges.Insert(
+                            index,
+                            current with { LastOffset = incoming.FirstOffset - 1 });
+                        index++;
+                    }
+
+                    if (current.LastOffset > incoming.LastOffset)
+                    {
+                        _ranges.Insert(
+                            index,
+                            current with { FirstOffset = incoming.LastOffset + 1 });
+                        index++;
+                    }
+
+                    continue;
+                }
+
+                if (incoming.LastOffset < current.FirstOffset)
                     break;
 
                 index++;
             }
+
+            index = 0;
+            while (index < _ranges.Count && _ranges[index].FirstOffset < incoming.FirstOffset)
+                index++;
 
             _ranges.Insert(index, incoming);
         }
@@ -208,6 +235,12 @@ internal sealed class AcknowledgementTracker
         {
             return !EndsBeforeWithGap(left.LastOffset, right.FirstOffset) &&
                    !EndsBeforeWithGap(right.LastOffset, left.FirstOffset);
+        }
+
+        private static bool Overlaps(AckRange left, AckRange right)
+        {
+            return left.FirstOffset <= right.LastOffset &&
+                   right.FirstOffset <= left.LastOffset;
         }
 
         private static bool EndsBeforeWithGap(long lastOffset, long firstOffset)
