@@ -260,6 +260,30 @@ No issues to flag.
         Blocks = $true
     },
     @{
+        Name = 'blocks security category despite global no-issues verdict'
+        Body = @'
+## Review
+
+### Security
+- The new admin endpoint builds the SQL query by concatenating the raw username parameter directly into the WHERE clause before executing it.
+
+No issues to flag.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks correctness category despite global no-issues verdict'
+        Body = @'
+## Review
+
+### Correctness
+- The retry counter is decremented twice per attempt, so this exhausts retries roughly twice as fast as configured.
+
+No issues to flag.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows category heading with previously flagged bugs verified fixed'
         Body = @'
 ## Review
@@ -269,6 +293,21 @@ No issues to flag.
 The prior cache-key and fallback findings are now resolved on the current diff.
 
 No new or unresolved actionable issues found in the current diff.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows resolved prior findings heading with itemized verification'
+        Body = @'
+## Review
+
+### Correctness — both previously-flagged bugs verified fixed
+
+**1. Dead `lastException` / unreachable fallback** — the exception filter now catches the final retriable exception, the loop completes, and `lastException` is genuinely thrown afterward. Confirmed correct.
+
+**2. Cache key ignored `normalize`** — `_idBySchemaCache` is now keyed by `(subject, schema, normalize)`, and the effective normalize flag is threaded consistently. Confirmed correct.
+
+Both fixes match what the prior reviews reported and were independently re-verified against the current diff.
 '@
         Blocks = $false
     },

@@ -105,6 +105,35 @@ function Test-StaleBotReviewCanBeIgnored {
     return Test-StatusCheckCompletedAfterInstant -Checks $Checks -Name 'claude-review' -InstantUtc $HeadCommitCommittedAt
 }
 
+function Test-ReviewCategoryAllowsGlobalNoIssueVerdict {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$CategoryHeading
+    )
+
+    $allowedTerms = @('design', 'architecture', 'api surface')
+    $terms = @(
+        foreach ($term in [regex]::Split($CategoryHeading, '\s*/\s*')) {
+            $normalized = ([regex]::Replace($term.Trim(), '\s+', ' ')).ToLowerInvariant()
+            if ($normalized) {
+                $normalized
+            }
+        }
+    )
+
+    if ($terms.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($term in $terms) {
+        if ($term -notin $allowedTerms) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Get-ActionableReviewBodyReason {
     [CmdletBinding()]
     param(
@@ -160,6 +189,7 @@ function Get-ActionableReviewBodyReason {
         "$noCategoryFindings(?:[\s\S]*)?"
         'looks?\s+(?:right|good)(?:[\s\S]*)?'
         '(?:both\s+)?previously[- ]flagged\b(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?'
+        '(?:the\s+)?prior\b(?=[\s\S]*\b(?:findings?|issues?|bugs?)\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?'
         'verified(?:\s+against\b[\s\S]*)?'
         'confirmed\b(?:[\s\S]*)?'
         'no\s+concerns\b(?:[\s\S]*)?'
@@ -177,6 +207,7 @@ function Get-ActionableReviewBodyReason {
     $categoryHeadingWithOptionalVerdict = "$categoryOnlyHeading(?:(?:$horizontalWhitespace*(?:[-:]|\p{Pd})$horizontalWhitespace*\S[^\r\n#]*)|(?:$horizontalWhitespace*\([^\r\n#)]*\))|(?:$horizontalWhitespace+\S[^\r\n#]*))?:?"
     $categoryHeadingPattern = "(?im)^$horizontalWhitespace*#{2,4}$horizontalWhitespace+($categoryOnlyHeading)(?:(?:$horizontalWhitespace*(?:[-:]|\p{Pd})$horizontalWhitespace*(?<verdict>\S[^\r\n#]*))|(?:$horizontalWhitespace*\((?<parentheticalVerdict>[^)\r\n#]+)\))|(?:$horizontalWhitespace+(?<bareVerdict>\S[^\r\n#]*)))?:?$horizontalWhitespace*\r?$"
     foreach ($heading in [regex]::Matches($Body, $categoryHeadingPattern)) {
+        $allowsGlobalNoIssueVerdict = Test-ReviewCategoryAllowsGlobalNoIssueVerdict -CategoryHeading $heading.Groups[1].Value
         $headingVerdict = if ($heading.Groups['verdict'].Success) {
             $heading.Groups['verdict'].Value
         } elseif ($heading.Groups['bareVerdict'].Success) {
@@ -184,6 +215,7 @@ function Get-ActionableReviewBodyReason {
         } else {
             $heading.Groups['parentheticalVerdict'].Value
         }
+        $headingVerdictResolvesPriorFindings = $headingVerdict -match "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:both\s+)?previously[- ]flagged\b(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?$"
         if ($headingVerdict -and $headingVerdict -notmatch $positiveCategoryHeadingVerdict) {
             return "actionable category heading: $($heading.Value.Trim())"
         }
@@ -208,7 +240,8 @@ function Get-ActionableReviewBodyReason {
         }
 
         if ($firstVerdict -notmatch $positiveCategorySection -and
-            -not ($globalNoIssueVerdict -and $sectionBody -notmatch $positiveVerdictContinuationBlocker)) {
+            -not ($headingVerdictResolvesPriorFindings -and $sectionBody -notmatch $positiveVerdictContinuationBlocker) -and
+            -not ($allowsGlobalNoIssueVerdict -and $globalNoIssueVerdict -and $sectionBody -notmatch $positiveVerdictContinuationBlocker)) {
             return "actionable category heading: $($heading.Value.Trim())"
         }
 
