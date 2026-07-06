@@ -3299,14 +3299,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearPendingEofEventsForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
-        var count = _pendingEofEvents.Count;
-        for (var i = 0; i < count; i++)
+        List<(TopicPartition Partition, long Offset)>? retained = null;
+        while (_pendingEofEvents.TryDequeue(out var eofEvent))
         {
-            if (!_pendingEofEvents.TryDequeue(out var eofEvent))
-                return;
-
             if (!partitionsToRemove.Contains(eofEvent.Partition))
-                _pendingEofEvents.Enqueue(eofEvent);
+                (retained ??= []).Add(eofEvent);
+        }
+
+        if (retained is null)
+            return;
+
+        foreach (var eofEvent in retained)
+        {
+            _pendingEofEvents.Enqueue(eofEvent);
         }
     }
 

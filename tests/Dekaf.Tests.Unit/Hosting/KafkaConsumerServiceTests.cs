@@ -4,6 +4,8 @@ using Dekaf;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;
+using Dekaf.Producer;
+using Dekaf.Retry;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -243,6 +245,78 @@ public sealed class KafkaConsumerServiceTests
             cts.Token);
 
         await Assert.That(async () => await waitTask).Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_RetryTopicsExhausted_RoutesToDeadLetterEvenBelowMaxFailures()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
+            .Returns(ValueTask.CompletedTask);
+
+        var source = CreateResult("orders", partition: 1, offset: 42);
+        var retryHeaders = RetryTopicHeaders.Build(
+            source,
+            failureCount: 1,
+            delay: TimeSpan.FromSeconds(5),
+            dueAt: DateTimeOffset.UtcNow.AddSeconds(-1));
+        var retryResult = CreateResult(
+            "orders-retry-5s",
+            partition: 3,
+            offset: 99,
+            headers: retryHeaders.ToList());
+
+        var deadLetterOptions = new DeadLetterOptions
+        {
+            MaxFailures = 3,
+            RetryTopics = new RetryTopicOptions
+            {
+                Delays = [TimeSpan.FromSeconds(5)]
+            }
+        };
+        var service = new FailingConsumerService(consumer, ["orders"], deadLetterOptions);
+        SetDlqProducer(service, producer);
+
+        await ProcessWithRetriesAsync(service, retryResult, CancellationToken.None);
+
+        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message.Topic == "orders.DLQ" &&
+            message.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey) == "2"));
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_RetryPolicy_UsesNextRetryTopicTierAfterLocalRetries()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
+            .Returns(ValueTask.CompletedTask);
+
+        var deadLetterOptions = new DeadLetterOptions
+        {
+            MaxFailures = 10,
+            RetryTopics = new RetryTopicOptions
+            {
+                Delays = [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30)]
+            }
+        };
+        var retryPolicy = new FixedDelayRetryPolicy
+        {
+            Delay = TimeSpan.Zero,
+            MaxAttempts = 1
+        };
+        var service = new FailingConsumerService(consumer, ["orders"], deadLetterOptions, retryPolicy);
+        SetDlqProducer(service, producer);
+
+        await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
+
+        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message.Topic == "orders-retry-5s" &&
+            message.Headers!.GetFirstAsString(RetryTopicHeaders.FailureCountKey) == "1"));
+        await producer.DidNotReceive().FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message.Topic == "orders-retry-30s"));
+        await Assert.That(service.Errors).Count().IsEqualTo(2);
     }
 
     #endregion
@@ -611,6 +685,31 @@ public sealed class KafkaConsumerServiceTests
         return (Task)method.Invoke(null, [dueAt, cancellationToken])!;
     }
 
+    private static ValueTask ProcessWithRetriesAsync(
+        TestableKafkaConsumerService service,
+        ConsumeResult<string, string> result,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>).GetMethod(
+            "ProcessWithRetriesAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ProcessWithRetriesAsync method not found.");
+
+        return (ValueTask)method.Invoke(service, [result, cancellationToken])!;
+    }
+
+    private static void SetDlqProducer(
+        TestableKafkaConsumerService service,
+        IKafkaProducer<byte[]?, byte[]?> producer)
+    {
+        var field = typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>).GetField(
+            "_dlqProducer",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_dlqProducer field not found.");
+
+        field.SetValue(service, producer);
+    }
+
     private static ConsumeResult<string, string> CreateResult(
         string topic,
         int partition = 0,
@@ -657,8 +756,12 @@ public sealed class KafkaConsumerServiceTests
     {
         public List<Exception> Errors { get; } = [];
 
-        public FailingConsumerService(IKafkaConsumer<string, string> consumer, string[] topics)
-            : base(consumer, topics)
+        public FailingConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            string[] topics,
+            DeadLetterOptions? deadLetterOptions = null,
+            IRetryPolicy? retryPolicy = null)
+            : base(consumer, topics, deadLetterOptions: deadLetterOptions, retryPolicy: retryPolicy)
         {
         }
 
@@ -682,8 +785,9 @@ public sealed class KafkaConsumerServiceTests
             IKafkaConsumer<string, string> consumer,
             string[] topics,
             KafkaConsumerServiceOptions? options = null,
-            DeadLetterOptions? deadLetterOptions = null)
-            : base(consumer, NullLogger.Instance, deadLetterOptions, serviceOptions: options)
+            DeadLetterOptions? deadLetterOptions = null,
+            IRetryPolicy? retryPolicy = null)
+            : base(consumer, NullLogger.Instance, deadLetterOptions, retryPolicy, options)
         {
             _topics = topics;
         }

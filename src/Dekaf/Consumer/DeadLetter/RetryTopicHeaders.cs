@@ -49,11 +49,11 @@ public static class RetryTopicHeaders
         }
 
         headers.Add(SourceTopicKey, sourceTopic);
-        headers.Add(SourcePartitionKey, FormatInt(sourcePartition));
-        headers.Add(SourceOffsetKey, FormatLong(sourceOffset));
-        headers.Add(FailureCountKey, FormatInt(failureCount));
-        headers.Add(DelayMsKey, FormatLong(delay.Ticks / TimeSpan.TicksPerMillisecond));
-        headers.Add(DueTimestampMsKey, FormatLong(dueAt.ToUnixTimeMilliseconds()));
+        headers.Add(SourcePartitionKey, DeadLetterHeaderFormatting.FormatInt(sourcePartition));
+        headers.Add(SourceOffsetKey, DeadLetterHeaderFormatting.FormatLong(sourceOffset));
+        headers.Add(FailureCountKey, DeadLetterHeaderFormatting.FormatInt(failureCount));
+        headers.Add(DelayMsKey, DeadLetterHeaderFormatting.FormatLong(delay.Ticks / TimeSpan.TicksPerMillisecond));
+        headers.Add(DueTimestampMsKey, DeadLetterHeaderFormatting.FormatLong(dueAt.ToUnixTimeMilliseconds()));
         return headers;
     }
 
@@ -120,7 +120,4 @@ public static class RetryTopicHeaders
     private static bool TryGetLong(IReadOnlyList<Header>? headers, string key, out long value)
         => long.TryParse(GetHeaderValue(headers, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
 
-    private static string FormatInt(int value) => value.ToString(CultureInfo.InvariantCulture);
-
-    private static string FormatLong(long value) => value.ToString(CultureInfo.InvariantCulture);
 }

@@ -294,58 +294,11 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         byte[]? rawValue = null;
         var previousFailureCount = RetryTopicHeaders.GetFailureCount(result.Headers);
 
-        if (_retryPolicy is not null)
+        var maxAttemptsWithoutPolicy = _retryTopicOptions?.IsEnabled == true ? 1 : _deadLetterOptions?.MaxFailures ?? 1;
+        var attempt = 0;
+        while (true)
         {
-            // Retry policy drives retry count and delays
-            var attempt = 0;
-            while (true)
-            {
-                attempt++;
-                try
-                {
-                    await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
-                    return;
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    CaptureRawBytesOnFirstFailure(attempt, ref rawKey, ref rawValue);
-
-                    await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
-
-                    var failureCount = previousFailureCount + attempt;
-                    var delay = _retryPolicy.GetNextDelay(attempt, ex);
-                    if (delay is not null)
-                    {
-                        await Task.Delay(delay.Value, stoppingToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // Policy says stop retrying - check DLQ
-                    if (await TryRouteToRetryTopicAsync(result, rawKey, rawValue, failureCount, stoppingToken)
-                            .ConfigureAwait(false))
-                    {
-                        return;
-                    }
-
-                    if (_deadLetterPolicy is not null &&
-                        _deadLetterPolicy.ShouldDeadLetter(result, ex, failureCount))
-                    {
-                        await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, failureCount, stoppingToken)
-                            .ConfigureAwait(false);
-                    }
-                    return;
-                }
-            }
-        }
-
-        // No retry policy: existing behavior (immediate retry up to MaxFailures)
-        var maxAttempts = _retryTopicOptions?.IsEnabled == true ? 1 : _deadLetterOptions?.MaxFailures ?? 1;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
-        {
+            attempt++;
             try
             {
                 await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
@@ -361,22 +314,55 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
                 await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
 
-                var failureCount = previousFailureCount + attempt;
-                if (await TryRouteToRetryTopicAsync(result, rawKey, rawValue, failureCount, stoppingToken)
-                        .ConfigureAwait(false))
+                var delay = _retryPolicy?.GetNextDelay(attempt, ex);
+                if (delay is not null)
+                {
+                    await Task.Delay(delay.Value, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var deadLetterFailureCount = previousFailureCount + attempt;
+                var retryTopicFailureCount = GetNextRetryTopicFailureCount(previousFailureCount);
+                var retryTopicResult = await TryRouteToRetryTopicAsync(
+                        result,
+                        rawKey,
+                        rawValue,
+                        retryTopicFailureCount,
+                        stoppingToken)
+                    .ConfigureAwait(false);
+                if (retryTopicResult == RetryTopicRouteResult.Routed)
                 {
                     return;
                 }
 
-                if (_deadLetterPolicy is not null &&
-                    _deadLetterPolicy.ShouldDeadLetter(result, ex, failureCount))
+                if (ShouldRouteToDeadLetter(result, ex, deadLetterFailureCount, retryTopicResult))
                 {
-                    await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, failureCount, stoppingToken)
+                    await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, deadLetterFailureCount, stoppingToken)
                         .ConfigureAwait(false);
                     return;
                 }
+
+                if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
+                    continue;
+
+                return;
             }
         }
+    }
+
+    private static int GetNextRetryTopicFailureCount(int previousFailureCount) => previousFailureCount + 1;
+
+    private bool ShouldRouteToDeadLetter(
+        ConsumeResult<TKey, TValue> result,
+        Exception exception,
+        int failureCount,
+        RetryTopicRouteResult retryTopicResult)
+    {
+        if (_deadLetterPolicy is null)
+            return false;
+
+        return retryTopicResult == RetryTopicRouteResult.Exhausted ||
+            _deadLetterPolicy.ShouldDeadLetter(result, exception, failureCount);
     }
 
     private string[] BuildSubscriptionTopics()
@@ -574,7 +560,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
     }
 
-    private async ValueTask<bool> TryRouteToRetryTopicAsync(
+    private async ValueTask<RetryTopicRouteResult> TryRouteToRetryTopicAsync(
         ConsumeResult<TKey, TValue> result,
         byte[]? rawKey, byte[]? rawValue, int failureCount,
         CancellationToken cancellationToken)
@@ -582,12 +568,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (_dlqProducer is null ||
             _retryTopicOptions?.IsEnabled != true)
         {
-            return false;
+            return RetryTopicRouteResult.Disabled;
         }
 
         var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
         if (!_retryTopicOptions.TryGetRetryTopic(sourceTopic, failureCount, out var retryTopic, out var delay))
-            return false;
+            return RetryTopicRouteResult.Exhausted;
 
         try
         {
@@ -611,13 +597,21 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             }
 
             LogMessageRoutedToRetryTopic(result.Topic, result.Partition, result.Offset, retryTopic, delay, failureCount);
-            return true;
+            return RetryTopicRouteResult.Routed;
         }
         catch (Exception retryEx)
         {
             await OnRetryTopicRoutingFailedAsync(retryEx, result, cancellationToken).ConfigureAwait(false);
-            return false;
+            return RetryTopicRouteResult.Failed;
         }
+    }
+
+    private enum RetryTopicRouteResult
+    {
+        Disabled,
+        Routed,
+        Exhausted,
+        Failed
     }
 
     private IKafkaProducer<byte[]?, byte[]?> BuildDlqProducer()
