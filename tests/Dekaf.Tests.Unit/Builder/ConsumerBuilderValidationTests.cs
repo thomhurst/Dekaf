@@ -230,6 +230,30 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithMaxPollRecords_LessThan1_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+        await Assert.That(() => builder.WithMaxPollRecords(0))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task ShareConsumer_WithMaxPollRecords_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateShareConsumer<string, string>();
+        var result = builder.WithMaxPollRecords(100);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task ShareConsumer_WithMaxPollRecords_LessThan1_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateShareConsumer<string, string>();
+        await Assert.That(() => builder.WithMaxPollRecords(0))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task WithFetchSessions_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

@@ -1524,6 +1524,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     public ConsumerBuilder<TKey, TValue> WithMaxPollRecords(int maxPollRecords)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxPollRecords, 1);
         _maxPollRecords = maxPollRecords;
         return this;
     }
@@ -2638,6 +2639,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public ShareConsumerBuilder<TKey, TValue> WithMaxPollRecords(int maxPollRecords)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxPollRecords, 1);
         _maxPollRecords = maxPollRecords;
         return this;
     }

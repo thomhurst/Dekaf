@@ -17,16 +17,21 @@ namespace Dekaf.Consumer
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
         private readonly Func<TopicPartition, bool>? _isPartitionStillAssigned;
+        private readonly int _maxRecords;
+        private long _count;
 
         internal ConsumeBatch(PendingFetchData pendingFetchData,
             IDeserializer<TKey>? keyDeserializer,
             IDeserializer<TValue>? valueDeserializer,
-            Func<TopicPartition, bool>? isPartitionStillAssigned = null)
+            Func<TopicPartition, bool>? isPartitionStillAssigned = null,
+            int maxRecords = int.MaxValue)
         {
+            ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
             _isPartitionStillAssigned = isPartitionStillAssigned;
+            _maxRecords = maxRecords;
         }
 
         /// <summary>
@@ -48,7 +53,7 @@ namespace Dekaf.Consumer
         /// Gets the number of messages yielded from this batch after enumeration.
         /// This value is only accurate after the batch has been fully enumerated.
         /// </summary>
-        public long Count => _pendingFetchData.MessageCount;
+        public long Count => _count;
 
         /// <summary>
         /// Returns a struct enumerator that avoids boxing allocation.
@@ -76,10 +81,12 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeResult<TKey, TValue>>
         {
             private readonly ConsumeBatch<TKey, TValue> _batch;
+            private int _recordsYielded;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
                 _batch = batch;
+                _recordsYielded = 0;
                 Current = default!;
             }
 
@@ -103,6 +110,12 @@ namespace Dekaf.Consumer
                 if (_batch._isPartitionStillAssigned is not null
                     && !_batch._isPartitionStillAssigned(pending.TopicPartition))
                 {
+                    return false;
+                }
+
+                if (_recordsYielded >= _batch._maxRecords)
+                {
+                    pending.TryBufferNext();
                     return false;
                 }
 
@@ -139,6 +152,8 @@ namespace Dekaf.Consumer
                     valueDeserializer: _batch._valueDeserializer);
 
                 pending.TrackConsumed(offset, messageBytes);
+                _recordsYielded++;
+                _batch._count++;
 
                 return true;
             }
