@@ -82,6 +82,7 @@ internal sealed class PendingFetchData : IDisposable
     private int _disposed;
     private int _headerGeneration;
     private bool _eagerParsed;
+    private bool _hasBufferedCurrent;
 
     public string Topic { get; private set; } = null!;
     public int PartitionIndex { get; private set; }
@@ -129,6 +130,7 @@ internal sealed class PendingFetchData : IDisposable
     /// Using long to prevent overflow in long-running scenarios with large fetches.
     /// </summary>
     public long MessageCount { get; private set; }
+    internal bool IsExhausted { get; private set; }
 
     private long _emittedMessageCount;
     private long _emittedBytesConsumed;
@@ -326,12 +328,21 @@ internal sealed class PendingFetchData : IDisposable
     {
         Debug.Assert(Volatile.Read(ref _disposed) == 0, "MoveNext() called after Dispose()");
 
+        if (IsExhausted)
+            return false;
+
+        if (_hasBufferedCurrent)
+        {
+            _hasBufferedCurrent = false;
+            return true;
+        }
+
         // First call - start at first batch, first record
         if (_batchIndex < 0)
         {
             _batchIndex = 0;
             _recordIndex = 0;
-            return HasCurrentRecord();
+            return HasCurrentRecordOrMarkExhausted();
         }
 
         // Try next record in current batch (uses cached count to avoid Records property access)
@@ -342,7 +353,36 @@ internal sealed class PendingFetchData : IDisposable
         // Move to next batch
         _batchIndex++;
         _recordIndex = 0;
-        return HasCurrentRecord();
+        return HasCurrentRecordOrMarkExhausted();
+    }
+
+    /// <summary>
+    /// Advances to the next record and makes the following <see cref="MoveNext"/> return it.
+    /// Used when a bounded batch reaches its record limit and must distinguish
+    /// "more records remain" from "fetch exhausted" without dropping the next record.
+    /// </summary>
+    internal bool TryBufferNext()
+    {
+        if (IsExhausted)
+            return false;
+
+        if (_hasBufferedCurrent)
+            return true;
+
+        if (!MoveNext())
+            return false;
+
+        _hasBufferedCurrent = true;
+        return true;
+    }
+
+    private bool HasCurrentRecordOrMarkExhausted()
+    {
+        if (HasCurrentRecord())
+            return true;
+
+        IsExhausted = true;
+        return false;
     }
 
     private bool HasCurrentRecord()
@@ -449,6 +489,7 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecords = null;
         _currentRecordsCount = 0;
         _eagerParsed = false;
+        _hasBufferedCurrent = false;
         unchecked
         {
             _headerGeneration++;
@@ -463,6 +504,7 @@ internal sealed class PendingFetchData : IDisposable
         LastYieldedLeaderEpoch = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
+        IsExhausted = false;
         _emittedMessageCount = 0;
         _emittedBytesConsumed = 0;
         PartitionIndex = 0;
@@ -896,6 +938,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
@@ -1675,7 +1718,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (ClearFetchBufferForPendingCoordinatorRevocations())
                     continue;
 
-                PendingFetchData pending = _pendingFetches.Dequeue();
+                PendingFetchData pending = _pendingFetches.Peek();
+                int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
+                var batchYielded = false;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -1689,28 +1734,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pending,
                         _keyDeserializer,
                         _valueDeserializer,
-                        IsCurrentlyAssigned);
+                        IsCurrentlyAssigned,
+                        _options.MaxPollRecords);
+                    batchYielded = true;
                     yield return batch;
-
-                    // After caller finishes iterating: update positions once per batch
-                    FlushConsumedPositions(pending);
-
-                    // Record consumer metrics per-fetch
-                    if (metricsEnabled && pending.MessageCount > 0)
-                    {
-                        EmitFetchMetrics(pending);
-                    }
-
-                    // Report batch processing time to the adaptive fetch sizer
-                    if (batchProcessingStarted.HasValue)
-                    {
-                        TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
-                    }
                 }
                 finally
                 {
-                    pending.Dispose();
+                    CompleteBatchPoll(
+                        pending,
+                        pendingFetchesVersion,
+                        metricsEnabled,
+                        batchProcessingStarted,
+                        disposePending: !batchYielded);
                 }
             }
 
@@ -1822,7 +1858,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (ClearFetchBufferForPendingCoordinatorRevocations())
                     continue;
 
-                PendingFetchData pending = _pendingFetches.Dequeue();
+                PendingFetchData pending = _pendingFetches.Peek();
+                int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
+                var batchYielded = false;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -1832,28 +1870,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
-                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned);
+                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned, _options.MaxPollRecords);
+                    batchYielded = true;
                     yield return batch;
-
-                    // After caller finishes iterating: update positions once per batch
-                    FlushConsumedPositions(pending);
-
-                    // Record consumer metrics per-fetch
-                    if (metricsEnabled && pending.MessageCount > 0)
-                    {
-                        EmitFetchMetrics(pending);
-                    }
-
-                    // Report batch processing time to the adaptive fetch sizer
-                    if (batchProcessingStarted.HasValue)
-                    {
-                        TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
-                    }
                 }
                 finally
                 {
-                    pending.Dispose();
+                    CompleteBatchPoll(
+                        pending,
+                        pendingFetchesVersion,
+                        metricsEnabled,
+                        batchProcessingStarted,
+                        disposePending: !batchYielded);
                 }
             }
 
@@ -1863,6 +1891,36 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Discarded — EOF is informational and not relevant for raw batch throughput
             }
+        }
+    }
+
+    private void CompleteBatchPoll(
+        PendingFetchData pending,
+        int pendingFetchesVersion,
+        bool metricsEnabled,
+        long? batchProcessingStarted,
+        bool disposePending)
+    {
+        if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+            return;
+
+        if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
+            return;
+
+        FlushConsumedPositions(pending);
+
+        if (metricsEnabled && pending.MessageCount > 0)
+            EmitFetchMetrics(pending);
+
+        if (batchProcessingStarted.HasValue)
+        {
+            TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+            _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+        }
+
+        if (disposePending || pending.IsExhausted || !IsCurrentlyAssigned(pending.TopicPartition))
+        {
+            _pendingFetches.Dequeue().Dispose();
         }
     }
 
