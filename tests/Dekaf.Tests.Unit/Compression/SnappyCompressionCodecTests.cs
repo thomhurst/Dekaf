@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Text;
 using Dekaf.Compression;
 using Dekaf.Compression.Snappy;
@@ -76,6 +77,19 @@ public class SnappyCompressionCodecTests
         // Xerial magic header: 0x82 0x53 0x4e 0x41 0x50 0x50 0x59 0x00
         var expectedMagic = new byte[] { 0x82, 0x53, 0x4e, 0x41, 0x50, 0x50, 0x59, 0x00 };
         await Assert.That(compressedBuffer.WrittenSpan.Slice(0, 8).ToArray()).IsEquivalentTo(expectedMagic);
+    }
+
+    [Test]
+    public async Task Compress_DefaultBlockSize_UsesSingleBlockForOneMiB()
+    {
+        var codec = new SnappyCompressionCodec();
+        var original = Enumerable.Range(0, 1024 * 1024).Select(static i => (byte)i).ToArray();
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+
+        codec.Compress(new ReadOnlySequence<byte>(original), compressedBuffer);
+
+        var blockCount = CountXerialBlocks(compressedBuffer.WrittenSpan);
+        await Assert.That(blockCount).IsEqualTo(1);
     }
 
     [Test]
@@ -183,6 +197,47 @@ public class SnappyCompressionCodecTests
 
         var expected = segment1.Concat(segment2).ToArray();
         await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(expected);
+    }
+
+    [Test]
+    public async Task Decompress_MultiSegmentCompressedInput_RoundTrips()
+    {
+        var codec = new SnappyCompressionCodec(blockSize: 1024);
+        var original = Enumerable.Range(0, 10_000).Select(static i => (byte)i).ToArray();
+
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>(original), compressedBuffer);
+        var compressed = compressedBuffer.WrittenMemory;
+
+        var firstSegment = new TestMemorySegment<byte>(compressed[..5]);
+        var secondSegment = firstSegment.Append(compressed.Slice(5, 20));
+        var thirdSegment = secondSegment.Append(compressed[25..]);
+        var compressedSequence = new ReadOnlySequence<byte>(
+            firstSegment,
+            0,
+            thirdSegment,
+            thirdSegment.Memory.Length);
+
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Decompress(compressedSequence, decompressedBuffer);
+
+        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(original);
+    }
+
+    private static int CountXerialBlocks(ReadOnlySpan<byte> compressed)
+    {
+        const int headerSize = 16;
+        var offset = headerSize;
+        var blocks = 0;
+
+        while (offset < compressed.Length)
+        {
+            var blockLength = BinaryPrimitives.ReadInt32BigEndian(compressed.Slice(offset, 4));
+            offset += 4 + blockLength;
+            blocks++;
+        }
+
+        return blocks;
     }
 }
 

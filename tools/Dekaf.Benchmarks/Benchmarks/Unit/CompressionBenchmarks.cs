@@ -12,7 +12,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [ShortRunJob]
 public class CompressionBenchmarks
 {
-    private readonly SnappyCompressionCodec _codec = new(blockSize: 65536);
+    private readonly SnappyCompressionCodec _codec = new();
 
     private byte[] _smallData = null!;
     private byte[] _largeData = null!;

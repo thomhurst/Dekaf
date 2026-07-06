@@ -17,7 +17,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class CompressionCodecComparisonBenchmarks
 {
     private readonly GzipCompressionCodec _gzip = new();
-    private readonly SnappyCompressionCodec _snappy = new(blockSize: 65536);
+    private readonly SnappyCompressionCodec _snappy = new();
     private readonly Lz4CompressionCodec _lz4 = new();
     private readonly ZstdCompressionCodec _zstd = new();
     private readonly BrotliCompressionCodec _brotli = new();

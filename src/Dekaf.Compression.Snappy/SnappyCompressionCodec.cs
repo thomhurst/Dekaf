@@ -21,8 +21,8 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     // Total header size: magic (8) + version (4) + compat version (4) = 16 bytes
     private const int HeaderSize = 16;
 
-    // Default block size for compression (64KB)
-    private const int DefaultBlockSize = 65536;
+    // Larger xerial blocks avoid per-block decode overhead on batch-sized payloads.
+    private const int DefaultBlockSize = 1024 * 1024;
 
     private readonly int _blockSize;
 
@@ -33,7 +33,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     /// <summary>
     /// Creates a new Snappy compression codec.
     /// </summary>
-    /// <param name="blockSize">The block size for compression. Defaults to 64KB.</param>
+    /// <param name="blockSize">The block size for compression. Defaults to 1 MiB.</param>
     public SnappyCompressionCodec(int blockSize = DefaultBlockSize)
     {
         if (blockSize <= 0)
@@ -109,64 +109,31 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
 
         // Process blocks
         Span<byte> blockHeader = stackalloc byte[4];
-        byte[]? compressedBuffer = null;
 
-        try
+        while (remaining >= 4)
         {
-            while (remaining >= 4)
-            {
-                // Read block header: [compressed size (4 bytes BE)]
-                source.Slice(position, 4).CopyTo(blockHeader);
-                var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
+            // Read block header: [compressed size (4 bytes BE)]
+            source.Slice(position, 4).CopyTo(blockHeader);
+            var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
 
-                position = source.GetPosition(4, position);
-                remaining -= 4;
+            position = source.GetPosition(4, position);
+            remaining -= 4;
 
-                if (compressedSize < 0)
-                    throw new InvalidDataException("Invalid block size in xerial-snappy data.");
+            if (compressedSize < 0)
+                throw new InvalidDataException("Invalid block size in xerial-snappy data.");
 
-                if (remaining < compressedSize)
-                    throw new InvalidDataException("Truncated xerial-snappy block.");
+            if (remaining < compressedSize)
+                throw new InvalidDataException("Truncated xerial-snappy block.");
 
-                var compressedSequence = source.Slice(position, compressedSize);
+            var compressedSequence = source.Slice(position, compressedSize);
+            Snappier.Snappy.Decompress(compressedSequence, destination);
 
-                // Get contiguous span for compressed data
-                ReadOnlySpan<byte> compressedSpan;
-                if (compressedSequence.IsSingleSegment)
-                {
-                    compressedSpan = compressedSequence.FirstSpan;
-                }
-                else
-                {
-                    if (compressedBuffer == null || compressedBuffer.Length < compressedSize)
-                    {
-                        if (compressedBuffer != null)
-                            ArrayPool<byte>.Shared.Return(compressedBuffer);
-                        compressedBuffer = ArrayPool<byte>.Shared.Rent(compressedSize);
-                    }
-                    compressedSequence.CopyTo(compressedBuffer);
-                    compressedSpan = compressedBuffer.AsSpan(0, compressedSize);
-                }
-
-                // Get uncompressed length from snappy frame, then decompress
-                var uncompressedSize = Snappier.Snappy.GetUncompressedLength(compressedSpan);
-                var decompressedSpan = destination.GetSpan(uncompressedSize);
-                var actualDecompressedLength = Snappier.Snappy.Decompress(compressedSpan, decompressedSpan);
-
-                destination.Advance(actualDecompressedLength);
-
-                position = source.GetPosition(compressedSize, position);
-                remaining -= compressedSize;
-            }
-
-            if (remaining != 0)
-                throw new InvalidDataException("Trailing data after last xerial-snappy block.");
+            position = source.GetPosition(compressedSize, position);
+            remaining -= compressedSize;
         }
-        finally
-        {
-            if (compressedBuffer != null)
-                ArrayPool<byte>.Shared.Return(compressedBuffer);
-        }
+
+        if (remaining != 0)
+            throw new InvalidDataException("Trailing data after last xerial-snappy block.");
     }
 
 }
@@ -206,9 +173,9 @@ public static class SnappyCompressionExtensions
     /// The <see cref="CompressionCodecRegistry.DefaultCompressionLevel"/> property is ignored for Snappy.
     /// </summary>
     /// <param name="registry">The compression codec registry.</param>
-    /// <param name="blockSize">The block size for compression. Defaults to 64KB.</param>
+    /// <param name="blockSize">The block size for compression. Defaults to 1 MiB.</param>
     /// <returns>The registry for fluent chaining.</returns>
-    public static CompressionCodecRegistry AddSnappy(this CompressionCodecRegistry registry, int blockSize = 65536)
+    public static CompressionCodecRegistry AddSnappy(this CompressionCodecRegistry registry, int blockSize = 1024 * 1024)
     {
         registry.Register(new SnappyCompressionCodec(blockSize));
         return registry;
