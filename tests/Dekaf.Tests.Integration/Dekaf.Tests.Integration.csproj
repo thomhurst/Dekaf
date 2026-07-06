@@ -5,6 +5,11 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <!-- Full integration publish roots tests that intentionally exercise reflection-based APIs. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2026;IL3050</WarningsNotAsErrors>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
