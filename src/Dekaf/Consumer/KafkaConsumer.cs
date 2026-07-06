@@ -5,7 +5,6 @@ using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
-using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;

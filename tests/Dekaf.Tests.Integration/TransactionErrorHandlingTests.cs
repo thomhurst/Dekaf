@@ -1,6 +1,5 @@
 using Dekaf.Errors;
 using Dekaf.Producer;
-using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration;
 

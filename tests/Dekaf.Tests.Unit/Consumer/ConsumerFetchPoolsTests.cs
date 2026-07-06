@@ -1,6 +1,5 @@
 using System.Reflection;
 using Dekaf.Consumer;
-using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 

@@ -1,5 +1,3 @@
-using Dekaf.Errors;
-
 namespace Dekaf.Admin;
 
 /// <summary>

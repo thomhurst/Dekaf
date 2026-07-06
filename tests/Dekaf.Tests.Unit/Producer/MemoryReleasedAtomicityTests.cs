@@ -1,4 +1,3 @@
-using System.Buffers;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 

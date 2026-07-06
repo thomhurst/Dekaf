@@ -1,4 +1,3 @@
-using System.Reflection;
 using Dekaf.SchemaRegistry.Avro;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;

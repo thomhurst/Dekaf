@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
-using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;

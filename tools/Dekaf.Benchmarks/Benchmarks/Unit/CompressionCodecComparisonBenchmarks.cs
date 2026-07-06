@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.IO.Compression;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Compression;
 using Dekaf.Compression.Brotli;

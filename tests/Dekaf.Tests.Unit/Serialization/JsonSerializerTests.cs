@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using Dekaf;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Json;
 

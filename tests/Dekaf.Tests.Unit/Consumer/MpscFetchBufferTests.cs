@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
-using Dekaf.Tests.Unit;
 
 namespace Dekaf.Tests.Unit.Consumer;
 

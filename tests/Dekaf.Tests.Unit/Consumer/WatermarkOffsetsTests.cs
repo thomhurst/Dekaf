@@ -1,5 +1,3 @@
-using Dekaf.Producer;
-
 namespace Dekaf.Tests.Unit.Consumer;
 
 public class WatermarkOffsetsTests

@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Consumer;
 

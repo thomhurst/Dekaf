@@ -3,7 +3,6 @@ using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
 using Dekaf.Retry;
-using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;

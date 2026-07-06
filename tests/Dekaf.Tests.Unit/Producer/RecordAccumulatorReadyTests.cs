@@ -8,7 +8,6 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
-using Dekaf.Tests.Unit;
 
 namespace Dekaf.Tests.Unit.Producer;
 

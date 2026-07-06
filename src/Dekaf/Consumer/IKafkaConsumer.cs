@@ -1,4 +1,3 @@
-using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 #if NETSTANDARD2_0

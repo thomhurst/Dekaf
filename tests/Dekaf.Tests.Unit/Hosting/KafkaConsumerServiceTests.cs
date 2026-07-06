@@ -1,6 +1,5 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using Dekaf;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;

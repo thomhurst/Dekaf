@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging;
-using TUnit.Core;
 using TUnit.Logging.Microsoft;
 
 namespace Dekaf.Tests.Integration;

@@ -15,7 +15,6 @@ using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
-using Dekaf.Serialization.Json;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
 using AvroSchema = Avro.Schema;

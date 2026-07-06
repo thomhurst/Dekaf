@@ -2,14 +2,11 @@ namespace Dekaf;
 
 using System.Net.Security;
 using Admin;
-using Consumer;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
-using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Logging;
 
 /// <summary>

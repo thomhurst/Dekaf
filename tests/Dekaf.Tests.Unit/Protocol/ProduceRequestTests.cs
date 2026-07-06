@@ -1,5 +1,4 @@
 using System.Buffers;
-using Dekaf.Compression;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;

@@ -1,5 +1,3 @@
-using Dekaf;
-
 namespace Dekaf.Consumer.DeadLetter;
 
 /// <summary>

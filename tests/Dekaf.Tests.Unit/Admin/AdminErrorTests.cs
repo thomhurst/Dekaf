@@ -1,6 +1,5 @@
 using Dekaf.Admin;
 using Dekaf.Errors;
-using Dekaf.Producer;
 using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Admin;

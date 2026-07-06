@@ -1,4 +1,3 @@
-using Dekaf.Errors;
 using Dekaf.Metadata;
 
 namespace Dekaf.Retry;

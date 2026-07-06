@@ -1,7 +1,5 @@
-using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Protocol;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer;
 

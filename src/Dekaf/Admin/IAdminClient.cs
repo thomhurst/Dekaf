@@ -1,5 +1,4 @@
 using Dekaf.Metadata;
-using Dekaf.Producer;
 using Dekaf.Telemetry;
 
 namespace Dekaf.Admin;

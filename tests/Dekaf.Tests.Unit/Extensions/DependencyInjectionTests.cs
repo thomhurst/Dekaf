@@ -1,4 +1,3 @@
-using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Compression.Lz4;
 using Dekaf.Consumer;

@@ -5,7 +5,6 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Tests.Unit;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;

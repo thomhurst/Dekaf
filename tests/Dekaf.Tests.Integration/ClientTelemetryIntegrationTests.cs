@@ -1,6 +1,5 @@
 using System.Reflection;
 using Dekaf.Producer;
-using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
 namespace Dekaf.Tests.Integration;

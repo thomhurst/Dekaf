@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Dekaf;
 
 namespace Dekaf.Tests.Unit.Consumer;
 

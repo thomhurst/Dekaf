@@ -1,4 +1,3 @@
-using Dekaf.Errors;
 using Dekaf.Protocol;
 
 namespace Dekaf.Consumer;

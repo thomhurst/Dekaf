@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Dekaf.Admin;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
 

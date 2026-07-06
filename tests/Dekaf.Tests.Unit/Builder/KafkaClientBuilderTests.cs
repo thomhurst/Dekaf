@@ -1,7 +1,5 @@
 using System.Reflection;
 using System.Net.Security;
-using Dekaf.Admin;
-using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;

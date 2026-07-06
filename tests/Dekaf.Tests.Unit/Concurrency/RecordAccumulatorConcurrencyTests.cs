@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
 using Dekaf.Producer;
-using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Concurrency;
 

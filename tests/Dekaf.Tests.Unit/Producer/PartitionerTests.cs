@@ -1,6 +1,5 @@
 using System.Reflection;
 using System.Text;
-using System.Threading;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;

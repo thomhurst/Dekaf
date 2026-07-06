@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
-using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;

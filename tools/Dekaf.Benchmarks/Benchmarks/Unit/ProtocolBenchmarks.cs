@@ -1,6 +1,5 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
-using Dekaf.Compression;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 

@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Dekaf.Consumer;
-using Dekaf.Networking;
 
 namespace Dekaf.Tests.Unit.Concurrency;
 

@@ -1,5 +1,4 @@
 using Dekaf.Admin;
-using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 

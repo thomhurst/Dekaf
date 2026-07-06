@@ -1,9 +1,6 @@
 namespace Dekaf;
 
 using Admin;
-using Consumer;
-using Producer;
-using ShareConsumer;
 
 /// <summary>
 /// Main entry point for creating Kafka clients.

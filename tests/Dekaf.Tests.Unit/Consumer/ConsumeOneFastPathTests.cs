@@ -5,7 +5,6 @@ using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
-using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
