@@ -1022,6 +1022,9 @@ public class RecordAccumulatorTests
         await Assert.That(firstBatch.DataSize).IsEqualTo(firstRecordSize);
         await Assert.That(firstBatch.RecordBatch.GetEncodedSize()).IsEqualTo(options.BatchSize);
 
+        var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(firstBatch.DataSize + currentBatch.ReservedSize);
+
         var secondBatch = CompleteCurrentBatch(accumulator, topicPartition);
         await Assert.That(secondBatch.RecordBatch.Records.Count).IsEqualTo(1);
         await Assert.That(secondBatch.RecordBatch.GetEncodedSize()).IsLessThanOrEqualTo(options.BatchSize);
