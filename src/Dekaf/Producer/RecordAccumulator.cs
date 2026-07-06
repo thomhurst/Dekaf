@@ -2920,13 +2920,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool releaseOverestimateOnFailure = true)
     {
         overestimatedBytesToRelease = currentBatch.OverestimatedBytes;
+        var completionSourcesCount = currentBatch.CompletionSourcesCount;
+        var pendingAwaitedProduceBatchReleased = false;
         try
         {
             var readyBatch = currentBatch.Complete();
             if (readyBatch is not null)
             {
-                if (readyBatch.CompletionSourcesCount > 0)
-                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleasePendingAwaitedProduceBatch(completionSourcesCount, ref pendingAwaitedProduceBatchReleased);
                 ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
                 if (currentBatch.PartitionCount > 1)
                     _onBatchComplete?.Invoke(readyBatch.TopicPartition.Topic, currentBatch.PartitionCount);
@@ -2944,10 +2945,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         catch
         {
+            ReleasePendingAwaitedProduceBatch(completionSourcesCount, ref pendingAwaitedProduceBatchReleased);
             if (releaseOverestimateOnFailure)
                 ReleaseSealOverestimate(ref overestimatedBytesToRelease);
             throw;
         }
+    }
+
+    private void ReleasePendingAwaitedProduceBatch(int completionSourcesCount, ref bool released)
+    {
+        if (released || completionSourcesCount <= 0)
+            return;
+
+        Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+        released = true;
     }
 
     private void NotifyRecordAppended(string topic, int partition, int actualBytesAdded, int partitionCount)
@@ -2963,6 +2974,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    // Immediate post-append sealing is limited to LingerMs == 0. Full-batch rotations that
+    // carry a pending overestimate between loop iterations require linger to keep batches open.
     private bool ShouldSealAppendedBatch(PartitionBatch batch)
         => _options.LingerMs == 0 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs);
 
@@ -4737,6 +4750,7 @@ internal sealed class PartitionBatch
     public int EstimatedSize => _estimatedSize;
     public int ReservedSize => _reservedSize;
     public int OverestimatedBytes => Math.Max(0, _reservedSize - _estimatedSize);
+    public int CompletionSourcesCount => _completionSourceCount;
 
     /// <summary>
     /// Returns the batch creation timestamp from Stopwatch for efficient age comparisons.

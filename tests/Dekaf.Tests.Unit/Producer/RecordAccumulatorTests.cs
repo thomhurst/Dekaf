@@ -253,6 +253,47 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task Purge_Queue_CompleteFailure_ReleasesPendingAwaitedProduceCount()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var completion = pool.Rent();
+
+            var appended = await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completion,
+                callback: null,
+                CancellationToken.None);
+
+            await Assert.That(appended).IsTrue();
+            await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(1);
+
+            var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+            PoisonBatchArena(currentBatch);
+
+            await Assert.That(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
+                .Throws<NullReferenceException>();
+            await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Purge_Queue_FailsSealedQueuedBatch()
     {
         var options = new ProducerOptions
