@@ -1447,7 +1447,6 @@ internal sealed class PartitionLane<TKey, TValue>
             return true;
 
         Interlocked.Decrement(ref _bufferedCount);
-        UntrackPending(result);
         return false;
     }
 
@@ -1507,23 +1506,6 @@ internal sealed class PartitionLane<TKey, TValue>
         {
             if (!_nextOffsetToCommit.HasValue)
                 _nextOffsetToCommit = message.Offset;
-
-            if (message.Offset < _nextOffsetToCommit.Value || _completedOffsets.Contains(message.Offset))
-                return;
-
-            _leaderEpochs[message.Offset] = message.LeaderEpoch ?? -1;
-        }
-    }
-
-    private void UntrackPending(ConsumeResult<TKey, TValue> message)
-    {
-        if (message.IsPartitionEof)
-            return;
-
-        lock (_offsetGate)
-        {
-            if (!_completedOffsets.Contains(message.Offset))
-                _leaderEpochs.Remove(message.Offset);
         }
     }
 
@@ -1709,7 +1691,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             if (!_lanes.TryGetValue(key, out lane!))
             {
-                lane = new KeyOrderedProcessingLane<TKey, TValue>(this);
+                lane = new KeyOrderedProcessingLane<TKey, TValue>(this, key);
                 _lanes.Add(key, lane);
             }
 
@@ -1779,6 +1761,30 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
 
     internal CancellationToken ProcessingCancellationToken => _processingCancellationToken;
 
+    internal int LaneCount
+    {
+        get
+        {
+            lock (_gate)
+                return _lanes.Count;
+        }
+    }
+
+    internal void RemoveIdleLane(
+        PartitionMessageKey<TKey> key,
+        KeyOrderedProcessingLane<TKey, TValue> lane)
+    {
+        lock (_gate)
+        {
+            if (_lanes.TryGetValue(key, out var currentLane)
+                && ReferenceEquals(currentLane, lane)
+                && lane.IsIdle)
+            {
+                _lanes.Remove(key);
+            }
+        }
+    }
+
     private async ValueTask WaitForActiveLanesAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -1829,7 +1835,8 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
 }
 
 internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
-    KeyOrderedPartitionDispatcher<TKey, TValue> dispatcher)
+    KeyOrderedPartitionDispatcher<TKey, TValue> dispatcher,
+    PartitionMessageKey<TKey> key)
 {
     private readonly object _gate = new();
     private readonly Queue<ConsumeResult<TKey, TValue>> _queue = [];
@@ -1848,6 +1855,15 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
         }
     }
 
+    internal bool IsIdle
+    {
+        get
+        {
+            lock (_gate)
+                return !_running && _queue.Count == 0;
+        }
+    }
+
     public async ValueTask RunAsync()
     {
         var batch = new List<ConsumeResult<TKey, TValue>>(dispatcher.MaxBatchSize);
@@ -1855,6 +1871,7 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
         while (true)
         {
             batch.Clear();
+            var removeLane = false;
             lock (_gate)
             {
                 while (batch.Count < dispatcher.MaxBatchSize && _queue.Count > 0)
@@ -1863,8 +1880,14 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
                 if (batch.Count == 0)
                 {
                     _running = false;
-                    return;
+                    removeLane = true;
                 }
+            }
+
+            if (removeLane)
+            {
+                dispatcher.RemoveIdleLane(key, this);
+                return;
             }
 
             dispatcher.ProcessingCancellationToken.ThrowIfCancellationRequested();
