@@ -10,6 +10,8 @@ namespace Dekaf.Security.Sasl;
 /// </summary>
 public sealed class OAuthBearerTokenProvider : IDisposable
 {
+    private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+
     private readonly OAuthBearerConfig _config;
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
@@ -21,7 +23,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
     /// </summary>
     /// <param name="config">The OAuth configuration.</param>
     public OAuthBearerTokenProvider(OAuthBearerConfig config)
-        : this(config, new HttpClient(), ownsHttpClient: true)
+        : this(config, new HttpClient(CreateHttpHandler(), disposeHandler: true), ownsHttpClient: true)
     {
     }
 
@@ -33,6 +35,31 @@ public sealed class OAuthBearerTokenProvider : IDisposable
     public OAuthBearerTokenProvider(OAuthBearerConfig config, HttpClient httpClient)
         : this(config, httpClient, ownsHttpClient: false)
     {
+    }
+
+    internal static HttpMessageHandler CreateHttpHandler()
+    {
+#if NETSTANDARD2_0
+        var handlerType = Type.GetType("System.Net.Http.SocketsHttpHandler, System.Net.Http");
+        if (handlerType is not null && Activator.CreateInstance(handlerType) is HttpMessageHandler handler)
+        {
+            var lifetimeProperty = handlerType.GetProperty("PooledConnectionLifetime");
+            if (lifetimeProperty is not null && lifetimeProperty.CanWrite)
+            {
+                lifetimeProperty.SetValue(handler, PooledConnectionLifetime);
+                return handler;
+            }
+
+            handler.Dispose();
+        }
+
+        return new HttpClientHandler();
+#else
+        return new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = PooledConnectionLifetime
+        };
+#endif
     }
 
     private OAuthBearerTokenProvider(OAuthBearerConfig config, HttpClient httpClient, bool ownsHttpClient)

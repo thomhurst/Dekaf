@@ -248,6 +248,15 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task CreateHttpHandler_SetsPooledConnectionLifetime()
+    {
+        using var handler = OAuthBearerTokenProvider.CreateHttpHandler();
+
+        await Assert.That(handler).IsTypeOf<SocketsHttpHandler>();
+        await Assert.That(((SocketsHttpHandler)handler).PooledConnectionLifetime).IsEqualTo(TimeSpan.FromMinutes(2));
+    }
+
+    [Test]
     public async Task GetTokenAsync_WithJwtBearer_SendsAssertionGrant()
     {
         using var rsa = RSA.Create(2048);
