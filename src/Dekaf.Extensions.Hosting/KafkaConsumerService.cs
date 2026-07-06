@@ -24,8 +24,11 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly IRetryPolicy? _retryPolicy;
     private readonly RetryTopicOptions? _retryTopicOptions;
     private readonly KafkaConsumerServiceOptions _serviceOptions;
+    private readonly object _retryTopicPostponementsLock = new();
+    private readonly Dictionary<TopicPartition, RetryTopicPostponement> _retryTopicPostponements = [];
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
+    private static readonly TimeSpan MaxRetryTopicDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="KafkaConsumerService{TKey, TValue}"/> class.
@@ -408,9 +411,13 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (delay <= TimeSpan.Zero)
             return false;
 
+        var partition = new TopicPartition(result.Topic, result.Partition);
+        var postponement = new RetryTopicPostponement(result.Offset, dueAt, delay);
+        if (!TryBeginRetryTopicPostponement(partition, postponement))
+            return true;
+
         LogRetryTopicDelay(result.Topic, result.Partition, result.Offset, delay);
 
-        var partition = new TopicPartition(result.Topic, result.Partition);
         _consumer.Partitions.Pause(partition);
         _consumer.Positions.Seek(new TopicPartitionOffset(
             result.Topic,
@@ -418,20 +425,68 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             result.Offset,
             result.LeaderEpoch ?? -1));
 
-        _ = ResumeRetryTopicPartitionAfterDelayAsync(partition, delay, cancellationToken);
+        _ = ResumeRetryTopicPartitionAfterDelayAsync(partition, postponement, cancellationToken);
         return true;
+    }
+
+    private bool TryBeginRetryTopicPostponement(
+        TopicPartition partition,
+        RetryTopicPostponement postponement)
+    {
+        lock (_retryTopicPostponementsLock)
+        {
+            if (_retryTopicPostponements.TryGetValue(partition, out var pending) &&
+                !IsEarlierRetryTopicPostponement(postponement, pending))
+            {
+                return false;
+            }
+
+            _retryTopicPostponements[partition] = postponement;
+            return true;
+        }
+    }
+
+    private bool TryCompleteRetryTopicPostponement(
+        TopicPartition partition,
+        RetryTopicPostponement postponement)
+    {
+        lock (_retryTopicPostponementsLock)
+        {
+            if (!_retryTopicPostponements.TryGetValue(partition, out var pending) ||
+                pending != postponement)
+            {
+                return false;
+            }
+
+            _retryTopicPostponements.Remove(partition);
+            return true;
+        }
+    }
+
+    private static bool IsEarlierRetryTopicPostponement(
+        RetryTopicPostponement candidate,
+        RetryTopicPostponement pending)
+    {
+        // Partition order wins over due time; seeking to a later offset can skip an earlier postponed record.
+        if (candidate.Offset != pending.Offset)
+            return candidate.Offset < pending.Offset;
+
+        return candidate.DueAt < pending.DueAt;
     }
 
     private async Task ResumeRetryTopicPartitionAfterDelayAsync(
         TopicPartition partition,
-        TimeSpan delay,
+        RetryTopicPostponement postponement,
         CancellationToken cancellationToken)
     {
         try
         {
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            await DelayUntilRetryTopicDueAsync(postponement.DueAt, cancellationToken).ConfigureAwait(false);
+            if (!TryCompleteRetryTopicPostponement(partition, postponement))
+                return;
+
             _consumer.Partitions.Resume(partition);
-            LogRetryTopicPartitionResumed(partition.Topic, partition.Partition, delay);
+            LogRetryTopicPartitionResumed(partition.Topic, partition.Partition, postponement.Delay);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -441,6 +496,29 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             LogRetryTopicPartitionResumeFailed(ex, partition.Topic, partition.Partition);
         }
     }
+
+    private static async Task DelayUntilRetryTopicDueAsync(
+        DateTimeOffset dueAt,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var remaining = dueAt - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                return;
+
+            var delay = remaining <= MaxRetryTopicDelayChunk
+                ? remaining
+                : MaxRetryTopicDelayChunk;
+
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private readonly record struct RetryTopicPostponement(
+        long Offset,
+        DateTimeOffset DueAt,
+        TimeSpan Delay);
 
     private void CaptureRawBytesOnFirstFailure(int attempt, ref byte[]? rawKey, ref byte[]? rawValue)
     {

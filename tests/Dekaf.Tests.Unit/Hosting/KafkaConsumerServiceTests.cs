@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using Dekaf;
 using Dekaf.Consumer;
@@ -168,6 +169,80 @@ public sealed class KafkaConsumerServiceTests
             items.Length == 1 &&
             items[0].Topic == "orders-retry-5s" &&
             items[0].Partition == 3));
+    }
+
+    [Test]
+    public async Task ExecuteAsync_RetryTopicMessageWithLaterOffset_DoesNotOverwritePendingSeek()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var positions = Substitute.For<IConsumerPositions>();
+        var partitions = Substitute.For<IConsumerPartitions>();
+        consumer.Positions.Returns(positions);
+        consumer.Partitions.Returns(partitions);
+
+        var source = CreateResult("orders", partition: 1, offset: 42);
+        var retryHeaders = RetryTopicHeaders.Build(
+            source,
+            failureCount: 1,
+            delay: TimeSpan.FromSeconds(5),
+            dueAt: DateTimeOffset.UtcNow.AddMinutes(5));
+        var firstRetryResult = CreateResult(
+            "orders-retry-5s",
+            partition: 3,
+            offset: 99,
+            headers: retryHeaders.ToList());
+        var secondRetryResult = CreateResult(
+            "orders-retry-5s",
+            partition: 3,
+            offset: 100,
+            headers: retryHeaders.ToList());
+        var consumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateResultsAndSignal(consumed, firstRetryResult, secondRetryResult));
+
+        var deadLetterOptions = new DeadLetterOptions
+        {
+            RetryTopics = new RetryTopicOptions
+            {
+                Delays = [TimeSpan.FromSeconds(5)]
+            }
+        };
+        var service = new TestConsumerService(
+            consumer,
+            ["orders"],
+            options: new KafkaConsumerServiceOptions { DrainOnShutdown = false },
+            deadLetterOptions: deadLetterOptions);
+
+        await service.StartAsync(CancellationToken.None);
+        await consumed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        await Assert.That(service.ProcessedMessages).IsEmpty();
+        positions.Received(1).Seek(Arg.Is<TopicPartitionOffset>(offset =>
+            offset.Topic == "orders-retry-5s" &&
+            offset.Partition == 3 &&
+            offset.Offset == 99));
+        positions.DidNotReceive().Seek(Arg.Is<TopicPartitionOffset>(offset =>
+            offset.Topic == "orders-retry-5s" &&
+            offset.Partition == 3 &&
+            offset.Offset == 100));
+        partitions.Received(1).Pause(Arg.Is<TopicPartition[]>(items =>
+            items.Length == 1 &&
+            items[0].Topic == "orders-retry-5s" &&
+            items[0].Partition == 3));
+    }
+
+    [Test]
+    public async Task RetryTopicDelay_WithLongDelay_WaitsInCancelableChunks()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var waitTask = DelayUntilRetryTopicDueAsync(
+            DateTimeOffset.UtcNow.AddDays(30),
+            cts.Token);
+
+        await Assert.That(async () => await waitTask).Throws<OperationCanceledException>();
     }
 
     #endregion
@@ -509,6 +584,31 @@ public sealed class KafkaConsumerServiceTests
         }
 
         await Task.CompletedTask;
+    }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, string>> CreateResultsAndSignal(
+        TaskCompletionSource completion,
+        params ConsumeResult<string, string>[] items)
+    {
+        foreach (var item in items)
+        {
+            yield return item;
+        }
+
+        completion.TrySetResult();
+        await Task.CompletedTask;
+    }
+
+    private static Task DelayUntilRetryTopicDueAsync(
+        DateTimeOffset dueAt,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>).GetMethod(
+            "DelayUntilRetryTopicDueAsync",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("DelayUntilRetryTopicDueAsync method not found.");
+
+        return (Task)method.Invoke(null, [dueAt, cancellationToken])!;
     }
 
     private static ConsumeResult<string, string> CreateResult(

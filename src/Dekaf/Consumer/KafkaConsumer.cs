@@ -3164,7 +3164,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Reset EOF state for this partition so it can fire again
         _eofEmitted.TryRemove(tp, out _);
-        ClearFetchBuffer();
+        ClearFetchBufferForPartitions([tp]);
     }
 
     public void SeekToBeginning(params TopicPartition[] partitions)
@@ -3182,7 +3182,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             _eofEmitted.TryRemove(partition, out _);
         }
-        ClearFetchBuffer();
+        ClearFetchBufferForPartitions(partitions);
     }
 
     public void SeekToEnd(params TopicPartition[] partitions)
@@ -3200,7 +3200,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             _eofEmitted.TryRemove(partition, out _);
         }
-        ClearFetchBuffer();
+        ClearFetchBufferForPartitions(partitions);
     }
 
     /// <summary>
@@ -3293,6 +3293,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // buffer would be consumed after an incremental unassign (cooperative rebalance),
         // causing data for partitions no longer owned by this consumer to be yielded.
         DrainPrefetchBufferForPartitions(removeSet);
+
+        ClearPendingEofEventsForPartitions(removeSet);
+    }
+
+    private void ClearPendingEofEventsForPartitions(HashSet<TopicPartition> partitionsToRemove)
+    {
+        var count = _pendingEofEvents.Count;
+        for (var i = 0; i < count; i++)
+        {
+            if (!_pendingEofEvents.TryDequeue(out var eofEvent))
+                return;
+
+            if (!partitionsToRemove.Contains(eofEvent.Partition))
+                _pendingEofEvents.Enqueue(eofEvent);
+        }
     }
 
     private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions)
