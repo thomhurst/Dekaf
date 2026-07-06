@@ -85,6 +85,20 @@ public class Lz4CompressionCodecTests
         await Assert.That(magic[3]).IsEqualTo((byte)0x18);
     }
 
+    [Test]
+    public async Task Lz4CompressionCodec_Decompress_TruncatedFrame_Throws()
+    {
+        var codec = new Lz4CompressionCodec();
+        var originalData = Enumerable.Range(0, 200).Select(static i => (byte)i).ToArray();
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>(originalData), compressedBuffer);
+        var truncatedFrame = compressedBuffer.WrittenSpan[..^5].ToArray();
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(truncatedFrame), decompressedBuffer))
+            .Throws<EndOfStreamException>();
+    }
+
     #endregion
 
     #region Compression Level Tests

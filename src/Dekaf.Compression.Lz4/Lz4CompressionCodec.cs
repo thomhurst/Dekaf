@@ -42,7 +42,8 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        LZ4Frame.Decode(source).CopyTo(destination);
+        using var reader = LZ4Frame.Decode(source);
+        reader.CopyTo(destination);
     }
 }
 
