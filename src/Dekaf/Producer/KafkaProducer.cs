@@ -504,7 +504,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // subject this completes synchronously and falls straight through to the fast path below.
         if (_keyPreparer is not null || _valuePreparer is not null)
         {
-            var prepare = PrepareSerializersAsync(message.Topic, message.Key, message.Value, message.Headers, cancellationToken);
+            ValueTask prepare;
+            try
+            {
+                prepare = PrepareSerializersAsync(message.Topic, message.Key, message.Value, message.Headers, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // A preparer that throws synchronously must still stop and tag the started span,
+                // matching the invariant AwaitWithActivity enforces on every other completion path.
+                RecordActivityFault(activity, ex);
+                throw;
+            }
+
             if (!prepare.IsCompletedSuccessfully)
             {
                 return AwaitPrepareThenProduce(prepare, message, activity, cancellationToken);
@@ -512,6 +524,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         return ProduceAfterPrepare(message, activity, cancellationToken);
+    }
+
+    // Stops and error-tags a started span when async serializer preparation fails before the
+    // message is appended. ProduceAfterPrepare owns the activity on all post-preparation paths,
+    // so this only runs when preparation itself throws or faults. No-op when tracing is disabled.
+    private static void RecordActivityFault(Activity? activity, Exception ex)
+    {
+        if (activity is null)
+        {
+            return;
+        }
+
+        Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+        activity.Dispose();
     }
 
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
@@ -551,7 +577,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Activity? activity,
         CancellationToken cancellationToken)
     {
-        await prepare.ConfigureAwait(false);
+        try
+        {
+            await prepare.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Preparation faulted (e.g. Schema Registry unreachable or cancelled mid-fetch) before the
+            // message was appended. Stop and error-tag the span here; ProduceAfterPrepare never runs.
+            RecordActivityFault(activity, ex);
+            throw;
+        }
+
         return await ProduceAfterPrepare(message, activity, cancellationToken).ConfigureAwait(false);
     }
 
@@ -592,8 +629,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         static async ValueTask AwaitBothAsync(ValueTask keyPrepare, ValueTask valuePrepare)
         {
-            await keyPrepare.ConfigureAwait(false);
-            await valuePrepare.ConfigureAwait(false);
+            // Await both even when one faults first, so a later fault on the other side is always
+            // observed rather than left as an unobserved task exception. This is the cold path
+            // (first message per subject); the steady state returns synchronously above.
+            await Task.WhenAll(keyPrepare.AsTask(), valuePrepare.AsTask()).ConfigureAwait(false);
         }
     }
 
