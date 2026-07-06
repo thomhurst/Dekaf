@@ -79,8 +79,8 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 | Partitioner | Behavior |
 |-------------|----------|
-| `Default` | Murmur2 positive-hash keyed messages, sticky null or empty keys until batch completion |
-| `Sticky` | Murmur2 positive-hash keyed messages, sticky null or empty keys until batch completion |
+| `Default` | Murmur2 positive-hash keyed messages, KIP-794 uniform sticky null or empty keys until `BatchSize` bytes |
+| `Sticky` | Murmur2 positive-hash keyed messages, KIP-794 uniform sticky null or empty keys until `BatchSize` bytes |
 | `RoundRobin` | Cycles through partitions |
 | `Random` | Ignores keys and picks a pseudo-random partition |
 | `Consistent` | librdkafka `consistent`: CRC32 hash; null and empty keys map to one partition |
@@ -94,7 +94,7 @@ Use `ConsistentRandom` when matching librdkafka or Confluent.Kafka's default `co
 
 ### Default and Sticky Partitioners
 
-The default partitioner uses sticky null-key partitioning to improve batching efficiency. You can also select `Sticky` explicitly:
+The default partitioner uses KIP-794 uniform sticky partitioning for null or empty keys. It keeps producing to the same partition until at least `BatchSize` bytes have been appended, then switches. By default, adaptive partitioning weights the next sticky partition away from partitions with queued batches. You can also select `Sticky` explicitly:
 
 ```csharp
 using Dekaf;
@@ -109,6 +109,15 @@ var producer = await Kafka.CreateProducer<string, string>()
 producer.Produce("events", null, "event1");
 producer.Produce("events", null, "event2");
 producer.Produce("events", null, "event3");
+```
+
+```csharp
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithAdaptivePartitioning(false)
+    .WithPartitionerAvailabilityTimeout(TimeSpan.Zero)
+    .WithPartitionerIgnoreKeys()
+    .BuildAsync();
 ```
 
 ## Partition Count Considerations

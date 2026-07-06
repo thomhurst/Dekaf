@@ -920,6 +920,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly ILogger _logger;
     private readonly Action<string, int>? _onBatchComplete;
+    private readonly Action<string, int, int, int>? _onRecordAppended;
+    private readonly ConcurrentDictionary<TopicPartition, long> _partitionQueueBytes = new();
 
     private int _disposed;
     private int _closed;
@@ -1678,16 +1680,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _wakeupSignal.RegisterShutdownToken(cancellationToken);
     }
 
+    internal long GetPartitionQueueBytes(string topic, int partition)
+    {
+        return _partitionQueueBytes.TryGetValue(new TopicPartition(topic, partition), out var bytes)
+            ? Math.Max(0, bytes)
+            : 0;
+    }
+
     public RecordAccumulator(
         ProducerOptions options,
         CompressionCodecRegistry? compressionCodecs = null,
         ILogger? logger = null,
-        Action<string, int>? onBatchComplete = null)
+        Action<string, int>? onBatchComplete = null,
+        Action<string, int, int, int>? onRecordAppended = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
         _compressionCodecs = compressionCodecs;
         _onBatchComplete = onBatchComplete;
+        _onRecordAppended = onRecordAppended;
 
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
 
@@ -2159,6 +2170,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var disposed = false;
                 var messageTooLarge = false;
                 var memoryToReleaseAfterLock = 0;
+                var actualBytesAdded = 0;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -2192,9 +2204,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize, out var overestimatedBytesToRelease))
+                                completionSource, callback, recordSize, out var overestimatedBytesToRelease,
+                                out var appendedBytes))
                             {
                                 memoryToReleaseAfterLock = overestimatedBytesToRelease;
+                                actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 ownsPendingCount = false;
@@ -2224,9 +2238,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize, out var overestimatedBytesToRelease))
+                                completionSource, callback, recordSize, out var overestimatedBytesToRelease,
+                                out var appendedBytes))
                             {
                                 memoryToReleaseAfterLock = overestimatedBytesToRelease;
+                                actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 ownsPendingCount = false;
@@ -2279,7 +2295,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (appendSucceeded)
+                {
+                    NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
                     return true;
+                }
 
                 if (waitForRotation)
                 {
@@ -2504,6 +2523,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var disposed = false;
                 var messageTooLarge = false;
                 var memoryToReleaseAfterLock = 0;
+                var actualBytesAdded = 0;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -2537,9 +2557,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease))
+                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease,
+                                out var appendedBytes))
                             {
                                 memoryToReleaseAfterLock = overestimatedBytesToRelease;
+                                actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 ownsPendingCount = false;
@@ -2569,9 +2591,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease))
+                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease,
+                                out var appendedBytes))
                             {
                                 memoryToReleaseAfterLock = overestimatedBytesToRelease;
+                                actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 ownsPendingCount = false;
@@ -2624,7 +2648,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (appendSucceeded)
+                {
+                    NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
                     return true;
+                }
 
                 if (waitForRotation)
                 {
@@ -2670,15 +2697,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize,
-        out int overestimatedBytesToRelease)
+        out int overestimatedBytesToRelease,
+        out int actualBytesAdded)
     {
         overestimatedBytesToRelease = 0;
+        actualBytesAdded = 0;
         var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback);
 
         if (result.Success)
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
             overestimatedBytesToRelease = Math.Max(0, estimatedSize - result.ActualSizeAdded);
+            actualBytesAdded = result.ActualSizeAdded;
             return true;
         }
 
@@ -2805,9 +2835,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize,
-        out int overestimatedBytesToRelease)
+        out int overestimatedBytesToRelease,
+        out int actualBytesAdded)
     {
         overestimatedBytesToRelease = 0;
+        actualBytesAdded = 0;
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
             headers, headerCount, completionSource, callback);
 
@@ -2815,6 +2847,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
             overestimatedBytesToRelease = Math.Max(0, estimatedSize - result.ActualSizeAdded);
+            actualBytesAdded = result.ActualSizeAdded;
             return true;
         }
 
@@ -2851,6 +2884,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         _batchPool.Return(currentBatch);
         return readyBatch;
+    }
+
+    private void NotifyRecordAppended(string topic, int partition, int actualBytesAdded, int partitionCount)
+    {
+        if (partitionCount > 1 && actualBytesAdded > 0)
+            _onRecordAppended?.Invoke(topic, partition, actualBytesAdded, partitionCount);
+    }
+
+    private static long SaturatingAdd(long current, int value)
+    {
+        var result = current + value;
+        return result < current ? long.MaxValue : result;
     }
 
     /// <summary>
@@ -3486,6 +3531,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void OnBatchEntersPipeline(ReadyBatch batch)
     {
+        _partitionQueueBytes.AddOrUpdate(
+            batch.TopicPartition,
+            batch.DataSize,
+            (_, current) => SaturatingAdd(current, batch.DataSize));
+
         // Counter first, list second. If a batch races between the counter increment
         // and the list add, the sweep will miss it in the snapshot — but that's acceptable
         // because the sweep is defense-in-depth at 3× delivery timeout and the batch will
@@ -3508,6 +3558,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // concurrent cleanup paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
         if (!InFlightBatchListRemove(batch))
             return false;
+
+        _partitionQueueBytes.AddOrUpdate(
+            batch.TopicPartition,
+            0,
+            (_, current) => Math.Max(0, current - batch.DataSize));
 
         batch.AppendDiag('X');
         var count = Interlocked.Decrement(ref _inFlightBatchCount);

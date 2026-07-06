@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -80,6 +81,57 @@ public class DefaultPartitionerTests
         await Assert.That(partition1).IsEqualTo(partition2);
         await Assert.That(partition1).IsGreaterThanOrEqualTo(0);
         await Assert.That(partition1).IsLessThan(5);
+    }
+
+    [Test]
+    public async Task OnRecordAppended_WhenBatchSizeReached_SwitchesPartition()
+    {
+        var partitioner = new DefaultPartitioner(stickyBatchSize: 10);
+        var uniformStickyPartitioner = (IUniformStickyPartitioner)partitioner;
+        const int partitionCount = 5;
+
+        var partition1 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+        uniformStickyPartitioner.OnRecordAppended("test-topic", partition1, bytes: 4, partitionCount);
+        var stillSticky = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+
+        uniformStickyPartitioner.OnRecordAppended("test-topic", partition1, bytes: 6, partitionCount);
+        var partition2 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+
+        await Assert.That(stillSticky).IsEqualTo(partition1);
+        await Assert.That(partition2).IsNotEqualTo(partition1);
+    }
+
+    [Test]
+    public async Task Partition_WhenIgnoreKeysTrue_UsesStickyPartitionForKeyedMessages()
+    {
+        var partitioner = new DefaultPartitioner(stickyBatchSize: 1024, ignoreKeys: true);
+
+        var partition1 = partitioner.Partition("test-topic", "key-1"u8, false, 5);
+        var partition2 = partitioner.Partition("test-topic", "key-2"u8, false, 5);
+
+        await Assert.That(partition2).IsEqualTo(partition1);
+    }
+
+    [Test]
+    public async Task AdaptivePartitioning_WithAvailabilityTimeout_SkipsBackedUpPartition()
+    {
+        var partitioner = new DefaultPartitioner(
+            stickyBatchSize: 1,
+            adaptivePartitioning: true,
+            availabilityTimeoutMs: 1);
+        var uniformStickyPartitioner = (IUniformStickyPartitioner)partitioner;
+        const int partitionCount = 3;
+
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue);
+        var partition1 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+        uniformStickyPartitioner.SetPartitionQueueByteProvider(
+            (_, partition) => partition == partition1 ? 1024 : 0);
+
+        Thread.Sleep(5);
+        uniformStickyPartitioner.OnRecordAppended("test-topic", partition1, bytes: 1, partitionCount);
+        var partition2 = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
+
+        await Assert.That(partition2).IsNotEqualTo(partition1);
     }
 
     [Test]

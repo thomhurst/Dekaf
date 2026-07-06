@@ -42,6 +42,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly ISerializer<TValue> _valueSerializer;
     private readonly IPartitioner _partitioner;
     private readonly bool _usesCustomPartitioner;
+    private readonly IUniformStickyPartitioner? _uniformStickyPartitioner;
     private readonly ConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IDisposable _brokerCountDiscoveredRegistration;
@@ -318,7 +319,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _usesCustomPartitioner = options.CustomPartitioner is not null;
         _partitioner = options.CustomPartitioner ?? options.Partitioner switch
         {
-            PartitionerType.Sticky => new StickyPartitioner(),
+            PartitionerType.Sticky => new StickyPartitioner(
+                options.BatchSize,
+                options.EnableAdaptivePartitioning,
+                options.PartitionerAvailabilityTimeoutMs,
+                options.IgnorePartitionerKeys),
             PartitionerType.RoundRobin => new RoundRobinPartitioner(),
             PartitionerType.Random => new RandomPartitioner(),
             PartitionerType.Consistent => new ConsistentPartitioner(),
@@ -327,8 +332,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             PartitionerType.Murmur2Random => new Murmur2RandomPartitioner(),
             PartitionerType.Fnv1A => new Fnv1APartitioner(),
             PartitionerType.Fnv1ARandom => new Fnv1ARandomPartitioner(),
-            _ => new DefaultPartitioner()
+            _ => new DefaultPartitioner(
+                options.BatchSize,
+                options.EnableAdaptivePartitioning,
+                options.PartitionerAvailabilityTimeoutMs,
+                options.IgnorePartitionerKeys)
         };
+        _uniformStickyPartitioner = _usesCustomPartitioner ? null : _partitioner as IUniformStickyPartitioner;
 
         _connectionPool = infrastructure.Pool;
         _metadataManager = infrastructure.Metadata;
@@ -360,14 +370,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         });
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);
-        Action<string, int>? batchCompletionCallback = _partitioner is IBatchCompletionAwarePartitioner batchCompletionAware
+        Action<string, int>? batchCompletionCallback = _uniformStickyPartitioner is null
+            && _partitioner is IBatchCompletionAwarePartitioner batchCompletionAware
             ? batchCompletionAware.OnBatchComplete
+            : null;
+        Action<string, int, int, int>? recordAppendedCallback = _uniformStickyPartitioner is not null
+            ? _uniformStickyPartitioner.OnRecordAppended
             : null;
         _accumulator = new RecordAccumulator(
             options,
             _compressionCodecs,
             loggerFactory?.CreateLogger<RecordAccumulator>(),
-            batchCompletionCallback);
+            batchCompletionCallback,
+            recordAppendedCallback);
+        _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
 
         // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
         // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
@@ -999,6 +1015,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             topicInfo,
             completion);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetUniformStickyPartitionCount(
+        int? explicitPartition,
+        ReadOnlySpan<byte> key,
+        bool keyIsNull,
+        int partitionCount)
+    {
+        if (explicitPartition is not null)
+            return 0;
+
+        var uniformStickyPartitioner = _uniformStickyPartitioner;
+        if (uniformStickyPartitioner is not null)
+            return uniformStickyPartitioner.UsesStickyPartition(key, keyIsNull) ? partitionCount : 0;
+
+        return keyIsNull && _partitioner is IBatchCompletionAwarePartitioner ? partitionCount : 0;
+    }
+
     private SyncProduceResult TryProduceSyncCore(
         string topic,
         TKey? key,
@@ -1070,9 +1103,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 resolvedPartition = _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
             }
 
-            var batchCompletionPartitionCount = partition is null && keyIsNull
-                ? topicInfo.PartitionCount
-                : 0;
+            var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+                partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
             // Get timestamp - use fast cached timestamp when no override provided
             var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
@@ -1328,9 +1360,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Determine partition
         var partition = message.Partition
             ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
-        var batchCompletionPartitionCount = message.Partition is null && keyIsNull
-            ? topicInfo.PartitionCount
-            : 0;
+        var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+            message.Partition, key.Span, keyIsNull, topicInfo.PartitionCount);
 
         // Get timestamp
         var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
@@ -2766,9 +2797,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
         var resolvedPartition = partition
             ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-        var batchCompletionPartitionCount = partition is null && keyIsNull
-            ? topicInfo.PartitionCount
-            : 0;
+        var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+            partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
         var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 

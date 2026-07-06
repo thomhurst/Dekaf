@@ -79,6 +79,16 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithPartitionerAvailabilityTimeout_WhenNegative_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var act = () => builder.WithPartitionerAvailabilityTimeout(TimeSpan.FromMilliseconds(-1));
+
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task BuildForTopic_WithNullTopic_ThrowsArgumentNullException()
     {
         var builder = Kafka.CreateProducer<string, string>()
@@ -178,6 +188,30 @@ public class ProducerBuilderValidationTests
     {
         var builder = Kafka.CreateProducer<string, string>();
         var result = builder.WithPartitioner(Dekaf.Producer.PartitionerType.RoundRobin);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithAdaptivePartitioning_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithAdaptivePartitioning(false);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithPartitionerAvailabilityTimeout_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithPartitionerAvailabilityTimeout(TimeSpan.FromMilliseconds(5));
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithPartitionerIgnoreKeys_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithPartitionerIgnoreKeys();
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 

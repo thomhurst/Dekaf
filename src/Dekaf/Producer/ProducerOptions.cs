@@ -302,6 +302,27 @@ public sealed class ProducerOptions
     public IPartitioner? CustomPartitioner { get; init; }
 
     /// <summary>
+    /// Whether built-in sticky partitioning adapts partition choice to queued broker load.
+    /// Equivalent to Kafka's <c>partitioner.adaptive.partitioning.enable</c>. Default is true.
+    /// Has no effect when <see cref="CustomPartitioner"/> is set.
+    /// </summary>
+    public bool EnableAdaptivePartitioning { get; init; } = true;
+
+    /// <summary>
+    /// Milliseconds a partition may stay backed up before adaptive partitioning treats it as unavailable.
+    /// Set to 0 to disable availability exclusion. Equivalent to Kafka's
+    /// <c>partitioner.availability.timeout.ms</c>. Default is 0.
+    /// </summary>
+    public int PartitionerAvailabilityTimeoutMs { get; init; }
+
+    /// <summary>
+    /// When true, built-in default partitioning ignores message keys and uses uniform sticky partitioning.
+    /// Equivalent to Kafka's <c>partitioner.ignore.keys</c>. Default is false.
+    /// Has no effect when <see cref="CustomPartitioner"/> is set.
+    /// </summary>
+    public bool IgnorePartitionerKeys { get; init; }
+
+    /// <summary>
     /// Use TLS.
     /// </summary>
     public bool UseTls { get; init; }

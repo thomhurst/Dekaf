@@ -153,6 +153,27 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task EnableAdaptivePartitioning_DefaultsTo_True()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.EnableAdaptivePartitioning).IsTrue();
+    }
+
+    [Test]
+    public async Task PartitionerAvailabilityTimeoutMs_DefaultsTo_0()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.PartitionerAvailabilityTimeoutMs).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task IgnorePartitionerKeys_DefaultsTo_False()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.IgnorePartitionerKeys).IsFalse();
+    }
+
+    [Test]
     public async Task UseTls_DefaultsTo_False()
     {
         var options = CreateOptions();

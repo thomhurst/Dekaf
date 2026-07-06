@@ -44,6 +44,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _initialBatchRecordCapacity;
     private PartitionerType _partitionerType = PartitionerType.Default;
     private IPartitioner? _customPartitioner;
+    private bool _enableAdaptivePartitioning = true;
+    private int _partitionerAvailabilityTimeoutMs;
+    private bool _ignorePartitionerKeys;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -396,6 +399,41 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         _partitionerType = partitionerType;
         _customPartitioner = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables KIP-794 adaptive partitioning for built-in sticky partitioners.
+    /// </summary>
+    /// <param name="enable">Whether partition choice should adapt to queued broker load.</param>
+    public ProducerBuilder<TKey, TValue> WithAdaptivePartitioning(bool enable = true)
+    {
+        _enableAdaptivePartitioning = enable;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how long a backed-up partition may remain unavailable to send before adaptive
+    /// partitioning excludes it from new sticky choices. Set to zero to disable exclusion.
+    /// </summary>
+    /// <param name="timeout">Availability timeout. Cannot be negative.</param>
+    public ProducerBuilder<TKey, TValue> WithPartitionerAvailabilityTimeout(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Partitioner availability timeout cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _partitionerAvailabilityTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures the built-in default partitioner to ignore message keys and use uniform
+    /// sticky partitioning for all records.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithPartitionerIgnoreKeys(bool ignoreKeys = true)
+    {
+        _ignorePartitionerKeys = ignoreKeys;
         return this;
     }
 
@@ -1084,6 +1122,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             CompressionLevel = _compressionLevel,
             Partitioner = _partitionerType,
             CustomPartitioner = _customPartitioner,
+            EnableAdaptivePartitioning = _enableAdaptivePartitioning,
+            PartitionerAvailabilityTimeoutMs = _partitionerAvailabilityTimeoutMs,
+            IgnorePartitionerKeys = _ignorePartitionerKeys,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,

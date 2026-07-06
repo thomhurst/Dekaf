@@ -89,6 +89,9 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `UseCompression(...)` | `CompressionType` | `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd` |
 | `WithCompressionLevel(...)` | `CompressionLevel` | Codec-specific integer |
 | `WithPartitioner(...)` | `Partitioner` | `Default`, `Sticky`, `RoundRobin` |
+| `WithAdaptivePartitioning(...)` | `EnableAdaptivePartitioning` | Boolean; Kafka `partitioner.adaptive.partitioning.enable` |
+| `WithPartitionerAvailabilityTimeout(...)` | `PartitionerAvailabilityTimeoutMs` | Milliseconds; Kafka `partitioner.availability.timeout.ms` |
+| `WithPartitionerIgnoreKeys(...)` | `IgnorePartitionerKeys` | Boolean; Kafka `partitioner.ignore.keys` |
 | `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
 | `WithRemoteCertificateValidationCallback(...)` | Runtime callback | Custom TLS certificate validation |
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
@@ -198,6 +201,8 @@ Control how messages are assigned to partitions:
 .WithPartitioner(PartitionerType.ConsistentRandom) // librdkafka default
 .WithPartitioner(PartitionerType.Fnv1ARandom)      // librdkafka/Sarama-compatible
 ```
+
+The built-in default and sticky partitioners use KIP-794 behavior for sticky records: they stay on a partition until at least `BatchSize` bytes have been produced to it. Adaptive partitioning is enabled by default and weights new sticky choices away from partitions with queued batches. Set `.WithAdaptivePartitioning(false)` for uniform switching, `.WithPartitionerAvailabilityTimeout(...)` to exclude backed-up partitions after a timeout, or `.WithPartitionerIgnoreKeys()` to use sticky partitioning even when records have keys.
 
 ## Transactions
 
@@ -374,6 +379,9 @@ Enable logging:
 | `UseCompression` | None | Compression codec |
 | `WithCompressionLevel` | null | Codec-specific compression level |
 | `WithPartitioner` | Default | Partition strategy |
+| `WithAdaptivePartitioning` | true | Adapt sticky partition choices to queued broker load |
+| `WithPartitionerAvailabilityTimeout` | 0ms | Exclude backed-up partitions after timeout; 0 disables |
+| `WithPartitionerIgnoreKeys` | false | Ignore keys for built-in sticky partitioning |
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
 | `WithConnectionsMaxIdle` | 540000ms | Close unused broker connections; `Timeout.InfiniteTimeSpan` disables |
 | `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |

@@ -76,6 +76,48 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendAsync_WhenStickyPartitionTracked_NotifiesRecordAppendCallback()
+    {
+        var options = CreateTestOptions();
+        var callbackCount = 0;
+        string? callbackTopic = null;
+        var callbackPartition = -1;
+        var callbackBytes = 0;
+        var callbackPartitionCount = 0;
+
+        await using var accumulator = new RecordAccumulator(
+            options,
+            onRecordAppended: (topic, partition, bytes, partitionCount) =>
+            {
+                callbackCount++;
+                callbackTopic = topic;
+                callbackPartition = partition;
+                callbackBytes = bytes;
+                callbackPartitionCount = partitionCount;
+            });
+
+        var appended = await accumulator.AppendAsync(
+            "test-topic",
+            partition: 2,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 3);
+
+        await Assert.That(appended).IsTrue();
+        await Assert.That(callbackCount).IsEqualTo(1);
+        await Assert.That(callbackTopic).IsEqualTo("test-topic");
+        await Assert.That(callbackPartition).IsEqualTo(2);
+        await Assert.That(callbackBytes).IsGreaterThan(0);
+        await Assert.That(callbackPartitionCount).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task BatchRotation_EnqueuesReadyBatchesInOrderAndClearsRotationGate()
     {
         var options = new ProducerOptions
