@@ -1887,7 +1887,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
-                    await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
+                    var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
+                    if (drained > 0)
+                        consecutiveErrors = 0;
 
                     if (_assignmentSnapshot.Count == 0)
                     {
@@ -1912,7 +1914,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     var (started, targetCount) = await DispatchReadyBrokerPrefetchesAsync(cancellationToken)
                         .ConfigureAwait(false);
-                    consecutiveErrors = 0;
 
                     if (started == 0)
                     {
