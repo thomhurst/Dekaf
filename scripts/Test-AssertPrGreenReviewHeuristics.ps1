@@ -234,6 +234,75 @@ This is still allocation-free and keeps the existing unsafe fast path unchanged.
         Blocks = $false
     },
     @{
+        Name = 'allows positive api surface category with no-issues verdict'
+        Body = @'
+## Review
+
+### Design / API surface
+- Block size default is updated consistently in the codec, extension, and benchmark files.
+- finally/ArrayPool.Return removal is safe because the pooled buffer path is gone.
+
+No issues to flag. This is a clean, well-tested, appropriately-scoped perf change.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'blocks api surface category defect despite no-issues verdict'
+        Body = @'
+## Review
+
+### Design / API surface
+- No issues found.
+- However, this introduces a race condition when two callers close concurrently.
+
+No issues to flag.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'allows category heading with previously flagged bugs verified fixed'
+        Body = @'
+## Review
+
+### Correctness — both previously-flagged bugs verified fixed
+
+The prior cache-key and fallback findings are now resolved on the current diff.
+
+No new or unresolved actionable issues found in the current diff.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'blocks category heading with previously flagged bugs still not fixed'
+        Body = @'
+## Review
+
+### Correctness — both previously-flagged bugs still not fixed
+
+The prior findings remain open.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'allows design conventions with benign race note'
+        Body = @'
+## Review
+
+### Design / CLAUDE.md conventions
+
+- `ConfigureAwait(false)` is applied consistently on every new `await` in `src/`.
+- `_activeBaseUriIndex` uses `Volatile.Read`/`Volatile.Write`; worst case under a race is an extra failover hop, not corrupted state.
+- Non-blocking: minor ergonomics wart, not correctness-affecting.
+
+### Security
+
+No concerns.
+
+No new or unresolved actionable issues found in the current diff.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'blocks positive phrase followed by incorrect scope'
         Body = @'
 ## Review
@@ -795,6 +864,17 @@ Conflict resolution kept both feature sets.
 ### Self-triggering `UnknownTopicOrPartition` regression (from review #1) - fixed in `bb0f437f`
 
 The regression is covered.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows test coverage gap closed heading'
+        Body = @'
+## Review
+
+### Test coverage — gap closed
+
+The missing tests are now present.
 '@
         Blocks = $false
     },
