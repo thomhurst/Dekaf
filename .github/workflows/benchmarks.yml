@@ -57,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-unit
-          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
           retention-days: 30
 
   client-benchmarks:
@@ -112,7 +112,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-client
-          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
           retention-days: 30
 
   client-benchmarks-native-memory:
@@ -211,7 +211,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-client-native
-          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
           retention-days: 30
 
   benchmark-summary:
