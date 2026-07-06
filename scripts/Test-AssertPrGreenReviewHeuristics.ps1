@@ -323,6 +323,35 @@ The prior findings remain open.
         Blocks = $true
     },
     @{
+        Name = 'blocks prior finding section with continuation defect'
+        Body = @'
+## Review
+
+### Correctness
+
+The prior fallback finding was verified as fixed, but a similar flaw exists in the retry path too.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks prior finding heading with continuation defect'
+        Body = @'
+## Review
+
+### Correctness - prior fallback finding verified, but a similar flaw exists in the retry path
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks previously flagged heading with continuation defect'
+        Body = @'
+## Review
+
+### Correctness - both previously-flagged bugs verified fixed, but a related flaw exists in the retry path
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows design conventions with benign race note'
         Body = @'
 ## Review

@@ -155,8 +155,14 @@ function Get-ActionableReviewBodyReason {
         return $null
     }
 
+    $resolvedPriorFindingLineContinuationGuard =
+        '(?![^\r\n]*\b(?:fixed|resolved|addressed|verified)\b[^\r\n]*\b(?:but|however|though|except)\b)'
+    $resolvedPriorFindingContinuationGuard =
+        '(?![\s\S]*\b(?:fixed|resolved|addressed|verified)\b[\s\S]*\b(?:but|however|though|except)\b)'
     $previouslyResolvedHeading =
-        '(?=.{1,300}\s*$)previously[- ]flagged\b(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fixed|resolved|addressed|verified)\b)[^\r\n]*\s*$'
+        '(?=.{1,300}\s*$)previously[- ]flagged\b' +
+        $resolvedPriorFindingLineContinuationGuard +
+        '(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fixed|resolved|addressed|verified)\b)[^\r\n]*\s*$'
     $resolvedFindingHeading =
         '(?=.{1,300}\s*$)(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fix|fix(?:es|ed)?|change|commit|follow[- ]up|resolves?|resolved|addresses?|addressed|verified)\b)(?=[^\r\n]*\b(?:issues?|bugs?|findings?|concerns?|regressions?)\b)[^\r\n]*\s*$'
     $verifiedCleanHeading =
@@ -188,8 +194,8 @@ function Get-ActionableReviewBodyReason {
     $positiveVerdictAlternatives = @(
         "$noCategoryFindings(?:[\s\S]*)?"
         'looks?\s+(?:right|good)(?:[\s\S]*)?'
-        '(?:both\s+)?previously[- ]flagged\b(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?'
-        '(?:the\s+)?prior\b(?=[\s\S]*\b(?:findings?|issues?|bugs?)\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?'
+        "(?:both\s+)?previously[- ]flagged\b$resolvedPriorFindingContinuationGuard(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?"
+        "(?:the\s+)?prior\b$resolvedPriorFindingContinuationGuard(?=[\s\S]*\b(?:findings?|issues?|bugs?)\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?"
         'verified(?:\s+against\b[\s\S]*)?'
         'confirmed\b(?:[\s\S]*)?'
         'no\s+concerns\b(?:[\s\S]*)?'
@@ -215,7 +221,7 @@ function Get-ActionableReviewBodyReason {
         } else {
             $heading.Groups['parentheticalVerdict'].Value
         }
-        $headingVerdictResolvesPriorFindings = $headingVerdict -match "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:both\s+)?previously[- ]flagged\b(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?$"
+        $headingVerdictResolvesPriorFindings = $headingVerdict -match "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:both\s+)?previously[- ]flagged\b$resolvedPriorFindingContinuationGuard(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?$"
         if ($headingVerdict -and $headingVerdict -notmatch $positiveCategoryHeadingVerdict) {
             return "actionable category heading: $($heading.Value.Trim())"
         }
