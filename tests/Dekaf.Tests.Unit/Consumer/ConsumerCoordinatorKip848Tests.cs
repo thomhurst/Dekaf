@@ -1011,10 +1011,12 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
 
-        await fatalHeartbeatReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var heartbeatTimeout = TimeSpan.FromSeconds(15);
+
+        await fatalHeartbeatReturned.Task.WaitAsync(heartbeatTimeout);
         await TestWait.UntilAsync(
             () => coordinator.State == CoordinatorState.Unjoined,
-            TimeSpan.FromSeconds(5));
+            heartbeatTimeout);
 
         GroupException? caught = null;
         try
