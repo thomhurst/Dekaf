@@ -191,10 +191,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
 
-    private void StoreFatalHeartbeatException(GroupException exception)
+    private async ValueTask StoreFatalHeartbeatExceptionAsync(GroupException exception)
     {
-        _state = CoordinatorState.Unjoined;
         Interlocked.CompareExchange(ref _fatalHeartbeatException, exception, null);
+
+        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            _state = CoordinatorState.Unjoined;
+        }
+        finally
+        {
+            _lock.Release();
+        }
     }
 
     private void ThrowIfFatalHeartbeatException()
@@ -1141,7 +1150,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             break;
 
                         default:
-                            StoreFatalHeartbeatException(ge);
+                            await StoreFatalHeartbeatExceptionAsync(ge).ConfigureAwait(false);
                             break;
                     }
 
