@@ -1,7 +1,13 @@
 using System.Reflection;
 using Dekaf.Errors;
+using Dekaf.Internal;
+using Dekaf.Metadata;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Serialization;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -363,6 +369,48 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task CompletePreparedTransactionAsync_Commit_UsesPreparedTransactionProducerIdentity()
+    {
+        var preparedState = new PreparedTransactionState(1001, 4);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState);
+
+        var request = harness.CapturedRequest;
+        await Assert.That(request.ProducerId).IsEqualTo(preparedState.ProducerId);
+        await Assert.That(request.ProducerEpoch).IsEqualTo(preparedState.ProducerEpoch);
+        await Assert.That(request.Committed).IsTrue();
+        await Assert.That(GetInstanceField<long>(harness.Producer, "_producerId")).IsEqualTo(2002);
+        await Assert.That(GetInstanceField<short>(harness.Producer, "_producerEpoch")).IsEqualTo((short)9);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+        await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(PreparedTransactionState.Empty);
+    }
+
+    [Test]
+    public async Task CompletePreparedTransactionAsync_Abort_UsesPreparedTransactionProducerIdentity()
+    {
+        var preparedState = new PreparedTransactionState(1001, 4);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+
+        await harness.Producer.CompletePreparedTransactionAsync(new PreparedTransactionState(9999, 1));
+
+        var request = harness.CapturedRequest;
+        await Assert.That(request.ProducerId).IsEqualTo(preparedState.ProducerId);
+        await Assert.That(request.ProducerEpoch).IsEqualTo(preparedState.ProducerEpoch);
+        await Assert.That(request.Committed).IsFalse();
+        await Assert.That(GetInstanceField<long>(harness.Producer, "_producerId")).IsEqualTo(2002);
+        await Assert.That(GetInstanceField<short>(harness.Producer, "_producerEpoch")).IsEqualTo((short)9);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+        await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(PreparedTransactionState.Empty);
+    }
+
+    [Test]
     public async Task InitTransactionsAsync_WithKeepPreparedAndUnsupportedFeature_ThrowsBrokerVersionException()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -417,6 +465,68 @@ public sealed class TransactionTests
         return producer;
     }
 
+    private static PreparedCompletionHarness BuildPreparedCompletionHarness(
+        PreparedTransactionState preparedState,
+        long currentProducerId,
+        short currentProducerEpoch)
+    {
+        EndTxnRequest? capturedRequest = null;
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(1);
+        connection
+            .SendAsync<EndTxnRequest, EndTxnResponse>(
+                Arg.Do<EndTxnRequest>(request => capturedRequest = request),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<EndTxnResponse>(new EndTxnResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ProducerId = preparedState.ProducerId,
+                ProducerEpoch = (short)(preparedState.ProducerEpoch + 1)
+            }));
+
+        var connectionPool = new ConnectionPool(
+            clientId: "test-producer",
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection));
+        connectionPool.RegisterBroker(1, "localhost", 9092);
+
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.EndTxn,
+            EndTxnRequest.LowestSupportedVersion,
+            EndTxnRequest.HighestSupportedVersion);
+
+        var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                TransactionalId = "test-txn-id",
+                EnableTwoPhaseCommit = true,
+                CloseTimeoutMs = 100
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global);
+
+        SetInstanceField(producer, "_initialized", true);
+        SetInstanceField(producer, "_producerId", currentProducerId);
+        SetInstanceField(producer, "_producerEpoch", currentProducerEpoch);
+        SetInstanceField(producer, "_transactionCoordinatorId", 1);
+        SetInstanceField(producer, "_currentTransactionUsesTV2", true);
+        producer._preparedTransactionState = preparedState;
+        producer._transactionState = TransactionState.PreparedTransaction;
+
+        return new PreparedCompletionHarness(
+            producer,
+            connectionPool,
+            () => capturedRequest ?? throw new InvalidOperationException("EndTxn request was not captured."));
+    }
+
     private static void SetFinalizedTransactionVersion(KafkaProducer<string, string> producer, short version)
     {
         var metadataManager = GetInstanceField<object>(producer, "_metadataManager");
@@ -440,5 +550,21 @@ public sealed class TransactionTests
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         var field = target.GetType().GetField(name, instanceFieldFlags);
         return (T)field!.GetValue(target)!;
+    }
+
+    private sealed class PreparedCompletionHarness(
+        KafkaProducer<string, string> producer,
+        ConnectionPool connectionPool,
+        Func<EndTxnRequest> capturedRequest) : IAsyncDisposable
+    {
+        public KafkaProducer<string, string> Producer { get; } = producer;
+
+        public EndTxnRequest CapturedRequest => capturedRequest();
+
+        public async ValueTask DisposeAsync()
+        {
+            await Producer.DisposeAsync().ConfigureAwait(false);
+            await connectionPool.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }

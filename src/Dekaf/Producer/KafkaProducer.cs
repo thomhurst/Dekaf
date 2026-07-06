@@ -1617,14 +1617,25 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             };
         }
 
-        var committed = preparedState == _preparedTransactionState;
+        var transactionToComplete = _preparedTransactionState;
+        var committed = preparedState == transactionToComplete;
         _transactionState = committed
             ? TransactionState.CommittingTransaction
             : TransactionState.AbortingTransaction;
 
         try
         {
-            await EndTransactionAsync(committed, cancellationToken).ConfigureAwait(false);
+            var applyResponseProducerState =
+                transactionToComplete.ProducerId == _producerId
+                && transactionToComplete.ProducerEpoch == _producerEpoch;
+
+            await EndTransactionAsync(
+                    committed,
+                    transactionToComplete.ProducerId,
+                    transactionToComplete.ProducerEpoch,
+                    applyResponseProducerState,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (!committed && !_currentTransactionUsesTV2)
             {
@@ -2040,7 +2051,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
     }
 
-    internal async ValueTask EndTransactionAsync(bool committed, CancellationToken cancellationToken)
+    internal ValueTask EndTransactionAsync(bool committed, CancellationToken cancellationToken)
+        => EndTransactionAsync(
+            committed,
+            _producerId,
+            _producerEpoch,
+            applyResponseProducerState: true,
+            cancellationToken);
+
+    private async ValueTask EndTransactionAsync(
+        bool committed,
+        long producerId,
+        short producerEpoch,
+        bool applyResponseProducerState,
+        CancellationToken cancellationToken)
     {
         const int maxRetries = 5;
         var retryDelayMs = 100;
@@ -2058,8 +2082,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var request = new EndTxnRequest
             {
                 TransactionalId = _options.TransactionalId!,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
+                ProducerId = producerId,
+                ProducerEpoch = producerEpoch,
                 Committed = committed
             };
 
@@ -2075,7 +2099,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // a separate InitProducerId round-trip.
                 // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
                 // drains all in-flight batches, so no BrokerSender is active.
-                if (_currentTransactionUsesTV2 && response.ProducerId >= 0)
+                if (applyResponseProducerState && _currentTransactionUsesTV2 && response.ProducerId >= 0)
                 {
                     _producerId = response.ProducerId;
                     _producerEpoch = response.ProducerEpoch;
