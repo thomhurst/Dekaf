@@ -273,7 +273,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download NativeAOT integration executable
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-aot-integration
           path: artifacts/aot/integration
