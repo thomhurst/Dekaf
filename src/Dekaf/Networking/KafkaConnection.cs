@@ -2517,6 +2517,9 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         }
 
         _receiveCts?.Cancel();
+        // Wake an idle PipeReader.ReadAsync immediately; cancellation alone can leave
+        // disposal waiting for the fallback receive-loop timeout.
+        _reader?.CancelPendingRead();
 
         if (_receiveTask is not null)
         {

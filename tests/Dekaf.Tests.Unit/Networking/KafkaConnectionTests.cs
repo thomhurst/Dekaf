@@ -291,6 +291,7 @@ public sealed class KafkaConnectionTests
             await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
 
             await Assert.That(connection.IsConnected).IsTrue();
+            await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
         }
         finally
         {
