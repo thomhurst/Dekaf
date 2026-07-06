@@ -723,6 +723,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         var results = new List<ShareConsumeResult<TKey, TValue>>();
 
         var reader = new KafkaProtocolReader(partition.RecordBytes);
+        var acquiredRecordIndex = 0;
         while (!reader.End && results.Count < maxRecords)
         {
             RecordBatch batch;
@@ -742,7 +743,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                 var offset = batch.BaseOffset + record.OffsetDelta;
 
-                var deliveryCount = FindDeliveryCount(partition.AcquiredRecords, offset);
+                var deliveryCount = FindDeliveryCount(
+                    partition.AcquiredRecords,
+                    offset,
+                    ref acquiredRecordIndex);
                 if (deliveryCount < 0)
                     continue;
 
@@ -930,14 +934,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int FindDeliveryCount(
         IReadOnlyList<ShareFetchAcquiredRecords> acquiredRecords,
-        long offset)
+        long offset,
+        ref int acquiredRecordIndex)
     {
-        for (var i = 0; i < acquiredRecords.Count; i++)
+        while (acquiredRecordIndex < acquiredRecords.Count)
         {
-            var range = acquiredRecords[i];
+            var range = acquiredRecords[acquiredRecordIndex];
             if (offset >= range.FirstOffset && offset <= range.LastOffset)
                 return range.DeliveryCount;
+
+            if (offset < range.FirstOffset)
+                return -1;
+
+            acquiredRecordIndex++;
         }
+
         return -1;
     }
 

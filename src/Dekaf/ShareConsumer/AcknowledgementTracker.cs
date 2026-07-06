@@ -11,23 +11,14 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed class AcknowledgementTracker
 {
-    private Dictionary<TopicPartition, Dictionary<long, AcknowledgeType>> _pendingAcks = new();
+    private Dictionary<TopicPartition, PartitionAcknowledgements> _pendingAcks = new();
 
     /// <summary>
     /// Tracks records delivered by a poll. All records default to Accept.
     /// </summary>
     internal void TrackDeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
-        if (!_pendingAcks.TryGetValue(tp, out var offsets))
-        {
-            offsets = new Dictionary<long, AcknowledgeType>();
-            _pendingAcks[tp] = offsets;
-        }
-
-        for (long offset = firstOffset; offset <= lastOffset; offset++)
-        {
-            offsets[offset] = AcknowledgeType.Accept;
-        }
+        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Accept);
     }
 
     /// <summary>
@@ -36,7 +27,7 @@ internal sealed class AcknowledgementTracker
     /// </summary>
     internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type, bool requireTracked = true)
     {
-        if (!_pendingAcks.TryGetValue(tp, out var offsets))
+        if (!_pendingAcks.TryGetValue(tp, out var partitionAcks))
         {
             if (requireTracked)
             {
@@ -44,16 +35,16 @@ internal sealed class AcknowledgementTracker
                     $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
             }
 
-            offsets = new Dictionary<long, AcknowledgeType>();
-            _pendingAcks[tp] = offsets;
+            partitionAcks = new PartitionAcknowledgements();
+            _pendingAcks[tp] = partitionAcks;
         }
-        else if (requireTracked && !offsets.ContainsKey(offset))
+        else if (requireTracked && !partitionAcks.ContainsOffset(offset))
         {
             throw new InvalidOperationException(
                 $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
         }
 
-        offsets[offset] = type;
+        partitionAcks.SetExplicit(offset, type);
     }
 
     /// <summary>
@@ -71,15 +62,16 @@ internal sealed class AcknowledgementTracker
         // Swap to a fresh dictionary so any new acks after this point go into a fresh
         // bucket — avoids the per-partition TryRemove race of the snapshot-and-remove pattern.
         var old = _pendingAcks;
-        _pendingAcks = new Dictionary<TopicPartition, Dictionary<long, AcknowledgeType>>();
+        _pendingAcks = new Dictionary<TopicPartition, PartitionAcknowledgements>();
 
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> result = new();
 
-        foreach (var (tp, offsets) in old)
+        foreach (var (tp, partitionAcks) in old)
         {
-            if (offsets.Count > 0)
+            var batches = partitionAcks.BuildBatches();
+            if (batches.Count > 0)
             {
-                result[tp] = BuildBatches(offsets);
+                result[tp] = batches;
             }
         }
 
@@ -95,74 +87,216 @@ internal sealed class AcknowledgementTracker
     {
         foreach (var (tp, batches) in acks)
         {
-            if (!_pendingAcks.TryGetValue(tp, out var offsets))
-            {
-                offsets = new Dictionary<long, AcknowledgeType>();
-                _pendingAcks[tp] = offsets;
-            }
+            var partitionAcks = GetOrAddPartition(tp);
 
             foreach (var batch in batches)
             {
-                for (int i = 0; i < batch.AcknowledgeTypes.Length; i++)
+                long? runStart = null;
+                long runEnd = 0;
+                var runType = AcknowledgeType.Accept;
+
+                for (var i = 0; i < batch.AcknowledgeTypes.Length; i++)
                 {
                     var offset = batch.FirstOffset + i;
                     // TryAdd intentionally: preserve any explicit acknowledgement the user set
                     // after the flush. A newer Acknowledge() call takes priority over re-queued
                     // stale acks from a failed CommitAsync.
-                    offsets.TryAdd(offset, (AcknowledgeType)batch.AcknowledgeTypes[i]);
+                    if (partitionAcks.ContainsOffset(offset))
+                    {
+                        if (runStart is not null)
+                        {
+                            partitionAcks.TrackRange(runStart.Value, runEnd, runType);
+                            runStart = null;
+                        }
+
+                        continue;
+                    }
+
+                    var type = (AcknowledgeType)batch.AcknowledgeTypes[i];
+                    if (runStart is not null && type == runType && offset == runEnd + 1)
+                    {
+                        runEnd = offset;
+                        continue;
+                    }
+
+                    if (runStart is not null)
+                        partitionAcks.TrackRange(runStart.Value, runEnd, runType);
+
+                    runStart = offset;
+                    runEnd = offset;
+                    runType = type;
+                }
+
+                if (runStart is not null)
+                    partitionAcks.TrackRange(runStart.Value, runEnd, runType);
+            }
+        }
+    }
+
+    private PartitionAcknowledgements GetOrAddPartition(TopicPartition tp)
+    {
+        if (_pendingAcks.TryGetValue(tp, out var partitionAcks))
+            return partitionAcks;
+
+        partitionAcks = new PartitionAcknowledgements();
+        _pendingAcks[tp] = partitionAcks;
+        return partitionAcks;
+    }
+
+    private sealed class PartitionAcknowledgements
+    {
+        private readonly List<AckRange> _ranges = [];
+        private Dictionary<long, AcknowledgeType>? _explicitAcks;
+
+        internal void TrackRange(long firstOffset, long lastOffset, AcknowledgeType type)
+        {
+            if (lastOffset < firstOffset)
+                return;
+
+            if (_ranges.Count > 0)
+            {
+                var last = _ranges[^1];
+                if (last.AcknowledgeType == type && firstOffset <= last.LastOffset + 1)
+                {
+                    _ranges[^1] = last with { LastOffset = Math.Max(last.LastOffset, lastOffset) };
+                    return;
                 }
             }
+
+            _ranges.Add(new AckRange(firstOffset, lastOffset, type));
+        }
+
+        internal bool ContainsOffset(long offset)
+        {
+            if (_explicitAcks is not null && _explicitAcks.ContainsKey(offset))
+                return true;
+
+            return ContainsOffsetInRanges(offset);
+        }
+
+        internal void SetExplicit(long offset, AcknowledgeType type)
+        {
+            _explicitAcks ??= new Dictionary<long, AcknowledgeType>();
+            _explicitAcks[offset] = type;
+        }
+
+        internal List<AcknowledgementBatchData> BuildBatches()
+        {
+            List<AcknowledgementBatchData> batches = [];
+
+            foreach (var range in _ranges)
+                batches.Add(BuildRangeBatch(range));
+
+            if (_explicitAcks is not null)
+                AddStandaloneExplicitBatches(batches);
+
+            if (batches.Count <= 1)
+                return batches;
+
+            batches.Sort(static (left, right) => left.FirstOffset.CompareTo(right.FirstOffset));
+            return MergeConsecutiveBatches(batches);
+        }
+
+        private AcknowledgementBatchData BuildRangeBatch(AckRange range)
+        {
+            var length = checked((int)(range.LastOffset - range.FirstOffset + 1));
+            var acknowledgeTypes = new byte[length];
+            Array.Fill(acknowledgeTypes, (byte)range.AcknowledgeType);
+
+            if (_explicitAcks is not null)
+            {
+                foreach (var (offset, type) in _explicitAcks)
+                {
+                    if (offset >= range.FirstOffset && offset <= range.LastOffset)
+                        acknowledgeTypes[offset - range.FirstOffset] = (byte)type;
+                }
+            }
+
+            return new AcknowledgementBatchData(range.FirstOffset, range.LastOffset, acknowledgeTypes);
+        }
+
+        private void AddStandaloneExplicitBatches(List<AcknowledgementBatchData> batches)
+        {
+            if (_explicitAcks is null)
+                return;
+
+            List<KeyValuePair<long, AcknowledgeType>>? standaloneAcks = null;
+            foreach (var kvp in _explicitAcks)
+            {
+                if (ContainsOffsetInRanges(kvp.Key))
+                    continue;
+
+                standaloneAcks ??= [];
+                standaloneAcks.Add(kvp);
+            }
+
+            if (standaloneAcks is null)
+                return;
+
+            standaloneAcks.Sort(static (left, right) => left.Key.CompareTo(right.Key));
+
+            var runStart = standaloneAcks[0].Key;
+            var previousOffset = runStart;
+            List<byte> runTypes = [(byte)standaloneAcks[0].Value];
+
+            for (var i = 1; i < standaloneAcks.Count; i++)
+            {
+                var (offset, type) = standaloneAcks[i];
+                if (offset == previousOffset + 1)
+                {
+                    runTypes.Add((byte)type);
+                }
+                else
+                {
+                    batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
+                    runStart = offset;
+                    runTypes = [(byte)type];
+                }
+
+                previousOffset = offset;
+            }
+
+            batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
+        }
+
+        private bool ContainsOffsetInRanges(long offset)
+        {
+            foreach (var range in _ranges)
+            {
+                if (offset >= range.FirstOffset && offset <= range.LastOffset)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static List<AcknowledgementBatchData> MergeConsecutiveBatches(List<AcknowledgementBatchData> batches)
+        {
+            List<AcknowledgementBatchData> merged = [];
+            var current = batches[0];
+
+            for (var i = 1; i < batches.Count; i++)
+            {
+                var next = batches[i];
+                if (current.LastOffset + 1 != next.FirstOffset)
+                {
+                    merged.Add(current);
+                    current = next;
+                    continue;
+                }
+
+                var combinedTypes = new byte[current.AcknowledgeTypes.Length + next.AcknowledgeTypes.Length];
+                Array.Copy(current.AcknowledgeTypes, combinedTypes, current.AcknowledgeTypes.Length);
+                Array.Copy(next.AcknowledgeTypes, 0, combinedTypes, current.AcknowledgeTypes.Length, next.AcknowledgeTypes.Length);
+                current = new AcknowledgementBatchData(current.FirstOffset, next.LastOffset, combinedTypes);
+            }
+
+            merged.Add(current);
+            return merged;
         }
     }
 
-    /// <summary>
-    /// Builds wire-format acknowledgement batches from an offset dictionary.
-    /// Sorts keys once then groups consecutive offsets into batches with per-record
-    /// AcknowledgeTypes arrays.
-    /// </summary>
-    private static List<AcknowledgementBatchData> BuildBatches(Dictionary<long, AcknowledgeType> offsets)
-    {
-        List<AcknowledgementBatchData> batches = [];
-
-        if (offsets.Count == 0)
-        {
-            return batches;
-        }
-
-        // Sort keys once at flush time — O(n log n) here instead of O(n) insert cost
-        // per TrackDeliveredRecords/Acknowledge call.
-        var sortedOffsets = offsets.Keys.Order().ToArray();
-
-        long batchStart = sortedOffsets[0];
-        long previousOffset = batchStart;
-        List<byte> currentTypes = [(byte)offsets[batchStart]];
-
-        for (int i = 1; i < sortedOffsets.Length; i++)
-        {
-            long offset = sortedOffsets[i];
-            AcknowledgeType type = offsets[offset];
-
-            if (offset == previousOffset + 1)
-            {
-                // Consecutive — extend current batch
-                currentTypes.Add((byte)type);
-            }
-            else
-            {
-                // Gap — close current batch and start new one
-                batches.Add(new AcknowledgementBatchData(batchStart, previousOffset, currentTypes.ToArray()));
-                batchStart = offset;
-                currentTypes = [(byte)type];
-            }
-
-            previousOffset = offset;
-        }
-
-        // Close final batch
-        batches.Add(new AcknowledgementBatchData(batchStart, previousOffset, currentTypes.ToArray()));
-
-        return batches;
-    }
+    private readonly record struct AckRange(long FirstOffset, long LastOffset, AcknowledgeType AcknowledgeType);
 }
 
 /// <summary>
