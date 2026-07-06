@@ -1,3 +1,110 @@
+function ConvertTo-UtcDateTimeOffset {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime()
+    }
+
+    if ($Value -is [DateTime]) {
+        return [DateTimeOffset]::new(([DateTime]$Value).ToUniversalTime())
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    try {
+        return [DateTimeOffset]::Parse($text).ToUniversalTime()
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-ReviewSubmittedBeforeInstant {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Review,
+        [AllowNull()]$InstantUtc
+    )
+
+    $instant = ConvertTo-UtcDateTimeOffset $InstantUtc
+    if ($null -eq $instant) {
+        return $false
+    }
+
+    $submittedAt = ConvertTo-UtcDateTimeOffset $Review.submittedAt
+    if ($null -eq $submittedAt) {
+        return $false
+    }
+
+    return $submittedAt -lt $instant
+}
+
+function Test-StatusCheckCompletedAfterInstant {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Checks,
+        [Parameter(Mandatory)][string]$Name,
+        [AllowNull()]$InstantUtc
+    )
+
+    $instant = ConvertTo-UtcDateTimeOffset $InstantUtc
+    if ($null -eq $instant) {
+        return $false
+    }
+
+    $allowedConclusions = @('SUCCESS', 'SKIPPED', 'NEUTRAL')
+    foreach ($check in @($Checks | Where-Object { $null -ne $_ })) {
+        if ([string]$check.name -ne $Name) {
+            continue
+        }
+
+        if (($null -ne $check.status) -and ([string]$check.status -ne 'COMPLETED')) {
+            continue
+        }
+
+        if (($null -ne $check.conclusion) -and ($allowedConclusions -notcontains [string]$check.conclusion)) {
+            continue
+        }
+
+        $completedAt = ConvertTo-UtcDateTimeOffset $check.completedAt
+        if ($null -ne $completedAt -and $completedAt -gt $instant) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-StaleBotReviewCanBeIgnored {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Review,
+        [AllowNull()]$HeadCommitCommittedAt,
+        [AllowNull()]$Checks
+    )
+
+    $author = [string]$Review.author.login
+    if ($author -notmatch '^claude(?:\[bot\])?$') {
+        return $false
+    }
+
+    if (-not (Test-ReviewSubmittedBeforeInstant -Review $Review -InstantUtc $HeadCommitCommittedAt)) {
+        return $false
+    }
+
+    return Test-StatusCheckCompletedAfterInstant -Checks $Checks -Name 'claude-review' -InstantUtc $HeadCommitCommittedAt
+}
+
 function Get-ActionableReviewBodyReason {
     [CmdletBinding()]
     param(

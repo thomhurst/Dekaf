@@ -875,4 +875,74 @@ foreach ($case in $cases) {
     }
 }
 
-Write-Host "OK review heuristic tests passed ($($cases.Count) cases)."
+$staleReviewCases = @(
+    @{
+        Name = 'ignores stale Claude review after current-head review check'
+        Review = [pscustomobject]@{
+            submittedAt = '2026-07-06T01:13:33Z'
+            author = [pscustomobject]@{ login = 'claude' }
+        }
+        HeadCommitCommittedAt = '2026-07-06T01:39:24Z'
+        Checks = @([pscustomobject]@{
+            name = 'claude-review'
+            status = 'COMPLETED'
+            conclusion = 'SUCCESS'
+            completedAt = '2026-07-06T01:40:48Z'
+        })
+        Ignored = $true
+    },
+    @{
+        Name = 'keeps stale Claude review before current-head review check'
+        Review = [pscustomobject]@{
+            submittedAt = '2026-07-06T01:13:33Z'
+            author = [pscustomobject]@{ login = 'claude' }
+        }
+        HeadCommitCommittedAt = '2026-07-06T01:39:24Z'
+        Checks = @([pscustomobject]@{
+            name = 'claude-review'
+            status = 'COMPLETED'
+            conclusion = 'SUCCESS'
+            completedAt = '2026-07-06T01:20:00Z'
+        })
+        Ignored = $false
+    },
+    @{
+        Name = 'keeps human stale review'
+        Review = [pscustomobject]@{
+            submittedAt = '2026-07-06T01:13:33Z'
+            author = [pscustomobject]@{ login = 'alice' }
+        }
+        HeadCommitCommittedAt = '2026-07-06T01:39:24Z'
+        Checks = @([pscustomobject]@{
+            name = 'claude-review'
+            status = 'COMPLETED'
+            conclusion = 'SUCCESS'
+            completedAt = '2026-07-06T01:40:48Z'
+        })
+        Ignored = $false
+    },
+    @{
+        Name = 'keeps current Claude review'
+        Review = [pscustomobject]@{
+            submittedAt = '2026-07-06T01:41:00Z'
+            author = [pscustomobject]@{ login = 'claude[bot]' }
+        }
+        HeadCommitCommittedAt = '2026-07-06T01:39:24Z'
+        Checks = @([pscustomobject]@{
+            name = 'claude-review'
+            status = 'COMPLETED'
+            conclusion = 'SUCCESS'
+            completedAt = '2026-07-06T01:40:48Z'
+        })
+        Ignored = $false
+    }
+)
+
+foreach ($case in $staleReviewCases) {
+    $ignored = Test-StaleBotReviewCanBeIgnored -Review $case.Review -HeadCommitCommittedAt $case.HeadCommitCommittedAt -Checks $case.Checks
+    if ($ignored -ne $case.Ignored) {
+        throw "Case '$($case.Name)' expected Ignored=$($case.Ignored), got Ignored=$ignored"
+    }
+}
+
+Write-Host "OK review heuristic tests passed ($($cases.Count) body cases, $($staleReviewCases.Count) stale review cases)."
