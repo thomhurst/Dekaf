@@ -115,28 +115,31 @@ public class RecordAccumulatorReadyTests
     [Test]
     public async Task Ready_SealedCompressedBatch_DoesNotCompressOnSenderCoordinator()
     {
-        var options = CreateTestOptions(batchSize: 50, lingerMs: 10_000, compressionType: CompressionType.Gzip);
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0, compressionType: CompressionType.Gzip);
 
         var codec = new CountingCompressionCodec(CompressionType.Gzip);
         var compressionCodecs = new CompressionCodecRegistry();
         compressionCodecs.Register(codec);
 
         var accumulator = new RecordAccumulator(options, compressionCodecs);
-        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+        ReadyBatch? batch = null;
 
         try
         {
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-
-            for (var i = 0; i < 10; i++)
-            {
-                var completion = pool.Rent();
-                accumulator.TryAppendWithCompletion("test-topic", 0,
-                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, completion);
-            }
+            var appended = await accumulator.AppendAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+            await Assert.That(appended).IsTrue();
 
             await TestWait.UntilAsync(
                 () => codec.CompressCount > 0,
@@ -157,11 +160,20 @@ public class RecordAccumulatorReadyTests
             await Assert.That(codec.CompressCount).IsEqualTo(compressCountBeforeReady);
             await Assert.That(readyNodes).Contains(1);
             await Assert.That(unknownLeadersExist).IsFalse();
+
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+
+            await Assert.That(drainResult).ContainsKey(1);
+            await Assert.That(drainResult[1].Count).IsEqualTo(1);
+            batch = drainResult[1][0];
+            await Assert.That(codec.CompressCount).IsEqualTo(compressCountBeforeReady);
         }
         finally
         {
+            CompleteAndReturnIfDrained(accumulator, batch);
             await accumulator.DisposeAsync();
-            await pool.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
     }
