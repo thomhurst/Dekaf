@@ -4242,14 +4242,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_partitionCacheLock)
         {
-            var cached = _cachedPartitionsByBroker;
-            if (cached is null)
+            var cachedEntry = _cachedPartitionsByBroker;
+            if (cachedEntry is null)
                 return;
 
-            var cachedPartitions = cached.Value.PartitionsByBroker;
-            var updated = new Dictionary<int, List<TopicPartition>>(cachedPartitions.Count);
+            var cached = cachedEntry.Value;
+            var partitionsByBroker = cached.PartitionsByBroker;
+            var updated = new Dictionary<int, List<TopicPartition>>(partitionsByBroker.Count);
             var changed = false;
-            foreach (var kvp in cachedPartitions)
+            foreach (var kvp in partitionsByBroker)
             {
                 var filtered = RemovePartitions(kvp.Value, partitions);
                 if (filtered is null)
@@ -4270,8 +4271,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (changed)
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
-                    cached.Value.PreferredReplicaExpiresAtTimestamp,
-                    cached.Value.MetadataLastRefreshed);
+                    cached.PreferredReplicaExpiresAtTimestamp,
+                    cached.MetadataLastRefreshed);
         }
     }
 
@@ -4279,11 +4280,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_partitionCacheLock)
         {
-            var cached = _cachedPartitionsByBroker;
-            if (cached is null)
+            var cachedEntry = _cachedPartitionsByBroker;
+            if (cachedEntry is null)
                 return;
 
-            var cachedPartitions = cached.Value.PartitionsByBroker;
+            var cached = cachedEntry.Value;
             if (!_preferredReadReplicas.IsEmpty)
             {
                 _cachedPartitionsByBroker = null;
@@ -4304,7 +4305,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     return;
                 }
 
-                updated ??= new Dictionary<int, List<TopicPartition>>(cachedPartitions);
+                updated ??= new Dictionary<int, List<TopicPartition>>(cached.PartitionsByBroker);
                 if (!updated.TryGetValue(leader.NodeId, out var brokerPartitions))
                 {
                     updated[leader.NodeId] = [partition];
@@ -4323,8 +4324,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (updated is not null)
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
-                    cached.Value.PreferredReplicaExpiresAtTimestamp,
-                    cached.Value.MetadataLastRefreshed);
+                    cached.PreferredReplicaExpiresAtTimestamp,
+                    cached.MetadataLastRefreshed);
         }
     }
 
