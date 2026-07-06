@@ -4246,9 +4246,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (cached is null)
                 return;
 
-            var updated = new Dictionary<int, List<TopicPartition>>(cached.Count);
+            var cachedPartitions = cached.Value.PartitionsByBroker;
+            var updated = new Dictionary<int, List<TopicPartition>>(cachedPartitions.Count);
             var changed = false;
-            foreach (var kvp in cached)
+            foreach (var kvp in cachedPartitions)
             {
                 var filtered = RemovePartitions(kvp.Value, partitions);
                 if (filtered is null)
@@ -4267,7 +4268,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (changed)
-                _cachedPartitionsByBroker = updated;
+                _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
+                    updated,
+                    cached.Value.PreferredReplicaExpiresAtTimestamp,
+                    cached.Value.MetadataLastRefreshed);
         }
     }
 
@@ -4279,6 +4283,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (cached is null)
                 return;
 
+            var cachedPartitions = cached.Value.PartitionsByBroker;
             if (!_preferredReadReplicas.IsEmpty)
             {
                 _cachedPartitionsByBroker = null;
@@ -4299,7 +4304,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     return;
                 }
 
-                updated ??= new Dictionary<int, List<TopicPartition>>(cached);
+                updated ??= new Dictionary<int, List<TopicPartition>>(cachedPartitions);
                 if (!updated.TryGetValue(leader.NodeId, out var brokerPartitions))
                 {
                     updated[leader.NodeId] = [partition];
@@ -4316,7 +4321,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (updated is not null)
-                _cachedPartitionsByBroker = updated;
+                _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
+                    updated,
+                    cached.Value.PreferredReplicaExpiresAtTimestamp,
+                    cached.Value.MetadataLastRefreshed);
         }
     }
 
