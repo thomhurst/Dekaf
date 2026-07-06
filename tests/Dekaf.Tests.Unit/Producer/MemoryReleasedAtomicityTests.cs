@@ -137,7 +137,10 @@ public class MemoryReleasedAtomicityTests
             {
                 if (accumulator.TryGetBatch("test-topic", p, out var partBatch) && partBatch is not null)
                 {
+                    var overestimatedBytes = partBatch.OverestimatedBytes;
                     var readyBatch = partBatch.Complete();
+                    if (overestimatedBytes > 0)
+                        accumulator.ReleaseMemory(overestimatedBytes);
                     if (readyBatch is not null)
                         batches.Add((readyBatch, readyBatch.DataSize));
                 }

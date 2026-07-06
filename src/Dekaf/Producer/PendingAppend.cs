@@ -189,7 +189,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     /// <summary>
     /// Attempts to fail the operation with an exception (timeout, cancellation, disposal).
-    /// Cleans up owned resources (PooledMemory, headers, pending produce count) since
+    /// Cleans up owned resources (PooledMemory, headers) since
     /// drain will not process this operation.
     /// </summary>
     /// <param name="exception">The exception to complete with.</param>
@@ -205,9 +205,6 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _key.Return();
         _value.Return();
         RecordAccumulator.ReturnPooledHeaders(_headers);
-
-        if (_completionSource is not null)
-            _accumulator.DecrementPendingAwaitedProduceCount();
 
         _core.SetException(exception);
         return true;

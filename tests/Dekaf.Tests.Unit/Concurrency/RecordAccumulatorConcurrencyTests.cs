@@ -229,8 +229,8 @@ public class RecordAccumulatorConcurrencyTests
     public async Task BufferMemoryContention_MultiplePartitions_BackpressureWorks()
     {
         // With a small buffer, multiple partitions under pressure should
-        // experience backpressure but not deadlock. Messages should eventually
-        // succeed or the cancellation token should fire.
+        // experience backpressure but not deadlock. TryAppendWithCompletion is
+        // allowed to return false so the production caller can fall back to slow path.
 
         const int taskCount = 4;
         const int messagesPerTask = 20;
@@ -239,6 +239,7 @@ public class RecordAccumulatorConcurrencyTests
         var accumulator = new RecordAccumulator(options);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var successCount = 0;
+        var backpressureCount = 0;
         var cancelledCount = 0;
 
         try
@@ -291,7 +292,16 @@ public class RecordAccumulatorConcurrencyTests
                             completion);
 
                         if (result)
+                        {
                             Interlocked.Increment(ref successCount);
+                        }
+                        else
+                        {
+                            key.Return();
+                            value.Return();
+                            pool.Return(completion);
+                            Interlocked.Increment(ref backpressureCount);
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -306,8 +316,8 @@ public class RecordAccumulatorConcurrencyTests
             Volatile.Write(ref cancelled, true);
             await drainTask;
 
-            // All messages should have succeeded or been cancelled - none should be lost
-            await Assert.That(successCount + cancelledCount).IsEqualTo(taskCount * messagesPerTask);
+            // All attempts should have either succeeded, hit backpressure, or been cancelled.
+            await Assert.That(successCount + backpressureCount + cancelledCount).IsEqualTo(taskCount * messagesPerTask);
             // At least some messages should have succeeded
             await Assert.That(successCount).IsGreaterThan(0);
         }

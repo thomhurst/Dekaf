@@ -92,7 +92,7 @@ public class BufferMemoryTests
             // Get the batch
             if (accumulator.TryGetBatch("test-topic", 0, out var batch))
             {
-                var batchSize = batch!.EstimatedSize;
+                var batchSize = batch!.ReservedSize;
 
                 // Simulate the batch being sent - release the memory.
                 // In production, CurrentBatch is set to null when sealed.
@@ -249,7 +249,7 @@ public class BufferMemoryTests
                 var pd = parms[1]!;
                 pd.GetType().GetField("CurrentBatch")!.SetValue(pd, null);
 
-                accumulator.ReleaseMemory(batch1!.EstimatedSize);
+                accumulator.ReleaseMemory(batch1!.ReservedSize);
             }
 
             var bufferedAfterRelease = accumulator.BufferedBytes;
