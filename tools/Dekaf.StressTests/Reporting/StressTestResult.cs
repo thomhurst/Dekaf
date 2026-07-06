@@ -77,6 +77,11 @@ internal sealed class StressTestResult
             ? cpu / Throughput.ElapsedSeconds
             : null;
 
+    public double? AllocatedBytesPerMessage =>
+        GcStats.AllocatedBytes is { } allocated && Throughput.TotalMessages > 0
+            ? (double)allocated / Throughput.TotalMessages
+            : null;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,

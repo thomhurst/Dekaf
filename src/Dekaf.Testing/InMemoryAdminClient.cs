@@ -659,6 +659,47 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>>(result);
     }
 
+    public ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
+        IEnumerable<string> transactionalIds,
+        FenceProducersOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionalIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = transactionalIds.ToDictionary(
+            transactionalId => transactionalId,
+            transactionalId => new FenceProducersResultInfo
+            {
+                TransactionalId = transactionalId,
+                ErrorCode = ErrorCode.TransactionalIdNotFound
+            },
+            StringComparer.Ordinal);
+
+        return ValueTask.FromResult<IReadOnlyDictionary<string, FenceProducersResultInfo>>(result);
+    }
+
+    public ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
+        AbortTransactionSpec transaction,
+        AbortTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        ValidateTopicPartition(transaction.TopicPartition);
+
+        return ValueTask.FromResult(new AbortTransactionResultInfo
+        {
+            TopicPartition = transaction.TopicPartition,
+            ProducerId = transaction.ProducerId,
+            ProducerEpoch = transaction.ProducerEpoch,
+            CoordinatorEpoch = transaction.CoordinatorEpoch,
+            ErrorCode = ErrorCode.None
+        });
+    }
+
     public ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
         IEnumerable<int> brokerIds,
         IEnumerable<TopicPartition>? partitions = null,

@@ -61,6 +61,18 @@ jobs:
             client: confluent
             brokers: 1
             name: Confluent Consumer
+          - scenario: consumer-batch
+            client: dekaf
+            brokers: 1
+            name: Dekaf Consumer Batch
+          - scenario: consumer-raw
+            client: dekaf
+            brokers: 1
+            name: Dekaf Consumer Raw
+          - scenario: consumer-raw-batch
+            client: dekaf
+            brokers: 1
+            name: Dekaf Consumer Raw Batch
           # Multi-broker: producer scenarios only — consumer throughput is unaffected by
           # replication factor since Acks only applies to producers.
           - scenario: producer

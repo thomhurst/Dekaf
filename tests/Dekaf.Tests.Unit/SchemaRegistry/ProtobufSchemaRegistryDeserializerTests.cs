@@ -12,6 +12,35 @@ public class ProtobufSchemaRegistryDeserializerTests
     private static SerializationContext CreateContext(string topic = "test-topic", bool isKey = false) =>
         new() { Topic = topic, Component = isKey ? SerializationComponent.Key : SerializationComponent.Value };
 
+    private sealed class CapturingRuleExecutor(byte[]? deserializedPayload = null) : ISchemaRegistryRuleExecutor
+    {
+        public SchemaRegistryRuleContext? Context { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+            => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            Context = context;
+            return deserializedPayload ?? payload;
+        }
+    }
+
+    private static byte[] CreateWireBytes(int schemaId, TestMessage message)
+    {
+        var protoBytes = message.ToByteArray();
+        var wireBytes = new byte[1 + 4 + 1 + protoBytes.Length];
+        wireBytes[0] = 0x00;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), schemaId);
+        wireBytes[5] = 0;
+        protoBytes.CopyTo(wireBytes.AsSpan(6));
+        return wireBytes;
+    }
+
     [Test]
     public async Task Deserialize_ReadsCorrectWireFormat()
     {
@@ -76,6 +105,33 @@ public class ProtobufSchemaRegistryDeserializerTests
         await Assert.That(result.Id).IsEqualTo(42);
         await Assert.That(schemaRegistry.TryGetCachedSchemaCallCount).IsEqualTo(1);
         await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Deserialize_RuleExecutor_TransformsMessageBytes_AfterMessageIndexes()
+    {
+        var schemaRegistry = new MockSchemaRegistryClient();
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "syntax = \"proto3\";"
+        };
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schema);
+        var replacement = new TestMessage { Id = 9, Name = "Plain", Value = 1.25 };
+        var executor = new CapturingRuleExecutor(replacement.ToByteArray());
+        var config = new ProtobufDeserializerConfig { RuleExecutor = executor };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(schemaRegistry, config);
+        var wireBytes = CreateWireBytes(schemaId, new TestMessage { Id = 1, Name = "Encrypted", Value = 3.14 });
+
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        await Assert.That(result.Id).IsEqualTo(replacement.Id);
+        await Assert.That(result.Name).IsEqualTo(replacement.Name);
+        await Assert.That(result.Value).IsEqualTo(replacement.Value);
+        await Assert.That(executor.Context).IsNotNull();
+        await Assert.That(executor.Context!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Protobuf);
+        await Assert.That(executor.Context.SchemaId).IsEqualTo(schemaId);
+        await Assert.That(executor.Context.Schema).IsSameReferenceAs(schema);
     }
 
     [Test]
@@ -157,6 +213,28 @@ public class ProtobufSchemaRegistryDeserializerTests
         // Assert - schema registry should not be called
         await schemaRegistry.DidNotReceive().GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());
         await Assert.That(result.Id).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task Deserialize_RuleExecutor_SkipSchemaValidation_PassesNullSchema()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        var executor = new CapturingRuleExecutor();
+        var config = new ProtobufDeserializerConfig
+        {
+            SkipSchemaValidation = true,
+            RuleExecutor = executor
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(schemaRegistry, config);
+        var wireBytes = CreateWireBytes(123, new TestMessage { Id = 42, Name = "Hello", Value = 3.14 });
+
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        await schemaRegistry.DidNotReceive().GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());
+        await Assert.That(result.Id).IsEqualTo(42);
+        await Assert.That(executor.Context).IsNotNull();
+        await Assert.That(executor.Context!.SchemaId).IsEqualTo(123);
+        await Assert.That(executor.Context.Schema).IsNull();
     }
 
     [Test]

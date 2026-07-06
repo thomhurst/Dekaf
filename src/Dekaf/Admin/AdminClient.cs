@@ -1099,6 +1099,177 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
+        IEnumerable<string> transactionalIds,
+        FenceProducersOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionalIds);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!SupportsApiRange(
+            Protocol.ApiKey.InitProducerId,
+            InitProducerIdRequest.LowestSupportedVersion,
+            InitProducerIdRequest.HighestSupportedVersion))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support InitProducerId (API key 22).");
+        }
+
+        var transactionalIdList = transactionalIds.ToList();
+        if (transactionalIdList.Count == 0)
+        {
+            return new Dictionary<string, FenceProducersResultInfo>();
+        }
+
+        var transactionTimeoutMs = options?.TimeoutMs ?? _options.RequestTimeoutMs;
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async () =>
+        {
+            var idsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var transactionalId in transactionalIdList)
+            {
+                var coordinatorId = await FindTransactionCoordinatorAsync(transactionalId, cancellationToken).ConfigureAwait(false);
+                if (!idsByCoordinator.TryGetValue(coordinatorId, out var ids))
+                {
+                    ids = [];
+                    idsByCoordinator[coordinatorId] = ids;
+                }
+
+                ids.Add(transactionalId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.InitProducerId,
+                InitProducerIdRequest.LowestSupportedVersion,
+                InitProducerIdRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<string, FenceProducersResultInfo>(StringComparer.Ordinal);
+
+            foreach (var (coordinatorId, ids) in idsByCoordinator)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+                foreach (var transactionalId in ids)
+                {
+                    var request = new InitProducerIdRequest
+                    {
+                        TransactionalId = transactionalId,
+                        TransactionTimeoutMs = transactionTimeoutMs,
+                        ProducerId = -1,
+                        ProducerEpoch = -1
+                    };
+
+                    var response = await connection.SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                        request,
+                        apiVersion,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (response.ErrorCode == Protocol.ErrorCode.ConcurrentTransactions)
+                    {
+                        throw new KafkaException(response.ErrorCode,
+                            $"FenceProducers is waiting for a concurrent transaction on transactional ID '{transactionalId}'.",
+                            isRetriable: true);
+                    }
+
+                    if (response.ErrorCode.IsRetriable() || response.ErrorCode.RequiresMetadataRefresh())
+                    {
+                        throw new KafkaException(response.ErrorCode,
+                            $"FenceProducers failed for transactional ID '{transactionalId}': {response.ErrorCode}");
+                    }
+
+                    result[transactionalId] = new FenceProducersResultInfo
+                    {
+                        TransactionalId = transactionalId,
+                        ErrorCode = response.ErrorCode,
+                        ProducerId = response.ProducerId,
+                        ProducerEpoch = response.ProducerEpoch
+                    };
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
+        AbortTransactionSpec transaction,
+        AbortTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!SupportsApiRange(
+            Protocol.ApiKey.WriteTxnMarkers,
+            WriteTxnMarkersRequest.LowestSupportedVersion,
+            WriteTxnMarkersRequest.HighestSupportedVersion))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support WriteTxnMarkers (API key 27).");
+        }
+
+        return await WithRetryAsync(async () =>
+        {
+            var topicPartition = transaction.TopicPartition;
+            var leaderNode = _metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition);
+            if (leaderNode is null)
+            {
+                throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
+                    $"No leader available for {topicPartition.Topic}-{topicPartition.Partition}");
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.WriteTxnMarkers,
+                WriteTxnMarkersRequest.LowestSupportedVersion,
+                WriteTxnMarkersRequest.HighestSupportedVersion);
+
+            var request = new WriteTxnMarkersRequest
+            {
+                Markers =
+                [
+                    new WriteTxnMarkersRequestMarker
+                    {
+                        ProducerId = transaction.ProducerId,
+                        ProducerEpoch = transaction.ProducerEpoch,
+                        TransactionResult = false,
+                        CoordinatorEpoch = transaction.CoordinatorEpoch,
+                        Topics =
+                        [
+                            new WriteTxnMarkersRequestTopic
+                            {
+                                Name = topicPartition.Topic,
+                                PartitionIndexes = [topicPartition.Partition]
+                            }
+                        ]
+                    }
+                ]
+            };
+
+            var connection = await _connectionPool.GetConnectionAsync(leaderNode.NodeId, cancellationToken).ConfigureAwait(false);
+            var response = await connection.SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var partitionResult = FindAbortTransactionPartition(response, transaction);
+            if (partitionResult.ErrorCode.IsRetriable() || partitionResult.ErrorCode.RequiresMetadataRefresh())
+            {
+                throw new KafkaException(partitionResult.ErrorCode,
+                    $"AbortTransaction failed for {topicPartition.Topic}-{topicPartition.Partition}: {partitionResult.ErrorCode}");
+            }
+
+            return new AbortTransactionResultInfo
+            {
+                TopicPartition = topicPartition,
+                ProducerId = transaction.ProducerId,
+                ProducerEpoch = transaction.ProducerEpoch,
+                CoordinatorEpoch = transaction.CoordinatorEpoch,
+                ErrorCode = partitionResult.ErrorCode
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask DeleteConsumerGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
@@ -3495,6 +3666,48 @@ public sealed class AdminClient : IAdminClient
 
     private ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
         => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
+
+    private bool SupportsApiRange(Protocol.ApiKey apiKey, short lowestSupportedVersion, short highestSupportedVersion)
+    {
+        if (!_metadataManager.HasApiKey(apiKey))
+            return false;
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            apiKey,
+            lowestSupportedVersion,
+            highestSupportedVersion);
+
+        return apiVersion >= lowestSupportedVersion &&
+               apiVersion <= highestSupportedVersion &&
+               _metadataManager.SupportsApiVersion(apiKey, apiVersion);
+    }
+
+    private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(
+        WriteTxnMarkersResponse response,
+        AbortTransactionSpec transaction)
+    {
+        var topicPartition = transaction.TopicPartition;
+        foreach (var marker in response.Markers)
+        {
+            if (marker.ProducerId != transaction.ProducerId)
+                continue;
+
+            foreach (var topic in marker.Topics)
+            {
+                if (!string.Equals(topic.Name, topicPartition.Topic, StringComparison.Ordinal))
+                    continue;
+
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.PartitionIndex == topicPartition.Partition)
+                        return partition;
+                }
+            }
+        }
+
+        throw new KafkaException(Protocol.ErrorCode.UnknownServerError,
+            $"WriteTxnMarkers response did not include {topicPartition.Topic}-{topicPartition.Partition} for producer {transaction.ProducerId}.");
+    }
 
     private async ValueTask<IKafkaConnection> GetControllerAsync(CancellationToken cancellationToken)
     {

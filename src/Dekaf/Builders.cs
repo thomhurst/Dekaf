@@ -1145,6 +1145,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _clientRack;
     private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
+    private bool _enableAutoOffsetStore = true;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private TimeSpan? _autoOffsetResetDuration;
     private int _fetchMinBytes = 1;
@@ -1337,6 +1338,17 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithOffsetCommitMode(OffsetCommitMode mode)
     {
         _offsetCommitMode = mode;
+        return this;
+    }
+
+    /// <summary>
+    /// Controls whether consumed offsets are stored automatically for background auto-commit.
+    /// Disable this and call <see cref="IKafkaConsumer{TKey,TValue}.StoreOffset(ConsumeResult{TKey,TValue})"/>
+    /// after processing succeeds to get Confluent-style manual offset store with auto-commit.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled = true)
+    {
+        _enableAutoOffsetStore = enabled;
         return this;
     }
 
@@ -2184,6 +2196,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ClientRack = _clientRack,
             OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
+            EnableAutoOffsetStore = _enableAutoOffsetStore,
             AutoOffsetReset = _autoOffsetReset,
             AutoOffsetResetDuration = _autoOffsetResetDuration,
             FetchMinBytes = _fetchMinBytes,

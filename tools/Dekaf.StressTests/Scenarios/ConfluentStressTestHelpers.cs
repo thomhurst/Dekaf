@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Dekaf.StressTests.Metrics;
+using Dekaf.Tooling;
 using ConfluentKafka = Confluent.Kafka;
 
 namespace Dekaf.StressTests.Scenarios;
@@ -18,7 +19,7 @@ internal static class ConfluentStressTestHelpers
     /// matching Dekaf's bytes-only BufferMemory regardless of --message-size (the
     /// default 100k count cap would bind first for messages under ~10 KB).
     /// </summary>
-    internal const int QueueBufferingMaxMessages = 10_000_000;
+    internal const int QueueBufferingMaxMessages = ConfluentProducerBackpressure.QueueBufferingMaxMessages;
 
     // --- Consumer fetch sizing -------------------------------------------------------------
     // Mirrors Dekaf's ConsumerBuilder.ForHighThroughput() preset (src/Dekaf/Builders.cs) so the
@@ -113,24 +114,12 @@ internal static class ConfluentStressTestHelpers
         ConfluentKafka.Message<string, string> message,
         Action<ConfluentKafka.DeliveryReport<string, string>>? deliveryHandler,
         CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            try
-            {
-                producer.Produce(topic, message, deliveryHandler);
-                return;
-            }
-            catch (ConfluentKafka.ProduceException<string, string> ex)
-                when (ex.Error.Code == ConfluentKafka.ErrorCode.Local_QueueFull)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                // The background poll thread drains the queue; a short sleep is the
-                // idiomatic librdkafka backpressure wait.
-                Thread.Sleep(1);
-            }
-        }
-    }
+        => ConfluentProducerBackpressure.ProduceWithBackpressure(
+            producer,
+            topic,
+            message,
+            deliveryHandler,
+            cancellationToken);
 
     /// <summary>
     /// Produces one message and records the full delivery round-trip into

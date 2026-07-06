@@ -28,6 +28,12 @@ public sealed class InMemoryConsumerOptions
     public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Auto;
 
     /// <summary>
+    /// Automatically stores each consumed message's next offset for auto-commit.
+    /// Disable to call <c>StoreOffset</c> after processing succeeds.
+    /// </summary>
+    public bool EnableAutoOffsetStore { get; init; } = true;
+
+    /// <summary>
     /// Member ID reported by the fake consumer.
     /// </summary>
     public string? MemberId { get; init; }

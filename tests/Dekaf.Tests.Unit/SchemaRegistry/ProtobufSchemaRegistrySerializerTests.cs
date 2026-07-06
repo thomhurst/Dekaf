@@ -13,6 +13,24 @@ public class ProtobufSchemaRegistrySerializerTests
     private static SerializationContext CreateContext(string topic = "test-topic", bool isKey = false) =>
         new() { Topic = topic, Component = isKey ? SerializationComponent.Key : SerializationComponent.Value };
 
+    private sealed class ReplacingRuleExecutor(byte[] serializedPayload) : ISchemaRegistryRuleExecutor
+    {
+        public SchemaRegistryRuleContext? Context { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            Context = context;
+            return serializedPayload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+            => payload;
+    }
+
     [Test]
     public async Task Serialize_WritesCorrectWireFormat()
     {
@@ -45,6 +63,31 @@ public class ProtobufSchemaRegistrySerializerTests
         var expectedPayload = message.ToByteArray();
         await Assert.That(written.AsSpan(6).ToArray()).IsEquivalentTo(expectedPayload);
     }
+
+    [Test]
+    public async Task Serialize_RuleExecutor_TransformsMessageBytes_AfterMessageIndexes()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(42));
+
+        var replacement = new TestMessage { Id = 9, Name = "Encrypted", Value = 1.25 };
+        var executor = new ReplacingRuleExecutor(replacement.ToByteArray());
+        var config = new ProtobufSerializerConfig { RuleExecutor = executor };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new TestMessage { Id = 1, Name = "Plain", Value = 3.14 }, ref buffer, CreateContext());
+
+        var written = buffer.WrittenMemory.ToArray();
+        await Assert.That(written[5]).IsEqualTo((byte)0);
+        await Assert.That(written.AsSpan(6).ToArray()).IsEquivalentTo(replacement.ToByteArray());
+        await Assert.That(executor.Context).IsNotNull();
+        await Assert.That(executor.Context!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Protobuf);
+        await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-value");
+        await Assert.That(executor.Context.SchemaId).IsEqualTo(42);
+    }
+
 
     [Test]
     public async Task Serialize_CachesSchemaId()
@@ -208,6 +251,45 @@ public class ProtobufSchemaRegistrySerializerTests
         // Assert - should call GetSchemaBySubjectAsync, not GetOrRegisterSchemaAsync
         await schemaRegistry.Received(1).GetSchemaBySubjectAsync(Arg.Any<string>(), "latest", Arg.Any<CancellationToken>());
         await schemaRegistry.DidNotReceive().GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task Serialize_DisablesAutoRegisterSchemas_WhenLookupFaults_ThrowsSchemaRegistryException()
+    {
+        await AssertLookupFaultThrowsSchemaRegistryExceptionAsync(
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false },
+            50001);
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_WhenLookupFaults_ThrowsSchemaRegistryException()
+    {
+        await AssertLookupFaultThrowsSchemaRegistryExceptionAsync(
+            new ProtobufSerializerConfig { UseLatestVersion = true },
+            50002);
+    }
+
+    private static async Task AssertLookupFaultThrowsSchemaRegistryExceptionAsync(
+        ProtobufSerializerConfig config,
+        int errorCode)
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetSchemaBySubjectAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<RegisteredSchema>(new SchemaRegistryException(errorCode, "lookup failed")));
+
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var message = new TestMessage { Id = 1, Name = "Test", Value = 3.14 };
+        var buffer = new ArrayBufferWriter<byte>();
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
+        {
+            serializer.Serialize(message, ref buffer, CreateContext());
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
     }
 
     [Test]

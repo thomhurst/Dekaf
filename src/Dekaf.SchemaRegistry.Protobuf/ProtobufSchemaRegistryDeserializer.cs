@@ -62,15 +62,17 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
+        Schema? schema = null;
         if (!_config.SkipSchemaValidation)
         {
-            var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
             if (schema.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
 
         // Read the message indexes (varints)
-        var payload = span.Slice(5);
+        var payloadMemory = data.Slice(5);
+        var payload = payloadMemory.Span;
         var (indexCount, bytesRead) = ReadVarint(payload, _config.UseDeprecatedFormat);
         if (indexCount < 0)
             throw new InvalidOperationException("Message index array length cannot be negative");
@@ -85,11 +87,24 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         }
 
         // The rest is the protobuf message
-        var protobufData = payload.Slice(bytesRead);
+        var protobufData = payloadMemory.Slice(bytesRead);
+        if (_config.RuleExecutor is not null)
+        {
+            protobufData = _config.RuleExecutor.TransformDeserializedPayload(
+                protobufData,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Schema = schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
+                });
+        }
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
         // IBufferMessage constraint is enforced at compile time.
-        return _parser.ParseFrom(protobufData);
+        return _parser.ParseFrom(protobufData.Span);
     }
 
     private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data, bool useDeprecatedFormat)

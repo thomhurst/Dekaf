@@ -109,14 +109,136 @@ public sealed class ConsumerDirtyCommitTests
         await Assert.That(partition.CommittedLeaderEpoch).IsEqualTo(7);
     }
 
-    private static KafkaConsumer<string, string> CreateConsumer(
-        List<OffsetCommitRequest> requests,
-        ErrorCode responseError)
-        => CreateConsumer(requests, new Queue<ErrorCode>([responseError]));
+    [Test]
+    public async Task StoreOffset_AutoCommit_CommitsNextOffset()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+
+        consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7)
+        ]);
+    }
+
+    [Test]
+    public async Task AutoCommit_WhenAutoOffsetStoreDisabled_DoesNotCommitConsumedPosition()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+
+        RecordConsumedPosition(consumer, new TopicPartition("topic-a", 0), 10, leaderEpoch: 3);
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task AutoCommit_WhenAutoOffsetStoreEnabled_CommitsConsumedPosition()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: true);
+
+        RecordConsumedPosition(consumer, new TopicPartition("topic-a", 0), 10, leaderEpoch: 3);
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3)
+        ]);
+    }
+
+    [Test]
+    public async Task CommitAsync_WhenAutoOffsetStoreDisabled_CommitsOnlyStoredOffset()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Manual,
+            enableAutoOffsetStore: false);
+        var partition = new TopicPartition("topic-a", 0);
+
+        RecordConsumedPosition(consumer, partition, 10, leaderEpoch: 3);
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(requests).IsEmpty();
+
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3));
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3)
+        ]);
+    }
+
+    [Test]
+    [Arguments("Seek")]
+    [Arguments("SeekToBeginning")]
+    [Arguments("SeekToEnd")]
+    public async Task CommitAsync_WhenAutoOffsetStoreDisabled_DoesNotCommitSeekedPositionUntilStored(string seekOperation)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Manual,
+            enableAutoOffsetStore: false);
+        var partition = new TopicPartition("topic-a", 0);
+
+        ApplySeek(consumer, seekOperation, partition);
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(requests).IsEmpty();
+
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3));
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 3)
+        ]);
+    }
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
-        Queue<ErrorCode> responseErrors)
+        ErrorCode responseError,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
+        bool enableAutoOffsetStore = true)
+        => CreateConsumer(
+            requests,
+            new Queue<ErrorCode>([responseError]),
+            offsetCommitMode,
+            enableAutoOffsetStore);
+
+    private static KafkaConsumer<string, string> CreateConsumer(
+        List<OffsetCommitRequest> requests,
+        Queue<ErrorCode> responseErrors,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
+        bool enableAutoOffsetStore = true)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -148,7 +270,8 @@ public sealed class ConsumerDirtyCommitTests
             {
                 BootstrapServers = ["localhost:9092"],
                 GroupId = "group-a",
-                OffsetCommitMode = OffsetCommitMode.Manual
+                OffsetCommitMode = offsetCommitMode,
+                EnableAutoOffsetStore = enableAutoOffsetStore
             },
             Serializers.String,
             Serializers.String,
@@ -167,6 +290,80 @@ public sealed class ConsumerDirtyCommitTests
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         method.Invoke(consumer, [partition, position, dirty]);
+    }
+
+    private static void ApplySeek(
+        KafkaConsumer<string, string> consumer,
+        string seekOperation,
+        TopicPartition partition)
+    {
+        switch (seekOperation)
+        {
+            case "Seek":
+                consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 10, leaderEpoch: 3));
+                break;
+            case "SeekToBeginning":
+                consumer.SeekToBeginning(partition);
+                break;
+            case "SeekToEnd":
+                consumer.SeekToEnd(partition);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(seekOperation), seekOperation, null);
+        }
+    }
+
+    private static void RecordConsumedPosition(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long position,
+        int leaderEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "RecordConsumedPosition",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        method.Invoke(consumer, [partition, position, leaderEpoch]);
+    }
+
+    private static async Task CommitStoredOffsetsAsync(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CommitStoredOffsetsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        var commit = method.Invoke(consumer, [CancellationToken.None])!;
+        if (commit is ValueTask valueTask)
+        {
+            await valueTask.ConfigureAwait(false);
+            return;
+        }
+
+        if (commit is ValueTask<bool> valueTaskWithResult)
+        {
+            _ = await valueTaskWithResult.ConfigureAwait(false);
+            return;
+        }
+
+        throw new InvalidOperationException($"Unexpected CommitStoredOffsetsAsync return type: {commit.GetType()}.");
+    }
+
+    private static ConsumeResult<string, string> CreateConsumeResult(long offset, int leaderEpoch)
+    {
+        return new ConsumeResult<string, string>(
+            topic: "topic-a",
+            partition: 0,
+            offset: offset,
+            keyData: ReadOnlyMemory<byte>.Empty,
+            isKeyNull: true,
+            valueData: ReadOnlyMemory<byte>.Empty,
+            isValueNull: true,
+            headers: null,
+            timestampMs: 0,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: leaderEpoch,
+            keyDeserializer: null,
+            valueDeserializer: null);
     }
 
     private static OffsetCommitRequest CloneRequest(OffsetCommitRequest request)

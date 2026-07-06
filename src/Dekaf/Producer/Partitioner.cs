@@ -20,69 +20,29 @@ internal interface IBatchCompletionAwarePartitioner
     void OnBatchComplete(string topic, int partitionCount);
 }
 
-/// <summary>
-/// Default partitioner - uses murmur2 hash of key, or round-robin for null keys.
-/// </summary>
-public sealed class DefaultPartitioner : IPartitioner
+internal sealed class StickyPartitionTracker
 {
-    // Non-atomic increment is intentional: avoids Interlocked cache line contention across threads.
-    // Two threads may occasionally read the same counter value (benign — just means two messages
-    // land on the same partition), but distribution remains even over time.
-    private uint _counter;
-
-    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
-    {
-        if (keyIsNull || key.Length == 0)
-        {
-            return (int)(++_counter % (uint)partitionCount);
-        }
-
-        // Murmur2 hash for consistent partitioning
-        return (int)(Murmur2.Hash(key) % partitionCount);
-    }
-}
-
-/// <summary>
-/// Sticky partitioner - sticks to a partition for null keys until batch is full.
-/// Uses ConcurrentDictionary for lock-free read access in the hot path.
-/// </summary>
-public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwarePartitioner
-{
-    private readonly ConcurrentDictionary<string, int> _stickyPartitions = new();
+    private readonly ConcurrentDictionary<string, int> _partitions = new();
 #if NETSTANDARD2_0
     private int _counter;
 #else
     private uint _counter;
 #endif
 
-    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    public int GetOrAssign(string topic, int partitionCount)
     {
-        if (keyIsNull || key.Length == 0)
+        if (_partitions.TryGetValue(topic, out var partition))
         {
-            // Hot path: TryGetValue is lock-free for reads in ConcurrentDictionary
-            if (_stickyPartitions.TryGetValue(topic, out var partition))
-            {
-                return partition;
-            }
-
-            // Cold path: topic not yet seen, compute and add a partition.
-            // Use uint to avoid overflow to negative values.
-            // GetOrAdd handles the race condition - if another thread added first, we use their value.
-            var newPartition = NextPartition(partitionCount);
-            return _stickyPartitions.GetOrAdd(topic, newPartition);
+            return partition;
         }
 
-        return (int)(Murmur2.Hash(key) % partitionCount);
+        var newPartition = NextPartition(partitionCount);
+        return _partitions.GetOrAdd(topic, newPartition);
     }
 
-    /// <summary>
-    /// Called when a batch is sent to switch to a new partition.
-    /// </summary>
-    public void OnBatchComplete(string topic, int partitionCount)
+    public void Rotate(string topic, int partitionCount)
     {
-        // Use AddOrUpdate for thread-safe update that doesn't race with concurrent TryGetValue.
-        // Use uint to avoid overflow to negative values.
-        _stickyPartitions.AddOrUpdate(
+        _partitions.AddOrUpdate(
             topic,
             _ => NextPartition(partitionCount),
             (_, _) => NextPartition(partitionCount));
@@ -98,11 +58,66 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
 }
 
 /// <summary>
+/// Default partitioner - uses murmur2 hash of key, or sticky partitioning for null keys.
+/// </summary>
+public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePartitioner
+{
+    private readonly StickyPartitionTracker _stickyPartitionTracker = new();
+
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        if (keyIsNull || key.Length == 0)
+        {
+            return _stickyPartitionTracker.GetOrAssign(topic, partitionCount);
+        }
+
+        // Kafka-compatible Murmur2 partitioning for keyed messages.
+        return Murmur2.Partition(key, partitionCount);
+    }
+
+    /// <summary>
+    /// Called when a batch is sent to switch to a new partition.
+    /// </summary>
+    public void OnBatchComplete(string topic, int partitionCount)
+    {
+        _stickyPartitionTracker.Rotate(topic, partitionCount);
+    }
+}
+
+/// <summary>
+/// Sticky partitioner - sticks to a partition for null keys until batch is full.
+/// Uses ConcurrentDictionary for lock-free read access in the hot path.
+/// </summary>
+public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwarePartitioner
+{
+    private readonly StickyPartitionTracker _stickyPartitionTracker = new();
+
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        if (keyIsNull || key.Length == 0)
+        {
+            return _stickyPartitionTracker.GetOrAssign(topic, partitionCount);
+        }
+
+        return Murmur2.Partition(key, partitionCount);
+    }
+
+    /// <summary>
+    /// Called when a batch is sent to switch to a new partition.
+    /// </summary>
+    public void OnBatchComplete(string topic, int partitionCount)
+    {
+        _stickyPartitionTracker.Rotate(topic, partitionCount);
+    }
+}
+
+/// <summary>
 /// Round-robin partitioner - cycles through partitions.
 /// </summary>
 public sealed class RoundRobinPartitioner : IPartitioner
 {
-    // Non-atomic increment — see DefaultPartitioner comment for rationale.
+    // Non-atomic increment is intentional: occasional duplicate reads are benign,
+    // and distribution remains even over time without Interlocked contention.
     private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
@@ -119,6 +134,12 @@ internal static class Murmur2
     private const uint Seed = 0x9747b28c;
     private const int M = 0x5bd1e995;
     private const int R = 24;
+    private const uint PositiveMask = 0x7fff_ffff;
+
+    public static int Partition(ReadOnlySpan<byte> key, int partitionCount)
+    {
+        return (int)((Hash(key) & PositiveMask) % (uint)partitionCount);
+    }
 
     public static uint Hash(ReadOnlySpan<byte> data)
     {

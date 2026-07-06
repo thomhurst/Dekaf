@@ -44,6 +44,30 @@ public sealed class AvroSerializerTests
         return ms.ToArray();
     }
 
+    private sealed class CapturingRuleExecutor(
+        byte[]? serializedPayload = null,
+        byte[]? deserializedPayload = null) : ISchemaRegistryRuleExecutor
+    {
+        public SchemaRegistryRuleContext? SerializeContext { get; private set; }
+        public SchemaRegistryRuleContext? DeserializeContext { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            SerializeContext = context;
+            return serializedPayload ?? payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            DeserializeContext = context;
+            return deserializedPayload ?? payload;
+        }
+    }
+
     [Test]
     public async Task Serializer_SerializesGenericRecord_WithWireFormat()
     {
@@ -71,6 +95,36 @@ public sealed class AvroSerializerTests
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, 4));
         await Assert.That(schemaId).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Serializer_RuleExecutor_TransformsAvroPayload()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(schema!);
+        record.Add("id", 42);
+        record.Add("name", "plain");
+
+        var replacement = new GenericRecord(schema!);
+        replacement.Add("id", 99);
+        replacement.Add("name", "encrypted");
+        var replacementPayload = SerializeAvroRecord(replacement, schema!);
+        var executor = new CapturingRuleExecutor(serializedPayload: replacementPayload);
+        var config = new AvroSerializerConfig { RuleExecutor = executor };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        await Assert.That(buffer.WrittenSpan.Slice(5).ToArray()).IsEquivalentTo(replacementPayload);
+        await Assert.That(executor.SerializeContext).IsNotNull();
+        await Assert.That(executor.SerializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Avro);
+        await Assert.That(executor.SerializeContext.Subject).IsEqualTo("test-topic-value");
+        await Assert.That(executor.SerializeContext.SchemaId).IsGreaterThan(0);
+        await Assert.That(executor.SerializeContext.Schema).IsNotNull();
+        await Assert.That(executor.SerializeContext.Schema!.SchemaType).IsEqualTo(SchemaType.Avro);
+        await Assert.That(executor.SerializeContext.Schema.SchemaString).IsEqualTo(schema!.ToString());
     }
 
     [Test]
@@ -114,6 +168,37 @@ public sealed class AvroSerializerTests
         await Assert.That(result).IsNotNull();
         await Assert.That((int)result["id"]!).IsEqualTo(42);
         await Assert.That((string)result["name"]!).IsEqualTo("test");
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_TransformsAvroPayload()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schemaObj = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schemaObj);
+
+        var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var replacement = new GenericRecord(avroSchema!);
+        replacement.Add("id", 7);
+        replacement.Add("name", "plain");
+        var replacementPayload = SerializeAvroRecord(replacement, avroSchema!);
+        var wireFormat = CreateWireFormat(schemaId, "encrypted"u8.ToArray());
+        var executor = new CapturingRuleExecutor(deserializedPayload: replacementPayload);
+        var config = new AvroDeserializerConfig { RuleExecutor = executor };
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry, config);
+
+        var result = deserializer.Deserialize(wireFormat, CreateContext());
+
+        await Assert.That((int)result["id"]!).IsEqualTo(7);
+        await Assert.That((string)result["name"]!).IsEqualTo("plain");
+        await Assert.That(executor.DeserializeContext).IsNotNull();
+        await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Avro);
+        await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
+        await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schemaObj);
     }
 
     [Test]

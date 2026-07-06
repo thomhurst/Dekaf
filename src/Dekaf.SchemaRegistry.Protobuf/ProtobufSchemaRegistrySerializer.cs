@@ -78,12 +78,29 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
 
         var protoSize = value.CalculateSize();
+        ReadOnlyMemory<byte> transformedPayload = default;
+        if (_config.RuleExecutor is not null)
+        {
+            transformedPayload = _config.RuleExecutor.TransformSerializedPayload(
+                value.ToByteArray(),
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Subject = schemaEntry.Subject,
+                    Schema = schemaEntry.Schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
+                });
+        }
 
         // Total size: magic byte + schema ID + indexes + message
-        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protoSize;
+        var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
+        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protobufPayloadLength;
         var span = destination.GetSpan(totalSize);
 
         // Write magic byte
@@ -97,18 +114,23 @@ public sealed class ProtobufSchemaRegistrySerializer<
         offset += _encodedMessageIndexes.Length;
 
         // Write the protobuf message
-        value.WriteTo(span.Slice(offset, protoSize));
+        if (_config.RuleExecutor is null)
+            value.WriteTo(span.Slice(offset, protoSize));
+        else
+            transformedPayload.Span.CopyTo(span.Slice(offset, transformedPayload.Length));
 
         destination.Advance(totalSize);
     }
 
-    private int GetSchemaIdForContext(string topic, bool isKey)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
         => _subjectSchemaIdCache.GetOrAdd(
             topic,
             isKey,
             this,
             static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
-            static (serializer, subject) => serializer.GetSchemaIdSync(subject));
+            static (serializer, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+                serializer.GetSchemaIdSync(subject),
+                serializer._schema));
 
     private int GetSchemaIdSync(string subject)
     {
@@ -119,7 +141,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_config.UseLatestVersion)
         {
             task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+                .ContinueWith(static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
         }
         else if (_config.AutoRegisterSchemas)
         {
@@ -128,7 +150,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         else
         {
             task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+                .ContinueWith(static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
         }
 
         // Add timeout to prevent indefinite blocking

@@ -18,6 +18,17 @@ public class OffsetCommitModeTests
     }
 
     [Test]
+    public async Task ConsumerBuilder_WithAutoOffsetStore_ConfiguresOption()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAutoOffsetStore(false)
+            .WithAutoOffsetStore(true);
+
+        await Assert.That(builder).IsNotNull();
+    }
+
+    [Test]
     public async Task ConsumerBuilder_OffsetCommitMode_DefaultIsAuto()
     {
         // The default should be Auto
@@ -76,9 +87,17 @@ public class OffsetCommitModeTests
         var commitAsyncWithOffsets = interfaceType.GetMethod(
             nameof(IKafkaConsumer<string, string>.CommitAsync),
             [typeof(IEnumerable<TopicPartitionOffset>), typeof(CancellationToken)]);
+        var storeOffset = interfaceType.GetMethod(
+            nameof(IKafkaConsumer<string, string>.StoreOffset),
+            [typeof(ConsumeResult<string, string>)]);
+        var storeSpecificOffset = interfaceType.GetMethod(
+            nameof(IKafkaConsumer<string, string>.StoreOffset),
+            [typeof(TopicPartitionOffset)]);
 
         await Assert.That(commitAsyncNoArgs).IsNotNull();
         await Assert.That(commitAsyncWithOffsets).IsNotNull();
+        await Assert.That(storeOffset).IsNotNull();
+        await Assert.That(storeSpecificOffset).IsNotNull();
     }
 
     [Test]
@@ -92,6 +111,17 @@ public class OffsetCommitModeTests
 
         // Default should be Auto
         await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+    }
+
+    [Test]
+    public async Task ConsumerOptions_EnableAutoOffsetStore_DefaultValue()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.EnableAutoOffsetStore).IsTrue();
     }
 
     [Test]

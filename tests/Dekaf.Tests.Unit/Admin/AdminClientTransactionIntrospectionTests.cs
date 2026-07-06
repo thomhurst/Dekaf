@@ -349,6 +349,221 @@ public sealed class AdminClientTransactionIntrospectionTests
         }).Throws<KafkaException>();
     }
 
+    [Test]
+    public async Task FenceProducersAsync_UsesTransactionCoordinatorsAndMapsProducerIds()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+
+        connections[1].SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<FindCoordinatorRequest>();
+                var coordinatorId = request.Key == "tx-b" ? 2 : 1;
+
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = coordinatorId,
+                            Host = $"broker-{coordinatorId}",
+                            Port = 9090 + coordinatorId,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ProducerId = 101,
+                ProducerEpoch = 3
+            }));
+
+        connections[2].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ProducerId = 202,
+                ProducerEpoch = 4
+            }));
+
+        var result = await admin.FenceProducersAsync(
+            ["tx-a", "tx-b"],
+            new FenceProducersOptions { TimeoutMs = 12345 });
+
+        await Assert.That(result["tx-a"].ProducerId).IsEqualTo(101);
+        await Assert.That(result["tx-a"].ProducerEpoch).IsEqualTo((short)3);
+        await Assert.That(result["tx-b"].ProducerId).IsEqualTo(202);
+        await Assert.That(result["tx-b"].ProducerEpoch).IsEqualTo((short)4);
+
+        await connections[1].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+            Arg.Is<InitProducerIdRequest>(r =>
+                r.TransactionalId == "tx-a" &&
+                r.TransactionTimeoutMs == 12345 &&
+                r.ProducerId == -1 &&
+                r.ProducerEpoch == -1),
+            5,
+            Arg.Any<CancellationToken>());
+
+        await connections[2].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+            Arg.Is<InitProducerIdRequest>(r =>
+                r.TransactionalId == "tx-b" &&
+                r.TransactionTimeoutMs == 12345 &&
+                r.ProducerId == -1 &&
+                r.ProducerEpoch == -1),
+            5,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task FenceProducersAsync_ConcurrentTransactions_Retries()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        var attempts = 0;
+
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                attempts++;
+                return ValueTask.FromResult(new InitProducerIdResponse
+                {
+                    ErrorCode = attempts == 1 ? ErrorCode.ConcurrentTransactions : ErrorCode.None,
+                    ProducerId = attempts == 1 ? -1 : 101,
+                    ProducerEpoch = attempts == 1 ? (short)-1 : (short)3
+                });
+            });
+
+        var result = await admin.FenceProducersAsync(["tx-a"]);
+
+        await Assert.That(result["tx-a"].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(result["tx-a"].ProducerId).IsEqualTo(101);
+        await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task FenceProducersAsync_NonRetriableItemError_ReturnsResultError()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.TransactionalIdAuthorizationFailed
+            }));
+
+        var result = await admin.FenceProducersAsync(["tx-a"]);
+
+        await Assert.That(result["tx-a"].ErrorCode).IsEqualTo(ErrorCode.TransactionalIdAuthorizationFailed);
+    }
+
+    [Test]
+    public async Task FenceProducersAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(includeInitProducerIdApi: false);
+
+        await Assert.That(async () =>
+        {
+            await admin.FenceProducersAsync(["tx-a"]);
+        }).Throws<BrokerVersionException>();
+    }
+
+    [Test]
+    public async Task AbortTransactionAsync_SendsAbortMarkerToPartitionLeader()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+
+        connections[2].SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
+                Arg.Any<WriteTxnMarkersRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(CreateWriteTxnMarkersResponse(callInfo.Arg<WriteTxnMarkersRequest>())));
+
+        var result = await admin.AbortTransactionAsync(new AbortTransactionSpec
+        {
+            TopicPartition = new TopicPartition("orders", 1),
+            ProducerId = 202,
+            ProducerEpoch = 4,
+            CoordinatorEpoch = 5
+        });
+
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.None);
+
+        await connections[2].Received(1).SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
+            Arg.Is<WriteTxnMarkersRequest>(r =>
+                r.Markers.Count == 1 &&
+                r.Markers[0].ProducerId == 202 &&
+                r.Markers[0].ProducerEpoch == 4 &&
+                !r.Markers[0].TransactionResult &&
+                r.Markers[0].CoordinatorEpoch == 5 &&
+                r.Markers[0].Topics.Count == 1 &&
+                r.Markers[0].Topics[0].Name == "orders" &&
+                r.Markers[0].Topics[0].PartitionIndexes.Count == 1 &&
+                r.Markers[0].Topics[0].PartitionIndexes[0] == 1),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task AbortTransactionAsync_NonRetriablePartitionError_ReturnsResultError()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        connections[1].SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
+                Arg.Any<WriteTxnMarkersRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(CreateWriteTxnMarkersResponse(
+                callInfo.Arg<WriteTxnMarkersRequest>(),
+                ErrorCode.InvalidProducerEpoch)));
+
+        var result = await admin.AbortTransactionAsync(new AbortTransactionSpec
+        {
+            TopicPartition = new TopicPartition("orders", 0),
+            ProducerId = 101,
+            ProducerEpoch = 3,
+            CoordinatorEpoch = 5
+        });
+
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.InvalidProducerEpoch);
+    }
+
+    [Test]
+    public async Task AbortTransactionAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnections(includeWriteTxnMarkersApi: false);
+
+        await Assert.That(async () =>
+        {
+            await admin.AbortTransactionAsync(new AbortTransactionSpec
+            {
+                TopicPartition = new TopicPartition("orders", 0),
+                ProducerId = 101,
+                ProducerEpoch = 3,
+                CoordinatorEpoch = 5
+            });
+        }).Throws<BrokerVersionException>();
+    }
+
     private static DescribeTransactionsResponse CreateDescribeTransactionsResponse(
         DescribeTransactionsRequest request,
         long producerId,
@@ -420,10 +635,34 @@ public sealed class AdminClientTransactionIntrospectionTests
         ];
     }
 
+    private static WriteTxnMarkersResponse CreateWriteTxnMarkersResponse(
+        WriteTxnMarkersRequest request,
+        ErrorCode errorCode = ErrorCode.None)
+    {
+        return new WriteTxnMarkersResponse
+        {
+            Markers = request.Markers.Select(marker => new WriteTxnMarkersResponseMarker
+            {
+                ProducerId = marker.ProducerId,
+                Topics = marker.Topics.Select(topic => new WriteTxnMarkersResponseTopic
+                {
+                    Name = topic.Name,
+                    Partitions = topic.PartitionIndexes.Select(partition => new WriteTxnMarkersResponsePartition
+                    {
+                        PartitionIndex = partition,
+                        ErrorCode = errorCode
+                    }).ToList()
+                }).ToList()
+            }).ToList()
+        };
+    }
+
     private static (AdminClient Admin, IReadOnlyDictionary<int, IKafkaConnection> Connections) CreateAdminWithMockConnections(
         bool includeListTransactionsApi = true,
         bool includeDescribeTransactionsApi = true,
         bool includeDescribeProducersApi = true,
+        bool includeInitProducerIdApi = true,
+        bool includeWriteTxnMarkersApi = true,
         short listTransactionsMaxVersion = 2)
     {
         var connections = new Dictionary<int, IKafkaConnection>
@@ -456,6 +695,10 @@ public sealed class AdminClientTransactionIntrospectionTests
             metadataManager.SetApiVersion(ApiKey.DescribeTransactions, 0, 0);
         if (includeDescribeProducersApi)
             metadataManager.SetApiVersion(ApiKey.DescribeProducers, 0, 0);
+        if (includeInitProducerIdApi)
+            metadataManager.SetApiVersion(ApiKey.InitProducerId, 2, 5);
+        if (includeWriteTxnMarkersApi)
+            metadataManager.SetApiVersion(ApiKey.WriteTxnMarkers, 1, 2);
 
         var admin = new AdminClient(
             new AdminClientOptions { BootstrapServers = ["localhost:9092"] },

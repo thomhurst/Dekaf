@@ -168,6 +168,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private const int MaxCancelledCorrelationIds = 10_000;
     private const int PendingRequestShardCount = 16;
     private const int MinimumResponseFrameSize = 4; // Correlation ID is always first in the response header.
+    // SASL handshake/auth responses are small; this pre-auth path must not honor untrusted large frame claims.
+    private const int MaxSaslResponseFrameSize = 1024 * 1024;
     private static int s_globalCorrelationId;
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
@@ -176,6 +178,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _pendingRequestSlotOperationCount;
     private int _pendingRequestSlotsClosed;
+    private int _pendingRequestCount;
     private readonly CancelledCorrelationIdTracker _cancelledCorrelationIds = new(MaxCancelledCorrelationIds);
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
@@ -1047,142 +1050,152 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         try
         {
-            // Rent a single pooled CTS for the entire loop lifetime and register the
-            // connection's cancellation token once. Each iteration reuses the same CTS
-            // via TryReset + CancelAfter, eliminating the per-iteration
-            // CancellationTokenRegistration allocation (see #507).
-            using var timeoutCts = _timeoutCtsPool.Rent();
-            using var reg = cancellationToken.CanBeCanceled
+            var timeoutCts = _timeoutCtsPool.Rent();
+            var reg = cancellationToken.CanBeCanceled
                 ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
                 : default;
 
-            while (!cancellationToken.IsCancellationRequested)
+            try
             {
-                ReadResult result;
-                try
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    // Apply RequestTimeout to each read operation.
-                    // TryReset clears any pending CancelAfter timer from the previous iteration.
-                    // It returns false if the outer cancellationToken fired (via the registration),
-                    // in which case ReadAsync will throw immediately and the while-condition
-                    // will exit before the next iteration.
-                    if (timeoutCts.TryReset())
-                        timeoutCts.CancelAfter(_options.RequestTimeout);
+                    ReadResult result;
+                    var readHasRequestTimeout = HasPendingRequests();
+                    try
+                    {
+                        timeoutCts.TryReset();
 
-                    // ReadResult state machine (System.IO.Pipelines):
-                    //
-                    // ReadAsync can complete in three ways:
-                    //
-                    // 1. IsCompleted=false, IsCanceled=false (normal data available):
-                    //    Data is available in result.Buffer. Process all complete responses,
-                    //    then call AdvanceTo to indicate consumed/examined positions.
-                    //
-                    // 2. IsCompleted=true:
-                    //    The PipeWriter was completed (end of stream). For PipeReader.Create(stream),
-                    //    this means the underlying stream reached EOF — the remote peer closed the
-                    //    connection. Any remaining data in the buffer is still valid and must be
-                    //    processed before exiting. We process responses first, then break out of
-                    //    the receive loop.
-                    //
-                    // 3. IsCanceled=true:
-                    //    The read was canceled. With Pipe.Reader (used via SocketPipe/DuplexPipe since
-                    //    PR #458), CancellationToken-based cancellation returns IsCanceled=true instead
-                    //    of throwing OperationCanceledException. Both paths must be handled.
-                    result = await _reader!.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
+                        // Only arm RequestTimeout while a response is outstanding. Idle
+                        // connections are governed by ConnectionsMaxIdleMs instead.
+                        if (readHasRequestTimeout)
+                            timeoutCts.CancelAfter(_options.RequestTimeout);
+
+                        // ReadResult state machine (System.IO.Pipelines):
+                        //
+                        // ReadAsync can complete in three ways:
+                        //
+                        // 1. IsCompleted=false, IsCanceled=false (normal data available):
+                        //    Data is available in result.Buffer. Process all complete responses,
+                        //    then call AdvanceTo to indicate consumed/examined positions.
+                        //
+                        // 2. IsCompleted=true:
+                        //    The PipeWriter was completed (end of stream). For PipeReader.Create(stream),
+                        //    this means the underlying stream reached EOF — the remote peer closed the
+                        //    connection. Any remaining data in the buffer is still valid and must be
+                        //    processed before exiting. We process responses first, then break out of
+                        //    the receive loop.
+                        //
+                        // 3. IsCanceled=true:
+                        //    The read was canceled. With Pipe.Reader (used via SocketPipe/DuplexPipe since
+                        //    PR #458), CancellationToken-based cancellation returns IsCanceled=true instead
+                        //    of throwing OperationCanceledException. Both paths must be handled.
+                        result = await _reader!.ReadAsync(readHasRequestTimeout ? timeoutCts.Token : cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (readHasRequestTimeout && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        if (!HasPendingRequests())
+                            continue;
+
+                        throw CreateReceiveTimeoutException();
+                    }
+
+                    // Pipe.Reader.ReadAsync returns IsCanceled=true on token cancellation instead of
+                    // throwing OperationCanceledException (unlike PipeReader.Create(Stream)). Without
+                    // this check, timeouts are silently swallowed: the connection stays in the pool
+                    // appearing healthy, and all subsequent requests on it also time out (#670).
+                    if (result.IsCanceled)
+                    {
+                        if (readHasRequestTimeout && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        {
+                            if (!HasPendingRequests())
+                            {
+                                _reader!.AdvanceTo(result.Buffer.Start, result.Buffer.Start);
+                                continue;
+                            }
+
+                            throw CreateReceiveTimeoutException();
+                        }
+
+                        if (!cancellationToken.IsCancellationRequested)
+                        {
+                            _reader!.AdvanceTo(result.Buffer.Start, result.Buffer.Start);
+                            continue;
+                        }
+
+                        // Outer cancellation (disposal) — exit cleanly
+                        break;
+                    }
+
+                    var buffer = result.Buffer;
+
+                    LogReceivedBytes(buffer.Length, _host, _port);
+
+                    // Phase 1: Continue assembling a partial frame if one is in progress.
+                    // The partial frame consumes data from the pipe buffer as it copies,
+                    // keeping the buffer below the pause threshold for large responses.
+                    if (_partialFrame.IsActive)
+                    {
+                        if (ContinuePartialFrame(ref buffer, ref _partialFrame))
+                        {
+                            // Frame complete — dispatch it
+                            var responseData = new PooledResponseBuffer(
+                                _partialFrame.Buffer!, _partialFrame.FrameSize,
+                                _partialFrame.IsPooled, pool: _responseBufferPool);
+                            DispatchResponse(_partialFrame.CorrelationId, responseData);
+                            _partialFrame = default;
+                        }
+                    }
+
+                    // Phase 2: Process any complete responses available in the buffer.
+                    // This is the fast path for small responses (e.g., producer acks)
+                    // that fit entirely within the pipe buffer.
+                    if (!_partialFrame.IsActive)
+                    {
+                        while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
+                        {
+                            DispatchResponse(correlationId, responseData);
+                        }
+
+                        // Phase 3: Start incremental assembly for frames that don't fit
+                        // in the current buffer, keeping the pipe below the pause threshold.
+                        if (buffer.Length >= 8)
+                        {
+                            TryStartPartialFrame(ref buffer, ref _partialFrame, _responseBufferPool);
+                        }
+                    }
+
+                    _reader!.AdvanceTo(buffer.Start, buffer.End);
+
+                    // After processing all available responses, check if the stream has ended.
+                    // IsCompleted=true means the remote peer closed the connection (EOF).
+                    // The remote peer closed the connection. Fail any pending requests
+                    // immediately so callers don't hang waiting for responses that will
+                    // never arrive. Without this, pending requests rely on their individual
+                    // RequestTimeout (30s default), which delays error detection and can
+                    // cause indefinite hangs when combined with BrokerSender retry cycles.
+                    if (result.IsCompleted)
+                    {
+                        LogReceiveLoopCompleted(_host, _port);
+                        MarkDisposed(); // Prevent new requests from being queued on a dead connection
+                        FailAllPendingRequests(new KafkaException(
+                            "Connection closed by remote peer (EOF)"));
+                        break;
+                    }
                 }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
-                    // Mark connection as failed to trigger reconnection
+                // While loop exited normally (no exception thrown, so no catch block runs).
+                // Two cases: cancellation between iterations, or EOF break (already handled above).
+                if (cancellationToken.IsCancellationRequested)
+                {
                     MarkDisposed();
-
-                    throw new KafkaException(
-                        $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
-                }
-
-                // Pipe.Reader.ReadAsync returns IsCanceled=true on token cancellation instead of
-                // throwing OperationCanceledException (unlike PipeReader.Create(Stream)). Without
-                // this check, timeouts are silently swallowed: the connection stays in the pool
-                // appearing healthy, and all subsequent requests on it also time out (#670).
-                if (result.IsCanceled)
-                {
-                    if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    {
-                        LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
-                        MarkDisposed();
-
-                        throw new KafkaException(
-                            $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
-                    }
-
-                    // Outer cancellation (disposal) — exit cleanly
-                    break;
-                }
-
-                var buffer = result.Buffer;
-
-                LogReceivedBytes(buffer.Length, _host, _port);
-
-                // Phase 1: Continue assembling a partial frame if one is in progress.
-                // The partial frame consumes data from the pipe buffer as it copies,
-                // keeping the buffer below the pause threshold for large responses.
-                if (_partialFrame.IsActive)
-                {
-                    if (ContinuePartialFrame(ref buffer, ref _partialFrame))
-                    {
-                        // Frame complete — dispatch it
-                        var responseData = new PooledResponseBuffer(
-                            _partialFrame.Buffer!, _partialFrame.FrameSize,
-                            _partialFrame.IsPooled, pool: _responseBufferPool);
-                        DispatchResponse(_partialFrame.CorrelationId, responseData);
-                        _partialFrame = default;
-                    }
-                }
-
-                // Phase 2: Process any complete responses available in the buffer.
-                // This is the fast path for small responses (e.g., producer acks)
-                // that fit entirely within the pipe buffer.
-                if (!_partialFrame.IsActive)
-                {
-                    while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
-                    {
-                        DispatchResponse(correlationId, responseData);
-                    }
-
-                    // Phase 3: Start incremental assembly for frames that don't fit
-                    // in the current buffer, keeping the pipe below the pause threshold.
-                    if (buffer.Length >= 8)
-                    {
-                        TryStartPartialFrame(ref buffer, ref _partialFrame, _responseBufferPool);
-                    }
-                }
-
-                _reader!.AdvanceTo(buffer.Start, buffer.End);
-
-                // After processing all available responses, check if the stream has ended.
-                // IsCompleted=true means the remote peer closed the connection (EOF).
-                // The remote peer closed the connection. Fail any pending requests
-                // immediately so callers don't hang waiting for responses that will
-                // never arrive. Without this, pending requests rely on their individual
-                // RequestTimeout (30s default), which delays error detection and can
-                // cause indefinite hangs when combined with BrokerSender retry cycles.
-                if (result.IsCompleted)
-                {
-                    LogReceiveLoopCompleted(_host, _port);
-                    MarkDisposed(); // Prevent new requests from being queued on a dead connection
-                    FailAllPendingRequests(new KafkaException(
-                        "Connection closed by remote peer (EOF)"));
-                    break;
+                    FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
                 }
             }
-
-            // While loop exited normally (no exception thrown, so no catch block runs).
-            // Two cases: cancellation between iterations, or EOF break (already handled above).
-            if (cancellationToken.IsCancellationRequested)
+            finally
             {
-                MarkDisposed();
-                FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
+                reg.Dispose();
+                timeoutCts.Dispose();
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1197,6 +1210,15 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             MarkDisposed(); // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
         }
+    }
+
+    private KafkaException CreateReceiveTimeoutException()
+    {
+        LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
+        MarkDisposed();
+
+        return new KafkaException(
+            $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
     }
 
     private void DispatchResponse(int correlationId, PooledResponseBuffer responseData)
@@ -1387,6 +1409,9 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             if (!shard.Requests.TryAdd(correlationId, new PendingRequestEntry(request, request.Version)))
                 throw new InvalidOperationException($"Duplicate pending request correlation id {correlationId}.");
         }
+
+        if (Interlocked.Increment(ref _pendingRequestCount) == 1)
+            _reader?.CancelPendingRead();
     }
 
     private bool TryGetPendingRequest(int correlationId, out PendingRequestEntry entry)
@@ -1408,24 +1433,22 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         }
 
         if (removed)
+        {
+            var remaining = Interlocked.Decrement(ref _pendingRequestCount);
+            Debug.Assert(remaining >= 0);
+
+            if (remaining == 0)
+                _reader?.CancelPendingRead();
+
             ReleasePendingRequestSlot();
+        }
 
         return removed;
     }
 
-    private int GetPendingRequestCount()
-    {
-        var count = 0;
-        foreach (var shard in _pendingRequestShards)
-        {
-            lock (shard.Gate)
-            {
-                count += shard.Requests.Count;
-            }
-        }
+    private int GetPendingRequestCount() => Volatile.Read(ref _pendingRequestCount);
 
-        return count;
-    }
+    private bool HasPendingRequests() => Volatile.Read(ref _pendingRequestCount) != 0;
 
     private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Dekaf.Compatibility.EnvironmentCompat.TickCount64);
 
@@ -1599,6 +1622,12 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             }
         }
 
+        if (releasedSlots != 0)
+        {
+            var remaining = Interlocked.Add(ref _pendingRequestCount, -releasedSlots);
+            Debug.Assert(remaining >= 0);
+        }
+
         ReleasePendingRequestSlots(releasedSlots);
     }
 
@@ -1663,6 +1692,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     {
         var tlsConfig = _options.TlsConfig;
         var callback = _options.RemoteCertificateValidationCallback;
+        var validateServerCertificateHostName = tlsConfig?.ValidateServerCertificateHostName ?? true;
 
         // Configure server certificate validation
         if (tlsConfig is not null && !tlsConfig.ValidateServerCertificate)
@@ -1674,15 +1704,40 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 #pragma warning restore CA5359
         }
 
-        if (callback is null && HasCustomCaCertificate(tlsConfig))
+        if (callback is not null)
+        {
+            return callback;
+        }
+
+        if (HasCustomCaCertificate(tlsConfig))
         {
             // Custom CA certificate validation
             var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
             return (_, certificate, chain, sslPolicyErrors) =>
-                ValidateServerCertificate(certificate, chain, sslPolicyErrors, caCertificates);
+                ValidateServerCertificate(
+                    certificate,
+                    chain,
+                    ApplyServerCertificateHostNamePolicy(sslPolicyErrors, validateServerCertificateHostName),
+                    caCertificates);
         }
 
-        return callback;
+        if (!validateServerCertificateHostName)
+        {
+            return static (_, _, _, sslPolicyErrors) =>
+                ApplyServerCertificateHostNamePolicy(sslPolicyErrors, validateServerCertificateHostName: false) ==
+                SslPolicyErrors.None;
+        }
+
+        return null;
+    }
+
+    internal static SslPolicyErrors ApplyServerCertificateHostNamePolicy(
+        SslPolicyErrors sslPolicyErrors,
+        bool validateServerCertificateHostName)
+    {
+        return validateServerCertificateHostName
+            ? sslPolicyErrors
+            : sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateNameMismatch;
     }
 
     private X509CertificateCollection? BuildClientCertificates(TlsConfig? tlsConfig)
@@ -2348,6 +2403,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         {
             await ReadExactlyAsync(_stream, sizeBuffer.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
             var responseSize = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
+            ValidateResponseFrameSize(responseSize, MaxSaslResponseFrameSize);
 
             var responseBuffer = ArrayPool<byte>.Shared.Rent(responseSize);
             try

@@ -14,62 +14,62 @@ internal sealed class SubjectSchemaIdCache
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
-    public int GetOrAdd<TState>(
+    internal SubjectSchemaIdCacheEntry GetOrAdd<TState>(
         string topic,
         bool isKey,
         TState state,
         Func<TState, string, bool, string> getSubjectName,
-        Func<TState, string, int> getSchemaId)
+        Func<TState, string, SubjectSchemaIdCacheValue> getSchema)
     {
         var key = new SubjectSchemaIdCacheKey(topic, isKey);
         var last = Volatile.Read(ref _last);
         if (last is not null && last.Key.Equals(key))
-            return last.SchemaId;
+            return last;
 
         if (_cache.TryGetValue(key, out var cached))
         {
             Volatile.Write(ref _last, cached);
-            return cached.SchemaId;
+            return cached;
         }
 
         var subject = getSubjectName(state, topic, isKey);
-        var schemaId = getSchemaId(state, subject);
-        return Cache(key, schemaId);
+        var schema = getSchema(state, subject);
+        return Cache(key, subject, schema.SchemaId, schema.Schema);
     }
 
-    public int Cache(string topic, bool isKey, int schemaId) =>
-        Cache(new SubjectSchemaIdCacheKey(topic, isKey), schemaId);
+    internal int Cache(string topic, bool isKey, string subject, int schemaId, Schema? schema) =>
+        Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema).SchemaId;
 
-    private int Cache(SubjectSchemaIdCacheKey key, int schemaId)
+    private SubjectSchemaIdCacheEntry Cache(SubjectSchemaIdCacheKey key, string? subject, int schemaId, Schema? schema)
     {
         if (_cache.TryGetValue(key, out var existing))
         {
             Volatile.Write(ref _last, existing);
-            return existing.SchemaId;
+            return existing;
         }
 
-        var entry = new SubjectSchemaIdCacheEntry(key, schemaId);
+        var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema);
         if (!TryReserveSlot())
         {
             Volatile.Write(ref _last, entry);
-            return schemaId;
+            return entry;
         }
 
         if (_cache.TryAdd(key, entry))
         {
             Volatile.Write(ref _last, entry);
-            return schemaId;
+            return entry;
         }
 
         Interlocked.Decrement(ref _cacheCount);
         if (_cache.TryGetValue(key, out existing))
         {
             Volatile.Write(ref _last, existing);
-            return existing.SchemaId;
+            return existing;
         }
 
         Volatile.Write(ref _last, entry);
-        return schemaId;
+        return entry;
     }
 
     private bool TryReserveSlot()
@@ -85,7 +85,13 @@ internal sealed class SubjectSchemaIdCache
         }
     }
 
-    private readonly record struct SubjectSchemaIdCacheKey(string Topic, bool IsKey);
+    internal readonly record struct SubjectSchemaIdCacheKey(string Topic, bool IsKey);
 
-    private sealed record SubjectSchemaIdCacheEntry(SubjectSchemaIdCacheKey Key, int SchemaId);
+    internal readonly record struct SubjectSchemaIdCacheValue(int SchemaId, Schema? Schema);
+
+    internal sealed record SubjectSchemaIdCacheEntry(
+        SubjectSchemaIdCacheKey Key,
+        string? Subject,
+        int SchemaId,
+        Schema? Schema);
 }

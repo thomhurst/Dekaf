@@ -365,6 +365,142 @@ public sealed class TransactionProtocolTests
         await Assert.That(committedLeaderEpoch).IsEqualTo(5);
     }
 
+    [Test]
+    public async Task WriteTxnMarkersRequest_V1_AbortMarker_WritesCorrectly()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new WriteTxnMarkersRequest
+        {
+            Markers =
+            [
+                new WriteTxnMarkersRequestMarker
+                {
+                    ProducerId = 42,
+                    ProducerEpoch = 7,
+                    TransactionResult = false,
+                    CoordinatorEpoch = 5,
+                    Topics =
+                    [
+                        new WriteTxnMarkersRequestTopic
+                        {
+                            Name = "orders",
+                            PartitionIndexes = [1]
+                        }
+                    ]
+                }
+            ]
+        };
+        request.Write(ref writer, version: 1);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        var markerCount = reader.ReadUnsignedVarInt() - 1;
+        var producerId = reader.ReadInt64();
+        var producerEpoch = reader.ReadInt16();
+        var transactionResult = reader.ReadBoolean();
+        var topicCount = reader.ReadUnsignedVarInt() - 1;
+        var topicName = reader.ReadCompactNonNullableString();
+        var partitionCount = reader.ReadUnsignedVarInt() - 1;
+        var partitionIndex = reader.ReadInt32();
+        reader.SkipTaggedFields();
+        var coordinatorEpoch = reader.ReadInt32();
+        reader.SkipTaggedFields();
+        reader.SkipTaggedFields();
+        var end = reader.End;
+
+        await Assert.That(markerCount).IsEqualTo(1);
+        await Assert.That(producerId).IsEqualTo(42L);
+        await Assert.That(producerEpoch).IsEqualTo((short)7);
+        await Assert.That(transactionResult).IsFalse();
+        await Assert.That(topicCount).IsEqualTo(1);
+        await Assert.That(topicName).IsEqualTo("orders");
+        await Assert.That(partitionCount).IsEqualTo(1);
+        await Assert.That(partitionIndex).IsEqualTo(1);
+        await Assert.That(coordinatorEpoch).IsEqualTo(5);
+        await Assert.That(end).IsTrue();
+    }
+
+    [Test]
+    public async Task WriteTxnMarkersRequest_V2_IncludesTransactionVersion()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new WriteTxnMarkersRequest
+        {
+            Markers =
+            [
+                new WriteTxnMarkersRequestMarker
+                {
+                    ProducerId = 42,
+                    ProducerEpoch = 7,
+                    TransactionResult = false,
+                    CoordinatorEpoch = 5,
+                    TransactionVersion = 2,
+                    Topics =
+                    [
+                        new WriteTxnMarkersRequestTopic
+                        {
+                            Name = "orders",
+                            PartitionIndexes = [1]
+                        }
+                    ]
+                }
+            ]
+        };
+        request.Write(ref writer, version: 2);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        _ = reader.ReadUnsignedVarInt();
+        _ = reader.ReadInt64();
+        _ = reader.ReadInt16();
+        _ = reader.ReadBoolean();
+        _ = reader.ReadUnsignedVarInt();
+        _ = reader.ReadCompactNonNullableString();
+        _ = reader.ReadUnsignedVarInt();
+        _ = reader.ReadInt32();
+        reader.SkipTaggedFields();
+        _ = reader.ReadInt32();
+        var transactionVersion = reader.ReadInt8();
+        reader.SkipTaggedFields();
+        reader.SkipTaggedFields();
+        var end = reader.End;
+
+        await Assert.That(transactionVersion).IsEqualTo((sbyte)2);
+        await Assert.That(end).IsTrue();
+    }
+
+    [Test]
+    public async Task WriteTxnMarkersResponse_V1_ReadsCorrectly()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteInt64(42);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteCompactString("orders");
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteInt32(1);
+        writer.WriteInt16((short)ErrorCode.InvalidProducerEpoch);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (WriteTxnMarkersResponse)WriteTxnMarkersResponse.Read(ref reader, version: 1);
+
+        await Assert.That(response.Markers.Count).IsEqualTo(1);
+        await Assert.That(response.Markers[0].ProducerId).IsEqualTo(42L);
+        await Assert.That(response.Markers[0].Topics[0].Name).IsEqualTo("orders");
+        await Assert.That(response.Markers[0].Topics[0].Partitions[0].PartitionIndex).IsEqualTo(1);
+        await Assert.That(response.Markers[0].Topics[0].Partitions[0].ErrorCode).IsEqualTo(ErrorCode.InvalidProducerEpoch);
+    }
+
     #region Version Constants Tests
 
     [Test]
@@ -405,6 +541,17 @@ public sealed class TransactionProtocolTests
         await Assert.That(AddOffsetsToTxnRequest.ApiKey).IsEqualTo(ApiKey.AddOffsetsToTxn);
         await Assert.That(AddOffsetsToTxnRequest.LowestSupportedVersion).IsEqualTo((short)3);
         await Assert.That(AddOffsetsToTxnRequest.HighestSupportedVersion).IsEqualTo((short)4);
+    }
+
+    [Test]
+    public async Task WriteTxnMarkersRequest_VersionConstants()
+    {
+        await Assert.That(WriteTxnMarkersRequest.ApiKey).IsEqualTo(ApiKey.WriteTxnMarkers);
+        await Assert.That(WriteTxnMarkersRequest.LowestSupportedVersion).IsEqualTo((short)1);
+        await Assert.That(WriteTxnMarkersRequest.HighestSupportedVersion).IsEqualTo((short)2);
+        await Assert.That(WriteTxnMarkersResponse.ApiKey).IsEqualTo(ApiKey.WriteTxnMarkers);
+        await Assert.That(WriteTxnMarkersResponse.LowestSupportedVersion).IsEqualTo((short)1);
+        await Assert.That(WriteTxnMarkersResponse.HighestSupportedVersion).IsEqualTo((short)2);
     }
 
     #endregion

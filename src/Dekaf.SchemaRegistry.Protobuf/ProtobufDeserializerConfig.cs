@@ -17,4 +17,10 @@ public sealed class ProtobufDeserializerConfig
     /// Default is false.
     /// </summary>
     public bool SkipSchemaValidation { get; init; }
+
+    /// <summary>
+    /// Optional rule executor applied to Protobuf message bytes after the Schema Registry envelope is read.
+    /// The Protobuf message-index prefix is not transformed.
+    /// </summary>
+    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
 }

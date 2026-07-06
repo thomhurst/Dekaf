@@ -346,6 +346,56 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Producer_WithDefaultPartitioner_SticksNullKeysBeforeBatchCompletes()
+    {
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-default-sticky")
+            .WithLinger(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // Act - fire-and-forget callbacks avoid awaited-produce micro-linger, so the
+        // configured linger keeps the current batch open while all partition choices happen.
+        var results = new RecordMetadata?[10];
+        var callbackCount = 0;
+        var callbacksCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        for (var i = 0; i < 10; i++)
+        {
+            var index = i;
+            await producer.FireAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = null,
+                Value = $"value-{i}"
+            }, (metadata, error) =>
+            {
+                if (error is not null)
+                {
+                    callbacksCompleted.TrySetException(error);
+                    return;
+                }
+
+                results[index] = metadata;
+                if (Interlocked.Increment(ref callbackCount) == results.Length)
+                    callbacksCompleted.TrySetResult();
+            });
+        }
+
+        await producer.FlushWithTimeoutAsync();
+        await callbacksCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Assert - default partitioner sticks null-key messages before batch completion.
+        await Assert.That(results.Any(static result => !result.HasValue)).IsFalse();
+        var partitions = results.Select(static result => result.GetValueOrDefault().Partition).Distinct().ToList();
+        await Assert.That(partitions.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Producer_WithStickyPartitioner_SticksMessagesBeforeBatchCompletes()
     {
         // Arrange

@@ -42,6 +42,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     private readonly bool _autoRegisterSchemas;
     private readonly Schema _schema;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -63,7 +64,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         JsonSerializerOptions? jsonOptions = null,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _jsonOptions = CreateJsonOptions(jsonOptions);
@@ -71,6 +73,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -93,7 +96,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         JsonTypeInfo<T> jsonTypeInfo,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
@@ -101,6 +105,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -125,7 +130,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         ISubjectNameStrategy customSubjectNameStrategy,
         JsonSerializerOptions? jsonOptions = null,
         bool autoRegisterSchemas = true,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
@@ -133,6 +139,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         _serializePayload = SerializeWithOptions;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -155,7 +162,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         ISubjectNameStrategy customSubjectNameStrategy,
         JsonTypeInfo<T> jsonTypeInfo,
         bool autoRegisterSchemas = true,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
@@ -163,6 +171,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         _serializePayload = SerializeWithTypeInfo;
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -173,7 +182,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        var schemaId = GetSchemaIdForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
 
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
         payloadBuffer.ResetWrittenCount();
@@ -200,13 +210,29 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             throw;
         }
 
+        var payload = payloadBuffer.WrittenMemory;
+        if (_ruleExecutor is not null)
+        {
+            payload = _ruleExecutor.TransformSerializedPayload(
+                payload,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Subject = schemaEntry.Subject,
+                    Schema = schemaEntry.Schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Json
+                });
+        }
+
         // Write wire format: [0x00] [schema ID] [JSON payload]
-        var totalSize = 1 + 4 + payloadBuffer.WrittenCount;
+        var totalSize = 1 + 4 + payload.Length;
         var span = destination.GetSpan(totalSize);
 
         span[0] = MagicByte;
         BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        payloadBuffer.WrittenSpan.CopyTo(span.Slice(5));
+        payload.Span.CopyTo(span.Slice(5));
 
         destination.Advance(totalSize);
 
@@ -217,13 +243,15 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         }
     }
 
-    private int GetSchemaIdForContext(string topic, bool isKey)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
         => _subjectSchemaIdCache.GetOrAdd(
             topic,
             isKey,
             this,
             static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
-            static (serializer, subject) => serializer.GetSchemaIdSync(subject));
+            static (serializer, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+                serializer.GetSchemaIdSync(subject),
+                serializer._schema));
 
     private int GetSchemaIdSync(string subject)
     {
@@ -311,6 +339,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private readonly JsonSerializerOptions? _jsonOptions;
     private readonly JsonTypeInfo<T>? _jsonTypeInfo;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
     /// <summary>
     /// Creates a new JSON Schema Registry deserializer.
@@ -323,12 +352,14 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions = null,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _jsonOptions = CreateJsonOptions(jsonOptions);
         _deserializePayload = DeserializeWithOptions;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
     }
 
     /// <summary>
@@ -340,12 +371,14 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonTypeInfo<T> jsonTypeInfo,
-        bool ownsClient = false)
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
         _deserializePayload = DeserializeWithTypeInfo;
         _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -361,10 +394,25 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
         // Verify the schema exists. Cache hits avoid Task allocation and sync-over-async.
-        _ = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+        var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
 
         // Extract JSON payload and deserialize
-        return _deserializePayload(span.Slice(5));
+        var payload = data.Slice(5);
+        if (_ruleExecutor is not null)
+        {
+            payload = _ruleExecutor.TransformDeserializedPayload(
+                payload,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Schema = schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Json
+                });
+        }
+
+        return _deserializePayload(payload.Span);
     }
 
     public ValueTask DisposeAsync()

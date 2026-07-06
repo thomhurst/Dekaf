@@ -1,9 +1,12 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -201,6 +204,79 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task ReceiveLoop_IdleLongerThanRequestTimeout_RemainsConnected(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(1) });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
+
+            await Assert.That(connection.IsConnected).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task SendAsync_CallerCanceledRequest_DoesNotFailIdleConnectionAfterRequestTimeout(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(1) });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            using var callerCancellation = new CancellationTokenSource();
+
+            var sendTask = connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                apiVersion: 3,
+                callerCancellation.Token).AsTask();
+
+            await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            await callerCancellation.CancelAsync();
+
+            var thrown = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            {
+                await sendTask.ConfigureAwait(false);
+            });
+            await Assert.That(thrown!.CancellationToken).IsEqualTo(callerCancellation.Token);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
+
+            await Assert.That(connection.IsConnected).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task IsConnected_StreamAssignedBeforeConnectionReady_ReturnsFalse(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -318,6 +394,100 @@ public sealed class KafkaConnectionTests
         }
     }
 
+    [Test]
+    [Arguments(-1)]
+    [Arguments(1_048_577)]
+    public async Task SendSaslMessageAsync_InvalidResponseFrameSize_ThrowsKafkaExceptionBeforeRent(int responseSize)
+    {
+        await using var connection = new KafkaConnection("localhost", 9092);
+        await using var stream = new SaslResponseStream(responseSize);
+        SetPrivateField(connection, "_stream", stream);
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+        {
+            await InvokeSaslHandshakeAsync(connection, CancellationToken.None).ConfigureAwait(false);
+        });
+
+        await Assert.That(exception!.Message).Contains($"Invalid response frame size {responseSize}");
+        await Assert.That(stream.BytesWritten).IsGreaterThan(0);
+        await Assert.That(stream.ReadCalls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationDisabled_IgnoresNameMismatchOnly()
+    {
+        await using var connection = new KafkaConnection(
+            "localhost",
+            9092,
+            options: new ConnectionOptions
+            {
+                TlsConfig = new TlsConfig
+                {
+                    ValidateServerCertificateHostName = false
+                }
+            });
+
+        var callback = InvokeBuildRemoteCertificateValidationCallback(connection);
+
+        await Assert.That(callback).IsNotNull();
+        await Assert.That(callback!(connection, null, null, SslPolicyErrors.RemoteCertificateNameMismatch)).IsTrue();
+        await Assert.That(callback(
+                connection,
+                null,
+                null,
+                SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors))
+            .IsFalse();
+    }
+
+    [Test]
+    public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationEnabledWithoutCustomPolicy_ReturnsNull()
+    {
+        await using var connection = new KafkaConnection(
+            "localhost",
+            9092,
+            options: new ConnectionOptions { TlsConfig = new TlsConfig() });
+
+        var callback = InvokeBuildRemoteCertificateValidationCallback(connection);
+
+        await Assert.That(callback).IsNull();
+    }
+
+    [Test]
+    public async Task ApplyServerCertificateHostNamePolicy_WhenEnabled_PreservesNameMismatch()
+    {
+        const SslPolicyErrors errors =
+            SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors;
+
+        var result = KafkaConnection.ApplyServerCertificateHostNamePolicy(
+            errors,
+            validateServerCertificateHostName: true);
+
+        await Assert.That(result).IsEqualTo(errors);
+    }
+
+    [Test]
+    public async Task ApplyServerCertificateHostNamePolicy_WhenDisabled_RemovesOnlyNameMismatch()
+    {
+        const SslPolicyErrors errors =
+            SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors;
+
+        var result = KafkaConnection.ApplyServerCertificateHostNamePolicy(
+            errors,
+            validateServerCertificateHostName: false);
+
+        await Assert.That(result).IsEqualTo(SslPolicyErrors.RemoteCertificateChainErrors);
+    }
+
+    [Test]
+    public async Task ApplyServerCertificateHostNamePolicy_WhenDisabled_AcceptsNameMismatchOnly()
+    {
+        var result = KafkaConnection.ApplyServerCertificateHostNamePolicy(
+            SslPolicyErrors.RemoteCertificateNameMismatch,
+            validateServerCertificateHostName: false);
+
+        await Assert.That(result).IsEqualTo(SslPolicyErrors.None);
+    }
+
     private static async Task<byte[]> ReadRequestFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var lengthBuffer = new byte[4];
@@ -361,6 +531,37 @@ public sealed class KafkaConnectionTests
         field.SetValue(connection, value);
     }
 
+    private static async ValueTask InvokeSaslHandshakeAsync(KafkaConnection connection, CancellationToken cancellationToken)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "SendSaslMessageAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("SendSaslMessageAsync was not found.");
+
+        var genericMethod = method.MakeGenericMethod(typeof(SaslHandshakeRequest), typeof(SaslHandshakeResponse));
+        var result = genericMethod.Invoke(connection,
+        [
+            new SaslHandshakeRequest { Mechanism = "PLAIN" },
+            (short)1,
+            cancellationToken
+        ]);
+
+        await ((ValueTask<SaslHandshakeResponse>)result!).ConfigureAwait(false);
+    }
+
+    private static RemoteCertificateValidationCallback? InvokeBuildRemoteCertificateValidationCallback(
+        KafkaConnection connection)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "BuildRemoteCertificateValidationCallback",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("BuildRemoteCertificateValidationCallback was not found.");
+
+        return (RemoteCertificateValidationCallback?)method.Invoke(connection, null);
+    }
+
     private static T GetPrivateField<T>(KafkaConnection connection, string name)
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
@@ -381,5 +582,67 @@ public sealed class KafkaConnectionTests
             byte[] bytes when bytes.Length > 0 => bytes[0] != 0,
             _ => false
         };
+    }
+
+    private sealed class SaslResponseStream(int responseSize) : Stream
+    {
+        private readonly MemoryStream _response = CreateSizePrefixStream(responseSize);
+
+        public int BytesWritten { get; private set; }
+        public int ReadCalls { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => _response.Length;
+
+        public override long Position
+        {
+            get => _response.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ReadCalls++;
+            return _response.Read(buffer, offset, count);
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            ReadCalls++;
+            return _response.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            BytesWritten += count;
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            BytesWritten += buffer.Length;
+            return ValueTask.CompletedTask;
+        }
+
+        private static MemoryStream CreateSizePrefixStream(int responseSize)
+        {
+            var buffer = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(buffer, responseSize);
+            return new MemoryStream(buffer);
+        }
     }
 }

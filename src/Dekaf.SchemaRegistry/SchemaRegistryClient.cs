@@ -2,7 +2,8 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Text;
+using System.Security.Cryptography.X509Certificates;
+using Dekaf.Security.Sasl;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -22,11 +23,24 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private bool _disposed;
 
     public SchemaRegistryClient(SchemaRegistryConfig config)
+        : this(config, CreateConfiguredHttpHandler(config))
+    {
+    }
+
+    internal SchemaRegistryClient(
+        SchemaRegistryConfig config,
+        HttpMessageHandler handler,
+        Func<OAuthBearerConfig, Func<CancellationToken, ValueTask<OAuthBearerToken>>>? oauthBearerTokenProviderFactory = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _maxCachedSchemas = Math.Max(0, config.MaxCachedSchemas);
 
-        _httpClient = new HttpClient(CreateHttpHandler(), disposeHandler: true)
+        var authHandler = new SchemaRegistryAuthenticationHandler(
+            handler,
+            config,
+            oauthBearerTokenProviderFactory);
+
+        _httpClient = new HttpClient(authHandler, disposeHandler: true)
         {
             BaseAddress = new Uri(config.Url.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMilliseconds(config.RequestTimeoutMs)
@@ -34,22 +48,34 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         _httpClient.DefaultRequestHeaders.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/vnd.schemaregistry.v1+json"));
-
-        if (!string.IsNullOrEmpty(config.BasicAuthUserInfo))
-        {
-            var authBytes = Encoding.UTF8.GetBytes(config.BasicAuthUserInfo);
-            _httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Basic", Convert.ToBase64String(authBytes));
-        }
     }
 
     internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
 
-    internal static SocketsHttpHandler CreateHttpHandler() => new()
+    internal static SocketsHttpHandler CreateHttpHandler(X509Certificate2? clientCertificate = null)
     {
-        PooledConnectionLifetime = PooledConnectionLifetime
-    };
+        var handler = new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = PooledConnectionLifetime
+        };
+
+        if (clientCertificate is not null)
+        {
+            handler.SslOptions.ClientCertificates = new X509CertificateCollection
+            {
+                clientCertificate
+            };
+        }
+
+        return handler;
+    }
+
+    private static SocketsHttpHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return CreateHttpHandler(config.ClientCertificate);
+    }
 
     public async Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
     {
@@ -69,7 +95,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
+        using var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
@@ -92,7 +118,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (_schemaByIdCache.TryGetValue(id, out var cached))
             return cached;
 
-        var response = await _httpClient.GetAsync(
+        using var response = await _httpClient.GetAsync(
             $"schemas/ids/{id}",
             cancellationToken).ConfigureAwait(false);
 
@@ -122,7 +148,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetAsync(
+        using var response = await _httpClient.GetAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
             cancellationToken).ConfigureAwait(false);
 
@@ -173,7 +199,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
+        using var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}",
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
@@ -220,7 +246,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetAsync("subjects", cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.GetAsync("subjects", cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<string>>(
@@ -229,7 +255,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<IReadOnlyList<int>> GetVersionsAsync(string subject, CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetAsync(
+        using var response = await _httpClient.GetAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
             cancellationToken).ConfigureAwait(false);
 
@@ -253,7 +279,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             }).ToList()
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
+        using var response = await _httpClient.PostAsJsonAsync(
             $"compatibility/subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
             request,
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
@@ -276,7 +302,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (permanent)
             url += "?permanent=true";
 
-        var response = await _httpClient.DeleteAsync(url, cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.DeleteAsync(url, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         return await response.Content.ReadFromJsonAsync<List<int>>(
@@ -341,6 +367,29 @@ public sealed class SchemaRegistryConfig
     /// Basic auth credentials in format "username:password".
     /// </summary>
     public string? BasicAuthUserInfo { get; init; }
+
+    /// <summary>
+    /// Static bearer token for Schema Registry requests. Takes precedence over
+    /// <see cref="BasicAuthUserInfo"/> and <see cref="OAuthBearerConfig"/>.
+    /// </summary>
+    public string? BearerAuthToken { get; init; }
+
+    /// <summary>
+    /// OAuth 2.0 / OIDC client-credentials configuration used to fetch Schema
+    /// Registry bearer tokens.
+    /// </summary>
+    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+
+    /// <summary>
+    /// Custom bearer token provider for Schema Registry requests. Takes
+    /// precedence over static tokens and <see cref="OAuthBearerConfig"/>.
+    /// </summary>
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+
+    /// <summary>
+    /// Client certificate presented during TLS handshake for mutual TLS.
+    /// </summary>
+    public X509Certificate2? ClientCertificate { get; init; }
 
     /// <summary>
     /// Request timeout in milliseconds.

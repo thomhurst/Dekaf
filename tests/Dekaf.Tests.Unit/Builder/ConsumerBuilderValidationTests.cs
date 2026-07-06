@@ -157,6 +157,26 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithAutoOffsetStore_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+        var result = builder.WithAutoOffsetStore(false);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithAutoOffsetStore_DisablesOption()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAutoOffsetStore(false)
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.EnableAutoOffsetStore).IsFalse();
+    }
+
+    [Test]
     public async Task WithAutoOffsetReset_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
