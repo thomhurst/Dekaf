@@ -916,7 +916,6 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         if (_pausedByRuntime.Add(lane.TopicPartition))
         {
-            lane.MarkRuntimeBackpressurePaused();
             _consumer.Partitions.Pause(lane.TopicPartition);
         }
     }
@@ -928,14 +927,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         if (_pausedByRuntime.Remove(lane.TopicPartition))
         {
-            lane.ClearRuntimeBackpressurePaused();
             _consumer.Partitions.Resume(lane.TopicPartition);
         }
     }
 
     private void OnLaneCapacityAvailable(PartitionLane<TKey, TValue> lane)
     {
-        if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume || !lane.IsRuntimeBackpressurePaused)
+        if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume)
             return;
 
         _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.Resume(lane));
@@ -1037,7 +1035,6 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         }
         else if (_pausedByRuntime.Remove(lane.TopicPartition))
         {
-            lane.ClearRuntimeBackpressurePaused();
             _consumer.Partitions.Resume(lane.TopicPartition);
         }
 
@@ -1176,7 +1173,6 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         _lanes.Remove(partition);
         _pausedByRuntime.Remove(partition);
-        lane.ClearRuntimeBackpressurePaused();
         _pendingIgnoreRestarts.Remove(partition);
         _ignoreRestartFailures.Remove(partition);
 
@@ -1375,7 +1371,6 @@ internal sealed class PartitionLane<TKey, TValue>
     private readonly int _capacity;
     private Task? _processorTask;
     private int _bufferedCount;
-    private int _runtimeBackpressurePaused;
     private int _completed;
     private readonly SortedSet<long> _completedOffsets = [];
     private readonly Dictionary<long, int> _leaderEpochs = [];
@@ -1424,18 +1419,6 @@ internal sealed class PartitionLane<TKey, TValue>
     public bool IsFull => Volatile.Read(ref _bufferedCount) >= _capacity;
 
     public bool HasCapacity => Volatile.Read(ref _bufferedCount) < _capacity;
-
-    public bool IsRuntimeBackpressurePaused => Volatile.Read(ref _runtimeBackpressurePaused) != 0;
-
-    public void MarkRuntimeBackpressurePaused()
-    {
-        Volatile.Write(ref _runtimeBackpressurePaused, 1);
-    }
-
-    public void ClearRuntimeBackpressurePaused()
-    {
-        Volatile.Write(ref _runtimeBackpressurePaused, 0);
-    }
 
     public void Start(PartitionProcessor<TKey, TValue> processor)
     {
