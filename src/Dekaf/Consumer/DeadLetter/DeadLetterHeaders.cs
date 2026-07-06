@@ -54,9 +54,12 @@ public static class DeadLetterHeaders
         }
 
         // Source metadata
-        headers.Add(SourceTopicKey, result.Topic);
-        headers.Add(SourcePartitionKey, FormatInt(result.Partition));
-        headers.Add(SourceOffsetKey, FormatLong(result.Offset));
+        var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
+        var sourcePartition = RetryTopicHeaders.GetSourcePartition(result.Headers) ?? result.Partition;
+        var sourceOffset = RetryTopicHeaders.GetSourceOffset(result.Headers) ?? result.Offset;
+        headers.Add(SourceTopicKey, sourceTopic);
+        headers.Add(SourcePartitionKey, FormatInt(sourcePartition));
+        headers.Add(SourceOffsetKey, FormatLong(sourceOffset));
         headers.Add(FailureCountKey, FormatInt(failureCount));
         headers.Add(TimestampKey, DateTimeOffset.UtcNow.ToString("O"));
 

@@ -1,6 +1,9 @@
 using System.Runtime.CompilerServices;
+using Dekaf;
 using Dekaf.Consumer;
+using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;
+using Dekaf.Serialization;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -37,6 +40,37 @@ public sealed class KafkaConsumerServiceTests
         }
 
         await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task ExecuteAsync_WithRetryTopics_SubscribesToSourceAndRetryTopics()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        var deadLetterOptions = new DeadLetterOptions
+        {
+            RetryTopics = new RetryTopicOptions
+            {
+                Delays = [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30)]
+            }
+        };
+        var service = new TestConsumerService(
+            consumer,
+            ["orders"],
+            options: new KafkaConsumerServiceOptions { DrainOnShutdown = false },
+            deadLetterOptions: deadLetterOptions);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForSubscribeAsync(consumer);
+        await service.StopAsync(CancellationToken.None);
+
+        consumer.Received(1).Subscribe(Arg.Is<string[]>(topics =>
+            topics.Contains("orders") &&
+            topics.Contains("orders-retry-5s") &&
+            topics.Contains("orders-retry-30s") &&
+            topics.Length == 3));
     }
 
     [Test]
@@ -83,6 +117,57 @@ public sealed class KafkaConsumerServiceTests
         await service.StopAsync(CancellationToken.None);
 
         await Assert.That(service.Errors).Count().IsGreaterThanOrEqualTo(1);
+    }
+
+    [Test]
+    public async Task ExecuteAsync_RetryTopicMessageNotDue_PausesAndSeeksWithoutProcessing()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var positions = Substitute.For<IConsumerPositions>();
+        var partitions = Substitute.For<IConsumerPartitions>();
+        consumer.Positions.Returns(positions);
+        consumer.Partitions.Returns(partitions);
+
+        var source = CreateResult("orders", partition: 1, offset: 42);
+        var retryHeaders = RetryTopicHeaders.Build(
+            source,
+            failureCount: 1,
+            delay: TimeSpan.FromSeconds(5),
+            dueAt: DateTimeOffset.UtcNow.AddMinutes(5));
+        var retryResult = CreateResult(
+            "orders-retry-5s",
+            partition: 3,
+            offset: 99,
+            headers: retryHeaders.ToList());
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateResults(retryResult));
+
+        var deadLetterOptions = new DeadLetterOptions
+        {
+            RetryTopics = new RetryTopicOptions
+            {
+                Delays = [TimeSpan.FromSeconds(5)]
+            }
+        };
+        var service = new TestConsumerService(
+            consumer,
+            ["orders"],
+            options: new KafkaConsumerServiceOptions { DrainOnShutdown = false },
+            deadLetterOptions: deadLetterOptions);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForPauseAsync(partitions);
+        await service.StopAsync(CancellationToken.None);
+
+        await Assert.That(service.ProcessedMessages).IsEmpty();
+        positions.Received(1).Seek(Arg.Is<TopicPartitionOffset>(offset =>
+            offset.Topic == "orders-retry-5s" &&
+            offset.Partition == 3 &&
+            offset.Offset == 99));
+        partitions.Received(1).Pause(Arg.Is<TopicPartition[]>(items =>
+            items.Length == 1 &&
+            items[0].Topic == "orders-retry-5s" &&
+            items[0].Partition == 3));
     }
 
     #endregion
@@ -370,6 +455,25 @@ public sealed class KafkaConsumerServiceTests
         throw new TimeoutException("ExecuteAsync did not call Subscribe() within timeout");
     }
 
+    private static async Task WaitForPauseAsync(IConsumerPartitions partitions)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (!timeout.IsCancellationRequested)
+        {
+            try
+            {
+                partitions.Received(1).Pause(Arg.Any<TopicPartition[]>());
+                return;
+            }
+            catch (NSubstitute.Exceptions.ReceivedCallsException)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+
+        throw new TimeoutException("Retry topic partition was not paused within timeout");
+    }
+
     private static async IAsyncEnumerable<ConsumeResult<string, string>> WaitForCancellation(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -390,32 +494,55 @@ public sealed class KafkaConsumerServiceTests
     {
         foreach (var (topic, partition, offset) in items)
         {
-            yield return new ConsumeResult<string, string>(
-                topic: topic,
-                partition: partition,
-                offset: offset,
-                keyData: default,
-                isKeyNull: true,
-                valueData: default,
-                isValueNull: true,
-                headers: null,
-                timestampMs: 0,
-                timestampType: TimestampType.NotAvailable,
-                leaderEpoch: null,
-                keyDeserializer: null,
-                valueDeserializer: null);
+            yield return CreateResult(topic, partition, offset);
         }
 
         await Task.CompletedTask;
+    }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, string>> CreateResults(
+        params ConsumeResult<string, string>[] items)
+    {
+        foreach (var item in items)
+        {
+            yield return item;
+        }
+
+        await Task.CompletedTask;
+    }
+
+    private static ConsumeResult<string, string> CreateResult(
+        string topic,
+        int partition = 0,
+        long offset = 0,
+        IReadOnlyList<Header>? headers = null)
+    {
+        return new ConsumeResult<string, string>(
+            topic: topic,
+            partition: partition,
+            offset: offset,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: headers,
+            timestampMs: 0,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null);
     }
 
     private sealed class TestConsumerService : TestableKafkaConsumerService
     {
         public List<ConsumeResult<string, string>> ProcessedMessages { get; } = [];
 
-        public TestConsumerService(IKafkaConsumer<string, string> consumer, string[] topics,
-            KafkaConsumerServiceOptions? options = null)
-            : base(consumer, topics, options)
+        public TestConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            string[] topics,
+            KafkaConsumerServiceOptions? options = null,
+            DeadLetterOptions? deadLetterOptions = null)
+            : base(consumer, topics, options, deadLetterOptions)
         {
         }
 
@@ -451,9 +578,12 @@ public sealed class KafkaConsumerServiceTests
     {
         private readonly string[] _topics;
 
-        protected TestableKafkaConsumerService(IKafkaConsumer<string, string> consumer, string[] topics,
-            KafkaConsumerServiceOptions? options = null)
-            : base(consumer, NullLogger.Instance, serviceOptions: options)
+        protected TestableKafkaConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            string[] topics,
+            KafkaConsumerServiceOptions? options = null,
+            DeadLetterOptions? deadLetterOptions = null)
+            : base(consumer, NullLogger.Instance, deadLetterOptions, serviceOptions: options)
         {
             _topics = topics;
         }

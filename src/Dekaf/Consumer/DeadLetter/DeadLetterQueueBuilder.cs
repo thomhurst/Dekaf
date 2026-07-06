@@ -11,6 +11,8 @@ public sealed class DeadLetterQueueBuilder
     private bool _awaitDelivery;
     private string? _bootstrapServers;
     private Action<ProducerBuilder<byte[]?, byte[]?>>? _configureProducer;
+    private readonly List<TimeSpan> _retryTopicDelays = [];
+    private string _retryTopicSuffixFormat = "-retry-{0}";
 
     /// <summary>
     /// Sets the topic suffix for DLQ topic names. Default: ".DLQ".
@@ -80,6 +82,42 @@ public sealed class DeadLetterQueueBuilder
     }
 
     /// <summary>
+    /// Enables tiered retry topics with the supplied retry delays.
+    /// For example, delays of 5s and 30s produce topics such as <c>orders-retry-5s</c>
+    /// and <c>orders-retry-30s</c> before routing to the DLQ.
+    /// </summary>
+    /// <param name="delays">Ordered retry delays.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DeadLetterQueueBuilder WithRetryTopics(params TimeSpan[] delays)
+    {
+        ArgumentNullException.ThrowIfNull(delays);
+        if (delays.Length == 0)
+            throw new ArgumentException("At least one retry topic delay is required.", nameof(delays));
+
+        _retryTopicDelays.Clear();
+        foreach (var delay in delays)
+        {
+            RetryTopicOptions.ValidateDelay(delay);
+            _retryTopicDelays.Add(delay);
+        }
+
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the suffix format used for retry topic names. The <c>{0}</c> placeholder receives
+    /// a compact delay label such as <c>5s</c>, <c>30s</c>, or <c>1m</c>.
+    /// </summary>
+    /// <param name="suffixFormat">Suffix format appended to the source topic.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DeadLetterQueueBuilder WithRetryTopicSuffixFormat(string suffixFormat)
+    {
+        RetryTopicOptions.ValidateTopicSuffixFormat(suffixFormat);
+        _retryTopicSuffixFormat = suffixFormat;
+        return this;
+    }
+
+    /// <summary>
     /// Sets default bootstrap servers only if not already explicitly configured.
     /// Used by DI to inherit from the consumer's bootstrap servers.
     /// </summary>
@@ -100,6 +138,13 @@ public sealed class DeadLetterQueueBuilder
         IncludeExceptionInHeaders = _includeExceptionInHeaders,
         AwaitDelivery = _awaitDelivery,
         BootstrapServers = _bootstrapServers,
-        ConfigureProducer = _configureProducer
+        ConfigureProducer = _configureProducer,
+        RetryTopics = _retryTopicDelays.Count == 0
+            ? null
+            : new RetryTopicOptions
+            {
+                Delays = _retryTopicDelays.ToArray(),
+                TopicSuffixFormat = _retryTopicSuffixFormat
+            }
     };
 }

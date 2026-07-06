@@ -94,6 +94,22 @@ public class DeadLetterHeadersTests
         await Assert.That(headers.GetFirstAsString("correlation-id")).IsEqualTo("xyz");
     }
 
+    [Test]
+    public async Task BuildHeaders_FromRetryTopic_UsesOriginalSourceMetadata()
+    {
+        var retryHeaders = new Headers()
+            .Add(RetryTopicHeaders.SourceTopicKey, "orders")
+            .Add(RetryTopicHeaders.SourcePartitionKey, "3")
+            .Add(RetryTopicHeaders.SourceOffsetKey, "99");
+        var result = CreateTestConsumeResult("orders-retry-5s", 0, 7, retryHeaders.ToList());
+
+        var headers = DeadLetterHeaders.Build(result, new InvalidOperationException("bad"), 2, includeException: true);
+
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourceTopicKey)).IsEqualTo("orders");
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourcePartitionKey)).IsEqualTo("3");
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourceOffsetKey)).IsEqualTo("99");
+    }
+
     private static ConsumeResult<string, string> CreateTestConsumeResult(
         string topic = "test", int partition = 0, long offset = 0,
         IReadOnlyList<Header>? headers = null)

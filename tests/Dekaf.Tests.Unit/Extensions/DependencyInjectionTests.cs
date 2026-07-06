@@ -470,6 +470,31 @@ public class DependencyInjectionTests
         await Assert.That(options.BootstrapServers).IsEqualTo("localhost:9092");
     }
 
+    [Test]
+    public async Task AddConsumer_WithRetryTopics_RegistersRetryTopicOptions()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumer<string, string>(
+                c => c
+                    .WithBootstrapServers("localhost:9092")
+                    .WithGroupId("test-group"),
+                dlq => dlq
+                    .WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30)));
+        });
+
+        var serviceProvider = services.BuildServiceProvider();
+        var options = serviceProvider.GetRequiredService<DeadLetterOptions>();
+
+        await Assert.That(options.RetryTopics).IsNotNull();
+        await Assert.That(options.RetryTopics!.GetRetryTopic("orders", TimeSpan.FromSeconds(5)))
+            .IsEqualTo("orders-retry-5s");
+        await Assert.That(options.RetryTopics.GetRetryTopic("orders", TimeSpan.FromSeconds(30)))
+            .IsEqualTo("orders-retry-30s");
+    }
+
     #endregion
 
     #region Configuration Binding Tests
