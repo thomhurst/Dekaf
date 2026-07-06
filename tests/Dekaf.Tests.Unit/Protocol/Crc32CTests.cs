@@ -31,6 +31,30 @@ public class Crc32CTests
     }
 
     [Test]
+    public async Task Combine_MixedLengths_MatchesConcatenatedCompute()
+    {
+        foreach (var prefixLength in CombineLengths())
+        {
+            foreach (var suffixLength in CombineLengths())
+            {
+                var prefix = CreateDeterministicBytes(prefixLength);
+                var suffix = CreateDeterministicBytes(suffixLength);
+                var combined = new byte[prefix.Length + suffix.Length];
+                prefix.CopyTo(combined, 0);
+                suffix.CopyTo(combined, prefix.Length);
+
+                var expected = Crc32C.Compute(combined);
+                var actual = Crc32C.Combine(
+                    Crc32C.Compute(prefix),
+                    Crc32C.Compute(suffix),
+                    suffix.Length);
+
+                await Assert.That(actual).IsEqualTo(expected);
+            }
+        }
+    }
+
+    [Test]
     public async Task ComputeSoftware_MixedLengths_MatchesBitwiseReference()
     {
         foreach (var length in MixedLengths())
@@ -126,6 +150,11 @@ public class Crc32CTests
             yield return length;
         }
     }
+
+    private static int[] CombineLengths() =>
+    [
+        0, 1, 2, 3, 7, 8, 31, 32, 63, 64, 255, 512, 513, 1024, 4096, 65536, 1048576
+    ];
 
     private static uint ComputeBitwise(ReadOnlySpan<byte> data)
     {

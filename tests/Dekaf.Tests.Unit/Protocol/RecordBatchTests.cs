@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using Dekaf.Compression;
 using Dekaf.Protocol;
@@ -512,6 +513,9 @@ public class RecordBatchTests
         await Assert.That(batch.PreCompressedRecords).IsNotNull();
         await Assert.That(batch.PreCompressedLength).IsGreaterThan(0);
         await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.Gzip);
+        var batchCrc = batch.PreCompressedRecordsCrc;
+        await Assert.That(batchCrc)
+            .IsEqualTo(Crc32C.Compute(batch.PreCompressedRecords!.AsSpan(0, batch.PreCompressedLength)));
 
         // Transfer to new batch via WithProducerState
         var newBatch = batch.WithProducerState(42, 1, 10);
@@ -520,6 +524,7 @@ public class RecordBatchTests
         await Assert.That(newBatch.PreCompressedRecords).IsNotNull();
         await Assert.That(newBatch.PreCompressedLength).IsGreaterThan(0);
         await Assert.That(newBatch.PreCompressedType).IsEqualTo(CompressionType.Gzip);
+        await Assert.That(newBatch.PreCompressedRecordsCrc).IsEqualTo(batchCrc);
         await Assert.That(newBatch.ProducerId).IsEqualTo(42L);
         await Assert.That(newBatch.ProducerEpoch).IsEqualTo((short)1);
         await Assert.That(newBatch.BaseSequence).IsEqualTo(10);
@@ -528,6 +533,7 @@ public class RecordBatchTests
         await Assert.That(batch.PreCompressedRecords).IsNull();
         await Assert.That(batch.PreCompressedLength).IsEqualTo(0);
         await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.None);
+        await Assert.That(batch.PreCompressedRecordsCrc).IsEqualTo(0u);
 
         // Clean up
         newBatch.Dispose();
@@ -543,6 +549,8 @@ public class RecordBatchTests
         await Assert.That(batch.PreCompressedRecords).IsNotNull();
         await Assert.That(batch.PreCompressedLength).IsGreaterThan(0);
         await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.None);
+        await Assert.That(batch.PreCompressedRecordsCrc)
+            .IsEqualTo(Crc32C.Compute(batch.PreCompressedRecords!.AsSpan(0, batch.PreCompressedLength)));
     }
 
     [Test]
@@ -558,6 +566,32 @@ public class RecordBatchTests
         preSerializedBatch.Write(preSerializedBuffer);
 
         await Assert.That(preSerializedBuffer.WrittenSpan.SequenceEqual(inlineBuffer.WrittenSpan)).IsTrue();
+    }
+
+    [Test]
+    public async Task Write_WithPreCompressedRecords_WritesMatchingCrc()
+    {
+        using var batch = CreateTwoRecordBatch();
+        batch.PreCompress(CompressionType.Gzip, null);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+
+        var (storedCrc, computedCrc) = ReadRecordBatchCrcs(buffer.WrittenSpan);
+        await Assert.That(storedCrc).IsEqualTo(computedCrc);
+    }
+
+    [Test]
+    public async Task Write_WithPreEncodedRecords_WritesMatchingCrc()
+    {
+        using var batch = CreateTwoRecordBatch();
+        batch.SetPreEncodedRecords(EncodeRecords(batch.Records));
+
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+
+        var (storedCrc, computedCrc) = ReadRecordBatchCrcs(buffer.WrittenSpan);
+        await Assert.That(storedCrc).IsEqualTo(computedCrc);
     }
 
     [Test]
@@ -603,6 +637,27 @@ public class RecordBatchTests
             }
         ]
     };
+
+    private static byte[] EncodeRecords(IReadOnlyList<Record> records)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static (uint Stored, uint Computed) ReadRecordBatchCrcs(ReadOnlySpan<byte> batch)
+    {
+        const int crcOffset = 8 + 4 + 4 + 1;
+        const int crcContentOffset = crcOffset + 4;
+
+        var stored = BinaryPrimitives.ReadUInt32BigEndian(batch.Slice(crcOffset, 4));
+        var computed = Crc32C.Compute(batch[crcContentOffset..]);
+        return (stored, computed);
+    }
 
     [Test]
     public async Task ReturnPreCompressedBuffer_CalledTwice_IsIdempotent()
