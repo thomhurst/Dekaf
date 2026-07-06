@@ -157,22 +157,28 @@ public class RecordAccumulatorReadyTests
     [Test]
     public async Task Ready_NoSealedBatches_ReturnsEmpty()
     {
-        // Arrange: Large batch size so appending one record won't seal
-        var options = CreateTestOptions(batchSize: 100_000);
+        // Arrange: Large batch size and long linger so appending one fire-and-forget record won't seal.
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 10_000);
         var accumulator = new RecordAccumulator(options);
-        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
 
         try
         {
-            // Append one record - batch should not seal (large batch size)
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-            var completion = pool.Rent();
-
-            accumulator.TryAppendWithCompletion("test-topic", 0,
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, completion);
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
 
             // Act: Call Ready()
             var readyNodes = new HashSet<int>();
@@ -184,7 +190,78 @@ public class RecordAccumulatorReadyTests
         finally
         {
             await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_LingerMs0_AwaitedAppend_SealsInline()
+    {
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+            var completion = pool.Rent();
+
+            var appended = accumulator.TryAppendWithCompletion("test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, completion);
+
+            await Assert.That(appended).IsTrue();
+
+            var readyNodes = new HashSet<int>();
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+
+            await Assert.That(readyNodes).Contains(1);
+            await Assert.That(unknownLeadersExist).IsFalse();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
             await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_LingerMs0_FireAndForgetSpanAppend_SealsInline()
+    {
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
+
+            var readyNodes = new HashSet<int>();
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+
+            await Assert.That(readyNodes).Contains(1);
+            await Assert.That(unknownLeadersExist).IsFalse();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
     }
