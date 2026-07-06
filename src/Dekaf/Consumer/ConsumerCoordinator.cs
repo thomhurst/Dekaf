@@ -195,7 +195,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         Interlocked.CompareExchange(ref _fatalHeartbeatException, exception, null);
 
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
         try
         {
             _state = CoordinatorState.Unjoined;
