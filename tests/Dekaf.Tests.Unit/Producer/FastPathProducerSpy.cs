@@ -110,6 +110,7 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
 
     public ValueTask CompletePreparedTransactionAsync(
         PreparedTransactionState preparedState,
+        bool committed,
         CancellationToken cancellationToken = default)
         => ValueTask.CompletedTask;
 

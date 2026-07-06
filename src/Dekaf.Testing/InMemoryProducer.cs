@@ -180,8 +180,10 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
     public ValueTask CompletePreparedTransactionAsync(
         PreparedTransactionState preparedState,
+        bool committed,
         CancellationToken cancellationToken = default)
     {
+        _ = committed;
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         throw new NotSupportedException("In-memory producer transactions are not supported.");

@@ -258,6 +258,10 @@ public sealed class TransactionTests
         await Assert.That(methodNames).Contains("BeginTransaction");
         await Assert.That(methodNames).Contains("InitTransactionsAsync");
         await Assert.That(methodNames).Contains("CompletePreparedTransactionAsync");
+
+        var completePreparedMethod = methods.Single(m => m.Name == "CompletePreparedTransactionAsync");
+        await Assert.That(completePreparedMethod.GetParameters().Any(p =>
+            p.Name == "committed" && p.ParameterType == typeof(bool))).IsTrue();
     }
 
     [Test]
@@ -364,7 +368,7 @@ public sealed class TransactionTests
 
         await Assert.That(async () =>
         {
-            await producer.CompletePreparedTransactionAsync(PreparedTransactionState.Empty);
+            await producer.CompletePreparedTransactionAsync(PreparedTransactionState.Empty, committed: true);
         }).Throws<ArgumentException>();
     }
 
@@ -377,7 +381,7 @@ public sealed class TransactionTests
             currentProducerId: 2002,
             currentProducerEpoch: 9);
 
-        await harness.Producer.CompletePreparedTransactionAsync(preparedState);
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState, committed: true);
 
         var request = harness.CapturedRequest;
         await Assert.That(request.ProducerId).IsEqualTo(preparedState.ProducerId);
@@ -398,7 +402,7 @@ public sealed class TransactionTests
             currentProducerId: 2002,
             currentProducerEpoch: 9);
 
-        await harness.Producer.CompletePreparedTransactionAsync(new PreparedTransactionState(9999, 1));
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState, committed: false);
 
         var request = harness.CapturedRequest;
         await Assert.That(request.ProducerId).IsEqualTo(preparedState.ProducerId);
@@ -408,6 +412,26 @@ public sealed class TransactionTests
         await Assert.That(GetInstanceField<short>(harness.Producer, "_producerEpoch")).IsEqualTo((short)9);
         await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
         await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(PreparedTransactionState.Empty);
+    }
+
+    [Test]
+    public async Task CompletePreparedTransactionAsync_MismatchedState_ThrowsTransactionException()
+    {
+        var preparedState = new PreparedTransactionState(1001, 4);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+
+        await Assert.That(async () =>
+        {
+            await harness.Producer.CompletePreparedTransactionAsync(
+                new PreparedTransactionState(9999, 1),
+                committed: false);
+        }).Throws<TransactionException>();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.PreparedTransaction);
+        await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(preparedState);
     }
 
     [Test]

@@ -82,16 +82,16 @@ await transaction.ProduceAsync(new ProducerMessage<string, string>
 var prepared = await transaction.PrepareAsync();
 
 // Store prepared.ToString() with the external transaction decision.
-await producer.CompletePreparedTransactionAsync(prepared);
+await producer.CompletePreparedTransactionAsync(prepared, committed: true);
 ```
 
 If the process restarts after prepare, initialize with `keepPreparedTransaction: true`
-and complete using the stored state:
+and complete using the stored state plus the external coordinator's decision:
 
 ```csharp
 await producer.InitTransactionsAsync(keepPreparedTransaction: true);
 var prepared = PreparedTransactionState.Parse(storedPreparedState);
-await producer.CompletePreparedTransactionAsync(prepared);
+await producer.CompletePreparedTransactionAsync(prepared, committed: shouldCommit);
 ```
 
 This requires broker support for `transaction.version` 3 and `InitProducerId` v6.

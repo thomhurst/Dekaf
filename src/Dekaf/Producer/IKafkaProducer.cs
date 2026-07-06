@@ -204,11 +204,14 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Completes a prepared transaction. The transaction is committed when the provided state
-    /// matches the prepared state returned by the broker; otherwise it is aborted.
+    /// Completes a prepared transaction using the external coordinator decision.
     /// </summary>
+    /// <param name="preparedState">The prepared transaction identity returned by <see cref="ITransaction{TKey, TValue}.PrepareAsync"/>.</param>
+    /// <param name="committed">True to commit the prepared transaction; false to abort it.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     ValueTask CompletePreparedTransactionAsync(
         PreparedTransactionState preparedState,
+        bool committed,
         CancellationToken cancellationToken = default);
 
     /// <summary>

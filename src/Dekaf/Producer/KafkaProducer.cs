@@ -1595,6 +1595,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     public async ValueTask CompletePreparedTransactionAsync(
         PreparedTransactionState preparedState,
+        bool committed,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(_options.TransactionalId))
@@ -1618,7 +1619,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         var transactionToComplete = _preparedTransactionState;
-        var committed = preparedState == transactionToComplete;
+        if (preparedState != transactionToComplete)
+        {
+            throw new TransactionException(ErrorCode.InvalidTxnState,
+                "Prepared transaction state does not match the pending prepared transaction.")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
         _transactionState = committed
             ? TransactionState.CommittingTransaction
             : TransactionState.AbortingTransaction;
