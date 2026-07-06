@@ -897,9 +897,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     //
     // Duplicate entries for the same partition are harmless: Ready() dequeues and checks the
     // partition deque, so extra notifications for an already-drained partition are no-ops.
-    // The queue is bounded: each partition appears at most once per seal event, muted
-    // partitions are dropped (not re-enqueued), and UnmutePartition re-enqueues only if
-    // sealed batches exist. Total size <= number of sealed batches <= BufferMemory / BatchSize.
+    // Muted partitions are dropped (not re-enqueued), and UnmutePartition re-enqueues only if
+    // sealed batches exist.
     private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
 
     // Per-node partition tracking: populated by Ready() with the specific partitions it
@@ -1286,10 +1285,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
             }
 
-            // Pre-serialization runs on a worker after seal. If the notification arrives
-            // before that worker finishes, leave the batch queued; completion re-notifies.
+            // Pre-serialization runs on a worker after seal. If a stale or early
+            // notification arrives first, preserve it so the fallback sender tick can
+            // retry without relying solely on the worker's completion publish.
             if (!head.IsPreSerialized)
+            {
+                _readyPartitions.Enqueue(tp);
                 continue;
+            }
 
             // Sealed batches in the deque are always sendable. The linger/micro-linger
             // timer already determined readiness when it sealed the batch, so re-checking
@@ -1426,9 +1429,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 // Safety check: Ready() should have pre-serialized the head batch before
                 // marking this node ready. If another path exposes an unready batch,
-                // leave it in the deque until the next notification.
+                // keep the consumed notification alive for the next sender cycle.
                 if (!batch.IsPreSerialized)
+                {
+                    _readyPartitions.Enqueue(tp);
                     continue;
+                }
 
                 if (batch.IsRetry && batch.RetryNotBefore > 0
                     && now < batch.RetryNotBefore)

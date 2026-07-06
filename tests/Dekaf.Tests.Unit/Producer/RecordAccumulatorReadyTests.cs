@@ -225,8 +225,18 @@ public class RecordAccumulatorReadyTests
             await appendWhileCompressionBlocked.WaitAsync(TimeSpan.FromSeconds(5));
 
             var readyNodesWhileBlocked = new HashSet<int>();
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var readyQueue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_readyPartitions");
+            readyQueue.Enqueue(topicPartition);
+
             accumulator.Ready(metadataManager, readyNodesWhileBlocked);
             await Assert.That(readyNodesWhileBlocked).IsEmpty();
+            await Assert.That(readyQueue.Count).IsEqualTo(1);
+
+            readyNodesWhileBlocked.Clear();
+            accumulator.Ready(metadataManager, readyNodesWhileBlocked);
+            await Assert.That(readyNodesWhileBlocked).IsEmpty();
+            await Assert.That(readyQueue.Count).IsEqualTo(1);
 
             codec.AllowCompression.SetResult();
 
@@ -244,6 +254,59 @@ public class RecordAccumulatorReadyTests
             codec.AllowCompression.TrySetResult();
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Drain_UnpreSerializedTrackedPartition_ReenqueuesNotification()
+    {
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0, compressionType: CompressionType.Gzip);
+        var codec = new BlockingCompressionCodec(CompressionType.Gzip);
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(codec);
+
+        var accumulator = new RecordAccumulator(options, compressionCodecs);
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var appended = await accumulator.AppendAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
+            await codec.CompressStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var trackedPartitions = GetPrivateField<Dictionary<int, List<TopicPartition>>>(
+                accumulator,
+                "_readyPartitionsPerNode");
+            trackedPartitions[1] = [topicPartition];
+
+            var readyNodes = new HashSet<int> { 1 };
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            var readyQueue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_readyPartitions");
+
+            accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+
+            await Assert.That(drainResult).IsEmpty();
+            await Assert.That(readyQueue.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            codec.AllowCompression.TrySetResult();
+            await accumulator.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
     }
