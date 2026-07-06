@@ -51,6 +51,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
 
+    internal static int GetWaitForAssignmentDelayMs(int retryDelayMs, int heartbeatIntervalMs)
+        => Math.Max(retryDelayMs, heartbeatIntervalMs);
+
     public ShareConsumerCoordinator(
         ShareConsumerOptions options,
         IConnectionPool connectionPool,
@@ -426,7 +429,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         // Broker accepted us but hasn't assigned partitions yet.
                         // Wait before re-sending heartbeat.
                         LogWaitingForAssignment();
-                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                        await Task.Delay(
+                            GetWaitForAssignmentDelayMs(retryDelayMs, _heartbeatIntervalMs),
+                            cancellationToken).ConfigureAwait(false);
                     }
                 }
                 catch (GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
