@@ -2528,6 +2528,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
+        void ReleaseDetachedBatchBytesIfSafe()
+        {
+            if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
+            {
+                var bytesToRelease = sealedBatchBytesToRelease;
+                sealedBatchBytesToRelease = 0;
+                ReleaseMemory(bytesToRelease);
+            }
+        }
+
         void ClearAppendAndRotationInProgressUnderLock()
         {
             ClearAppendInProgressUnderLock(pd);
@@ -2657,12 +2667,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         ReleaseMemory(batchToFail.DataSize);
                 }
 
-                if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
-                {
-                    var bytesToRelease = sealedBatchBytesToRelease;
-                    sealedBatchBytesToRelease = 0;
-                    ReleaseMemory(bytesToRelease);
-                }
+                ReleaseDetachedBatchBytesIfSafe();
 
                 if (appendReserved)
                 {
@@ -2735,8 +2740,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
                             if (readyBatch is not null)
                                 StartPreSerialization(readyBatch);
+                            ownsRotation = false;
                         }
 
+                        ReleaseDetachedBatchBytesIfSafe();
                         return true;
                     }
                     catch
