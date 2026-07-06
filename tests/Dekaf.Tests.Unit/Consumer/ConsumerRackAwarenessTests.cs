@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
@@ -69,6 +70,40 @@ public sealed class ConsumerRackAwarenessTests
         var preferredGroups = await InvokeGroupPartitionsByBrokerAsync(consumer);
         await Assert.That(preferredGroups).ContainsKey(2);
         await Assert.That(preferredGroups).DoesNotContainKey(1);
+
+        var cachedPreferredGroups = await InvokeGroupPartitionsByBrokerAsync(consumer);
+        await Assert.That(cachedPreferredGroups).IsSameReferenceAs(preferredGroups);
+    }
+
+    [Test]
+    public async Task PreferredReadReplica_ExpiredCachedGroupingFallsBackToLeader()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+
+        connection.SendAsync<FetchRequest, FetchResponse>(
+                Arg.Any<FetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateFetchResponse(preferredReadReplica: 2)));
+
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, clientRack: "rack-a");
+        consumer.Assign(Partition);
+
+        await InvokeFetchFromBrokerAsync(consumer, brokerId: 1, [Partition]);
+        var preferredGroups = await InvokeGroupPartitionsByBrokerAsync(consumer);
+        await Assert.That(preferredGroups).ContainsKey(2);
+
+        ExpirePreferredReadReplicaAndCache(consumer, metadataManager);
+
+        var fallbackGroups = await InvokeGroupPartitionsByBrokerAsync(consumer);
+        await Assert.That(fallbackGroups).ContainsKey(1);
+        await Assert.That(fallbackGroups).DoesNotContainKey(2);
+        await Assert.That(fallbackGroups).IsNotSameReferenceAs(preferredGroups);
     }
 
     [Test]
@@ -360,5 +395,63 @@ public sealed class ConsumerRackAwarenessTests
             throw new InvalidOperationException("GroupPartitionsByBrokerAsync returned unexpected type");
 
         return await valueTask.ConfigureAwait(false);
+    }
+
+    private static void ExpirePreferredReadReplicaAndCache(
+        KafkaConsumer<string, string> consumer,
+        MetadataManager metadataManager)
+    {
+        var expiresAtTimestamp = Stopwatch.GetTimestamp() - 1;
+        var consumerType = typeof(KafkaConsumer<string, string>);
+        ExpirePreferredReadReplica(consumer, metadataManager, consumerType, expiresAtTimestamp);
+        ExpirePartitionBrokerCache(consumer, metadataManager, consumerType, expiresAtTimestamp);
+    }
+
+    private static void ExpirePreferredReadReplica(
+        KafkaConsumer<string, string> consumer,
+        MetadataManager metadataManager,
+        Type consumerType,
+        long expiresAtTimestamp)
+    {
+        var preferredReadReplicasField = consumerType.GetField(
+                "_preferredReadReplicas",
+                BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_preferredReadReplicas field not found");
+
+        var preferredReadReplicas = preferredReadReplicasField.GetValue(consumer)
+            ?? throw new InvalidOperationException("_preferredReadReplicas field was null");
+        var stateType = preferredReadReplicas.GetType().GetGenericArguments()[1];
+        var expiredState = Activator.CreateInstance(
+                stateType,
+                [2, metadataManager.Metadata.LastRefreshed, expiresAtTimestamp])
+            ?? throw new InvalidOperationException("PreferredReadReplicaState could not be created");
+
+        var indexer = preferredReadReplicas.GetType().GetProperty("Item")
+            ?? throw new InvalidOperationException("_preferredReadReplicas indexer not found");
+        indexer.SetValue(preferredReadReplicas, expiredState, [Partition]);
+    }
+
+    private static void ExpirePartitionBrokerCache(
+        KafkaConsumer<string, string> consumer,
+        MetadataManager metadataManager,
+        Type consumerType,
+        long expiresAtTimestamp)
+    {
+        var cacheField = consumerType.GetField(
+                "_cachedPartitionsByBroker",
+                BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_cachedPartitionsByBroker field not found");
+
+        var cache = cacheField.GetValue(consumer)
+            ?? throw new InvalidOperationException("_cachedPartitionsByBroker field was null");
+        var cacheType = cache.GetType();
+        var partitionsByBroker = cacheType.GetProperty("PartitionsByBroker")?.GetValue(cache)
+            ?? throw new InvalidOperationException("PartitionsByBroker property not found");
+        var expiredCache = Activator.CreateInstance(
+                cacheType,
+                [partitionsByBroker, expiresAtTimestamp, metadataManager.Metadata.LastRefreshed])
+            ?? throw new InvalidOperationException("PartitionBrokerCacheEntry could not be created");
+
+        cacheField.SetValue(consumer, expiredCache);
     }
 }

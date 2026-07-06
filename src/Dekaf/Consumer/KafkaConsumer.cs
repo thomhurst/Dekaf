@@ -752,10 +752,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // empty partition responses to emit partition EOF events.
     private bool ShouldUseFetchSessions => _options.EnableFetchSessions && !_options.EnablePartitionEof;
 
-    // Cached partition grouping by broker to avoid allocations on every fetch
+    // Cached partition grouping by broker to avoid allocations on every fetch.
     // Invalidated whenever _assignment, _paused, or preferred read replicas change.
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
-    private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
+    private PartitionBrokerCacheEntry? _cachedPartitionsByBroker;
     private readonly object _partitionCacheLock = new();
     private int _assignmentVersion;
 
@@ -773,6 +773,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
+    private const long NoPreferredReplicaExpiry = long.MaxValue;
+
+    private readonly record struct PartitionBrokerCacheEntry(
+        Dictionary<int, List<TopicPartition>> PartitionsByBroker,
+        long PreferredReplicaExpiresAtTimestamp,
+        DateTimeOffset MetadataLastRefreshed);
+
+    private readonly record struct PartitionFetchBrokerResolution(
+        TopicPartition Partition,
+        BrokerNode? Broker,
+        long PreferredReplicaExpiresAtTimestamp);
 
     private readonly record struct PreferredReadReplicaState(
         int ReplicaId,
@@ -4198,12 +4209,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int capturedVersion;
         TopicPartition[] assignmentArray;
         int assignmentCount;
+        var now = Stopwatch.GetTimestamp();
 
         lock (_partitionCacheLock)
         {
-            if (_cachedPartitionsByBroker is not null && _preferredReadReplicas.IsEmpty)
+            if (_cachedPartitionsByBroker is { } cached)
             {
-                return _cachedPartitionsByBroker;
+                if (IsPartitionBrokerCacheValid(cached, now))
+                    return cached.PartitionsByBroker;
+
+                _cachedPartitionsByBroker = null;
             }
 
             // Capture version and copy assignment/paused data under lock
@@ -4223,46 +4238,55 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Build the cache outside the lock - allocate once per assignment change.
-        // Resolve all partition fetch brokers in parallel for maximum throughput.
-        var brokerTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Broker)>>.Shared.Rent(assignmentCount);
+        var result = new Dictionary<int, List<TopicPartition>>();
+        var preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        Task<PartitionFetchBrokerResolution>[]? brokerTasks = null;
+        var brokerTaskCount = 0;
         try
         {
             for (var i = 0; i < assignmentCount; i++)
             {
-                brokerTasks[i] = ResolvePartitionFetchBrokerAsync(assignmentArray[i], cancellationToken);
+                var partition = assignmentArray[i];
+                if (TryResolvePartitionFetchBroker(
+                        partition,
+                        now,
+                        out var broker,
+                        out var partitionPreferredReplicaExpiresAtTimestamp))
+                {
+                    AddPartitionFetchBroker(
+                        result,
+                        new PartitionFetchBrokerResolution(
+                            partition,
+                            broker,
+                            partitionPreferredReplicaExpiresAtTimestamp),
+                        ref preferredReplicaExpiresAtTimestamp);
+                    continue;
+                }
+
+                brokerTasks ??= ArrayPool<Task<PartitionFetchBrokerResolution>>.Shared.Rent(assignmentCount - i);
+                brokerTasks[brokerTaskCount++] = ResolvePartitionFetchBrokerAsync(partition, cancellationToken);
             }
 
+            if (brokerTaskCount > 0)
+            {
 #if NETSTANDARD2_0
-            await Task.WhenAll(brokerTasks.Take(assignmentCount)).ConfigureAwait(false);
+                await Task.WhenAll(brokerTasks!.Take(brokerTaskCount)).ConfigureAwait(false);
 #else
-            await Task.WhenAll(new ReadOnlySpan<Task<(TopicPartition Partition, BrokerNode? Broker)>>(brokerTasks, 0, assignmentCount)).ConfigureAwait(false);
+                await Task.WhenAll(new ReadOnlySpan<Task<PartitionFetchBrokerResolution>>(brokerTasks!, 0, brokerTaskCount)).ConfigureAwait(false);
 #endif
+
+                for (var i = 0; i < brokerTaskCount; i++)
+                {
+                    AddPartitionFetchBroker(result, brokerTasks![i].Result, ref preferredReplicaExpiresAtTimestamp);
+                }
+            }
         }
         finally
         {
             ArrayPool<TopicPartition>.Shared.Return(assignmentArray, clearArray: true);
+            if (brokerTasks is not null)
+                ArrayPool<Task<PartitionFetchBrokerResolution>>.Shared.Return(brokerTasks, clearArray: true);
         }
-
-        // Build result dictionary from resolved partitions (tasks already completed)
-        var result = new Dictionary<int, List<TopicPartition>>();
-        for (var i = 0; i < assignmentCount; i++)
-        {
-            var (partition, broker) = brokerTasks[i].Result;
-            if (broker is null)
-                continue;
-
-            if (!result.TryGetValue(broker.NodeId, out var list))
-            {
-                list = [];
-                result[broker.NodeId] = list;
-            }
-
-            list.Add(partition);
-        }
-
-        // Return pooled array after extracting results
-        ArrayPool<Task<(TopicPartition Partition, BrokerNode? Broker)>>.Shared.Return(brokerTasks, clearArray: true);
 
         // Cache the result - will be reused until assignment/paused changes.
         // Don't cache empty results: an empty dictionary means partition leaders
@@ -4272,36 +4296,102 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_partitionCacheLock)
         {
             if (result.Count > 0 && _cachedPartitionsByBroker is null
-                && _preferredReadReplicas.IsEmpty
                 && Volatile.Read(ref _assignmentVersion) == capturedVersion)
             {
-                _cachedPartitionsByBroker = result;
+                _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
+                    result,
+                    preferredReplicaExpiresAtTimestamp,
+                    _metadataManager.Metadata.LastRefreshed);
             }
-            return _cachedPartitionsByBroker ?? result;
+
+            if (_cachedPartitionsByBroker is { } cached
+                && IsPartitionBrokerCacheValid(cached, Stopwatch.GetTimestamp()))
+            {
+                return cached.PartitionsByBroker;
+            }
+
+            return result;
         }
     }
 
-    private async Task<(TopicPartition Partition, BrokerNode? Broker)> ResolvePartitionFetchBrokerAsync(
+    private bool IsPartitionBrokerCacheValid(PartitionBrokerCacheEntry cached, long now)
+    {
+        if (cached.PreferredReplicaExpiresAtTimestamp == NoPreferredReplicaExpiry)
+            return true;
+
+        return cached.PreferredReplicaExpiresAtTimestamp > now
+            && cached.MetadataLastRefreshed == _metadataManager.Metadata.LastRefreshed;
+    }
+
+    private static void AddPartitionFetchBroker(
+        Dictionary<int, List<TopicPartition>> result,
+        PartitionFetchBrokerResolution resolution,
+        ref long preferredReplicaExpiresAtTimestamp)
+    {
+        if (resolution.Broker is null)
+            return;
+
+        if (resolution.PreferredReplicaExpiresAtTimestamp < preferredReplicaExpiresAtTimestamp)
+            preferredReplicaExpiresAtTimestamp = resolution.PreferredReplicaExpiresAtTimestamp;
+
+        if (!result.TryGetValue(resolution.Broker.NodeId, out var list))
+        {
+            list = [];
+            result[resolution.Broker.NodeId] = list;
+        }
+
+        list.Add(resolution.Partition);
+    }
+
+    private bool TryResolvePartitionFetchBroker(
+        TopicPartition partition,
+        long now,
+        out BrokerNode? broker,
+        out long preferredReplicaExpiresAtTimestamp)
+    {
+        preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
+        if (leader is null)
+        {
+            broker = null;
+            return false;
+        }
+
+        broker = GetPreferredReadReplicaBrokerOrLeader(partition, leader, now, out preferredReplicaExpiresAtTimestamp);
+        return true;
+    }
+
+    private async Task<PartitionFetchBrokerResolution> ResolvePartitionFetchBrokerAsync(
         TopicPartition partition,
         CancellationToken cancellationToken)
     {
         var leader = await _metadataManager.GetPartitionLeaderAsync(
             partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
         if (leader is null)
-            return (partition, null);
+            return new PartitionFetchBrokerResolution(partition, null, NoPreferredReplicaExpiry);
 
-        return (partition, GetPreferredReadReplicaBrokerOrLeader(partition, leader));
+        var broker = GetPreferredReadReplicaBrokerOrLeader(
+            partition,
+            leader,
+            Stopwatch.GetTimestamp(),
+            out var preferredReplicaExpiresAtTimestamp);
+        return new PartitionFetchBrokerResolution(partition, broker, preferredReplicaExpiresAtTimestamp);
     }
 
-    private BrokerNode GetPreferredReadReplicaBrokerOrLeader(TopicPartition partition, BrokerNode leader)
+    private BrokerNode GetPreferredReadReplicaBrokerOrLeader(
+        TopicPartition partition,
+        BrokerNode leader,
+        long now,
+        out long preferredReplicaExpiresAtTimestamp)
     {
+        preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+
         if (string.IsNullOrEmpty(_options.ClientRack)
             || !_preferredReadReplicas.TryGetValue(partition, out var preferred))
         {
             return leader;
         }
 
-        var now = Stopwatch.GetTimestamp();
         var metadata = _metadataManager.Metadata;
         if (preferred.ExpiresAtTimestamp <= now
             || preferred.MetadataLastRefreshed != metadata.LastRefreshed)
@@ -4318,6 +4408,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         LogUsingPreferredReadReplica(partition.Topic, partition.Partition, preferred.ReplicaId, leader.NodeId);
+        preferredReplicaExpiresAtTimestamp = preferred.ExpiresAtTimestamp;
         return preferredBroker;
     }
 
