@@ -292,7 +292,8 @@ Enable, disable, or tune TCP keepalive probes:
 
 ### WithRemoteCertificateValidationCallback
 
-Attach a custom TLS certificate validation callback for pinning or private PKI:
+Attach a custom TLS certificate validation callback for pinning or private PKI.
+Setting a callback enables TLS for the connection.
 
 ```csharp
 .WithRemoteCertificateValidationCallback((sender, cert, chain, errors) =>

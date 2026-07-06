@@ -99,11 +99,11 @@ public sealed class KafkaClientBuilder
     private int _maxInFlightRequestsPerConnection = 5;
     private int _maxConnectionsPerBroker = 10;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
-    private TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30);
-    private bool _enableTcpKeepAlive = true;
-    private TimeSpan _tcpKeepAliveTime = TimeSpan.FromMinutes(2);
-    private TimeSpan _tcpKeepAliveInterval = TimeSpan.FromSeconds(30);
-    private int _tcpKeepAliveRetryCount = 3;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private TimeSpan? _metadataMaxAge;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
@@ -209,7 +209,10 @@ public sealed class KafkaClientBuilder
     /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
     /// Unsupported platforms ignore individual probe options.
     /// </summary>
-    public KafkaClientBuilder WithTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount = 3)
+    public KafkaClientBuilder WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
     {
         ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
         _enableTcpKeepAlive = true;
@@ -484,11 +487,11 @@ internal sealed class KafkaClientOptions
     public bool UseTls { get; init; }
     public TlsConfig? TlsConfig { get; init; }
     public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
-    public TimeSpan ConnectionTimeout { get; init; } = TimeSpan.FromSeconds(30);
-    public bool EnableTcpKeepAlive { get; init; } = true;
-    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
-    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
-    public int TcpKeepAliveRetryCount { get; init; } = 3;
+    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     public SaslMechanism SaslMechanism { get; init; }
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }

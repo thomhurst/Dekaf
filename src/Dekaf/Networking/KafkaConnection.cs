@@ -2854,23 +2854,23 @@ public sealed class ConnectionOptions
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = true;
+    public bool EnableTcpKeepAlive { get; init; } = DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
+    public TimeSpan TcpKeepAliveTime { get; init; } = DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan TcpKeepAliveInterval { get; init; } = DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = 3;
+    public int TcpKeepAliveRetryCount { get; init; } = DefaultTcpKeepAliveRetryCount;
 
     /// <summary>
     /// Minimum segment size for pipe.
@@ -2885,7 +2885,7 @@ public sealed class ConnectionOptions
     /// <summary>
     /// Connection timeout.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ConnectionTimeout { get; init; } = DefaultConnectionTimeout;
 
     /// <summary>
     /// Request timeout.
@@ -2929,6 +2929,11 @@ public sealed class ConnectionOptions
     internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
 
     internal const int DefaultConnectionsMaxIdleMs = 540000;
+    internal static readonly TimeSpan DefaultConnectionTimeout = TimeSpan.FromSeconds(30);
+    internal const bool DefaultEnableTcpKeepAlive = true;
+    internal static readonly TimeSpan DefaultTcpKeepAliveTime = TimeSpan.FromMinutes(2);
+    internal static readonly TimeSpan DefaultTcpKeepAliveInterval = TimeSpan.FromSeconds(30);
+    internal const int DefaultTcpKeepAliveRetryCount = 3;
 
     internal static int ValidateConnectionsMaxIdleMs(int value, string paramName)
     {

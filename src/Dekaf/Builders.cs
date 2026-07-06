@@ -73,11 +73,11 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
-    private TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30);
-    private bool _enableTcpKeepAlive = true;
-    private TimeSpan _tcpKeepAliveTime = TimeSpan.FromMinutes(2);
-    private TimeSpan _tcpKeepAliveInterval = TimeSpan.FromSeconds(30);
-    private int _tcpKeepAliveRetryCount = 3;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
@@ -319,7 +319,10 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
     /// Unsupported platforms ignore individual probe options.
     /// </summary>
-    public ProducerBuilder<TKey, TValue> WithTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount = 3)
+    public ProducerBuilder<TKey, TValue> WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
     {
         ThrowIfClientOwnedConnectionSettings();
         ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
@@ -1260,11 +1263,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
-    private TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30);
-    private bool _enableTcpKeepAlive = true;
-    private TimeSpan _tcpKeepAliveTime = TimeSpan.FromMinutes(2);
-    private TimeSpan _tcpKeepAliveInterval = TimeSpan.FromSeconds(30);
-    private int _tcpKeepAliveRetryCount = 3;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
@@ -2038,7 +2041,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
     /// Unsupported platforms ignore individual probe options.
     /// </summary>
-    public ConsumerBuilder<TKey, TValue> WithTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount = 3)
+    public ConsumerBuilder<TKey, TValue> WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
     {
         ThrowIfClientOwnedConnectionSettings();
         ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
@@ -2493,11 +2499,11 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
-    private TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30);
-    private bool _enableTcpKeepAlive = true;
-    private TimeSpan _tcpKeepAliveTime = TimeSpan.FromMinutes(2);
-    private TimeSpan _tcpKeepAliveInterval = TimeSpan.FromSeconds(30);
-    private int _tcpKeepAliveRetryCount = 3;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private IRetryPolicy? _retryPolicy;
@@ -2667,7 +2673,10 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
     /// Unsupported platforms ignore individual probe options.
     /// </summary>
-    public ShareConsumerBuilder<TKey, TValue> WithTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount = 3)
+    public ShareConsumerBuilder<TKey, TValue> WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
     {
         ThrowIfClientOwnedConnectionSettings();
         ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);

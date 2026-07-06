@@ -3898,28 +3898,28 @@ public sealed class AdminClientOptions
     /// <summary>
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
 
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = true;
+    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
+    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = 3;
+    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
 
     public bool UseTls { get; init; }
     public TlsConfig? TlsConfig { get; init; }
@@ -4009,11 +4009,11 @@ public sealed class AdminClientBuilder
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
-    private TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30);
-    private bool _enableTcpKeepAlive = true;
-    private TimeSpan _tcpKeepAliveTime = TimeSpan.FromMinutes(2);
-    private TimeSpan _tcpKeepAliveInterval = TimeSpan.FromSeconds(30);
-    private int _tcpKeepAliveRetryCount = 3;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private AwsMskIamConfig? _awsMskIamConfig;
     private ILoggerFactory? _loggerFactory;
@@ -4402,7 +4402,10 @@ public sealed class AdminClientBuilder
     /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
     /// Unsupported platforms ignore individual probe options.
     /// </summary>
-    public AdminClientBuilder WithTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount = 3)
+    public AdminClientBuilder WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
     {
         ThrowIfClientOwnedConnectionSettings();
         ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);

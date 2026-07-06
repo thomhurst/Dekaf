@@ -16,6 +16,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Net.Security;
 using System.Xml;
 
 namespace Dekaf.Extensions.DependencyInjection;
@@ -782,10 +783,15 @@ internal static class DekafOptionsBinding
         builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
         builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
-        builder.WithConnectionTimeout(options.ConnectionTimeout);
-        if (options.EnableTcpKeepAlive)
-            builder.WithTcpKeepAlive(options.TcpKeepAliveTime, options.TcpKeepAliveInterval, options.TcpKeepAliveRetryCount);
-        builder.WithTcpKeepAlive(options.EnableTcpKeepAlive);
+        ApplySocketConnectionOptions(
+            options.ConnectionTimeout,
+            options.EnableTcpKeepAlive,
+            options.TcpKeepAliveTime,
+            options.TcpKeepAliveInterval,
+            options.TcpKeepAliveRetryCount,
+            builder.WithConnectionTimeout,
+            enabled => builder.WithTcpKeepAlive(enabled),
+            (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         builder.WithIdempotence(options.EnableIdempotence);
         builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
         if (options.TransactionalId is not null)
@@ -801,8 +807,9 @@ internal static class DekafOptionsBinding
         else
             builder.WithPartitioner(options.Partitioner);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
-        if (options.RemoteCertificateValidationCallback is not null)
-            builder.WithRemoteCertificateValidationCallback(options.RemoteCertificateValidationCallback);
+        ApplyRemoteCertificateValidationCallback(
+            options.RemoteCertificateValidationCallback,
+            builder.WithRemoteCertificateValidationCallback);
         ApplySasl(
             options.SaslMechanism,
             options.SaslUsername,
@@ -870,14 +877,20 @@ internal static class DekafOptionsBinding
         builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
         builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
-        builder.WithConnectionTimeout(options.ConnectionTimeout);
-        if (options.EnableTcpKeepAlive)
-            builder.WithTcpKeepAlive(options.TcpKeepAliveTime, options.TcpKeepAliveInterval, options.TcpKeepAliveRetryCount);
-        builder.WithTcpKeepAlive(options.EnableTcpKeepAlive);
+        ApplySocketConnectionOptions(
+            options.ConnectionTimeout,
+            options.EnableTcpKeepAlive,
+            options.TcpKeepAliveTime,
+            options.TcpKeepAliveInterval,
+            options.TcpKeepAliveRetryCount,
+            builder.WithConnectionTimeout,
+            enabled => builder.WithTcpKeepAlive(enabled),
+            (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         builder.WithCheckCrcs(options.CheckCrcs);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
-        if (options.RemoteCertificateValidationCallback is not null)
-            builder.WithRemoteCertificateValidationCallback(options.RemoteCertificateValidationCallback);
+        ApplyRemoteCertificateValidationCallback(
+            options.RemoteCertificateValidationCallback,
+            builder.WithRemoteCertificateValidationCallback);
         ApplySasl(
             options.SaslMechanism,
             options.SaslUsername,
@@ -925,13 +938,19 @@ internal static class DekafOptionsBinding
         builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
         builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
-        builder.WithConnectionTimeout(options.ConnectionTimeout);
-        if (options.EnableTcpKeepAlive)
-            builder.WithTcpKeepAlive(options.TcpKeepAliveTime, options.TcpKeepAliveInterval, options.TcpKeepAliveRetryCount);
-        builder.WithTcpKeepAlive(options.EnableTcpKeepAlive);
+        ApplySocketConnectionOptions(
+            options.ConnectionTimeout,
+            options.EnableTcpKeepAlive,
+            options.TcpKeepAliveTime,
+            options.TcpKeepAliveInterval,
+            options.TcpKeepAliveRetryCount,
+            builder.WithConnectionTimeout,
+            enabled => builder.WithTcpKeepAlive(enabled),
+            (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
-        if (options.RemoteCertificateValidationCallback is not null)
-            builder.WithRemoteCertificateValidationCallback(options.RemoteCertificateValidationCallback);
+        ApplyRemoteCertificateValidationCallback(
+            options.RemoteCertificateValidationCallback,
+            builder.WithRemoteCertificateValidationCallback);
         if (options.OAuthBearerTokenProvider is not null)
         {
             builder.WithOAuthBearer(options.OAuthBearerTokenProvider);
@@ -975,6 +994,32 @@ internal static class DekafOptionsBinding
         {
             useTlsBuilder();
         }
+    }
+
+    private static void ApplySocketConnectionOptions<TBuilder>(
+        TimeSpan connectionTimeout,
+        bool enableTcpKeepAlive,
+        TimeSpan tcpKeepAliveTime,
+        TimeSpan tcpKeepAliveInterval,
+        int tcpKeepAliveRetryCount,
+        Func<TimeSpan, TBuilder> withConnectionTimeout,
+        Func<bool, TBuilder> withTcpKeepAliveEnabled,
+        Func<TimeSpan, TimeSpan, int, TBuilder> withTcpKeepAlive)
+    {
+        withConnectionTimeout(connectionTimeout);
+
+        if (enableTcpKeepAlive)
+            withTcpKeepAlive(tcpKeepAliveTime, tcpKeepAliveInterval, tcpKeepAliveRetryCount);
+        else
+            withTcpKeepAliveEnabled(false);
+    }
+
+    private static void ApplyRemoteCertificateValidationCallback<TBuilder>(
+        RemoteCertificateValidationCallback? remoteCertificateValidationCallback,
+        Func<RemoteCertificateValidationCallback, TBuilder> withRemoteCertificateValidationCallback)
+    {
+        if (remoteCertificateValidationCallback is not null)
+            withRemoteCertificateValidationCallback(remoteCertificateValidationCallback);
     }
 
     private static TimeSpan ToTimeout(int milliseconds) =>
@@ -1317,13 +1362,14 @@ internal static class DekafConfigurationBinding
         if (hasKeepAliveTime || hasKeepAliveInterval || hasKeepAliveRetryCount)
         {
             withTcpKeepAlive(
-                hasKeepAliveTime ? keepAliveTime : TimeSpan.FromMinutes(2),
-                hasKeepAliveInterval ? keepAliveInterval : TimeSpan.FromSeconds(30),
-                hasKeepAliveRetryCount ? keepAliveRetryCount : 3);
+                hasKeepAliveTime ? keepAliveTime : ConnectionOptions.DefaultTcpKeepAliveTime,
+                hasKeepAliveInterval ? keepAliveInterval : ConnectionOptions.DefaultTcpKeepAliveInterval,
+                hasKeepAliveRetryCount ? keepAliveRetryCount : ConnectionOptions.DefaultTcpKeepAliveRetryCount);
         }
-
-        if (hasEnableTcpKeepAlive)
-            withTcpKeepAliveEnabled(enableTcpKeepAlive);
+        else if (hasEnableTcpKeepAlive)
+        {
+            withTcpKeepAliveEnabled(true);
+        }
     }
 
     private static void ApplyAdaptiveConnections<TBuilder>(

@@ -314,7 +314,8 @@ Enable TLS:
 .UseMutualTls(caCert, clientCert, clientKey)
 ```
 
-Custom TLS certificate validation can be attached for pinning or private PKI:
+Custom TLS certificate validation can be attached for pinning or private PKI.
+Setting a callback enables TLS for the connection.
 
 ```csharp
 .WithRemoteCertificateValidationCallback((sender, cert, chain, errors) =>
