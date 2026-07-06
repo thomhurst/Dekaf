@@ -1912,21 +1912,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     var (started, targetCount) = await DispatchReadyBrokerPrefetchesAsync(cancellationToken)
                         .ConfigureAwait(false);
-                    ReportBrokerPrefetchUtilization(targetCount);
                     consecutiveErrors = 0;
 
                     if (started == 0)
                     {
                         if (_brokerPrefetchScheduler.HasInFlight)
                         {
+                            var hasBacklog = targetCount > 0;
+                            ReportBrokerPrefetchBacklog(hasBacklog);
                             _adaptiveFetchSizer?.RecordFetchStart();
                             await _brokerPrefetchScheduler.WaitForAnyAsync(cancellationToken).ConfigureAwait(false);
                             _adaptiveFetchSizer?.RecordFetchEnd();
+                            ReportBrokerPrefetchBacklog(hasBacklog);
                         }
                         else
                         {
+                            ReportBrokerPrefetchBacklog(isBacklogged: false);
                             await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                         }
+                    }
+                    else
+                    {
+                        ReportBrokerPrefetchBacklog(isBacklogged: false);
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2100,14 +2107,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void ReportBrokerPrefetchUtilization(int targetCount)
+    private void ReportBrokerPrefetchBacklog(bool isBacklogged)
     {
         if (_connectionScaler is null)
             return;
 
         _connectionScaler.ReportPipelineUtilization(
-            _brokerPrefetchScheduler.InFlightCount,
-            Math.Max(targetCount, 1));
+            isBacklogged ? 1 : 0,
+            pipelineDepth: 1);
         _connectionScaler.MaybeScale();
     }
 
