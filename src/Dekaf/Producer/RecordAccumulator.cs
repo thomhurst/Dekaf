@@ -798,6 +798,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
     // (create→fill→seal), so its pool needs proportionally more capacity.
     private const int ReadyBatchPoolSizeRatio = 2;
+    private const int DisposeAppendInProgressWaitMs = 5000;
+    private static readonly long DisposeAppendInProgressWaitTicks =
+        (long)(DisposeAppendInProgressWaitMs * (Stopwatch.Frequency / 1000.0));
 
     private readonly ProducerOptions _options;
     private readonly CompressionCodecRegistry? _compressionCodecs;
@@ -4012,22 +4015,41 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            using var guard = new SpinLockGuard(ref pd.Lock);
-
-            if (pd.CurrentBatch is { } currentBatch)
+            var spinner = new SpinWait();
+            while (true)
             {
-                pd.CurrentBatch = null;
-                MarkLingerPartitionDequeued(pd);
-                Interlocked.Decrement(ref _unsealedBatchCount);
+                var waitForAppend = false;
+                {
+                    using var guard = new SpinLockGuard(ref pd.Lock);
 
-                currentBatches ??= new List<PartitionBatch>();
-                currentBatches.Add(currentBatch);
-            }
+                    if (pd.AppendInProgress)
+                    {
+                        waitForAppend = true;
+                    }
+                    else
+                    {
+                        if (pd.CurrentBatch is { } currentBatch)
+                        {
+                            pd.CurrentBatch = null;
+                            MarkLingerPartitionDequeued(pd);
+                            Interlocked.Decrement(ref _unsealedBatchCount);
 
-            while (pd.Count > 0)
-            {
-                readyBatches ??= new List<ReadyBatch>();
-                readyBatches.Add(pd.PollFirst()!);
+                            currentBatches ??= new List<PartitionBatch>();
+                            currentBatches.Add(currentBatch);
+                        }
+
+                        while (pd.Count > 0)
+                        {
+                            readyBatches ??= new List<ReadyBatch>();
+                            readyBatches.Add(pd.PollFirst()!);
+                        }
+                    }
+                }
+
+                if (!waitForAppend)
+                    break;
+
+                spinner.SpinOnce();
             }
         }
 
@@ -4381,41 +4403,67 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
+            var appendWaitStartTicks = Stopwatch.GetTimestamp();
+            var spinner = new SpinWait();
+
+            while (true)
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                var waitForAppend = false;
+                var appendWaitTimedOut = false;
 
-                // Fail current unsealed batch
-                if (pd.CurrentBatch is { } current)
                 {
-                    var readyBatch = current.Complete();
-                    if (readyBatch is not null)
-                    {
-                        if (readyBatch.CompletionSourcesCount > 0)
-                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+                    using var guard = new SpinLockGuard(ref pd.Lock);
 
-                        readyBatch.Fail(disposedException);
-                        if (readyBatch.TrySetMemoryReleased())
+                    if (pd.AppendInProgress)
+                    {
+                        appendWaitTimedOut = DisposeAppendInProgressWaitTimedOut(appendWaitStartTicks);
+                        waitForAppend = !appendWaitTimedOut;
+                    }
+
+                    if (!waitForAppend)
+                    {
+                        if (appendWaitTimedOut)
                         {
-                            ReleaseMemory(readyBatch.DataSize);
+                            DrainReadyBatchesForDisposeUnderLock(pd, disposedException);
+                        }
+                        else
+                        {
+                            // Fail current unsealed batch
+                            if (pd.CurrentBatch is { } current)
+                            {
+                                var readyBatch = current.Complete();
+                                if (readyBatch is not null)
+                                {
+                                    if (readyBatch.CompletionSourcesCount > 0)
+                                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+
+                                    readyBatch.Fail(disposedException);
+                                    if (readyBatch.TrySetMemoryReleased())
+                                    {
+                                        ReleaseMemory(readyBatch.DataSize);
+                                    }
+                                }
+                                _batchPool.Return(current);
+                                pd.CurrentBatch = null;
+                                MarkLingerPartitionDequeued(pd);
+                                Interlocked.Decrement(ref _unsealedBatchCount);
+                            }
+
+                            DrainReadyBatchesForDisposeUnderLock(pd, disposedException);
                         }
                     }
-                    _batchPool.Return(current);
-                    pd.CurrentBatch = null;
-                    MarkLingerPartitionDequeued(pd);
-                    Interlocked.Decrement(ref _unsealedBatchCount);
                 }
 
-                // Drain sealed batches
-                while (pd.Count > 0)
+                if (waitForAppend)
                 {
-                    var readyBatch = pd.PollFirst()!;
-                    readyBatch.Fail(disposedException);
-                    if (readyBatch.TrySetMemoryReleased())
-                    {
-                        ReleaseMemory(readyBatch.DataSize);
-                    }
-                    OnBatchExitsPipeline(readyBatch);
+                    spinner.SpinOnce();
+                    continue;
                 }
+
+                if (appendWaitTimedOut)
+                    LogAppendInProgressDisposalTimeout(kvp.Key.Topic, kvp.Key.Partition);
+
+                break;
             }
         }
 
@@ -4445,16 +4493,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var pd = kvp.Value;
             {
                 using var guard = new SpinLockGuard(ref pd.Lock);
-                while (pd.Count > 0)
-                {
-                    var batch = pd.PollFirst()!;
-                    batch.Fail(disposedException);
-                    if (batch.TrySetMemoryReleased())
-                    {
-                        ReleaseMemory(batch.DataSize);
-                    }
-                    OnBatchExitsPipeline(batch); // Decrement counter
-                }
+                DrainReadyBatchesForDisposeUnderLock(pd, disposedException);
             }
         }
 
@@ -4477,6 +4516,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _bufferSpaceSignal.TrySetResult();
         _flushLingerLock.Dispose();
         // _flushTcs doesn't need disposal - it's a TaskCompletionSource
+    }
+
+    private static bool DisposeAppendInProgressWaitTimedOut(long startTicks)
+        => Stopwatch.GetTimestamp() - startTicks >= DisposeAppendInProgressWaitTicks;
+
+    private void DrainReadyBatchesForDisposeUnderLock(PartitionDeque pd, Exception disposedException)
+    {
+        while (pd.Count > 0)
+        {
+            var batch = pd.PollFirst()!;
+            batch.Fail(disposedException);
+            if (batch.TrySetMemoryReleased())
+            {
+                ReleaseMemory(batch.DataSize);
+            }
+            OnBatchExitsPipeline(batch);
+        }
     }
 
     #region Logging
@@ -4519,6 +4575,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Timed out waiting for in-progress append during accumulator disposal for {Topic}-{Partition}; skipping current batch cleanup")]
+    private partial void LogAppendInProgressDisposalTimeout(string topic, int partition);
 
     #endregion
 }

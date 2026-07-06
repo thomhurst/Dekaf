@@ -214,6 +214,99 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task Purge_Queue_WaitsForInProgressSpanAppendBeforeReturningCurrentBatch()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var headerValue = new BlockingReadOnlyMemoryManager(new byte[] { 1, 2, 3, 4 });
+        var headers = ProducerContainerPools.Headers.Rent(1);
+        headers[0] = new Header("blocked", headerValue.ReadOnlyMemory);
+        var appendTask = Task.Run(async () =>
+            await accumulator.AppendFromSpansAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                timestamp,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers,
+                headerCount: 1,
+                callback: null,
+                CancellationToken.None));
+
+        try
+        {
+            await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            var purgeTask = Task.Run(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+            await Task.Delay(100);
+            await Assert.That(purgeTask.IsCompleted).IsFalse();
+
+            headerValue.Release();
+
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(await purgeTask.WaitAsync(TimeSpan.FromSeconds(5))).IsEqualTo(1);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            headerValue.Release();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task DisposeAsync_WaitsForInProgressSpanAppendBeforeReturningCurrentBatch()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var headerValue = new BlockingReadOnlyMemoryManager(new byte[] { 1, 2, 3, 4 });
+        var headers = ProducerContainerPools.Headers.Rent(1);
+        headers[0] = new Header("blocked", headerValue.ReadOnlyMemory);
+        var disposed = false;
+        var appendTask = Task.Run(async () =>
+            await accumulator.AppendFromSpansAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                timestamp,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers,
+                headerCount: 1,
+                callback: null,
+                CancellationToken.None));
+
+        try
+        {
+            await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            var disposeTask = Task.Run(async () => await accumulator.DisposeAsync());
+            await Task.Delay(100);
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+            headerValue.Release();
+
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsFalse();
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            disposed = true;
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            headerValue.Release();
+            if (!disposed)
+                await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Purge_Queue_FailsSealedQueuedBatch()
     {
         var options = new ProducerOptions
@@ -2955,6 +3048,38 @@ public class RecordAccumulatorTests
                 throw new InvalidOperationException("Record encode touched header value while holding the partition lock.");
 
             GetSpanCalls++;
+            return buffer;
+        }
+
+        public override MemoryHandle Pin(int elementIndex = 0) =>
+            throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
+    }
+
+    private sealed class BlockingReadOnlyMemoryManager(byte[] buffer) : MemoryManager<byte>
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ReadOnlyMemory<byte> ReadOnlyMemory => CreateMemory(buffer.Length);
+
+        public Task WaitUntilEnteredAsync() => _entered.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        public override Span<byte> GetSpan()
+        {
+            _entered.TrySetResult();
+            _release.Task.GetAwaiter().GetResult();
             return buffer;
         }
 
