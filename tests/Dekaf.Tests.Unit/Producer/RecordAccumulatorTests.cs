@@ -508,6 +508,77 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendFromSpansAsync_HeaderValueEncode_RunsOutsidePartitionLock()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1000,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var seedAppended = await accumulator.AppendFromSpansAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "seed"u8,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(seedAppended).IsTrue();
+
+        EnableThreadOwnerTrackingForPartitionLock(accumulator, topicPartition);
+        var headerValue = new LockAssertingReadOnlyMemoryManager(
+            GetPartitionDeque(accumulator, topicPartition),
+            new byte[] { 1, 2, 3, 4 });
+
+        var headers = ProducerContainerPools.Headers.Rent(1);
+        headers[0] = new Header("lock-check", headerValue.ReadOnlyMemory);
+
+        var appended = await accumulator.AppendFromSpansAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp + 1,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "value"u8,
+            valueIsNull: false,
+            headers,
+            headerCount: 1,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+        await Assert.That(headerValue.GetSpanCalls).IsGreaterThan(0);
+
+        var readyBatch = CompleteCurrentBatch(accumulator, topicPartition);
+        var writer = new ArrayBufferWriter<byte>();
+        readyBatch.RecordBatch.Write(writer);
+        var reader = new KafkaProtocolReader(writer.WrittenMemory);
+        using var parsed = RecordBatch.Read(ref reader);
+
+        var record = parsed.Records[1];
+        var recordHeaders = record.Headers!;
+        await Assert.That(recordHeaders[0].Key).IsEqualTo("lock-check");
+        await Assert.That(recordHeaders[0].Value.ToArray()).IsEquivalentTo(new byte[] { 1, 2, 3, 4 });
+
+        readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.FromUnixTimeMilliseconds(timestamp));
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_FirstRecordLargerThanBatchSize_UsesExpandedArena()
     {
         const int batchSize = 128;
@@ -2865,6 +2936,38 @@ public class RecordAccumulatorTests
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
         return (T)field!.GetValue(instance)!;
+    }
+
+    private sealed class LockAssertingReadOnlyMemoryManager(
+        object partitionDeque,
+        byte[] buffer) : MemoryManager<byte>
+    {
+        private readonly FieldInfo _lockField = partitionDeque.GetType().GetField("Lock")!;
+
+        public int GetSpanCalls { get; private set; }
+
+        public ReadOnlyMemory<byte> ReadOnlyMemory => CreateMemory(buffer.Length);
+
+        public override Span<byte> GetSpan()
+        {
+            var partitionLock = (SpinLock)_lockField.GetValue(partitionDeque)!;
+            if (partitionLock.IsHeldByCurrentThread)
+                throw new InvalidOperationException("Record encode touched header value while holding the partition lock.");
+
+            GetSpanCalls++;
+            return buffer;
+        }
+
+        public override MemoryHandle Pin(int elementIndex = 0) =>
+            throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 
     private sealed class ThrowingReadOnlyMemoryManager(int length) : MemoryManager<byte>
