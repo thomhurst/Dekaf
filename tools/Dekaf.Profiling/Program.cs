@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Testcontainers.Kafka;
@@ -11,21 +12,24 @@ namespace Dekaf.Profiling;
 /// Dedicated profiling app for Dekaf producers and consumers against real Kafka.
 ///
 /// Usage:
-///   dotnet run -c Release -- [scenario] [duration_seconds] [message_size] [batch_size]
+///   dotnet run -c Release -- [scenario] [duration_seconds] [message_size] [batch_size] [connections_per_broker]
 ///
 /// Scenarios:
 ///   producer-fire-forget  - Fire-and-forget producer (no acks waiting)
 ///   producer-acked        - Producer with acks (awaits each message)
 ///   producer-batch        - Batch producer (fires batch, awaits all)
+///   producer-fnf-3conn-gc - #1369 GC outlier repro: non-idempotent FireAsync vs idempotent twin
 ///   consumer              - Consumer consuming messages
 ///   roundtrip             - End-to-end produce then consume
 ///   all                   - Run all scenarios sequentially
 ///
 /// Environment Variables:
 ///   KAFKA_BOOTSTRAP_SERVERS - Use external Kafka instead of Testcontainers
+///   KAFKA_TOPIC_REPLICATION_FACTOR - Replication factor for created topics
 ///
 /// Examples:
 ///   dotnet run -c Release -- producer-fire-forget 30 1000 1000
+///   dotnet run -c Release -- producer-fnf-3conn-gc 120 1000 1048576 3
 ///   dotnet run -c Release -- all 15
 ///
 /// Profiling:
@@ -37,6 +41,9 @@ namespace Dekaf.Profiling;
 public static class Program
 {
     private const string Topic = "profiling-topic";
+    private const string ProducerFnf3ConnGcScenario = "producer-fnf-3conn-gc";
+    private const int ProducerFnf3ConnGcPartitions = 6;
+    private const ulong ProducerBufferMemoryBytes = 512UL * 1024 * 1024;
 
     /// <summary>
     /// Pre-allocated keys to eliminate string interpolation allocations in hot paths.
@@ -65,7 +72,10 @@ public static class Program
         var scenario = args.Length > 0 ? args[0].ToLowerInvariant() : "all";
         var durationSeconds = args.Length > 1 ? int.Parse(args[1]) : 15;
         var messageSize = args.Length > 2 ? int.Parse(args[2]) : 1000;
-        var batchSize = args.Length > 3 ? int.Parse(args[3]) : 100;
+        var defaultBatchSize = scenario == ProducerFnf3ConnGcScenario ? 1_048_576 : 100;
+        var batchSize = args.Length > 3 ? int.Parse(args[3]) : defaultBatchSize;
+        var defaultConnectionsPerBroker = scenario == ProducerFnf3ConnGcScenario ? 3 : 1;
+        var connectionsPerBroker = args.Length > 4 ? int.Parse(args[4]) : defaultConnectionsPerBroker;
 
         Console.WriteLine("Dekaf Profiling App (Real Kafka)");
         Console.WriteLine($"PID: {Environment.ProcessId}");
@@ -73,6 +83,7 @@ public static class Program
         Console.WriteLine($"Duration: {durationSeconds}s");
         Console.WriteLine($"Message Size: {messageSize} bytes");
         Console.WriteLine($"Batch Size: {batchSize}");
+        Console.WriteLine($"Connections Per Broker: {connectionsPerBroker}");
         Console.WriteLine(new string('-', 50));
 
         // Start Kafka
@@ -80,10 +91,12 @@ public static class Program
         Console.WriteLine($"Kafka ready at: {kafka.BootstrapServers}");
 
         // Create topic
-        await kafka.CreateTopicAsync(Topic, partitions: 3).ConfigureAwait(false);
+        var topicPartitions = scenario == ProducerFnf3ConnGcScenario ? ProducerFnf3ConnGcPartitions : 3;
+        await kafka.CreateTopicAsync(Topic, topicPartitions).ConfigureAwait(false);
 
         // Give time to attach profiler
         Console.WriteLine("\nStarting in 2 seconds (attach profiler now)...");
+        PrintProfilerAttachHints();
         await Task.Delay(2000).ConfigureAwait(false);
 
         var scenarios = scenario switch
@@ -99,13 +112,16 @@ public static class Program
             switch (s)
             {
                 case "producer-fire-forget":
-                    await RunProducerFireAndForgetAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize).ConfigureAwait(false);
+                    await RunProducerFireAndForgetAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize, connectionsPerBroker).ConfigureAwait(false);
                     break;
                 case "producer-acked":
-                    await RunProducerAckedAsync(kafka.BootstrapServers, durationSeconds, messageSize).ConfigureAwait(false);
+                    await RunProducerAckedAsync(kafka.BootstrapServers, durationSeconds, messageSize, connectionsPerBroker).ConfigureAwait(false);
                     break;
                 case "producer-batch":
-                    await RunProducerBatchAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize).ConfigureAwait(false);
+                    await RunProducerBatchAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize, connectionsPerBroker).ConfigureAwait(false);
+                    break;
+                case ProducerFnf3ConnGcScenario:
+                    await RunProducerFnf3ConnGcAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize, connectionsPerBroker).ConfigureAwait(false);
                     break;
                 case "consumer":
                     await RunConsumerAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize).ConfigureAwait(false);
@@ -129,22 +145,31 @@ public static class Program
         return 0;
     }
 
-    private static async Task RunProducerFireAndForgetAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
+    private static async Task RunProducerFireAndForgetAsync(
+        string bootstrapServers,
+        int durationSeconds,
+        int messageSize,
+        int batchSize,
+        int connectionsPerBroker)
     {
         var messageValue = new string('x', messageSize);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
+            .WithBufferMemory(ProducerBufferMemoryBytes)
+            .WithConnectionsPerBroker(connectionsPerBroker)
             .Build();
 
         // Warmup
-        for (var i = 0; i < 100; i++)
+        await producer.ProduceAsync(Topic, "warmup", "warmup").ConfigureAwait(false);
+        for (var i = 0; i < 99; i++)
         {
-            await producer.ProduceAsync(Topic, "warmup", "warmup");
+            await producer.FireAsync(Topic, "warmup", "warmup").ConfigureAwait(false);
         }
         await producer.FlushAsync().ConfigureAwait(false);
 
@@ -163,7 +188,7 @@ public static class Program
             for (var i = 0; i < batchSize && !cts.Token.IsCancellationRequested; i++)
             {
                 // Use pre-allocated key to avoid string interpolation allocation
-                await producer.ProduceAsync(Topic, GetKey(count), messageValue);
+                await producer.FireAsync(Topic, GetKey(count), messageValue).ConfigureAwait(false);
                 count++;
             }
         }
@@ -177,7 +202,7 @@ public static class Program
         PrintResults("Messages sent", count, sw.Elapsed, gcStats);
     }
 
-    private static async Task RunProducerAckedAsync(string bootstrapServers, int durationSeconds, int messageSize)
+    private static async Task RunProducerAckedAsync(string bootstrapServers, int durationSeconds, int messageSize, int connectionsPerBroker)
     {
         var messageValue = new string('x', messageSize);
 
@@ -187,6 +212,7 @@ public static class Program
             .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithBatchSize(16384)
+            .WithConnectionsPerBroker(connectionsPerBroker)
             .Build();
 
         // Warmup
@@ -234,7 +260,12 @@ public static class Program
         PrintResults("Messages sent", count, sw.Elapsed, gcStats);
     }
 
-    private static async Task RunProducerBatchAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
+    private static async Task RunProducerBatchAsync(
+        string bootstrapServers,
+        int durationSeconds,
+        int messageSize,
+        int batchSize,
+        int connectionsPerBroker)
     {
         var messageValue = new string('x', messageSize);
 
@@ -244,6 +275,7 @@ public static class Program
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
+            .WithConnectionsPerBroker(connectionsPerBroker)
             .Build();
 
         // Warmup
@@ -294,6 +326,128 @@ public static class Program
         gcStats.Capture();
 
         PrintResults("Messages sent", count, sw.Elapsed, gcStats);
+    }
+
+    private static async Task RunProducerFnf3ConnGcAsync(
+        string bootstrapServers,
+        int durationSeconds,
+        int messageSize,
+        int producerBatchSize,
+        int connectionsPerBroker)
+    {
+        Console.WriteLine("  #1369 repro mode");
+        Console.WriteLine("  Workload: FireAsync hot path, 6 partitions, 512 MiB BufferMemory");
+        Console.WriteLine("  Compare: idempotence=false/acks=Leader vs idempotence=true/acks=All");
+        Console.WriteLine("  For the original 3-broker signal, set KAFKA_BOOTSTRAP_SERVERS to a 3-broker cluster.");
+        Console.WriteLine();
+
+        var nonIdempotent = await RunProducerFnfVariantAsync(
+            name: "non-idempotent acks=Leader",
+            bootstrapServers,
+            durationSeconds,
+            messageSize,
+            producerBatchSize,
+            connectionsPerBroker,
+            idempotence: false,
+            acks: Acks.Leader,
+            clientId: "profiling-fnf-3conn-leader").ConfigureAwait(false);
+
+        ForceFullGc();
+        await Task.Delay(1000).ConfigureAwait(false);
+
+        var idempotent = await RunProducerFnfVariantAsync(
+            name: "idempotent acks=All",
+            bootstrapServers,
+            durationSeconds,
+            messageSize,
+            producerBatchSize,
+            connectionsPerBroker,
+            idempotence: true,
+            acks: Acks.All,
+            clientId: "profiling-fnf-3conn-idempotent").ConfigureAwait(false);
+
+        PrintProducerFnfComparison(nonIdempotent, idempotent);
+    }
+
+    private static async Task<ProducerProfileResult> RunProducerFnfVariantAsync(
+        string name,
+        string bootstrapServers,
+        int durationSeconds,
+        int messageSize,
+        int producerBatchSize,
+        int connectionsPerBroker,
+        bool idempotence,
+        Acks acks,
+        string clientId)
+    {
+        var messageValue = new string('x', messageSize);
+
+        Console.WriteLine($"=== Variant: {name} ===");
+        Console.WriteLine($"  Producer batch size: {producerBatchSize:N0} bytes");
+        Console.WriteLine($"  Connections per broker: {connectionsPerBroker}");
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithClientId(clientId)
+            .WithIdempotence(idempotence)
+            .WithAcks(acks)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithBatchSize(producerBatchSize)
+            .WithBufferMemory(ProducerBufferMemoryBytes)
+            .WithConnectionsPerBroker(connectionsPerBroker)
+            .Build();
+
+        await producer.ProduceAsync(Topic, "warmup", "warmup").ConfigureAwait(false);
+        for (var i = 0; i < 999; i++)
+        {
+            await producer.FireAsync(Topic, "warmup", "warmup").ConfigureAwait(false);
+        }
+        await producer.FlushAsync().ConfigureAwait(false);
+
+        ForceFullGc();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
+        var sw = Stopwatch.StartNew();
+        var count = 0L;
+        var gcStats = new GcStats();
+
+        while (!cts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                await producer.FireAsync(Topic, GetKey(count), messageValue).ConfigureAwait(false);
+                count++;
+
+                if (count % 100_000 == 0)
+                {
+                    await Task.Yield();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        try
+        {
+            await producer.FlushAsync(CancellationToken.None)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Console.WriteLine("  Warning: Flush timed out after 30 seconds");
+        }
+
+        sw.Stop();
+        gcStats.Capture();
+
+        PrintResults("Messages accepted", count, sw.Elapsed, gcStats);
+        Console.WriteLine();
+
+        return new ProducerProfileResult(name, count, sw.Elapsed, gcStats);
     }
 
     private static async Task RunConsumerAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
@@ -515,21 +669,24 @@ public static class Program
     {
         Console.WriteLine("""
 
-            Usage: dotnet run -c Release -- [scenario] [duration_seconds] [message_size] [batch_size]
+            Usage: dotnet run -c Release -- [scenario] [duration_seconds] [message_size] [batch_size] [connections_per_broker]
 
             Scenarios:
               producer-fire-forget  - Fire-and-forget producer (no acks waiting)
               producer-acked        - Producer with acks (awaits each message)
               producer-batch        - Batch producer (fires batch, awaits all)
+              producer-fnf-3conn-gc - #1369 GC outlier repro: non-idempotent FireAsync vs idempotent twin
               consumer              - Consumer consuming messages
               roundtrip             - End-to-end produce then consume
               all                   - Run all scenarios sequentially
 
             Environment Variables:
               KAFKA_BOOTSTRAP_SERVERS - Use external Kafka instead of Testcontainers
+              KAFKA_TOPIC_REPLICATION_FACTOR - Replication factor for created topics
 
             Examples:
               dotnet run -c Release -- producer-fire-forget 30 1000 1000
+              dotnet run -c Release -- producer-fnf-3conn-gc 120 1000 1048576 3
               dotnet run -c Release -- all 15
             """);
     }
@@ -539,6 +696,54 @@ public static class Program
         Console.WriteLine($"  {label}: {count:N0}");
         Console.WriteLine($"  Throughput: {count / elapsed.TotalSeconds:N0} msg/sec");
         PrintGcStats(gcStats);
+    }
+
+    private static void PrintProfilerAttachHints()
+    {
+        Console.WriteLine("Profiler attach hints:");
+        Console.WriteLine($"  dotnet-counters monitor -p {Environment.ProcessId} --counters System.Runtime");
+        Console.WriteLine($"  dotnet-trace collect -p {Environment.ProcessId} --profile gc-verbose");
+    }
+
+    private static void PrintProducerFnfComparison(ProducerProfileResult nonIdempotent, ProducerProfileResult idempotent)
+    {
+        Console.WriteLine("=== #1369 GC comparison ===");
+        PrintProducerFnfComparisonRow(nonIdempotent);
+        PrintProducerFnfComparisonRow(idempotent);
+
+        var allocRatio = idempotent.GcStats.AllocatedBytes > 0
+            ? nonIdempotent.GcStats.AllocatedBytes / (double)idempotent.GcStats.AllocatedBytes
+            : double.NaN;
+        var gen2Delta = nonIdempotent.GcStats.Gen2 - idempotent.GcStats.Gen2;
+
+        Console.WriteLine($"  Allocation ratio: {allocRatio:F2}x");
+        Console.WriteLine($"  Gen2 delta: {gen2Delta:+#;-#;0}");
+
+        if (allocRatio >= 2.0 || gen2Delta >= 50)
+        {
+            Console.WriteLine("  Outlier signal: reproduced");
+        }
+        else
+        {
+            Console.WriteLine("  Outlier signal: not reproduced at this duration/configuration");
+        }
+    }
+
+    private static void PrintProducerFnfComparisonRow(ProducerProfileResult result)
+    {
+        var allocatedPerMessage = result.MessageCount > 0
+            ? result.GcStats.AllocatedBytes / (double)result.MessageCount
+            : 0;
+        Console.WriteLine(
+            $"  {result.Name}: {result.MessageCount:N0} msg, {result.MessageCount / result.Elapsed.TotalSeconds:N0} msg/sec, " +
+            $"{FormatBytes(result.GcStats.AllocatedBytes)} allocated, {allocatedPerMessage:N1} B/msg, Gen2={result.GcStats.Gen2}");
+    }
+
+    private static void ForceFullGc()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
     }
 
     private static void PrintGcStats(GcStats gcStats)
@@ -559,6 +764,8 @@ public static class Program
             _ => $"{bytes / (1024.0 * 1024 * 1024):F2} GB"
         };
     }
+
+    private sealed record ProducerProfileResult(string Name, long MessageCount, TimeSpan Elapsed, GcStats GcStats);
 
     /// <summary>
     /// Tracks GC collection counts across all generations.
@@ -610,8 +817,7 @@ public static class Program
         {
             if (_container is null)
             {
-                // External Kafka - rely on auto-create or assume topic exists
-                Console.WriteLine($"Using external Kafka - assuming topic {topic} exists or will be auto-created");
+                await AdminCreateTopicAsync(BootstrapServers, topic, partitions).ConfigureAwait(false);
                 return;
             }
 
@@ -633,6 +839,50 @@ public static class Program
             {
                 Console.WriteLine($"Warning: Topic creation returned exit code {result.ExitCode}: {result.Stderr}");
             }
+        }
+
+        private static async Task AdminCreateTopicAsync(string bootstrapServers, string topic, int partitions)
+        {
+            var replicationFactor = ParseTopicReplicationFactor();
+
+            await using var adminClient = Kafka.CreateAdminClient()
+                .WithBootstrapServers(bootstrapServers)
+                .WithClientId("profiling-admin")
+                .Build();
+
+            try
+            {
+                await adminClient.CreateTopicsAsync([
+                    new NewTopic
+                    {
+                        Name = topic,
+                        NumPartitions = partitions,
+                        ReplicationFactor = replicationFactor
+                    }
+                ]).ConfigureAwait(false);
+
+                Console.WriteLine($"Created topic via admin API: {topic} (partitions={partitions}, replication={replicationFactor})");
+            }
+            catch (DekafLib.Errors.KafkaException ex) when (ex.ErrorCode == DekafLib.Protocol.ErrorCode.TopicAlreadyExists)
+            {
+                Console.WriteLine($"Topic {topic} already exists");
+            }
+        }
+
+        private static short ParseTopicReplicationFactor()
+        {
+            var value = Environment.GetEnvironmentVariable("KAFKA_TOPIC_REPLICATION_FACTOR");
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return 1;
+            }
+
+            if (!short.TryParse(value, out var replicationFactor) || replicationFactor < 1)
+            {
+                throw new InvalidOperationException("KAFKA_TOPIC_REPLICATION_FACTOR must be a positive short integer.");
+            }
+
+            return replicationFactor;
         }
 
         public async ValueTask DisposeAsync()
