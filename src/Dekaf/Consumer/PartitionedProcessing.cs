@@ -30,6 +30,7 @@ public static class PartitionedConsumerExtensions
 
         options ??= new PartitionedProcessingOptions();
         options.Validate();
+        options.ValidatePartitionProcessor();
 
         var logger = consumer is IConsumerLoggerFactorySource loggerSource
             ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
@@ -40,6 +41,164 @@ public static class PartitionedConsumerExtensions
             options,
             logger);
         await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs a record handler for assigned partitions.
+    /// </summary>
+    public static async ValueTask RunPartitionedAsync<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        PartitionRecordProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(consumer);
+        ArgumentNullException.ThrowIfNull(processor);
+
+        options ??= new PartitionedProcessingOptions();
+        options.Validate();
+
+        var logger = consumer is IConsumerLoggerFactorySource loggerSource
+            ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
+            : null;
+        var runtime = new PartitionedConsumerRuntime<TKey, TValue>(
+            consumer,
+            CreateRecordProcessor(processor, options),
+            options,
+            logger);
+        await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs a batch handler for assigned partitions.
+    /// </summary>
+    public static async ValueTask RunPartitionedBatchesAsync<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        PartitionBatchProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(consumer);
+        ArgumentNullException.ThrowIfNull(processor);
+
+        options ??= new PartitionedProcessingOptions();
+        options.Validate();
+
+        var logger = consumer is IConsumerLoggerFactorySource loggerSource
+            ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
+            : null;
+        var runtime = new PartitionedConsumerRuntime<TKey, TValue>(
+            consumer,
+            CreateBatchProcessor(processor, options),
+            options,
+            logger);
+        await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static PartitionProcessor<TKey, TValue> CreateRecordProcessor<TKey, TValue>(
+        PartitionRecordProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions options)
+    {
+        return options.Ordering == PartitionedProcessingOrder.Key
+            ? (context, cancellationToken) => RunKeyOrderedRecordsAsync(context, processor, options, cancellationToken)
+            : (context, cancellationToken) => RunPartitionOrderedRecordsAsync(context, processor, cancellationToken);
+    }
+
+    private static PartitionProcessor<TKey, TValue> CreateBatchProcessor<TKey, TValue>(
+        PartitionBatchProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions options)
+    {
+        return options.Ordering == PartitionedProcessingOrder.Key
+            ? (context, cancellationToken) => RunKeyOrderedBatchesAsync(context, processor, options, cancellationToken)
+            : (context, cancellationToken) => RunPartitionOrderedBatchesAsync(context, processor, options, cancellationToken);
+    }
+
+    private static async ValueTask RunPartitionOrderedRecordsAsync<TKey, TValue>(
+        PartitionProcessorContext<TKey, TValue> context,
+        PartitionRecordProcessor<TKey, TValue> processor,
+        CancellationToken cancellationToken)
+    {
+        var handlerContext = new PartitionRecordProcessorContext<TKey, TValue>(context);
+
+        while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (context.TryReadMessage(out var message))
+            {
+                await processor(handlerContext, message, cancellationToken).ConfigureAwait(false);
+                context.MarkProcessed(message);
+            }
+        }
+    }
+
+    private static async ValueTask RunPartitionOrderedBatchesAsync<TKey, TValue>(
+        PartitionProcessorContext<TKey, TValue> context,
+        PartitionBatchProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions options,
+        CancellationToken cancellationToken)
+    {
+        var handlerContext = new PartitionBatchProcessorContext<TKey, TValue>(context);
+        var batch = new List<ConsumeResult<TKey, TValue>>(options.MaxHandlerBatchSize);
+
+        while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
+        {
+            batch.Clear();
+            while (batch.Count < options.MaxHandlerBatchSize && context.TryReadMessage(out var message))
+                batch.Add(message);
+
+            if (batch.Count == 0)
+                continue;
+
+            var records = batch.ToArray();
+            await processor(handlerContext, records, cancellationToken).ConfigureAwait(false);
+
+            for (var i = 0; i < records.Length; i++)
+                context.MarkProcessed(records[i]);
+        }
+    }
+
+    private static ValueTask RunKeyOrderedRecordsAsync<TKey, TValue>(
+        PartitionProcessorContext<TKey, TValue> context,
+        PartitionRecordProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions options,
+        CancellationToken cancellationToken)
+    {
+        var handlerContext = new PartitionRecordProcessorContext<TKey, TValue>(context);
+        var dispatcher = new KeyOrderedPartitionDispatcher<TKey, TValue>(
+            context,
+            maxBatchSize: 1,
+            options.MaxConcurrentHandlersPerPartition,
+            options.MaxBufferedRecordsPerPartition,
+            async (records, token) =>
+            {
+                var message = records[0];
+                await processor(handlerContext, message, token).ConfigureAwait(false);
+                context.MarkProcessed(message);
+            });
+
+        return dispatcher.RunAsync(cancellationToken);
+    }
+
+    private static ValueTask RunKeyOrderedBatchesAsync<TKey, TValue>(
+        PartitionProcessorContext<TKey, TValue> context,
+        PartitionBatchProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions options,
+        CancellationToken cancellationToken)
+    {
+        var handlerContext = new PartitionBatchProcessorContext<TKey, TValue>(context);
+        var dispatcher = new KeyOrderedPartitionDispatcher<TKey, TValue>(
+            context,
+            options.MaxHandlerBatchSize,
+            options.MaxConcurrentHandlersPerPartition,
+            options.MaxBufferedRecordsPerPartition,
+            async (records, token) =>
+            {
+                await processor(handlerContext, records, token).ConfigureAwait(false);
+
+                for (var i = 0; i < records.Count; i++)
+                    context.MarkProcessed(records[i]);
+            });
+
+        return dispatcher.RunAsync(cancellationToken);
     }
 }
 
@@ -53,6 +212,22 @@ internal interface IConsumerLoggerFactorySource
 /// </summary>
 public delegate ValueTask PartitionProcessor<TKey, TValue>(
     PartitionProcessorContext<TKey, TValue> context,
+    CancellationToken cancellationToken);
+
+/// <summary>
+/// Processes one consumed record from a partitioned runtime lane.
+/// </summary>
+public delegate ValueTask PartitionRecordProcessor<TKey, TValue>(
+    PartitionRecordProcessorContext<TKey, TValue> context,
+    ConsumeResult<TKey, TValue> message,
+    CancellationToken cancellationToken);
+
+/// <summary>
+/// Processes a batch of consumed records from a partitioned runtime lane.
+/// </summary>
+public delegate ValueTask PartitionBatchProcessor<TKey, TValue>(
+    PartitionBatchProcessorContext<TKey, TValue> context,
+    IReadOnlyList<ConsumeResult<TKey, TValue>> messages,
     CancellationToken cancellationToken);
 
 /// <summary>
@@ -102,6 +277,88 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     /// Gets the last message offset marked as processed for this partition.
     /// </summary>
     public long? LastProcessedOffset => _lane.LastProcessedOffset;
+
+    internal ValueTask<bool> WaitToReadMessageAsync(CancellationToken cancellationToken)
+    {
+        return _lane.WaitToReadMessageAsync(cancellationToken);
+    }
+
+    internal bool TryReadMessage(out ConsumeResult<TKey, TValue> message)
+    {
+        return _lane.TryReadMessage(out message);
+    }
+}
+
+/// <summary>
+/// Partition-scoped context for record handlers.
+/// </summary>
+public sealed class PartitionRecordProcessorContext<TKey, TValue>
+{
+    private readonly PartitionProcessorContext<TKey, TValue> _partition;
+
+    internal PartitionRecordProcessorContext(PartitionProcessorContext<TKey, TValue> partition)
+    {
+        _partition = partition;
+    }
+
+    /// <summary>
+    /// Gets the partition owned by this handler.
+    /// </summary>
+    public TopicPartition TopicPartition => _partition.TopicPartition;
+
+    /// <summary>
+    /// Gets the token signaled when this partition handler should stop.
+    /// </summary>
+    public CancellationToken StoppingToken => _partition.StoppingToken;
+
+    /// <summary>
+    /// Commits the last contiguous offset completed for this partition.
+    /// </summary>
+    public ValueTask CommitProcessedAsync(CancellationToken cancellationToken = default)
+    {
+        return _partition.CommitProcessedAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets the highest message offset marked as processed for this partition.
+    /// </summary>
+    public long? LastProcessedOffset => _partition.LastProcessedOffset;
+}
+
+/// <summary>
+/// Partition-scoped context for batch handlers.
+/// </summary>
+public sealed class PartitionBatchProcessorContext<TKey, TValue>
+{
+    private readonly PartitionProcessorContext<TKey, TValue> _partition;
+
+    internal PartitionBatchProcessorContext(PartitionProcessorContext<TKey, TValue> partition)
+    {
+        _partition = partition;
+    }
+
+    /// <summary>
+    /// Gets the partition owned by this handler.
+    /// </summary>
+    public TopicPartition TopicPartition => _partition.TopicPartition;
+
+    /// <summary>
+    /// Gets the token signaled when this partition handler should stop.
+    /// </summary>
+    public CancellationToken StoppingToken => _partition.StoppingToken;
+
+    /// <summary>
+    /// Commits the last contiguous offset completed for this partition.
+    /// </summary>
+    public ValueTask CommitProcessedAsync(CancellationToken cancellationToken = default)
+    {
+        return _partition.CommitProcessedAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets the highest message offset marked as processed for this partition.
+    /// </summary>
+    public long? LastProcessedOffset => _partition.LastProcessedOffset;
 }
 
 /// <summary>
@@ -113,6 +370,21 @@ public sealed class PartitionedProcessingOptions
     /// Gets the maximum queued records per partition lane.
     /// </summary>
     public int MaxBufferedRecordsPerPartition { get; init; } = 256;
+
+    /// <summary>
+    /// Gets the ordering scope used by record and batch handler overloads.
+    /// </summary>
+    public PartitionedProcessingOrder Ordering { get; init; } = PartitionedProcessingOrder.Partition;
+
+    /// <summary>
+    /// Gets the maximum concurrent record or batch handlers per partition when <see cref="Ordering"/> is <see cref="PartitionedProcessingOrder.Key"/>.
+    /// </summary>
+    public int MaxConcurrentHandlersPerPartition { get; init; } = 1;
+
+    /// <summary>
+    /// Gets the maximum number of records passed to a batch handler invocation.
+    /// </summary>
+    public int MaxHandlerBatchSize { get; init; } = 1;
 
     /// <summary>
     /// Gets how the runtime applies backpressure when a partition lane is full.
@@ -158,6 +430,8 @@ public sealed class PartitionedProcessingOptions
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxBufferedRecordsPerPartition, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxConcurrentHandlersPerPartition, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxHandlerBatchSize, 1);
 
         if (StopTimeout < TimeSpan.Zero && StopTimeout != Timeout.InfiniteTimeSpan)
             throw new ArgumentOutOfRangeException(nameof(StopTimeout));
@@ -174,6 +448,28 @@ public sealed class PartitionedProcessingOptions
         if (CommitInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(CommitInterval));
     }
+
+    internal void ValidatePartitionProcessor()
+    {
+        if (Ordering != PartitionedProcessingOrder.Partition)
+            throw new InvalidOperationException("Key-ordered partitioned processing requires a record or batch handler overload.");
+    }
+}
+
+/// <summary>
+/// Ordering behavior for partitioned record and batch handlers.
+/// </summary>
+public enum PartitionedProcessingOrder
+{
+    /// <summary>
+    /// Process each partition in Kafka offset order with one active handler at a time.
+    /// </summary>
+    Partition,
+
+    /// <summary>
+    /// Process different keys from one partition concurrently while preserving order for each key.
+    /// </summary>
+    Key
 }
 
 /// <summary>
@@ -1066,9 +1362,12 @@ internal sealed class PartitionLane<TKey, TValue>
     private Task? _processorTask;
     private int _bufferedCount;
     private int _completed;
+    private readonly SortedSet<long> _completedOffsets = [];
+    private readonly Dictionary<long, int> _leaderEpochs = [];
+    private long? _nextOffsetToCommit;
     private long? _completedOffset;
     private long? _lastProcessedOffset;
-    private int _lastProcessedLeaderEpoch = -1;
+    private int _lastCommittedLeaderEpoch = -1;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -1142,17 +1441,34 @@ internal sealed class PartitionLane<TKey, TValue>
         if (Volatile.Read(ref _completed) != 0)
             return false;
 
+        TrackPending(result);
         Interlocked.Increment(ref _bufferedCount);
         if (_channel.Writer.TryWrite(result))
             return true;
 
         Interlocked.Decrement(ref _bufferedCount);
+        UntrackPending(result);
         return false;
     }
 
     public ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
     {
         return _channel.Writer.WaitToWriteAsync(cancellationToken);
+    }
+
+    public ValueTask<bool> WaitToReadMessageAsync(CancellationToken cancellationToken)
+    {
+        return _channel.Reader.WaitToReadAsync(cancellationToken);
+    }
+
+    public bool TryReadMessage(out ConsumeResult<TKey, TValue> message)
+    {
+        if (!_channel.Reader.TryRead(out message))
+            return false;
+
+        Interlocked.Decrement(ref _bufferedCount);
+        _capacityAvailable(this);
+        return true;
     }
 
     public void MarkProcessed(ConsumeResult<TKey, TValue> message)
@@ -1166,13 +1482,69 @@ internal sealed class PartitionLane<TKey, TValue>
 
         lock (_offsetGate)
         {
-            var completedOffset = message.Offset + 1;
-            if (!_completedOffset.HasValue || completedOffset > _completedOffset.Value)
-            {
-                _completedOffset = completedOffset;
+            if (!_nextOffsetToCommit.HasValue)
+                _nextOffsetToCommit = message.Offset;
+
+            if (!_lastProcessedOffset.HasValue || message.Offset > _lastProcessedOffset.Value)
                 _lastProcessedOffset = message.Offset;
-                _lastProcessedLeaderEpoch = message.LeaderEpoch ?? -1;
+
+            if (message.Offset < _nextOffsetToCommit.Value)
+                return;
+
+            _leaderEpochs[message.Offset] = message.LeaderEpoch ?? -1;
+            _completedOffsets.Add(message.Offset);
+
+            AdvanceCompletedOffset();
+        }
+    }
+
+    private void TrackPending(ConsumeResult<TKey, TValue> message)
+    {
+        if (message.IsPartitionEof)
+            return;
+
+        lock (_offsetGate)
+        {
+            if (!_nextOffsetToCommit.HasValue)
+                _nextOffsetToCommit = message.Offset;
+
+            if (message.Offset < _nextOffsetToCommit.Value || _completedOffsets.Contains(message.Offset))
+                return;
+
+            _leaderEpochs[message.Offset] = message.LeaderEpoch ?? -1;
+        }
+    }
+
+    private void UntrackPending(ConsumeResult<TKey, TValue> message)
+    {
+        if (message.IsPartitionEof)
+            return;
+
+        lock (_offsetGate)
+        {
+            if (!_completedOffsets.Contains(message.Offset))
+                _leaderEpochs.Remove(message.Offset);
+        }
+    }
+
+    private void AdvanceCompletedOffset()
+    {
+        while (_nextOffsetToCommit.HasValue && _completedOffsets.Remove(_nextOffsetToCommit.Value))
+        {
+            var completedOffset = _nextOffsetToCommit.Value;
+
+            if (_leaderEpochs.TryGetValue(completedOffset, out var leaderEpoch))
+            {
+                _lastCommittedLeaderEpoch = leaderEpoch;
+                _leaderEpochs.Remove(completedOffset);
             }
+            else
+            {
+                _lastCommittedLeaderEpoch = -1;
+            }
+
+            _completedOffset = completedOffset + 1;
+            _nextOffsetToCommit = _completedOffset;
         }
     }
 
@@ -1185,7 +1557,7 @@ internal sealed class PartitionLane<TKey, TValue>
                     TopicPartition.Topic,
                     TopicPartition.Partition,
                     _completedOffset.Value,
-                    _lastProcessedLeaderEpoch)
+                    _lastCommittedLeaderEpoch)
                 : null;
         }
     }
@@ -1245,14 +1617,10 @@ internal sealed class PartitionLane<TKey, TValue>
     private async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ReadMessagesAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        while (await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        while (await WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
-            while (_channel.Reader.TryRead(out var item))
-            {
-                Interlocked.Decrement(ref _bufferedCount);
-                _capacityAvailable(this);
+            while (TryReadMessage(out var item))
                 yield return item;
-            }
         }
     }
 
@@ -1266,6 +1634,281 @@ internal sealed class PartitionLane<TKey, TValue>
     {
         if (!_stopping.IsCancellationRequested)
             await _stopping.CancelAsync().ConfigureAwait(false);
+    }
+}
+
+internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
+{
+    private readonly PartitionProcessorContext<TKey, TValue> _context;
+    private readonly int _maxBatchSize;
+    private readonly Func<IReadOnlyList<ConsumeResult<TKey, TValue>>, CancellationToken, ValueTask> _processor;
+    private readonly SemaphoreSlim _concurrency;
+    private readonly SemaphoreSlim _inFlight;
+    private readonly object _gate = new();
+    private readonly object _failureGate = new();
+    private readonly Dictionary<PartitionMessageKey<TKey>, KeyOrderedProcessingLane<TKey, TValue>> _lanes = [];
+    private readonly ConcurrentDictionary<Task, byte> _tasks = new();
+    private readonly CancellationTokenSource _failureCancellation = new();
+    private CancellationToken _processingCancellationToken;
+    private ExceptionDispatchInfo? _failure;
+
+    public KeyOrderedPartitionDispatcher(
+        PartitionProcessorContext<TKey, TValue> context,
+        int maxBatchSize,
+        int maxConcurrentHandlers,
+        int maxBufferedRecords,
+        Func<IReadOnlyList<ConsumeResult<TKey, TValue>>, CancellationToken, ValueTask> processor)
+    {
+        _context = context;
+        _maxBatchSize = maxBatchSize;
+        _processor = processor;
+        _concurrency = new SemaphoreSlim(maxConcurrentHandlers);
+        _inFlight = new SemaphoreSlim(maxBufferedRecords);
+    }
+
+    public async ValueTask RunAsync(CancellationToken cancellationToken)
+    {
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _failureCancellation.Token);
+        _processingCancellationToken = linkedCancellation.Token;
+
+        try
+        {
+            while (await _context.WaitToReadMessageAsync(_processingCancellationToken).ConfigureAwait(false))
+            {
+                while (_context.TryReadMessage(out var message))
+                {
+                    await _inFlight.WaitAsync(_processingCancellationToken).ConfigureAwait(false);
+                    Enqueue(message);
+                    ThrowIfFailed();
+                }
+            }
+
+            await WaitForActiveLanesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_failure is not null)
+        {
+        }
+        finally
+        {
+            if (cancellationToken.IsCancellationRequested || _failure is not null)
+                await ObserveActiveLanesAsync().ConfigureAwait(false);
+        }
+
+        ThrowIfFailed();
+    }
+
+    private void Enqueue(ConsumeResult<TKey, TValue> message)
+    {
+        var key = PartitionMessageKey<TKey>.From(message.Key);
+        KeyOrderedProcessingLane<TKey, TValue> lane;
+        bool shouldStart;
+
+        lock (_gate)
+        {
+            if (!_lanes.TryGetValue(key, out lane!))
+            {
+                lane = new KeyOrderedProcessingLane<TKey, TValue>(this);
+                _lanes.Add(key, lane);
+            }
+
+            shouldStart = lane.Enqueue(message);
+        }
+
+        if (shouldStart)
+            StartLane(lane);
+    }
+
+    private void StartLane(KeyOrderedProcessingLane<TKey, TValue> lane)
+    {
+        var task = lane.RunAsync().AsTask();
+        _tasks.TryAdd(task, 0);
+
+        _ = task.ContinueWith(
+            static (completedTask, state) =>
+            {
+                var dispatcher = (KeyOrderedPartitionDispatcher<TKey, TValue>)state!;
+                dispatcher.CompleteLaneTask(completedTask);
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void CompleteLaneTask(Task task)
+    {
+        _tasks.TryRemove(task, out _);
+
+        if (!task.IsFaulted || task.Exception is null)
+            return;
+
+        var exception = task.Exception.InnerExceptions.Count == 1
+            ? task.Exception.InnerException!
+            : task.Exception;
+        CaptureFailure(exception);
+    }
+
+    internal async ValueTask ProcessBatchAsync(IReadOnlyList<ConsumeResult<TKey, TValue>> batch)
+    {
+        try
+        {
+            await _concurrency.WaitAsync(_processingCancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _processor(batch, _processingCancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _concurrency.Release();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !_processingCancellationToken.IsCancellationRequested)
+        {
+            CaptureFailure(ex);
+            throw;
+        }
+        finally
+        {
+            _inFlight.Release(batch.Count);
+        }
+    }
+
+    internal int MaxBatchSize => _maxBatchSize;
+
+    internal CancellationToken ProcessingCancellationToken => _processingCancellationToken;
+
+    private async ValueTask WaitForActiveLanesAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var tasks = _tasks.Keys.ToArray();
+            if (tasks.Length == 0)
+                return;
+
+            try
+            {
+                await Task.WhenAll(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception) when (_failure is not null)
+            {
+                return;
+            }
+        }
+    }
+
+    private async ValueTask ObserveActiveLanesAsync()
+    {
+        var tasks = _tasks.Keys.ToArray();
+        if (tasks.Length == 0)
+            return;
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // The original handler failure or cancellation is preserved by the dispatcher.
+        }
+    }
+
+    private void CaptureFailure(Exception exception)
+    {
+        lock (_failureGate)
+            _failure ??= ExceptionDispatchInfo.Capture(exception);
+
+        _failureCancellation.Cancel();
+    }
+
+    private void ThrowIfFailed()
+    {
+        _failure?.Throw();
+    }
+}
+
+internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
+    KeyOrderedPartitionDispatcher<TKey, TValue> dispatcher)
+{
+    private readonly object _gate = new();
+    private readonly Queue<ConsumeResult<TKey, TValue>> _queue = [];
+    private bool _running;
+
+    public bool Enqueue(ConsumeResult<TKey, TValue> message)
+    {
+        lock (_gate)
+        {
+            _queue.Enqueue(message);
+            if (_running)
+                return false;
+
+            _running = true;
+            return true;
+        }
+    }
+
+    public async ValueTask RunAsync()
+    {
+        var batch = new List<ConsumeResult<TKey, TValue>>(dispatcher.MaxBatchSize);
+
+        while (true)
+        {
+            batch.Clear();
+            lock (_gate)
+            {
+                while (batch.Count < dispatcher.MaxBatchSize && _queue.Count > 0)
+                    batch.Add(_queue.Dequeue());
+
+                if (batch.Count == 0)
+                {
+                    _running = false;
+                    return;
+                }
+            }
+
+            dispatcher.ProcessingCancellationToken.ThrowIfCancellationRequested();
+            await dispatcher.ProcessBatchAsync(batch.ToArray()).ConfigureAwait(false);
+        }
+    }
+}
+
+internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessageKey<TKey>>
+{
+    private readonly bool _hasValue;
+    private readonly TKey? _value;
+
+    private PartitionMessageKey(TKey? value, bool hasValue)
+    {
+        _value = value;
+        _hasValue = hasValue;
+    }
+
+    public static PartitionMessageKey<TKey> From(TKey? value)
+    {
+        return value is null
+            ? new PartitionMessageKey<TKey>(default, hasValue: false)
+            : new PartitionMessageKey<TKey>(value, hasValue: true);
+    }
+
+    public bool Equals(PartitionMessageKey<TKey> other)
+    {
+        if (_hasValue != other._hasValue)
+            return false;
+
+        return !_hasValue || EqualityComparer<TKey>.Default.Equals(_value!, other._value!);
+    }
+
+    public override bool Equals(object? obj)
+    {
+        return obj is PartitionMessageKey<TKey> other && Equals(other);
+    }
+
+    public override int GetHashCode()
+    {
+        return _hasValue
+            ? EqualityComparer<TKey>.Default.GetHashCode(_value!)
+            : 0;
     }
 }
 

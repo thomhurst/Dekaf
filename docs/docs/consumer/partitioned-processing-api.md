@@ -66,7 +66,8 @@ Within one partition:
 
 - messages are yielded in Kafka offset order
 - at most one processor invocation is active
-- `MarkProcessed` records the highest completed offset for that partition
+- `MarkProcessed` records completed offsets; commits advance only through
+  contiguous completed offsets
 
 Across partitions:
 
@@ -97,6 +98,55 @@ await consumer.RunPartitionedAsync(
 This pattern lets partition `orders-0` continue in offset order while
 `orders-1`, `orders-2`, and other assigned partitions run their own ordered
 lanes at the same time.
+
+### Key-ordered handlers
+
+Use the record-handler overload when you want Dekaf to invoke your handler per
+record and mark records processed after the handler returns successfully:
+
+```csharp
+await consumer.RunPartitionedAsync(
+    async (partition, message, ct) =>
+    {
+        await HandleOrderAsync(message.Key, message.Value, ct);
+    },
+    new PartitionedProcessingOptions
+    {
+        Ordering = PartitionedProcessingOrder.Key,
+        MaxConcurrentHandlersPerPartition = 8,
+        MaxBufferedRecordsPerPartition = 512
+    },
+    stoppingToken);
+```
+
+With `PartitionedProcessingOrder.Key`, different keys from the same Kafka
+partition can run concurrently, but records with the same key are processed in
+offset order. Dekaf tracks offset gaps, so a later key cannot advance commits
+past an earlier unfinished record.
+
+### Batch handlers
+
+Use `RunPartitionedBatchesAsync` when your application works more efficiently
+on groups of records:
+
+```csharp
+await consumer.RunPartitionedBatchesAsync(
+    async (partition, messages, ct) =>
+    {
+        await SaveBatchAsync(messages.Select(static m => m.Value), ct);
+    },
+    new PartitionedProcessingOptions
+    {
+        Ordering = PartitionedProcessingOrder.Key,
+        MaxConcurrentHandlersPerPartition = 4,
+        MaxHandlerBatchSize = 100
+    },
+    stoppingToken);
+```
+
+Batch handlers receive up to `MaxHandlerBatchSize` records. In key-ordered mode,
+each batch contains records for one key lane. Records in a handler or batch are
+marked processed only after the callback completes successfully.
 
 ## Commit Semantics
 
@@ -135,7 +185,8 @@ await consumer.RunPartitionedAsync(
     stoppingToken);
 ```
 
-`CommitProcessedAsync` commits only the current partition's completed offset.
+`CommitProcessedAsync` commits only the current partition's contiguous completed
+offset.
 Runtime-managed revoke and shutdown commits may batch completed offsets for
 multiple partitions into one `CommitAsync` call.
 
