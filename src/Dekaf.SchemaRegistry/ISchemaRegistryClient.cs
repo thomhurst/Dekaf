@@ -110,6 +110,16 @@ public sealed class Schema
     /// Schema references for schemas that depend on other schemas.
     /// </summary>
     public IReadOnlyList<SchemaReference>? References { get; init; }
+
+    /// <summary>
+    /// Optional Schema Registry data-contract metadata, including field tags used by CSFLE policies.
+    /// </summary>
+    public SchemaMetadata? Metadata { get; init; }
+
+    /// <summary>
+    /// Optional Schema Registry rule set for data-contract validation, migration, and encryption rules.
+    /// </summary>
+    public SchemaRuleSet? RuleSet { get; init; }
 }
 
 /// <summary>
@@ -136,6 +146,166 @@ public sealed class RegisteredSchema
     /// The schema.
     /// </summary>
     public required Schema Schema { get; init; }
+}
+
+/// <summary>
+/// Schema Registry data-contract metadata.
+/// </summary>
+public sealed class SchemaMetadata
+{
+    /// <summary>
+    /// Field or schema paths mapped to tag names, for example PII or encrypted.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlySet<string>>? Tags { get; init; }
+
+    /// <summary>
+    /// Arbitrary schema metadata properties.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Properties { get; init; }
+
+    /// <summary>
+    /// Names of metadata properties that should be treated as sensitive.
+    /// </summary>
+    public IReadOnlySet<string>? Sensitive { get; init; }
+}
+
+/// <summary>
+/// Schema Registry data-contract rule set.
+/// </summary>
+public sealed class SchemaRuleSet
+{
+    /// <summary>
+    /// Rules used when migrating between schema versions.
+    /// </summary>
+    public IReadOnlyList<SchemaRule>? MigrationRules { get; init; }
+
+    /// <summary>
+    /// Rules used for validation or transforms on the current schema.
+    /// </summary>
+    public IReadOnlyList<SchemaRule>? DomainRules { get; init; }
+
+    /// <summary>
+    /// Rules used for encoding transforms such as field-level encryption.
+    /// </summary>
+    public IReadOnlyList<SchemaRule>? EncodingRules { get; init; }
+
+    /// <summary>
+    /// Optional Schema Registry activation marker.
+    /// </summary>
+    public string? EnableAt { get; init; }
+}
+
+/// <summary>
+/// Schema Registry data-contract rule.
+/// </summary>
+public sealed class SchemaRule
+{
+    /// <summary>
+    /// Rule name.
+    /// </summary>
+    public required string Name { get; init; }
+
+    /// <summary>
+    /// Optional rule documentation.
+    /// </summary>
+    public string? Doc { get; init; }
+
+    /// <summary>
+    /// Rule kind.
+    /// </summary>
+    public SchemaRuleKind Kind { get; init; }
+
+    /// <summary>
+    /// Rule mode.
+    /// </summary>
+    public SchemaRuleMode Mode { get; init; }
+
+    /// <summary>
+    /// Rule executor type, for example ENCRYPT or CEL.
+    /// </summary>
+    public required string Type { get; init; }
+
+    /// <summary>
+    /// Tags this rule applies to.
+    /// </summary>
+    public IReadOnlySet<string>? Tags { get; init; }
+
+    /// <summary>
+    /// Rule parameters.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Parameters { get; init; }
+
+    /// <summary>
+    /// Optional rule expression.
+    /// </summary>
+    public string? Expr { get; init; }
+
+    /// <summary>
+    /// Optional action on rule success.
+    /// </summary>
+    public string? OnSuccess { get; init; }
+
+    /// <summary>
+    /// Optional action on rule failure.
+    /// </summary>
+    public string? OnFailure { get; init; }
+
+    /// <summary>
+    /// Whether this rule is disabled.
+    /// </summary>
+    public bool Disabled { get; init; }
+}
+
+/// <summary>
+/// Schema Registry rule kind.
+/// </summary>
+public enum SchemaRuleKind
+{
+    /// <summary>
+    /// A transform rule.
+    /// </summary>
+    Transform,
+
+    /// <summary>
+    /// A validation or condition rule.
+    /// </summary>
+    Condition
+}
+
+/// <summary>
+/// Schema Registry rule mode.
+/// </summary>
+public enum SchemaRuleMode
+{
+    /// <summary>
+    /// Upgrade migration rule.
+    /// </summary>
+    Upgrade,
+
+    /// <summary>
+    /// Downgrade migration rule.
+    /// </summary>
+    Downgrade,
+
+    /// <summary>
+    /// Upgrade and downgrade migration rule.
+    /// </summary>
+    UpDown,
+
+    /// <summary>
+    /// Read-side rule.
+    /// </summary>
+    Read,
+
+    /// <summary>
+    /// Write-side rule.
+    /// </summary>
+    Write,
+
+    /// <summary>
+    /// Write and read rule.
+    /// </summary>
+    WriteRead
 }
 
 /// <summary>

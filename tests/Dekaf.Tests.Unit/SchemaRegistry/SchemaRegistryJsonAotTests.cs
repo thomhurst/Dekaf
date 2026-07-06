@@ -34,7 +34,37 @@ public sealed class SchemaRegistryJsonAotTests
                     Subject = "shared-value",
                     Version = 2
                 }
-            ]
+            ],
+            Metadata = new SchemaMetadataDto
+            {
+                Tags = new Dictionary<string, HashSet<string>>
+                {
+                    ["$.name"] = ["PII"]
+                },
+                Properties = new Dictionary<string, string>
+                {
+                    ["owner"] = "payments"
+                },
+                Sensitive = ["owner"]
+            },
+            RuleSet = new SchemaRuleSetDto
+            {
+                EncodingRules =
+                [
+                    new SchemaRuleDto
+                    {
+                        Name = "encryptPii",
+                        Kind = "TRANSFORM",
+                        Mode = "WRITEREAD",
+                        Type = "ENCRYPT",
+                        Tags = ["PII"],
+                        Params = new Dictionary<string, string>
+                        {
+                            ["encrypt.kek.name"] = "payments-kek"
+                        }
+                    }
+                ]
+            }
         };
 
         var requestJson = JsonSerializer.SerializeToUtf8Bytes(
@@ -57,7 +87,24 @@ public sealed class SchemaRegistryJsonAotTests
                   "subject": "shared-value",
                   "version": 2
                 }
-              ]
+              ],
+              "metadata": {
+                "tags": { "$.name": [ "PII" ] },
+                "properties": { "owner": "payments" },
+                "sensitive": [ "owner" ]
+              },
+              "ruleSet": {
+                "encodingRules": [
+                  {
+                    "name": "encryptPii",
+                    "kind": "TRANSFORM",
+                    "mode": "WRITEREAD",
+                    "type": "ENCRYPT",
+                    "tags": [ "PII" ],
+                    "params": { "encrypt.kek.name": "payments-kek" }
+                  }
+                ]
+              }
             }
             """u8;
         var subjectResponse = JsonSerializer.Deserialize(
@@ -75,8 +122,12 @@ public sealed class SchemaRegistryJsonAotTests
 
         await Assert.That(roundTrippedRequest!.SchemaType).IsEqualTo("JSON");
         await Assert.That(roundTrippedRequest.References!.Count).IsEqualTo(1);
+        await Assert.That(roundTrippedRequest.Metadata!.Tags!["$.name"]).Contains("PII");
+        await Assert.That(roundTrippedRequest.RuleSet!.EncodingRules![0].Params!["encrypt.kek.name"]).IsEqualTo("payments-kek");
         await Assert.That(subjectResponse!.Subject).IsEqualTo("orders-value");
         await Assert.That(subjectResponse.References!.Count).IsEqualTo(1);
+        await Assert.That(subjectResponse.Metadata!.Properties!["owner"]).IsEqualTo("payments");
+        await Assert.That(subjectResponse.RuleSet!.EncodingRules![0].Mode).IsEqualTo("WRITEREAD");
         await Assert.That(compatibilityDocument.RootElement.TryGetProperty("is_compatible", out _)).IsTrue();
         await Assert.That(errorDocument.RootElement.TryGetProperty("error_code", out _)).IsTrue();
     }
