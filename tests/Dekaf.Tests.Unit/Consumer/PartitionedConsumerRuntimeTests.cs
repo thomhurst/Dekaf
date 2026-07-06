@@ -145,6 +145,44 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task PartitionLane_DoesNotSignalCapacityWhenNotPreviouslyFull()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var callbacks = 0;
+        var lane = CreateLane(
+            partition,
+            capacity: 4,
+            _ => Interlocked.Increment(ref callbacks));
+
+        for (var offset = 0; offset < 3; offset++)
+            await Assert.That(lane.TryEnqueue(CreateResult(partition, offset))).IsTrue();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await ReadLaneMessagesAsync(lane, count: 3, cts.Token).ConfigureAwait(false);
+
+        await Assert.That(Volatile.Read(ref callbacks)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PartitionLane_SignalsCapacityOnceWhenFullLaneHasRoom()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var callbacks = 0;
+        var lane = CreateLane(
+            partition,
+            capacity: 4,
+            _ => Interlocked.Increment(ref callbacks));
+
+        for (var offset = 0; offset < 4; offset++)
+            await Assert.That(lane.TryEnqueue(CreateResult(partition, offset))).IsTrue();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await ReadLaneMessagesAsync(lane, count: 4, cts.Token).ConfigureAwait(false);
+
+        await Assert.That(Volatile.Read(ref callbacks)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_RevokedPartitionStopsRoutingAndCommitsProcessedOnly()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -994,6 +1032,32 @@ public sealed class PartitionedConsumerRuntimeTests
 
         lock (offsets)
             return offsets.ToArray();
+    }
+
+    private static PartitionLane<string, string> CreateLane(
+        TopicPartition partition,
+        int capacity,
+        Action<PartitionLane<string, string>> capacityAvailable)
+    {
+        return new PartitionLane<string, string>(
+            partition,
+            capacity,
+            static (_, _) => ValueTask.CompletedTask,
+            capacityAvailable,
+            static (_, exception) => throw new InvalidOperationException("Lane failed.", exception));
+    }
+
+    private static async Task ReadLaneMessagesAsync(
+        PartitionLane<string, string> lane,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        await using var enumerator = lane.Messages.GetAsyncEnumerator(cancellationToken);
+        for (var i = 0; i < count; i++)
+        {
+            var hasMessage = await enumerator.MoveNextAsync().ConfigureAwait(false);
+            await Assert.That(hasMessage).IsTrue();
+        }
     }
 
     private static ConsumeResult<string, string> CreateResult(
