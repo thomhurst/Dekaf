@@ -11,6 +11,8 @@ namespace Dekaf.Security.Sasl;
 public sealed class OAuthBearerTokenProvider : IDisposable
 {
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+    private static readonly string[] TokenResponsePrincipalClaims = ["sub", "client_id", "object_id", "oid"];
+    private static readonly string[] JwtPrincipalClaims = ["sub", "azp", "client_id", "appid", "oid"];
 
     private readonly OAuthBearerConfig _config;
     private readonly HttpClient _httpClient;
@@ -23,7 +25,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
     /// </summary>
     /// <param name="config">The OAuth configuration.</param>
     public OAuthBearerTokenProvider(OAuthBearerConfig config)
-        : this(config, new HttpClient(CreateHttpHandler(), disposeHandler: true), ownsHttpClient: true)
+        : this(config, CreateDefaultHttpClient(config), ownsHttpClient: true)
     {
     }
 
@@ -37,7 +39,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
     {
     }
 
-    internal static HttpMessageHandler CreateHttpHandler()
+    internal static HttpMessageHandler CreateHttpHandler(bool useProxy = true)
     {
 #if NETSTANDARD2_0
         var handlerType = Type.GetType("System.Net.Http.SocketsHttpHandler, System.Net.Http");
@@ -47,17 +49,22 @@ public sealed class OAuthBearerTokenProvider : IDisposable
             if (lifetimeProperty is not null && lifetimeProperty.CanWrite)
             {
                 lifetimeProperty.SetValue(handler, PooledConnectionLifetime);
+                var useProxyProperty = handlerType.GetProperty("UseProxy");
+                if (useProxyProperty is not null && useProxyProperty.CanWrite)
+                    useProxyProperty.SetValue(handler, useProxy);
+
                 return handler;
             }
 
             handler.Dispose();
         }
 
-        return new HttpClientHandler();
+        return new HttpClientHandler { UseProxy = useProxy };
 #else
         return new SocketsHttpHandler
         {
-            PooledConnectionLifetime = PooledConnectionLifetime
+            PooledConnectionLifetime = PooledConnectionLifetime,
+            UseProxy = useProxy
         };
 #endif
     }
@@ -67,6 +74,14 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _ownsHttpClient = ownsHttpClient;
+    }
+
+    private static HttpClient CreateDefaultHttpClient(OAuthBearerConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        var useProxy = config.GrantType != OAuthBearerGrantType.AzureImds;
+        return new HttpClient(CreateHttpHandler(useProxy), disposeHandler: true);
     }
 
     /// <summary>
@@ -101,6 +116,13 @@ public sealed class OAuthBearerTokenProvider : IDisposable
 
     private async Task<OAuthBearerToken> FetchTokenAsync(CancellationToken cancellationToken)
     {
+        return _config.GrantType == OAuthBearerGrantType.AzureImds
+            ? await FetchAzureImdsTokenAsync(cancellationToken).ConfigureAwait(false)
+            : await FetchOAuthTokenEndpointAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<OAuthBearerToken> FetchOAuthTokenEndpointAsync(CancellationToken cancellationToken)
+    {
         var requestBody = BuildTokenRequestBody();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _config.TokenEndpointUrl)
@@ -129,6 +151,42 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         }
 
         return ParseTokenResponse(responseContent);
+    }
+
+    private async Task<OAuthBearerToken> FetchAzureImdsTokenAsync(CancellationToken cancellationToken)
+    {
+        var options = _config.AzureImds
+            ?? throw new InvalidOperationException("Azure IMDS OAuth grant requires AzureImds options");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildAzureImdsTokenUri(options));
+        request.Headers.TryAddWithoutValidation("Metadata", "true");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var responseContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new AuthenticationException(
+                $"Azure IMDS token request failed with status {response.StatusCode}: {responseContent}");
+        }
+
+        return ParseTokenResponse(responseContent);
+    }
+
+    private static Uri BuildAzureImdsTokenUri(OAuthBearerAzureImdsOptions options)
+    {
+        var endpoint = options.TokenEndpoint;
+        var separator = endpoint.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+        var uri = new StringBuilder(endpoint)
+            .Append(separator)
+            .Append("api-version=").Append(Uri.EscapeDataString(options.ApiVersion))
+            .Append("&resource=").Append(Uri.EscapeDataString(options.Resource));
+
+        if (!string.IsNullOrWhiteSpace(options.ClientId))
+            uri.Append("&client_id=").Append(Uri.EscapeDataString(options.ClientId!));
+
+        return new Uri(uri.ToString(), UriKind.Absolute);
     }
 
     private Dictionary<string, string> BuildTokenRequestBody()
@@ -220,11 +278,14 @@ public sealed class OAuthBearerTokenProvider : IDisposable
     private static string ExtractPrincipalName(string accessToken, JsonElement tokenResponse)
     {
         // First, try to get from token response (some providers include it)
-        if (tokenResponse.TryGetProperty("sub", out var subElement))
+        foreach (var responseClaim in TokenResponsePrincipalClaims)
         {
-            var sub = subElement.GetString();
-            if (!string.IsNullOrEmpty(sub))
-                return sub!;
+            if (tokenResponse.TryGetProperty(responseClaim, out var responseClaimElement))
+            {
+                var value = responseClaimElement.GetString();
+                if (!string.IsNullOrEmpty(value))
+                    return value!;
+            }
         }
 
         // Try to decode JWT and extract subject claim
@@ -251,7 +312,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
                 var payloadRoot = payloadDoc.RootElement;
 
                 // Try 'sub' claim first, then 'azp' (authorized party), then 'client_id'
-                foreach (var claim in new[] { "sub", "azp", "client_id" })
+                foreach (var claim in JwtPrincipalClaims)
                 {
                     if (payloadRoot.TryGetProperty(claim, out var claimElement))
                     {

@@ -278,6 +278,56 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task GetTokenAsync_WithAzureImds_SendsMetadataGetRequest()
+    {
+        var handler = new CapturingAzureImdsHandler();
+        var options = new OAuthBearerAzureImdsOptions
+        {
+            TokenEndpoint = "http://169.254.169.254/metadata/identity/oauth2/token",
+            Resource = "api://kafka",
+            ClientId = "managed-identity-client"
+        };
+        using var provider = new OAuthBearerTokenProvider(options.ToOAuthBearerConfig(), new HttpClient(handler));
+
+        var token = await provider.GetTokenAsync();
+
+        await Assert.That(token.TokenValue).IsEqualTo("azure-access-token");
+        await Assert.That(token.PrincipalName).IsEqualTo("managed-identity-client");
+        await Assert.That(handler.Requests.Count).IsEqualTo(1);
+
+        var request = handler.Requests[0];
+        await Assert.That(request.Method).IsEqualTo(HttpMethod.Get);
+        await Assert.That(request.HasContent).IsFalse();
+        await Assert.That(request.MetadataHeader).IsEqualTo("true");
+        await Assert.That(request.Query["api-version"]).IsEqualTo("2018-02-01");
+        await Assert.That(request.Query["resource"]).IsEqualTo("api://kafka");
+        await Assert.That(request.Query["client_id"]).IsEqualTo("managed-identity-client");
+    }
+
+    [Test]
+    public async Task GetTokenAsync_WithAzureImdsSystemAssignedIdentity_OmitsClientId()
+    {
+        var handler = new CapturingAzureImdsHandler();
+        var options = new OAuthBearerAzureImdsOptions
+        {
+            Resource = "https://eventhubs.azure.net/"
+        };
+        using var provider = new OAuthBearerTokenProvider(options.ToOAuthBearerConfig(), new HttpClient(handler));
+
+        _ = await provider.GetTokenAsync();
+
+        await Assert.That(handler.Requests[0].Query.ContainsKey("client_id")).IsFalse();
+    }
+
+    [Test]
+    public async Task ToOAuthBearerConfig_WithAzureImdsMissingResource_ThrowsInvalidOperationException()
+    {
+        var options = new OAuthBearerAzureImdsOptions { Resource = string.Empty };
+
+        await Assert.That(() => options.ToOAuthBearerConfig()).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task GetTokenAsync_WithValidCachedToken_ReusesToken()
     {
         using var rsa = RSA.Create(2048);
@@ -411,4 +461,48 @@ public sealed class OAuthBearerTokenProviderTests
         private static string DecodeFormValue(string value) =>
             Uri.UnescapeDataString(value.Replace('+', ' '));
     }
+
+    private sealed class CapturingAzureImdsHandler : HttpMessageHandler
+    {
+        public List<AzureImdsRequest> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(new AzureImdsRequest(
+                request.Method,
+                request.Content is not null,
+                request.Headers.TryGetValues("Metadata", out var metadataValues)
+                    ? metadataValues.Single()
+                    : null,
+                ParseQuery(request.RequestUri!.Query)));
+
+            const string json = """{"access_token":"azure-access-token","expires_in":3600,"client_id":"managed-identity-client"}""";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        }
+
+        private static IReadOnlyDictionary<string, string> ParseQuery(string query)
+        {
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var pair in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = pair.Split('=', 2);
+                var key = Uri.UnescapeDataString(parts[0]);
+                var value = parts.Length == 2 ? Uri.UnescapeDataString(parts[1]) : string.Empty;
+                result[key] = value;
+            }
+
+            return result;
+        }
+    }
+
+    private sealed record AzureImdsRequest(
+        HttpMethod Method,
+        bool HasContent,
+        string? MetadataHeader,
+        IReadOnlyDictionary<string, string> Query);
 }

@@ -623,6 +623,33 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures OAUTHBEARER authentication using Azure IMDS managed identity.
+    /// </summary>
+    /// <param name="options">The Azure IMDS OAuth options.</param>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearerAzureImds(OAuthBearerAzureImdsOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = options.ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using Azure IMDS managed identity.
+    /// </summary>
+    /// <param name="configure">Callback that configures the Azure IMDS OAuth options.</param>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearerAzureImds(Action<OAuthBearerAzureImdsOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerAzureImdsOptions { Resource = string.Empty };
+        configure(options);
+        return WithOAuthBearerAzureImds(options);
+    }
+
+    /// <summary>
     /// Configures OAUTHBEARER authentication using a custom token provider.
     /// </summary>
     /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
@@ -1810,6 +1837,33 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures OAUTHBEARER authentication using Azure IMDS managed identity.
+    /// </summary>
+    /// <param name="options">The Azure IMDS OAuth options.</param>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearerAzureImds(OAuthBearerAzureImdsOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = options.ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using Azure IMDS managed identity.
+    /// </summary>
+    /// <param name="configure">Callback that configures the Azure IMDS OAuth options.</param>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearerAzureImds(Action<OAuthBearerAzureImdsOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerAzureImdsOptions { Resource = string.Empty };
+        configure(options);
+        return WithOAuthBearerAzureImds(options);
+    }
+
+    /// <summary>
     /// Configures OAUTHBEARER authentication using a custom token provider.
     /// </summary>
     /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
@@ -2885,6 +2939,25 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerAzureImds(OAuthBearerAzureImdsOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = options.ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerAzureImds(Action<OAuthBearerAzureImdsOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerAzureImdsOptions { Resource = string.Empty };
+        configure(options);
+        return WithOAuthBearerAzureImds(options);
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerTokenProvider(Func<CancellationToken, ValueTask<OAuthBearerToken>> provider)
