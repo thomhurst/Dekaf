@@ -64,6 +64,30 @@ Scope check passed.
         Blocks = $false
     },
     @{
+        Name = 'allows explicit clear verdict marker'
+        Body = @'
+## Review
+
+### Correctness
+Legacy prose can mention scary words without blocking when the review posts the
+machine-readable all-clear marker.
+
+<!-- REVIEW_VERDICT: CLEAR -->
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'blocks explicit blocking verdict marker'
+        Body = @'
+## Review
+
+No issues found.
+
+<!-- REVIEW_VERDICT: BLOCKING -->
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows positive category section headings'
         Body = @'
 ## Review
@@ -567,6 +591,56 @@ No bugs found, but the shutdown path is hanging under cancellation.
         Blocks = $true
     },
     @{
+        Name = 'blocks non-idempotent positive opener finding'
+        Body = @'
+## Review
+
+### Correctness
+Looks good, but the retry logic is not idempotent and can double-charge.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks never-disposed positive opener finding'
+        Body = @'
+## Review
+
+### Correctness
+Looks good, but the connection is never disposed.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks throws-exception positive opener finding'
+        Body = @'
+## Review
+
+### Correctness
+No issues found, but this throws an exception on empty input.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks credential-exposure positive opener finding'
+        Body = @'
+## Review
+
+### Correctness
+Looks good, but this exposes credentials in the log output.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks stale-cache positive opener finding'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found. The cache entry can go stale and never refresh.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows live protocol clean review shape'
         Body = @'
 ## Review
@@ -699,6 +773,17 @@ The prior findings are now resolved.
 ### Fix in `62546f5` resolves the concurrency issue
 
 The new commit avoids the unsafe queue path.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows merge correctness verified clean heading'
+        Body = @'
+## Review
+
+### Merge correctness — verified clean
+
+Conflict resolution kept both feature sets.
 '@
         Blocks = $false
     },

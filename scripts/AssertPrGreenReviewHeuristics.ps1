@@ -8,15 +8,29 @@ function Get-ActionableReviewBodyReason {
         return $null
     }
 
+    $verdictMarkers = [regex]::Matches($Body, '(?im)^\s*<!--\s*REVIEW_VERDICT:\s*(CLEAR|BLOCKING)\s*-->\s*$')
+    if ($verdictMarkers.Count -gt 0) {
+        foreach ($marker in $verdictMarkers) {
+            if ($marker.Groups[1].Value -eq 'BLOCKING') {
+                return 'review verdict marker: BLOCKING'
+            }
+        }
+
+        return $null
+    }
+
     $previouslyResolvedHeading =
         '(?=.{1,300}\s*$)previously[- ]flagged\b(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fixed|resolved|addressed|verified)\b)[^\r\n]*\s*$'
     $resolvedFindingHeading =
         '(?=.{1,300}\s*$)(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fix|fix(?:es|ed)?|change|commit|follow[- ]up|resolves?|resolved|addresses?|addressed|verified)\b)(?=[^\r\n]*\b(?:issues?|bugs?|findings?|concerns?|regressions?)\b)[^\r\n]*\s*$'
+    $verifiedCleanHeading =
+        '(?=.{1,300}\s*$)merge\s+correctness\b(?=[^\r\n]*\bverified\s+clean\b)[^\r\n]*\s*$'
     $nonActionableHeading =
         '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
         '|not\s+a\s+regression\b(?:,\s+just\s+noting\s+scope)?\s*$' +
         "|$previouslyResolvedHeading" +
-        "|$resolvedFindingHeading"
+        "|$resolvedFindingHeading" +
+        "|$verifiedCleanHeading"
     $actionableHeadingWord = 'Correctness|Bug|Bugs|Concern|Concerns|Issue|Issues|Regression|Risk|Risks|Design|Leak|Leaks|Gap|Gaps|Silently|(?<!not )(?<!non-)Blocking|(?<!not )(?<!non-)Blocker|Test coverage gap|Required|Must fix'
     $horizontalWhitespace = '[^\S\r\n]'
     $categoryHeadingTerm = "(?:correctness|security|design|architecture|claude\.md$horizontalWhitespace+(?:compliance|conventions))"
@@ -24,7 +38,7 @@ function Get-ActionableReviewBodyReason {
     $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
     $positiveVerdictDefect =
-        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|crash(?:es|ing|ed)?|fixme|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|will\s+allocate|allocate\s+per|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|still\s+broken|remains?\s+broken|is\s+broken|leak(?:s|ing|ed)?|race|corrupt(?:s|ion|ed|ing)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hang(?:s|ing)?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|skip(?:s|ped|ping)?\s+validation|design\s+risk|risk\s+(?:for|of)|real\s+concerns?|concerns?\s+about|(?:test\s+)?coverage\s+gap|(?<!no\s)(?<!non[- ])block(?:er|ing)|fix\s+is\s+required|required\s+fix|required\s+before|real\s+(?:bug|issue)|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
+        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|throws?\s+(?:an?\s+)?exception|crash(?:es|ing|ed)?|fixme|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|will\s+allocate|allocate\s+per|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|still\s+broken|remains?\s+broken|is\s+broken|leak(?:s|ing|ed)?|never\s+disposed|not\s+disposed|race|corrupt(?:s|ion|ed|ing)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|expos(?:es|ed|ing)?\s+(?:credentials?|secrets?|tokens?)|stack\s+overflow|hang(?:s|ing)?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|double[- ]charges?|not\s+idempotent|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|skip(?:s|ped|ping)?\s+validation|design\s+risk|risk\s+(?:for|of)|real\s+concerns?|concerns?\s+about|(?:test\s+)?coverage\s+gap|(?<!no\s)(?<!non[- ])block(?:er|ing)|fix\s+is\s+required|required\s+fix|required\s+before|real\s+(?:bug|issue)|edge\s+case|go(?:es|ing)?\s+stale|stale\s+(?:cache|entry)|never\s+refresh|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
     $positiveVerdictBlocker = '\b(?:' + $positiveVerdictDefect + ')\b'
     $positiveVerdictContinuationDefect =
         "$positiveVerdictDefect|(?<!not\s+a\s)(?<!no\s)regressions?(?!\s+(?:coverage|tests?|risk))|now\s+duplicated|(?<!used\s+to\s+be\s)(?<!previously\s)duplicated\s+across|duplicates?\s+logic|duplication\s+of|swallow(?:s|ed|ing)?"
