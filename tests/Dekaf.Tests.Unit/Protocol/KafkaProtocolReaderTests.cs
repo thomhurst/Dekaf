@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Protocol;
@@ -126,6 +127,69 @@ public class KafkaProtocolReaderTests
     }
 
     [Test]
+    public async Task ReadBytes_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x7F, 0xFF, 0xFF, 0xFF };
+
+        var exception = ReadThrowsMalformed(data, static (ref KafkaProtocolReader reader) => reader.ReadBytes());
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadBytes_MultiSegmentClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x00, 0x00, 0x00, 0x05, 0x01, 0x02 };
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(data, splitAt: 2);
+
+        var exception = ReadThrowsMalformed(sequence, static (ref KafkaProtocolReader reader) => reader.ReadBytes());
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadRawBytes_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = Array.Empty<byte>();
+
+        var exception = ReadThrowsMalformed(data, static (ref KafkaProtocolReader reader) => reader.ReadRawBytes(int.MaxValue));
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadMemorySlice_MultiSegmentClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(new byte[] { 0x01, 0x02 }, splitAt: 1);
+
+        var exception = ReadThrowsMalformed(sequence, static (ref KafkaProtocolReader reader) => reader.ReadMemorySlice(3));
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadCompactArray_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x04 };
+
+        var exception = ReadThrowsMalformed(
+            data,
+            static (ref KafkaProtocolReader reader) => reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt8()));
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
+    public async Task ReadString_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x00, 0x05, (byte)'a', (byte)'b' };
+
+        var exception = ReadThrowsMalformed(data, static (ref KafkaProtocolReader reader) => reader.ReadString());
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
     public async Task ReadBoolean_ReadsTrue()
     {
         var data = new byte[] { 0x01 };
@@ -168,4 +232,40 @@ public class KafkaProtocolReaderTests
 
         await Assert.That(reader.Remaining).IsEqualTo(2);
     }
+
+    private static MalformedProtocolDataException ReadThrowsMalformed(
+        byte[] data,
+        ReadAction read)
+    {
+        try
+        {
+            var reader = new KafkaProtocolReader(data);
+            read(ref reader);
+        }
+        catch (MalformedProtocolDataException exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Expected MalformedProtocolDataException");
+    }
+
+    private static MalformedProtocolDataException ReadThrowsMalformed(
+        ReadOnlySequence<byte> data,
+        ReadAction read)
+    {
+        try
+        {
+            var reader = new KafkaProtocolReader(data);
+            read(ref reader);
+        }
+        catch (MalformedProtocolDataException exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Expected MalformedProtocolDataException");
+    }
+
+    private delegate void ReadAction(ref KafkaProtocolReader reader);
 }

@@ -624,10 +624,10 @@ public ref struct KafkaProtocolReader
         if (length == 0)
             return string.Empty;
 
+        ValidateReadableLength(length);
+
         if (_isContiguous)
         {
-            if (length < 0 || _position > _span.Length - length)
-                ThrowInsufficientData();
             var result = Encoding.UTF8.GetString(_span.Slice(_position, length));
             _position += length;
             return result;
@@ -691,11 +691,11 @@ public ref struct KafkaProtocolReader
 
     private byte[] ReadBytesContent(int length)
     {
+        ValidateReadableLength(length);
+
         var result = new byte[length];
         if (_isContiguous)
         {
-            if (length < 0 || _position > _span.Length - length)
-                ThrowInsufficientData();
             _span.Slice(_position, length).CopyTo(result);
             _position += length;
             return result;
@@ -733,6 +733,9 @@ public ref struct KafkaProtocolReader
     {
         if (count == 0)
             return [];
+
+        ValidateReadableLength(count);
+
         var result = new byte[count];
         ReadRawBytes(result);
         return result;
@@ -748,11 +751,11 @@ public ref struct KafkaProtocolReader
         if (count == 0)
             return ReadOnlyMemory<byte>.Empty;
 
+        ValidateReadableLength(count);
+
         // Fast path: Return a slice of the backing memory (zero-allocation)
         if (_isContiguous && _hasMemory)
         {
-            if (count < 0 || _position > _span.Length - count)
-                ThrowInsufficientData();
             var result = _memory.Slice(_position, count);
             _position += count;
             return result;
@@ -761,8 +764,6 @@ public ref struct KafkaProtocolReader
         // Fallback for span-only mode: must allocate since spans can't become Memory
         if (_isContiguous)
         {
-            if (count < 0 || _position > _span.Length - count)
-                ThrowInsufficientData();
             var result = _span.Slice(_position, count).ToArray();
             _position += count;
             return result;
@@ -796,6 +797,8 @@ public ref struct KafkaProtocolReader
         if (length <= 0)
             return [];
 
+        ValidateReadableLength(length);
+
         var result = new T[length];
         for (var i = 0; i < length; i++)
         {
@@ -812,6 +815,8 @@ public ref struct KafkaProtocolReader
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
             return [];
+
+        ValidateReadableLength(length);
 
         var result = new T[length];
         for (var i = 0; i < length; i++)
@@ -832,6 +837,8 @@ public ref struct KafkaProtocolReader
 
         if (length == 0)
             return [];
+
+        ValidateReadableLength(length);
 
         var result = new T[length];
         for (var i = 0; i < length; i++)
@@ -906,6 +913,8 @@ public ref struct KafkaProtocolReader
         if (length <= 0)
             return [];
 
+        ValidateReadableLength(length);
+
         var result = new T[length];
         for (var i = 0; i < length; i++)
         {
@@ -923,6 +932,8 @@ public ref struct KafkaProtocolReader
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
             return [];
+
+        ValidateReadableLength(length);
 
         var result = new T[length];
         for (var i = 0; i < length; i++)
@@ -945,6 +956,8 @@ public ref struct KafkaProtocolReader
         if (length == 0)
             return [];
 
+        ValidateReadableLength(length);
+
         var result = new T[length];
         for (var i = 0; i < length; i++)
         {
@@ -964,6 +977,8 @@ public ref struct KafkaProtocolReader
         if (length <= 0)
             return 0;
 
+        ValidateReadableLength(length);
+
         for (var i = 0; i < length; i++)
         {
             destination.Add(readItem(ref this, state));
@@ -982,6 +997,8 @@ public ref struct KafkaProtocolReader
         if (length <= 0)
             return 0;
 
+        ValidateReadableLength(length);
+
         for (var i = 0; i < length; i++)
         {
             destination.Add(readItem(ref this, state));
@@ -999,6 +1016,15 @@ public ref struct KafkaProtocolReader
     /// </summary>
     public delegate T ReadFunc<out T, in TState>(ref KafkaProtocolReader reader, TState state);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private readonly void ValidateReadableLength(int length)
+    {
+        if (length < 0 || Remaining < length)
+        {
+            ThrowInvalidLength(length, Remaining);
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInsufficientData()
     {
@@ -1015,5 +1041,12 @@ public ref struct KafkaProtocolReader
     private static void ThrowInvalidProtocolData()
     {
         throw new MalformedProtocolDataException("Invalid protocol data: unsigned varint exceeds Int32 range");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidLength(int length, long remaining)
+    {
+        throw new MalformedProtocolDataException(
+            $"Invalid protocol data: claimed length {length} exceeds remaining data {remaining}");
     }
 }
