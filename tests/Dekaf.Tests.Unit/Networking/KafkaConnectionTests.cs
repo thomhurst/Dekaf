@@ -1,10 +1,12 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -411,6 +413,81 @@ public sealed class KafkaConnectionTests
         await Assert.That(stream.ReadCalls).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationDisabled_IgnoresNameMismatchOnly()
+    {
+        await using var connection = new KafkaConnection(
+            "localhost",
+            9092,
+            options: new ConnectionOptions
+            {
+                TlsConfig = new TlsConfig
+                {
+                    ValidateServerCertificateHostName = false
+                }
+            });
+
+        var callback = InvokeBuildRemoteCertificateValidationCallback(connection);
+
+        await Assert.That(callback).IsNotNull();
+        await Assert.That(callback!(connection, null, null, SslPolicyErrors.RemoteCertificateNameMismatch)).IsTrue();
+        await Assert.That(callback(
+                connection,
+                null,
+                null,
+                SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors))
+            .IsFalse();
+    }
+
+    [Test]
+    public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationEnabledWithoutCustomPolicy_ReturnsNull()
+    {
+        await using var connection = new KafkaConnection(
+            "localhost",
+            9092,
+            options: new ConnectionOptions { TlsConfig = new TlsConfig() });
+
+        var callback = InvokeBuildRemoteCertificateValidationCallback(connection);
+
+        await Assert.That(callback).IsNull();
+    }
+
+    [Test]
+    public async Task ApplyServerCertificateHostNamePolicy_WhenEnabled_PreservesNameMismatch()
+    {
+        const SslPolicyErrors errors =
+            SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors;
+
+        var result = KafkaConnection.ApplyServerCertificateHostNamePolicy(
+            errors,
+            validateServerCertificateHostName: true);
+
+        await Assert.That(result).IsEqualTo(errors);
+    }
+
+    [Test]
+    public async Task ApplyServerCertificateHostNamePolicy_WhenDisabled_RemovesOnlyNameMismatch()
+    {
+        const SslPolicyErrors errors =
+            SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors;
+
+        var result = KafkaConnection.ApplyServerCertificateHostNamePolicy(
+            errors,
+            validateServerCertificateHostName: false);
+
+        await Assert.That(result).IsEqualTo(SslPolicyErrors.RemoteCertificateChainErrors);
+    }
+
+    [Test]
+    public async Task ApplyServerCertificateHostNamePolicy_WhenDisabled_AcceptsNameMismatchOnly()
+    {
+        var result = KafkaConnection.ApplyServerCertificateHostNamePolicy(
+            SslPolicyErrors.RemoteCertificateNameMismatch,
+            validateServerCertificateHostName: false);
+
+        await Assert.That(result).IsEqualTo(SslPolicyErrors.None);
+    }
+
     private static async Task<byte[]> ReadRequestFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var lengthBuffer = new byte[4];
@@ -471,6 +548,18 @@ public sealed class KafkaConnectionTests
         ]);
 
         await ((ValueTask<SaslHandshakeResponse>)result!).ConfigureAwait(false);
+    }
+
+    private static RemoteCertificateValidationCallback? InvokeBuildRemoteCertificateValidationCallback(
+        KafkaConnection connection)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "BuildRemoteCertificateValidationCallback",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("BuildRemoteCertificateValidationCallback was not found.");
+
+        return (RemoteCertificateValidationCallback?)method.Invoke(connection, null);
     }
 
     private static T GetPrivateField<T>(KafkaConnection connection, string name)

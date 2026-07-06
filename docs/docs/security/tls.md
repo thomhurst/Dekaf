@@ -82,8 +82,11 @@ var tlsConfig = new TlsConfig
     ClientKeyPath = "/path/to/client.key",
     ClientKeyPassword = "password",
 
-    // Skip server certificate validation (NOT recommended for production)
-    SkipServerCertificateValidation = false,
+    // Validate the broker certificate chain
+    ValidateServerCertificate = true,
+
+    // Verify that the certificate matches the connection host name
+    ValidateServerCertificateHostName = true,
 
     // Allowed TLS protocols
     EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
@@ -134,13 +137,26 @@ Solutions:
 2. Check certificate chain is complete
 3. Verify server hostname matches certificate
 
+### Host Name Mismatch Only
+
+If the broker certificate chain is trusted but the certificate host name does not match the address used by clients, disable only host-name verification:
+
+```csharp
+var tlsConfig = new TlsConfig
+{
+    CaCertificatePath = "/path/to/ca.crt",
+    ValidateServerCertificate = true,
+    ValidateServerCertificateHostName = false
+};
+```
+
 ### For Development Only
 
 ```csharp
 // ⚠️ NEVER use in production
 var tlsConfig = new TlsConfig
 {
-    SkipServerCertificateValidation = true
+    ValidateServerCertificate = false
 };
 ```
 
