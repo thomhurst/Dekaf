@@ -137,19 +137,57 @@ public sealed class ConsumerFetchPoolsTests
         await Assert.That(GetFetchRequestTemplateCacheCount(consumer)).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task BuildFetchRequestTopics_DifferentBrokersWithSameShape_CacheSeparateTemplates()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var brokerOnePartitions = new List<TopicPartition>
+        {
+            new("topic-a", 0),
+            new("topic-a", 1)
+        };
+        var brokerTwoPartitions = new List<TopicPartition>
+        {
+            new("topic-b", 0),
+            new("topic-b", 1)
+        };
+
+        var brokerOneResult = InvokeBuildFetchRequestTopics(consumer, brokerOnePartitions, brokerId: 1);
+        ConsumerFetchPools.ReturnFetchRequestTopics(brokerOneResult);
+
+        var brokerTwoResult = InvokeBuildFetchRequestTopics(consumer, brokerTwoPartitions, brokerId: 2);
+        ConsumerFetchPools.ReturnFetchRequestTopics(brokerTwoResult);
+
+        var brokerOneHit = InvokeBuildFetchRequestTopics(consumer, brokerOnePartitions, brokerId: 1);
+        ConsumerFetchPools.ReturnFetchRequestTopics(brokerOneHit);
+
+        await Assert.That(GetFetchRequestTemplateCacheCount(consumer)).IsEqualTo(2);
+    }
+
     private static List<FetchRequestTopic> InvokeBuildFetchRequestTopics(
         KafkaConsumer<string, string> consumer,
         List<TopicPartition> partitions)
-        => InvokeBuildFetchRequestTopics(consumer, partitions, 0, partitions.Count);
+        => InvokeBuildFetchRequestTopics(consumer, partitions, 0, partitions.Count, brokerId: 1);
+
+    private static List<FetchRequestTopic> InvokeBuildFetchRequestTopics(
+        KafkaConsumer<string, string> consumer,
+        List<TopicPartition> partitions,
+        int brokerId)
+        => InvokeBuildFetchRequestTopics(consumer, partitions, 0, partitions.Count, brokerId);
 
     private static List<FetchRequestTopic> InvokeBuildFetchRequestTopics(
         KafkaConsumer<string, string> consumer,
         List<TopicPartition> partitions,
         int startIndex,
-        int count)
+        int count,
+        int brokerId = 1)
         => (List<FetchRequestTopic>)BuildFetchRequestTopicsMethod.Invoke(
             consumer,
-            [partitions, startIndex, count])!;
+            [partitions, startIndex, count, brokerId])!;
 
     private static int GetFetchRequestTemplateCacheCount(KafkaConsumer<string, string> consumer)
     {

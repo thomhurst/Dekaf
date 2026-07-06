@@ -2140,7 +2140,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             // Build fetch request — pass index range to avoid GetRange allocation
-            var topicData = BuildFetchRequestTopics(partitions, partitionStartIndex, partitionCount);
+            var topicData = BuildFetchRequestTopics(partitions, partitionStartIndex, partitionCount, brokerId);
             FetchSessionBuildResult? fetchSessionBuild = fetchSessionHandler?.Build(topicData, _metadataManager.Metadata);
 
             var request = FetchRequest.Rent();
@@ -4328,7 +4328,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         await ResolveSpecialOffsetsAsync(partitions, 0, partitions.Count, cancellationToken).ConfigureAwait(false);
 
         // Build fetch request - use imperative code to avoid LINQ allocations
-        var topicData = BuildFetchRequestTopics(partitions, 0, partitions.Count);
+        var topicData = BuildFetchRequestTopics(partitions, 0, partitions.Count, brokerId);
         FetchSessionHandler? fetchSessionHandler = null;
         FetchSessionBuildResult? fetchSessionBuild = null;
         if (ShouldUseFetchSessions && apiVersion >= 7)
@@ -4883,12 +4883,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private List<FetchRequestTopic> BuildFetchRequestTopics(
-        List<TopicPartition> partitions, int startIndex, int count)
+        List<TopicPartition> partitions, int startIndex, int count, int brokerId)
     {
         if (count == 0)
             return ConsumerFetchPools.RentFetchRequestTopicList(0);
 
-        var cacheKey = new FetchRequestCacheKey(startIndex, count);
+        var cacheKey = new FetchRequestCacheKey(brokerId, startIndex, count);
 
         // Take snapshots of current state under lock
         FetchRequestTemplateCacheEntry? cachedEntry;
@@ -4966,7 +4966,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return result;
     }
 
-    private readonly record struct FetchRequestCacheKey(int StartIndex, int Count);
+    private readonly record struct FetchRequestCacheKey(int BrokerId, int StartIndex, int Count);
 
     private sealed class FetchRequestTemplateCacheEntry(
         List<TopicPartition> partitions,
@@ -5061,14 +5061,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return result;
     }
-
-    /// <summary>
-    /// Order-independent partition list equality check.
-    /// Uses O(n²) comparison for small lists (allocation-free), O(n) HashSet for larger lists.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool PartitionListsEqual(List<TopicPartition> a, List<TopicPartition> b)
-        => PartitionRangeEquals(a, 0, a.Count, b);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool PartitionRangeEquals(
