@@ -84,16 +84,18 @@ public sealed class SchemaRegistryRuleExecutorTests
     }
 
     [Test]
-    public async Task TransformSerializedPayload_ConditionKindEncodingRule_SkipsRule()
+    public async Task TransformSerializedPayload_ConditionKindEncodingRule_UsesHandler()
     {
-        var executor = new SchemaRegistryRuleExecutor([]);
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([new AppendingRuleHandler("A", calls)]);
         var payload = "payload"u8.ToArray();
         var schema = CreateSchema(
-            CreateRule("condition", "missing", SchemaRuleMode.WriteRead, kind: SchemaRuleKind.Condition));
+            CreateRule("condition", "A", SchemaRuleMode.WriteRead, kind: SchemaRuleKind.Condition));
 
         var result = executor.TransformSerializedPayload(payload, CreateContext(schema));
 
-        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+        await Assert.That(Encoding.UTF8.GetString(result.Span)).IsEqualTo("payload|AW");
+        await Assert.That(calls).IsEquivalentTo(["Write:condition:Json"]);
     }
 
     [Test]
