@@ -62,14 +62,17 @@ internal sealed class StickyPartitionTracker
         var state = _partitions.GetOrAdd(topic,
             topicName => new StickyPartitionState(NextPartition(topicName, partitionCount, currentPartition: null)));
 
-        lock (state)
+        while (true)
         {
-            if (state.Partition >= 0 && state.Partition < partitionCount)
-                return state.Partition;
+            var packedState = Volatile.Read(ref state.PackedState);
+            var partition = UnpackPartition(packedState);
+            if (partition >= 0 && partition < partitionCount)
+                return partition;
 
-            state.Partition = NextPartition(topic, partitionCount, currentPartition: null);
-            state.ProducedBytes = 0;
-            return state.Partition;
+            var nextPartition = NextPartition(topic, partitionCount, currentPartition: null);
+            var nextState = PackState(nextPartition, producedBytes: 0);
+            if (Interlocked.CompareExchange(ref state.PackedState, nextState, packedState) == packedState)
+                return nextPartition;
         }
     }
 
@@ -78,10 +81,14 @@ internal sealed class StickyPartitionTracker
         var state = _partitions.GetOrAdd(topic,
             topicName => new StickyPartitionState(NextPartition(topicName, partitionCount, currentPartition: null)));
 
-        lock (state)
+        while (true)
         {
-            state.Partition = NextPartition(topic, partitionCount, state.Partition);
-            state.ProducedBytes = 0;
+            var packedState = Volatile.Read(ref state.PackedState);
+            var partition = UnpackPartition(packedState);
+            var nextPartition = NextPartition(topic, partitionCount, partition);
+            var nextState = PackState(nextPartition, producedBytes: 0);
+            if (Interlocked.CompareExchange(ref state.PackedState, nextState, packedState) == packedState)
+                return;
         }
     }
 
@@ -91,17 +98,26 @@ internal sealed class StickyPartitionTracker
             return;
 
         var state = _partitions.GetOrAdd(topic, _ => new StickyPartitionState(partition));
-        lock (state)
+        while (true)
         {
-            if (state.Partition != partition)
+            var packedState = Volatile.Read(ref state.PackedState);
+            if (UnpackPartition(packedState) != partition)
                 return;
 
-            state.ProducedBytes += bytes;
-            if (state.ProducedBytes < stickyBatchSize)
-                return;
+            var producedBytes = SaturatingAdd(UnpackProducedBytes(packedState), bytes);
+            if (producedBytes < stickyBatchSize)
+            {
+                var updatedState = PackState(partition, producedBytes);
+                if (Interlocked.CompareExchange(ref state.PackedState, updatedState, packedState) == packedState)
+                    return;
 
-            state.Partition = NextPartition(topic, partitionCount, partition);
-            state.ProducedBytes = 0;
+                continue;
+            }
+
+            var nextPartition = NextPartition(topic, partitionCount, partition);
+            var nextState = PackState(nextPartition, producedBytes: 0);
+            if (Interlocked.CompareExchange(ref state.PackedState, nextState, packedState) == packedState)
+                return;
         }
     }
 
@@ -159,6 +175,9 @@ internal sealed class StickyPartitionTracker
 
         if (eligibleCount == 0)
         {
+            // Every other partition has stayed backed up past the timeout. Fall back to
+            // the weighted choice across all partitions; NextPartition still prevents a
+            // no-op rotation if the current partition wins.
             for (var partition = 0; partition < partitionCount; partition++)
             {
                 var queueSize = Math.Max(0, partitionQueueBytes(topic, partition));
@@ -238,6 +257,18 @@ internal sealed class StickyPartitionTracker
         return positiveRandom % upperExclusive;
     }
 
+    private static long PackState(int partition, int producedBytes)
+        => ((long)partition << 32) | (uint)producedBytes;
+
+    private static int UnpackPartition(long packedState)
+        => (int)(packedState >> 32);
+
+    private static int UnpackProducedBytes(long packedState)
+        => (int)(packedState & 0x7fff_ffff);
+
+    private static int SaturatingAdd(int left, int right)
+        => left > int.MaxValue - right ? int.MaxValue : left + right;
+
     private static long SaturatingAdd(long left, long right)
     {
         var result = left + right;
@@ -246,8 +277,7 @@ internal sealed class StickyPartitionTracker
 
     private sealed class StickyPartitionState(int partition)
     {
-        public int Partition = partition;
-        public long ProducedBytes;
+        public long PackedState = PackState(partition, producedBytes: 0);
     }
 
     private sealed class PartitionAvailabilityState(long busySinceTimestamp)

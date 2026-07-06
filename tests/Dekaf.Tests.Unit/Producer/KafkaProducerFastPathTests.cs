@@ -112,22 +112,69 @@ public class KafkaProducerFastPathTests
         await Assert.That(metadata.Offset).IsEqualTo(7);
     }
 
-    private static TopicInfo CreateTopicInfo() => new()
+    [Test]
+    public async Task FireAsync_KeyedMessageOnStickyPartition_DoesNotAdvanceUniformStickyCounter()
+    {
+        const int partitionCount = 3;
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1024,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            EnableAdaptivePartitioning = false
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer, partitionCount);
+        SetInstanceField(producer, "_initialized", true);
+
+        var partitioner = GetInstanceField<IPartitioner>(producer, "_partitioner");
+        var stickyPartition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount);
+        var keyOnStickyPartition = FindKeyForPartition(partitioner, stickyPartition, partitionCount);
+
+        await producer.FireAsync(Topic, key: null, value: "sticky");
+        var bufferedAfterStickyAppend = producer.RecordAccumulator.BufferedBytes;
+        for (var i = 0; i < 6; i++)
+        {
+            await producer.FireAsync(Topic, keyOnStickyPartition, new string('v', 512));
+        }
+
+        await Assert.That(producer.RecordAccumulator.BufferedBytes)
+            .IsGreaterThan(bufferedAfterStickyAppend + 1024);
+
+        var partitionAfterKeyedAppends = partitioner.Partition(
+            Topic,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            partitionCount);
+
+        await Assert.That(partitionAfterKeyedAppends).IsEqualTo(stickyPartition);
+    }
+
+    private static TopicInfo CreateTopicInfo(int partitionCount = 1) => new()
     {
         Name = Topic,
-        Partitions =
-        [
-            new PartitionInfo
+        Partitions = Enumerable.Range(0, partitionCount)
+            .Select(partition => new PartitionInfo
             {
-                PartitionIndex = 0,
+                PartitionIndex = partition,
                 LeaderId = 0,
                 ReplicaNodes = [0],
                 IsrNodes = [0]
-            }
-        ]
+            })
+            .ToArray()
     };
 
-    private static void SeedProducerMetadata(KafkaProducer<string, string> producer)
+    private static void SeedProducerMetadata(KafkaProducer<string, string> producer, int partitionCount = 1)
     {
         var metadataManager = GetInstanceField<MetadataManager>(producer, "_metadataManager");
         metadataManager.Metadata.Update(new MetadataResponse
@@ -149,20 +196,32 @@ public class KafkaProducerFastPathTests
                 {
                     ErrorCode = ErrorCode.None,
                     Name = Topic,
-                    Partitions =
-                    [
-                        new PartitionMetadata
+                    Partitions = Enumerable.Range(0, partitionCount)
+                        .Select(partition => new PartitionMetadata
                         {
                             ErrorCode = ErrorCode.None,
-                            PartitionIndex = 0,
+                            PartitionIndex = partition,
                             LeaderId = 0,
                             ReplicaNodes = [0],
                             IsrNodes = [0]
-                        }
-                    ]
+                        })
+                        .ToArray()
                 }
             ]
         });
+    }
+
+    private static string FindKeyForPartition(IPartitioner partitioner, int targetPartition, int partitionCount)
+    {
+        for (var i = 0; i < 10_000; i++)
+        {
+            var key = $"key-{i}";
+            var keyBytes = Encoding.UTF8.GetBytes(key);
+            if (partitioner.Partition(Topic, keyBytes, keyIsNull: false, partitionCount) == targetPartition)
+                return key;
+        }
+
+        throw new InvalidOperationException($"Could not find a key for partition {targetPartition}.");
     }
 
     private static object InvokeTryProduceSyncCore(
