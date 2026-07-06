@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Admin;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
@@ -10,12 +11,12 @@ namespace Dekaf.Tests.Integration;
 ///
 /// Share groups use a Share Partition Start Offset (SPSO) that is set when the
 /// share coordinator first initializes a share-partition. Records must be produced
-/// AFTER the consumer has joined the group for them to be within the acquisition
-/// window. All tests follow this pattern: subscribe, start polling (triggers group
-/// join), produce in background, receive messages.
+/// after the consumer has joined the group and issued an initial ShareFetch for
+/// them to be within the acquisition window.
 /// </summary>
 [Category("ShareConsumer")]
 [SupportsKafka(420)]
+[NotInParallel("ShareConsumerKafka42")]
 public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -36,8 +37,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .BuildAsync();
 
         consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic, count: 5);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 5);
 
         var messages = new List<ShareConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -51,8 +53,6 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             }
         }
         catch (OperationCanceledException) { }
-
-        await produceTask;
 
         await Assert.That(messages.Count).IsEqualTo(5);
 
@@ -101,8 +101,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .BuildAsync();
 
         consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic, count: 1);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         ShareConsumeResult<string, string>? result = null;
@@ -116,8 +117,6 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             }
         }
         catch (OperationCanceledException) { }
-
-        await produceTask;
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.DeliveryCount).IsGreaterThanOrEqualTo(1);
@@ -141,8 +140,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .BuildAsync();
 
         consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic, count: 1);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -155,8 +155,6 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             }
         }
         catch (OperationCanceledException) { }
-
-        await produceTask;
 
         // Should not throw
         await consumer.CommitAsync(CancellationToken.None);
@@ -182,10 +180,10 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .BuildAsync();
 
         firstConsumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(firstConsumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic, count: 1);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
         var first = await ConsumeOneAsync(firstConsumer);
-        await produceTask;
 
         await Assert.That(first.Value).IsEqualTo("value-0");
 
@@ -237,11 +235,6 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"share-group-{Guid.NewGuid():N}";
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
         await using var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
@@ -249,30 +242,11 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .BuildAsync();
 
         consumer.Subscribe(topic);
-
-        var produceTask = ProduceAfterDelayAsync(producer, topic, count: 1);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        try
-        {
-            await foreach (var msg in consumer.PollAsync(cts.Token))
-            {
-                break;
-            }
-        }
-        catch (OperationCanceledException) { }
-
-        await produceTask;
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
         // After polling, MemberId should be set
         await Assert.That(consumer.MemberId).IsNotNull();
     }
-
-    private static Task ProduceAfterDelayAsync(
-        IKafkaProducer<string, string> producer, string topic, int count,
-        int delayMs = 5000)
-        => ShareConsumerTestHelper.ProduceAfterDelayAsync(producer, topic, count, delayMs);
 
     private static async Task<ShareConsumeResult<string, string>> ConsumeOneAsync(
         IKafkaShareConsumer<string, string> consumer)
@@ -300,6 +274,7 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 /// </summary>
 [Category("ShareConsumerAdmin")]
 [SupportsKafka(420)]
+[NotInParallel("ShareConsumerKafka42")]
 public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -321,8 +296,9 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
             .BuildAsync();
 
         consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
 
         // Poll to ensure group is active and has received a message
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -335,8 +311,6 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
             }
         }
         catch (OperationCanceledException) { }
-
-        await produceTask;
 
         // Act
         await using var adminClient = KafkaContainer.CreateAdminClient();
@@ -369,8 +343,9 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
             .BuildAsync();
 
         consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
 
         // Poll to ensure group is active
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -383,8 +358,6 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
             }
         }
         catch (OperationCanceledException) { }
-
-        await produceTask;
 
         // Act
         await using var adminClient = KafkaContainer.CreateAdminClient();
@@ -414,8 +387,9 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
             .BuildAsync();
 
         consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
-        var produceTask = ProduceAfterDelayAsync(producer, topic);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -428,8 +402,6 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
             }
         }
         catch (OperationCanceledException) { }
-
-        await produceTask;
 
         await consumer.CommitAsync();
 
@@ -444,26 +416,37 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
         var offset = offsets.First(o => o.TopicPartition.Topic == topic);
         await Assert.That(offset.StartOffset).IsGreaterThanOrEqualTo(0);
     }
-
-    private static Task ProduceAfterDelayAsync(
-        IKafkaProducer<string, string> producer, string topic, int delayMs = 5000)
-        => ShareConsumerTestHelper.ProduceAfterDelayAsync(producer, topic, count: 1, delayMs);
 }
 
 /// <summary>
 /// Shared helper for share consumer integration tests.
-/// Produces messages after a delay to allow the share consumer to join the group
-/// and initialize share partitions. This is necessary because share groups start
-/// from the Share Partition Start Offset (SPSO), which is set when the share
-/// coordinator first loads the partition.
+/// Primes the share consumer before producing records so the broker initializes
+/// the Share Partition Start Offset (SPSO) before test messages are written.
 /// </summary>
 internal static class ShareConsumerTestHelper
 {
-    internal static async Task ProduceAfterDelayAsync(
-        IKafkaProducer<string, string> producer, string topic, int count,
-        int delayMs = 5000)
+    internal static async Task PrimeShareConsumerAsync(
+        IKafkaShareConsumer<string, string> consumer)
     {
-        await Task.Delay(delayMs);
+        using var pollCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var pollTask = PollUntilCanceledAsync(consumer, pollCts.Token);
+
+        try
+        {
+            await WaitForShareAssignmentAsync(consumer, TimeSpan.FromSeconds(15));
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+        }
+        finally
+        {
+            await pollCts.CancelAsync();
+        }
+
+        await pollTask;
+    }
+
+    internal static async Task ProduceAsync(
+        IKafkaProducer<string, string> producer, string topic, int count)
+    {
         for (int i = 0; i < count; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -475,5 +458,34 @@ internal static class ShareConsumerTestHelper
         }
 
         await producer.FlushAsync();
+    }
+
+    private static async Task PollUntilCanceledAsync(
+        IKafkaShareConsumer<string, string> consumer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var _ in consumer.PollAsync(cancellationToken))
+            {
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private static async Task WaitForShareAssignmentAsync(
+        IKafkaShareConsumer<string, string> consumer, TimeSpan timeout)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        while (Stopwatch.GetElapsedTime(startedAt) < timeout)
+        {
+            if (consumer.MemberId is not null && consumer.Assignment.Count > 0)
+                return;
+
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException("Share consumer did not receive a partition assignment.");
     }
 }

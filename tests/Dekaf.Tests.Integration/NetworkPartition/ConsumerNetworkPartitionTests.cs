@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration.NetworkPartition;
@@ -8,6 +9,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 /// Uses Docker pause/unpause to simulate network failures.
 /// </summary>
 [Category("NetworkPartition")]
+[NotInParallel("NetworkPartitionKafkaContainer")]
 [ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerClass)]
 public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
 {
@@ -81,18 +83,11 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             }
 
             // Assert: consumer should rejoin and consume new messages
-            var postPartitionMessages = new List<string>();
-            using var postCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await foreach (var msg in consumer.ConsumeAsync(postCts.Token))
-            {
-                if (msg.Value!.StartsWith("post-", StringComparison.Ordinal))
-                {
-                    postPartitionMessages.Add(msg.Value);
-                }
-
-                if (postPartitionMessages.Count >= 3)
-                    break;
-            }
+            var postPartitionMessages = await ConsumeMatchingValuesAsync(
+                consumer,
+                expectedCount: 3,
+                value => value.StartsWith("post-", StringComparison.Ordinal),
+                TimeSpan.FromSeconds(30));
 
             await Assert.That(postPartitionMessages).Count().IsEqualTo(3);
         }
@@ -179,18 +174,11 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             }
 
             // Assert: consumer should rejoin, get partition assignments, and consume new messages
-            var postMessages = new List<string>();
-            using var postCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await foreach (var msg in consumer.ConsumeAsync(postCts.Token))
-            {
-                if (msg.Value!.StartsWith("post-", StringComparison.Ordinal))
-                {
-                    postMessages.Add(msg.Value);
-                }
-
-                if (postMessages.Count >= 4)
-                    break;
-            }
+            var postMessages = await ConsumeMatchingValuesAsync(
+                consumer,
+                expectedCount: 4,
+                value => value.StartsWith("post-", StringComparison.Ordinal),
+                TimeSpan.FromSeconds(30));
 
             await Assert.That(postMessages).Count().IsEqualTo(4);
 
@@ -236,5 +224,42 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         {
             return ValueTask.CompletedTask;
         }
+    }
+
+    private static async Task<List<string>> ConsumeMatchingValuesAsync(
+        IKafkaConsumer<string, string> consumer,
+        int expectedCount,
+        Func<string, bool> predicate,
+        TimeSpan timeout)
+    {
+        var values = new List<string>();
+        using var cts = new CancellationTokenSource(timeout);
+
+        while (values.Count < expectedCount)
+        {
+            try
+            {
+                await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+                {
+                    if (msg.Value is { } value && predicate(value))
+                    {
+                        values.Add(value);
+                    }
+
+                    if (values.Count >= expectedCount)
+                        return values;
+                }
+            }
+            catch (ConsumeException ex) when (ex.IsRetriable)
+            {
+                // Broker pause/unpause can surface one retriable fetch reset before consumption resumes.
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+
+        return values;
     }
 }

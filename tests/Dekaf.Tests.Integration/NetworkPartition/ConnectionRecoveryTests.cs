@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 /// Tests verifying client reconnection and metadata recovery after network interruptions.
 /// </summary>
 [Category("NetworkPartition")]
+[NotInParallel("NetworkPartitionKafkaContainer")]
 [ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerClass)]
 public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
 {

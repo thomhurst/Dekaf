@@ -65,7 +65,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         if (MaximumParallelTests is { } maximumParallelTests)
         {
             arguments.Add("--maximum-parallel-tests");
-            arguments.Add(maximumParallelTests.ToString());
+            arguments.Add(maximumParallelTests.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
         context.Logger.LogInformation("Running integration tests for category: {Category}", Category);

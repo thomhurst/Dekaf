@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 /// Uses Docker pause/unpause to simulate network failures.
 /// </summary>
 [Category("NetworkPartition")]
+[NotInParallel("NetworkPartitionKafkaContainer")]
 [ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerClass)]
 public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
 {

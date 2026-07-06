@@ -193,7 +193,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets]
+        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
       fail-fast: false
 
     steps:
@@ -255,7 +255,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets]
+        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
       fail-fast: false
 
     steps:
@@ -292,11 +292,21 @@ jobs:
           DOTNET_GCConserveMemory: '9'
         run: |
           chmod +x ./artifacts/aot/integration/Dekaf.Tests.Integration
-          ./artifacts/aot/integration/Dekaf.Tests.Integration \
-            --hangdump \
-            --hangdump-timeout 15m \
-            --log-level Debug \
+          args=(
+            --hangdump
+            --hangdump-timeout 15m
+            --log-level Debug
             --treenode-filter "/**[Category=${{ matrix.category }}]"
+          )
+          case "${{ matrix.category }}" in
+            Producer)
+              args+=(--maximum-parallel-tests 4)
+              ;;
+            NetworkPartition|ShareConsumer|ShareConsumerAdmin)
+              args+=(--maximum-parallel-tests 1)
+              ;;
+          esac
+          ./artifacts/aot/integration/Dekaf.Tests.Integration "${args[@]}"
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v7
