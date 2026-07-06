@@ -2716,8 +2716,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var batches = pending.GetBatches();
         long bytes = PerPartitionResponseOverhead;
-        foreach (var batch in batches)
+        for (var i = 0; i < batches.Count; i++)
         {
+            var batch = batches[i];
             bytes += batch.BatchLength + PerBatchHeaderOverhead;
         }
         return bytes;
