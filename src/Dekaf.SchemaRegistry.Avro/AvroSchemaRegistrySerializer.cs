@@ -35,7 +35,7 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// <typeparam name="T">The type to serialize. Must be either an Avro ISpecificRecord or GenericRecord.</typeparam>
 public sealed class AvroSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] T>
-    : ISerializer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private const int WireHeaderSize = 5;
@@ -97,6 +97,25 @@ public sealed class AvroSchemaRegistrySerializer<
         var schemaId = await GetOrFetchSchemaIdAsync(subject, schema, cancellationToken).ConfigureAwait(false);
         CacheSubjectSchemaId(topic, isKey, subject, schemaId, schema);
         return schemaId;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Delegates to <see cref="WarmupAsync"/>. Returns a synchronously completed <see cref="ValueTask"/>
+    /// with no allocation once the subject's schema ID is cached, so the producer's steady-state hot path
+    /// stays fully synchronous and only the first value per subject pays the async schema fetch.
+    /// </remarks>
+    public ValueTask PrepareAsync(T value, SerializationContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        var isKey = context.Component == SerializationComponent.Key;
+        if (_subjectSchemaIdCache.Contains(context.Topic, isKey))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return new ValueTask(WarmupAsync(context.Topic, value, isKey, cancellationToken));
     }
 
     /// <summary>

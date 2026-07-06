@@ -589,6 +589,61 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_PrepareAsync_IsAsynchronous_WhenSchemaNotYetCached()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        schemaRegistry.BlockNextGetOrRegisterSchema();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(schema!);
+        record.Add("id", 1);
+        record.Add("name", "prepare");
+
+        // Cold path: the schema fetch is in flight, so preparation must be genuinely asynchronous
+        // (not blocking a thread) - that is the whole point of the hook.
+        var prepare = serializer.PrepareAsync(record, CreateContext("prepare-topic"));
+        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await Assert.That(prepare.IsCompleted).IsFalse();
+
+        schemaRegistry.ReleaseBlockedGetOrRegisterSchema();
+        await prepare;
+
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Serializer_PrepareAsync_WhenAlreadyPrepared_CompletesSynchronouslyAndSerializeDoesNotRefetch()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(schema!);
+        record.Add("id", 1);
+        record.Add("name", "prepare");
+
+        var context = CreateContext("prepare-topic");
+
+        // First prepare warms the subject cache with a single registry call.
+        await serializer.PrepareAsync(record, context);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+
+        // Once warmed, prepare completes synchronously (no allocation, no registry call) so the
+        // producer's fast path stays synchronous.
+        var warm = serializer.PrepareAsync(record, context);
+        await Assert.That(warm.IsCompletedSuccessfully).IsTrue();
+        await warm;
+
+        // And the synchronous serialize now runs against the cached schema id without re-fetching.
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, context);
+
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+        await Assert.That(buffer.WrittenCount).IsGreaterThan(5); // magic byte + 4-byte schema id + payload
+    }
+
+    [Test]
     public async Task Deserializer_WarmupAsync_RetriesAfterTransientSchemaFetchFailure()
     {
         using var schemaRegistry = new MockSchemaRegistryClient

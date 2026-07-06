@@ -22,19 +22,38 @@ internal sealed class SubjectSchemaIdCache
         Func<TState, string, SubjectSchemaIdCacheValue> getSchema)
     {
         var key = new SubjectSchemaIdCacheKey(topic, isKey);
-        var last = Volatile.Read(ref _last);
-        if (last is not null && last.Key.Equals(key))
-            return last;
-
-        if (_cache.TryGetValue(key, out var cached))
-        {
-            Volatile.Write(ref _last, cached);
+        if (TryGetCached(key, out var cached))
             return cached;
-        }
 
         var subject = getSubjectName(state, topic, isKey);
         var schema = getSchema(state, subject);
         return Cache(key, subject, schema.SchemaId, schema.Schema);
+    }
+
+    // Cheap membership check for async preparation: true once (topic, isKey) has a resolved schema ID,
+    // meaning a subsequent synchronous GetOrAdd for it will hit the cache instead of fetching/blocking.
+    internal bool Contains(string topic, bool isKey) =>
+        TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out _);
+
+    // Shared lookup: the single-entry MRU (_last) fast-check followed by the concurrent dictionary.
+    private bool TryGetCached(in SubjectSchemaIdCacheKey key, out SubjectSchemaIdCacheEntry entry)
+    {
+        var last = Volatile.Read(ref _last);
+        if (last is not null && last.Key.Equals(key))
+        {
+            entry = last;
+            return true;
+        }
+
+        if (_cache.TryGetValue(key, out var cached))
+        {
+            Volatile.Write(ref _last, cached);
+            entry = cached;
+            return true;
+        }
+
+        entry = null!;
+        return false;
     }
 
     internal int Cache(string topic, bool isKey, string subject, int schemaId, Schema? schema) =>
