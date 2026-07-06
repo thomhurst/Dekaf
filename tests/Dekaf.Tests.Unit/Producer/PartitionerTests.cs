@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -356,4 +357,125 @@ public class RoundRobinPartitionerTests
         await Task.WhenAll(tasks);
         await Assert.That(allValid).IsTrue();
     }
+}
+
+public class LibrdkafkaPartitionerTests
+{
+    private static readonly LibrdkafkaHashVector[] HashVectors =
+    [
+        new("kafka", 10, Crc32: 0x5bbc7517, Crc32Partition: 9, Fnv1A: 0x0d33c4e1, Fnv1APartition: 5),
+        new("user-123", 10, Crc32: 0xa2686a4e, Crc32Partition: 0, Fnv1A: 0x736c336d, Fnv1APartition: 3),
+        new("order-123", 12, Crc32: 0x0a2544a5, Crc32Partition: 1, Fnv1A: 0x5af730e6, Fnv1APartition: 6),
+        new("giberish123456789", 50, Crc32: 0x7b3a8e3f, Crc32Partition: 21, Fnv1A: 0x77a58295, Fnv1APartition: 23)
+    ];
+
+    [Test]
+    public async Task ConsistentPartitioner_MatchesLibrdkafkaCrc32Vectors()
+    {
+        var partitioner = new ConsistentPartitioner();
+
+        foreach (var vector in HashVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            await Assert.That(LibrdkafkaCrc32.Hash(key)).IsEqualTo(vector.Crc32);
+            await Assert.That(partitioner.Partition("topic", key, keyIsNull: false, vector.PartitionCount))
+                .IsEqualTo(vector.Crc32Partition);
+        }
+    }
+
+    [Test]
+    public async Task ConsistentPartitioner_NullAndEmptyKeys_MapToSinglePartition()
+    {
+        var partitioner = new ConsistentPartitioner();
+
+        await Assert.That(partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: true, 17))
+            .IsEqualTo(0);
+        await Assert.That(partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: false, 17))
+            .IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Fnv1APartitioner_MatchesLibrdkafkaVectors()
+    {
+        var partitioner = new Fnv1APartitioner();
+
+        foreach (var vector in HashVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            await Assert.That(Fnv1A.Hash(key)).IsEqualTo(vector.Fnv1A);
+            await Assert.That(partitioner.Partition("topic", key, keyIsNull: false, vector.PartitionCount))
+                .IsEqualTo(vector.Fnv1APartition);
+        }
+    }
+
+    [Test]
+    public async Task Fnv1APartitioner_NullAndEmptyKeys_MapToSinglePartition()
+    {
+        var partitioner = new Fnv1APartitioner();
+        var expected = (int)(Fnv1A.Hash(ReadOnlySpan<byte>.Empty) % 17u);
+
+        await Assert.That(Fnv1A.Hash(ReadOnlySpan<byte>.Empty)).IsEqualTo(0x7ee3623bu);
+        await Assert.That(expected).IsEqualTo(0);
+        await Assert.That(partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: true, 17))
+            .IsEqualTo(expected);
+        await Assert.That(partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: false, 17))
+            .IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task Murmur2RandomPartitioner_EmptyNonNullKey_UsesMurmur2()
+    {
+        var partitioner = new Murmur2RandomPartitioner();
+
+        await Assert.That(partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: false, 17))
+            .IsEqualTo(Murmur2.Partition(ReadOnlySpan<byte>.Empty, 17));
+    }
+
+    [Test]
+    public async Task Fnv1ARandomPartitioner_EmptyNonNullKey_UsesFnv1A()
+    {
+        var partitioner = new Fnv1ARandomPartitioner();
+        var expected = (int)(Fnv1A.Hash(ReadOnlySpan<byte>.Empty) % 17u);
+
+        await Assert.That(partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: false, 17))
+            .IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task ConsistentRandomPartitioner_EmptyKey_UsesRandomPartition()
+    {
+        var partitioner = new ConsistentRandomPartitioner();
+
+        for (var i = 0; i < 20; i++)
+        {
+            var partition = partitioner.Partition("topic", ReadOnlySpan<byte>.Empty, keyIsNull: false, 17);
+
+            await Assert.That(partition).IsGreaterThanOrEqualTo(0);
+            await Assert.That(partition).IsLessThan(17);
+        }
+    }
+
+    [Test]
+    public async Task RandomPartitioner_IgnoresKeyAndReturnsValidPartitions()
+    {
+        var partitioner = new RandomPartitioner();
+
+        for (var i = 0; i < 20; i++)
+        {
+            var partition = partitioner.Partition("topic", "same-key"u8, keyIsNull: false, 17);
+
+            await Assert.That(partition).IsGreaterThanOrEqualTo(0);
+            await Assert.That(partition).IsLessThan(17);
+        }
+    }
+
+    private sealed record LibrdkafkaHashVector(
+        string Key,
+        int PartitionCount,
+        uint Crc32,
+        int Crc32Partition,
+        uint Fnv1A,
+        int Fnv1APartition);
 }

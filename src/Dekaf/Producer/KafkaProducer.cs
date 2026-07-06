@@ -314,6 +314,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             PartitionerType.Sticky => new StickyPartitioner(),
             PartitionerType.RoundRobin => new RoundRobinPartitioner(),
+            PartitionerType.Random => new RandomPartitioner(),
+            PartitionerType.Consistent => new ConsistentPartitioner(),
+            PartitionerType.ConsistentRandom => new ConsistentRandomPartitioner(),
+            PartitionerType.Murmur2 => new Murmur2Partitioner(),
+            PartitionerType.Murmur2Random => new Murmur2RandomPartitioner(),
+            PartitionerType.Fnv1A => new Fnv1APartitioner(),
+            PartitionerType.Fnv1ARandom => new Fnv1ARandomPartitioner(),
             _ => new DefaultPartitioner()
         };
 

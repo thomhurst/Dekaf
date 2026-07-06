@@ -79,9 +79,18 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 | Partitioner | Behavior |
 |-------------|----------|
-| `Default` | Hash key for keyed messages, sticks null keys until batch completion |
-| `Sticky` | Sticks to one partition for null keys until batch completion |
-| `RoundRobin` | Distributes all messages evenly |
+| `Default` | Murmur2 positive-hash keyed messages, sticky null or empty keys until batch completion |
+| `Sticky` | Murmur2 positive-hash keyed messages, sticky null or empty keys until batch completion |
+| `RoundRobin` | Cycles through partitions |
+| `Random` | Ignores keys and picks a pseudo-random partition |
+| `Consistent` | librdkafka `consistent`: CRC32 hash; null and empty keys map to one partition |
+| `ConsistentRandom` | librdkafka `consistent_random`: CRC32 hash; null and empty keys are random |
+| `Murmur2` | librdkafka `murmur2`: Java-compatible Murmur2 hash; null keys map to one partition |
+| `Murmur2Random` | librdkafka `murmur2_random`: Java-compatible Murmur2 hash; null keys are random |
+| `Fnv1A` | librdkafka `fnv1a`: Sarama-compatible FNV-1a hash; null keys map to one partition |
+| `Fnv1ARandom` | librdkafka `fnv1a_random`: Sarama-compatible FNV-1a hash; null keys are random |
+
+Use `ConsistentRandom` when matching librdkafka or Confluent.Kafka's default `consistent_random` mapping. Use `Murmur2Random` when matching the Java producer's null-key behavior.
 
 ### Default and Sticky Partitioners
 

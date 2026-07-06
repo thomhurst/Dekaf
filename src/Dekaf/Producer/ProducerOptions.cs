@@ -505,5 +505,40 @@ public enum PartitionerType
     /// <summary>
     /// Round-robin partitioner.
     /// </summary>
-    RoundRobin
+    RoundRobin,
+
+    /// <summary>
+    /// Random partitioner.
+    /// </summary>
+    Random,
+
+    /// <summary>
+    /// librdkafka consistent partitioner (CRC32 hash; null and empty keys map to one partition).
+    /// </summary>
+    Consistent,
+
+    /// <summary>
+    /// librdkafka consistent_random partitioner (CRC32 hash; null and empty keys are random).
+    /// </summary>
+    ConsistentRandom,
+
+    /// <summary>
+    /// librdkafka murmur2 partitioner (Java-compatible Murmur2 hash; null keys map to one partition).
+    /// </summary>
+    Murmur2,
+
+    /// <summary>
+    /// librdkafka murmur2_random partitioner (Java-compatible Murmur2 hash; null keys are random).
+    /// </summary>
+    Murmur2Random,
+
+    /// <summary>
+    /// librdkafka fnv1a partitioner (Sarama-compatible FNV-1a hash; null keys map to one partition).
+    /// </summary>
+    Fnv1A,
+
+    /// <summary>
+    /// librdkafka fnv1a_random partitioner (Sarama-compatible FNV-1a hash; null keys are random).
+    /// </summary>
+    Fnv1ARandom
 }

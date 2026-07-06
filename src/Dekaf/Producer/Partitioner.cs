@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.IO.Hashing;
 
 namespace Dekaf.Producer;
 
@@ -123,6 +124,160 @@ public sealed class RoundRobinPartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         return (int)(++_counter % (uint)partitionCount);
+    }
+}
+
+/// <summary>
+/// Random partitioner - ignores keys and distributes across partitions.
+/// </summary>
+public sealed class RandomPartitioner : IPartitioner
+{
+    private readonly RandomPartitionSelector _randomPartitionSelector = new();
+
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return _randomPartitionSelector.NextPartition(partitionCount);
+    }
+}
+
+/// <summary>
+/// librdkafka consistent partitioner - CRC32 hash of key.
+/// Null and empty keys map to the same partition.
+/// </summary>
+public sealed class ConsistentPartitioner : IPartitioner
+{
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return LibrdkafkaCrc32.Partition(key, partitionCount);
+    }
+}
+
+/// <summary>
+/// librdkafka consistent_random partitioner - CRC32 for non-empty keys, random for null or empty keys.
+/// </summary>
+public sealed class ConsistentRandomPartitioner : IPartitioner
+{
+    private readonly RandomPartitionSelector _randomPartitionSelector = new();
+
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return key.Length == 0
+            ? _randomPartitionSelector.NextPartition(partitionCount)
+            : LibrdkafkaCrc32.Partition(key, partitionCount);
+    }
+}
+
+/// <summary>
+/// librdkafka murmur2 partitioner - Java-compatible Murmur2 hash of key.
+/// Null keys map to the hash of an empty key.
+/// </summary>
+public sealed class Murmur2Partitioner : IPartitioner
+{
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return Murmur2.Partition(key, partitionCount);
+    }
+}
+
+/// <summary>
+/// librdkafka murmur2_random partitioner - Murmur2 for non-null keys, random for null keys.
+/// </summary>
+public sealed class Murmur2RandomPartitioner : IPartitioner
+{
+    private readonly RandomPartitionSelector _randomPartitionSelector = new();
+
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return keyIsNull
+            ? _randomPartitionSelector.NextPartition(partitionCount)
+            : Murmur2.Partition(key, partitionCount);
+    }
+}
+
+/// <summary>
+/// librdkafka fnv1a partitioner - Sarama-compatible FNV-1a hash of key.
+/// Null and empty keys map to the same partition.
+/// </summary>
+public sealed class Fnv1APartitioner : IPartitioner
+{
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return Fnv1A.Partition(key, partitionCount);
+    }
+}
+
+/// <summary>
+/// librdkafka fnv1a_random partitioner - FNV-1a for non-null keys, random for null keys.
+/// </summary>
+public sealed class Fnv1ARandomPartitioner : IPartitioner
+{
+    private readonly RandomPartitionSelector _randomPartitionSelector = new();
+
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+    {
+        return keyIsNull
+            ? _randomPartitionSelector.NextPartition(partitionCount)
+            : Fnv1A.Partition(key, partitionCount);
+    }
+}
+
+internal sealed class RandomPartitionSelector
+{
+    private const int GoldenRatioIncrement = unchecked((int)0x9e3779b9);
+    private const uint MixMultiplier1 = 0x7feb352d;
+    private const uint MixMultiplier2 = 0x846ca68b;
+
+    private int _state = Environment.TickCount;
+
+    public int NextPartition(int partitionCount)
+    {
+        var value = unchecked((uint)Interlocked.Add(ref _state, GoldenRatioIncrement));
+        value ^= value >> 16;
+        value *= MixMultiplier1;
+        value ^= value >> 15;
+        value *= MixMultiplier2;
+        value ^= value >> 16;
+        return (int)(value % (uint)partitionCount);
+    }
+}
+
+internal static class LibrdkafkaCrc32
+{
+    public static int Partition(ReadOnlySpan<byte> key, int partitionCount)
+    {
+        return (int)(Hash(key) % (uint)partitionCount);
+    }
+
+    public static uint Hash(ReadOnlySpan<byte> key)
+    {
+        return Crc32.HashToUInt32(key);
+    }
+}
+
+internal static class Fnv1A
+{
+    private const uint Offset = 0x811c9dc5;
+    private const uint Prime = 0x01000193;
+
+    public static int Partition(ReadOnlySpan<byte> key, int partitionCount)
+    {
+        return (int)(Hash(key) % (uint)partitionCount);
+    }
+
+    public static uint Hash(ReadOnlySpan<byte> key)
+    {
+        var hash = Offset;
+
+        foreach (var value in key)
+        {
+            hash ^= value;
+            hash *= Prime;
+        }
+
+        var signedHash = unchecked((int)hash);
+        return signedHash < 0
+            ? unchecked((uint)-signedHash)
+            : hash;
     }
 }
 

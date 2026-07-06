@@ -192,6 +192,8 @@ Control how messages are assigned to partitions:
 .WithPartitioner(PartitionerType.Default)     // Hash key or sticky null keys
 .WithPartitioner(PartitionerType.Sticky)      // Stick null keys for batching
 .WithPartitioner(PartitionerType.RoundRobin)  // Even distribution
+.WithPartitioner(PartitionerType.ConsistentRandom) // librdkafka default
+.WithPartitioner(PartitionerType.Fnv1ARandom)      // librdkafka/Sarama-compatible
 ```
 
 ## Transactions
