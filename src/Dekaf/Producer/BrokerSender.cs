@@ -794,8 +794,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     carryOver.DrainTo(drainList);
 
                 for (var i = 0; i < drainList.Count; i++)
+                {
                     CoalesceBatch(drainList[i], coalescedBatches, ref coalescedCount,
                         coalescedPartitions, carryOver);
+                }
 
                 // Read from the event channel lazily during coalescing (like main reads
                 // from its bounded batch channel). Non-batch events are consumed as signals.
@@ -808,7 +810,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var carryOverBudget = maxCoalesce - carryOver.Count;
                     var channelReads = 0;
                     var channelCarryOvers = 0;
-                    while (channelReads < maxCoalesce && eventReader.TryRead(out var evt))
+                    while (coalescedCount < maxCoalesce
+                        && channelReads < maxCoalesce
+                        && eventReader.TryRead(out var evt))
                     {
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
@@ -843,12 +847,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // the spin pure waste. This is especially important for single-partition topics
                 // where coalescedCount is always 1 and every MicroLinger iteration is wasted.
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
+                    && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
                     && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight)
                 {
                     var spinWait = new SpinWait();
-                    for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
+                    for (var spin = 0; spin < MicroLingerMaxSpins && coalescedCount < maxCoalesce; spin++)
                     {
                         if (!eventReader.TryRead(out var evt))
                         {
@@ -1296,6 +1301,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // carry-over — they must retain their retry state and mute status.
             batch.RetryNotBefore = 0;
 
+            if (CarryOverIfCoalescedFull(batch, coalescedBatches, coalescedCount, carryOver))
+                return;
+
             if (!coalescedPartitions.Add(batch.TopicPartition))
             {
                 // Same partition already in this request (shouldn't happen — only one
@@ -1304,9 +1312,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return;
             }
 
-            batch.AppendDiag('C');
-            coalescedBatches[coalescedCount] = batch;
-            coalescedCount++;
+            AddCoalescedBatch(batch, coalescedBatches, ref coalescedCount);
             return;
         }
 
@@ -1319,6 +1325,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
+        if (CarryOverIfCoalescedFull(batch, coalescedBatches, coalescedCount, carryOver))
+            return;
+
         // Ensure at most one batch per partition per coalesced request
         if (!coalescedPartitions.Add(batch.TopicPartition))
         {
@@ -1327,6 +1336,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
+        AddCoalescedBatch(batch, coalescedBatches, ref coalescedCount);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool CarryOverIfCoalescedFull(
+        ReadyBatch batch,
+        ReadyBatch[] coalescedBatches,
+        int coalescedCount,
+        PartitionCarryOver carryOver)
+    {
+        if (coalescedCount < coalescedBatches.Length)
+            return false;
+
+        batch.AppendDiag('O');
+        carryOver.Add(batch);
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddCoalescedBatch(
+        ReadyBatch batch,
+        ReadyBatch[] coalescedBatches,
+        ref int coalescedCount)
+    {
         batch.AppendDiag('C');
         coalescedBatches[coalescedCount] = batch;
         coalescedCount++;
