@@ -48,6 +48,77 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_WithPendingFetch_FlushesPositionWhenFetchExhausted()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        var positions = GetPositions(consumer);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        await Assert.That(positions.ContainsKey(tp)).IsFalse();
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        await Assert.That(positions.ContainsKey(tp)).IsFalse();
+
+        await Assert.That(TryConsumeOneFromPendingFetches(consumer, out _)).IsFalse();
+        await Assert.That(positions[tp]).IsEqualTo(22L);
+    }
+
+    [Test]
+    public async Task CommitAsync_InAutoMode_FlushesActivePositionWithoutPendingQueue()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        var positions = GetPositions(consumer);
+        var pendingFetches = GetPendingFetches(consumer);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        var activeFetch = pendingFetches.Peek();
+        pendingFetches.Clear();
+        activeFetch.Dispose();
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(positions[tp]).IsEqualTo(21L);
+    }
+
+    [Test]
+    public async Task GetPosition_InAutoMode_ReadsActiveSnapshotWithoutPendingQueue()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        var pendingFetches = GetPendingFetches(consumer);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        var activeFetch = pendingFetches.Peek();
+        pendingFetches.Clear();
+        activeFetch.Dispose();
+
+        await Assert.That(consumer.GetPosition(tp)).IsEqualTo(21L);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_WithPrefetchBuffer_ReturnsRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -106,8 +177,11 @@ public sealed class ConsumeOneFastPathTests
 
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+        await Assert.That(messagesReceived).IsEmpty();
 
-        await Assert.That(messagesReceived).IsEquivalentTo([1L, 1L]);
+        await Assert.That(TryConsumeOneFromPendingFetches(consumer, out _)).IsFalse();
+
+        await Assert.That(messagesReceived).IsEquivalentTo([2L]);
         await Assert.That(bytesReceived.Sum()).IsEqualTo(8L);
     }
 
@@ -192,6 +266,13 @@ public sealed class ConsumeOneFastPathTests
     }
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        OffsetCommitMode offsetCommitMode,
+        params PendingFetchData[] fetches)
+    {
+        return CreateInitializedConsumer(null, queuedMinMessages: 1, fetchMaxWaitMs: 200, offsetCommitMode, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
         int queuedMinMessages,
         params PendingFetchData[] fetches)
     {
@@ -219,11 +300,21 @@ public sealed class ConsumeOneFastPathTests
         int fetchMaxWaitMs,
         params PendingFetchData[] fetches)
     {
+        return CreateInitializedConsumer(loggerFactory, queuedMinMessages, fetchMaxWaitMs, OffsetCommitMode.Manual, fetches);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        ILoggerFactory? loggerFactory,
+        int queuedMinMessages,
+        int fetchMaxWaitMs,
+        OffsetCommitMode offsetCommitMode,
+        params PendingFetchData[] fetches)
+    {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
-                OffsetCommitMode = OffsetCommitMode.Manual,
+                OffsetCommitMode = offsetCommitMode,
                 QueuedMinMessages = queuedMinMessages,
                 FetchMaxWaitMs = fetchMaxWaitMs
             },
@@ -277,6 +368,32 @@ public sealed class ConsumeOneFastPathTests
             ?? throw new InvalidOperationException("_pendingFetches field not found.");
 
         return (Queue<PendingFetchData>)field.GetValue(consumer)!;
+    }
+
+    private static ConcurrentDictionary<TopicPartition, long> GetPositions(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_positions", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_positions field not found.");
+
+        return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
+    }
+
+    private static bool TryConsumeOneFromPendingFetches(
+        KafkaConsumer<string, string> consumer,
+        out ConsumeResult<string, string> result)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("TryConsumeOneFromPendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("TryConsumeOneFromPendingFetches method not found.");
+
+        object?[] args = [null];
+        var consumed = (bool)method.Invoke(consumer, args)!;
+        result = args[0] is ConsumeResult<string, string> consumeResult
+            ? consumeResult
+            : default;
+        return consumed;
     }
 
     private static MpscFetchBuffer GetPrefetchBuffer(KafkaConsumer<string, string> consumer)
