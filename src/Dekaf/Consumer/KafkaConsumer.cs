@@ -2813,7 +2813,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
-            if (_prefetchBuffer.WaitToRead(_options.FetchMaxWaitMs, cancellationToken))
+            if (await WaitForPrefetchDataAsync(cancellationToken).ConfigureAwait(false))
             {
                 if (_prefetchBuffer.TryRead(out var fetched))
                 {

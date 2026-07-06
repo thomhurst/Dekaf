@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Text;
@@ -206,6 +207,26 @@ public sealed class ConsumeOneFastPathTests
         var prefetchCts = GetPrefetchCts(consumer);
         await Assert.That(prefetchCts).IsNotNull();
         await Assert.That(prefetchCts!.IsCancellationRequested).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_WithEmptyPrefetchBuffer_DoesNotBlockCaller()
+    {
+        await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetchMaxWaitMs: 1_000);
+        AssignTestPartition(consumer);
+        SetPrefetchStarted(consumer);
+
+        using var cts = new CancellationTokenSource();
+
+        var stopwatch = Stopwatch.StartNew();
+        var consumeTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        stopwatch.Stop();
+
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(100));
+        await Assert.That(consumeTask.IsCompleted).IsFalse();
+
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await consumeTask);
     }
 
     [Test]
