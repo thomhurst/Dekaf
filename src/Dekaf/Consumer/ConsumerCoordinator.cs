@@ -1135,7 +1135,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1.
+    /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1 for dynamic members,
+    /// or -2 for static members so the broker keeps the assignment warm.
     /// </summary>
     private async ValueTask LeaveGroupConsumerProtocolAsync(CancellationToken cancellationToken)
     {
@@ -1149,7 +1150,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 GroupId = _options.GroupId!,
                 MemberId = _memberId!,
-                MemberEpoch = -1,
+                MemberEpoch = string.IsNullOrEmpty(_options.GroupInstanceId) ? -1 : -2,
                 InstanceId = _options.GroupInstanceId,
             };
 
