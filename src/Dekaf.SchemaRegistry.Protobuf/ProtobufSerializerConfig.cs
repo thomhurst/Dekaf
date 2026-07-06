@@ -34,6 +34,12 @@ public sealed class ProtobufSerializerConfig
     public bool UseLatestVersion { get; init; }
 
     /// <summary>
+    /// Whether schema registration and lookup requests should include normalize=true.
+    /// Default is false.
+    /// </summary>
+    public bool NormalizeSchemas { get; init; }
+
+    /// <summary>
     /// Whether to use the deprecated unsigned Protobuf message-index encoding.
     /// This also preserves the previous RecordName subject naming format without a -key/-value suffix.
     /// Default is false.

@@ -33,6 +33,12 @@ public sealed class AvroSerializerConfig
     public bool UseLatestVersion { get; init; }
 
     /// <summary>
+    /// Whether schema registration and lookup requests should include normalize=true.
+    /// Default is false.
+    /// </summary>
+    public bool NormalizeSchemas { get; init; }
+
+    /// <summary>
     /// Optional rule executor applied to Avro payload bytes before the Schema Registry envelope is written.
     /// </summary>
     public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }

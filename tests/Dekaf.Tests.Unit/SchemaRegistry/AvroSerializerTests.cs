@@ -5,6 +5,7 @@ using Avro.IO;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
+using NSubstitute;
 using AvroSchema = Avro.Schema;
 using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 
@@ -306,6 +307,33 @@ public sealed class AvroSerializerTests
         var schemaId1 = BinaryPrimitives.ReadInt32BigEndian(buffer1.WrittenSpan.Slice(1, 4));
         var schemaId2 = BinaryPrimitives.ReadInt32BigEndian(buffer2.WrittenSpan.Slice(1, 4));
         await Assert.That(schemaId1).IsEqualTo(schemaId2);
+    }
+
+    [Test]
+    public async Task Serializer_NormalizeSchemas_PassesNormalizeToRegistry()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetOrRegisterSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<RegistrySchema>(),
+                true,
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(123));
+        var config = new AvroSerializerConfig { NormalizeSchemas = true };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(schema!);
+        record.Add("id", 1);
+        record.Add("name", "normalized");
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        await schemaRegistry.Received(1).GetOrRegisterSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<RegistrySchema>(),
+            true,
+            Arg.Any<CancellationToken>());
     }
 
     [Test]

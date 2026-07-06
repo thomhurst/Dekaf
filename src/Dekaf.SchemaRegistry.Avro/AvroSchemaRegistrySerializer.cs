@@ -343,8 +343,16 @@ public sealed class AvroSchemaRegistrySerializer<
             if (_config.AutoRegisterSchemas)
             {
                 // Register schema if auto-register is enabled
-                return await _schemaRegistry.GetOrRegisterSchemaAsync(subject, registrySchema, CancellationToken.None)
-                    .ConfigureAwait(false);
+                return _config.NormalizeSchemas
+                    ? await _schemaRegistry.GetOrRegisterSchemaAsync(
+                        subject,
+                        registrySchema,
+                        normalize: true,
+                        CancellationToken.None).ConfigureAwait(false)
+                    : await _schemaRegistry.GetOrRegisterSchemaAsync(
+                        subject,
+                        registrySchema,
+                        CancellationToken.None).ConfigureAwait(false);
             }
 
             // Get existing schema ID from registry

@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +10,7 @@ using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
+using NSubstitute;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -288,6 +290,39 @@ public sealed class SchemaRegistryCacheTests
     }
 
     [Test]
+    public async Task Serializer_NormalizeSchemas_PassesNormalizeToRegistry()
+    {
+        var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                true,
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(123));
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
+
+        await using var serializer = new SchemaRegistrySerializer<string>(
+            registry,
+            serialize: static (value, writer) =>
+            {
+                var byteCount = Encoding.UTF8.GetByteCount(value);
+                Encoding.UTF8.GetBytes(value, writer.GetSpan(byteCount));
+                writer.Advance(byteCount);
+            },
+            getSchema: _ => schema,
+            normalizeSchemas: true);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("msg", ref buffer, CreateContext());
+
+        await registry.Received(1).GetOrRegisterSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            true,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task Deserializer_RuleExecutor_TransformsDeserializedPayload()
     {
         var registry = new MockSchemaRegistryClient();
@@ -335,6 +370,32 @@ public sealed class SchemaRegistryCacheTests
 
         await Assert.That(strategy.CallCount).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task JsonSerializer_NormalizeSchemas_PassesNormalizeToRegistry()
+    {
+        var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                true,
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(123));
+
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            """{ "type": "string" }""",
+            normalizeSchemas: true);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("msg", ref buffer, CreateContext());
+
+        await registry.Received(1).GetOrRegisterSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            true,
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -524,6 +585,105 @@ public sealed class SchemaRegistryCacheTests
     }
 
     [Test]
+    public async Task Client_FailsOverToNextUrl_OnRetriableStatus()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.ServiceUnavailable, "{}")
+            .Enqueue(HttpStatusCode.OK, "[]");
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://primary:8081, http://secondary:8081"
+        }, handler);
+
+        var subjects = await client.GetAllSubjectsAsync();
+
+        await Assert.That(subjects).IsEmpty();
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(2);
+        await Assert.That(handler.RequestUris[0].Host).IsEqualTo("primary");
+        await Assert.That(handler.RequestUris[1].Host).IsEqualTo("secondary");
+    }
+
+    [Test]
+    public async Task Client_DoesNotFailOver_OnSchemaRegistryClientError()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.NotFound, """{ "error_code": 40401, "message": "not found" }""")
+            .Enqueue(HttpStatusCode.OK, "[]");
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Urls = ["http://primary:8081", "http://secondary:8081"],
+            Url = "http://ignored:8081"
+        }, handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() => client.GetAllSubjectsAsync());
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(40401);
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(1);
+        await Assert.That(handler.RequestUris[0].Host).IsEqualTo("primary");
+    }
+
+    [Test]
+    public async Task Client_AddsNormalizeQuery_WhenConfigured()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, """{ "id": 42 }""");
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081",
+            NormalizeSchemas = true
+        }, handler);
+
+        var schemaId = await client.RegisterSchemaAsync("topic-value", NewSchema(1));
+
+        await Assert.That(schemaId).IsEqualTo(42);
+        await Assert.That(handler.RequestUris[0].Query).IsEqualTo("?normalize=true");
+    }
+
+    [Test]
+    public async Task Client_RegisterSchema_CacheKeyIncludesNormalizeFlag()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, """{ "id": 41 }""")
+            .Enqueue(HttpStatusCode.OK, """{ "id": 42 }""");
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var schema = NewSchema(1);
+
+        var firstId = await client.RegisterSchemaAsync("topic-value", schema, normalize: false);
+        var secondId = await client.RegisterSchemaAsync("topic-value", schema, normalize: true);
+
+        await Assert.That(firstId).IsEqualTo(41);
+        await Assert.That(secondId).IsEqualTo(42);
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(2);
+        await Assert.That(handler.RequestUris[0].Query).IsEqualTo("");
+        await Assert.That(handler.RequestUris[1].Query).IsEqualTo("?normalize=true");
+    }
+
+    [Test]
+    public async Task Client_GetOrRegisterSchema_CacheKeyIncludesNormalizeFlag()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, RegisteredSchemaJson(41))
+            .Enqueue(HttpStatusCode.OK, RegisteredSchemaJson(42));
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var schema = NewSchema(1);
+
+        var firstId = await client.GetOrRegisterSchemaAsync("topic-value", schema, normalize: false);
+        var secondId = await client.GetOrRegisterSchemaAsync("topic-value", schema, normalize: true);
+
+        await Assert.That(firstId).IsEqualTo(41);
+        await Assert.That(secondId).IsEqualTo(42);
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(2);
+        await Assert.That(handler.RequestUris[0].Query).IsEqualTo("");
+        await Assert.That(handler.RequestUris[1].Query).IsEqualTo("?normalize=true");
+    }
+
+    [Test]
     public async Task Deserializer_UsesCachedSchema_AndPassesPayloadWithoutCopy()
     {
         var registry = new MockSchemaRegistryClient();
@@ -635,6 +795,45 @@ public sealed class SchemaRegistryCacheTests
         SchemaType = SchemaType.Json,
         SchemaString = $$"""{ "type": "string", "title": "schema-{{id}}" }"""
     };
+
+    private static string RegisteredSchemaJson(int id) =>
+        $$"""
+        {
+          "subject": "topic-value",
+          "version": 1,
+          "id": {{id}},
+          "schema": "{ \"type\": \"string\" }",
+          "schemaType": "JSON"
+        }
+        """;
+
+    private sealed class QueueingSchemaRegistryHandler : HttpMessageHandler
+    {
+        private readonly Queue<(HttpStatusCode StatusCode, string Content)> _responses = new();
+
+        public List<Uri> RequestUris { get; } = [];
+
+        public QueueingSchemaRegistryHandler Enqueue(HttpStatusCode statusCode, string content)
+        {
+            _responses.Enqueue((statusCode, content));
+            return this;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri!);
+            (HttpStatusCode StatusCode, string Content) response = _responses.Count > 0
+                ? _responses.Dequeue()
+                : (HttpStatusCode.OK, "[]");
+
+            return Task.FromResult(new HttpResponseMessage(response.StatusCode)
+            {
+                Content = new StringContent(response.Content, Encoding.UTF8)
+            });
+        }
+    }
 
     private static GenericRecord CreateAvroRecord()
     {
