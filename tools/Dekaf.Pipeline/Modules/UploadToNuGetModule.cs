@@ -41,6 +41,8 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
         }
 
         var results = new List<CommandResult>();
+        var newlyPublished = 0;
+        var duplicates = 0;
 
         foreach (var package in packedProjects)
         {
@@ -54,8 +56,44 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
 
             context.Logger.LogInformation("Uploading {PackageName}", package.Name);
 
-            results.Add(await PushPackageAsync(nupkgFile.Path));
+            var result = await PushPackageAsync(nupkgFile.Path);
+            results.Add(result);
+
+            // A non-duplicate push failure throws (non-zero exit), so anything reaching here either
+            // published or was skipped as a duplicate. --skip-duplicate reports "already exists" on
+            // a conflict; treat its absence as a genuine new publish.
+            var isDuplicate =
+                result.StandardOutput.Contains("already exists", StringComparison.OrdinalIgnoreCase)
+                || result.StandardError.Contains("already exists", StringComparison.OrdinalIgnoreCase);
+            if (isDuplicate)
+            {
+                duplicates++;
+                context.Logger.LogWarning(
+                    "Package {PackageName} {Version} already exists on the feed - skipped as duplicate",
+                    package.Name, package.Version);
+            }
+            else
+            {
+                newlyPublished++;
+                context.Logger.LogInformation("Published {PackageName} {Version}", package.Name, package.Version);
+            }
         }
+
+        // Guard against silent no-op releases: the job succeeds but ships nothing because every
+        // package version already exists (e.g. the version stopped advancing). Fail loudly instead.
+        if (newlyPublished == 0)
+        {
+            var reason = duplicates > 0
+                ? $"every push was a duplicate of an already-released version ({packedProjects[0].Version}); the package version likely did not advance"
+                : "no package files were found to push";
+
+            throw new InvalidOperationException(
+                $"NuGet publish ran but 0 of {packedProjects.Count} packages were newly published - {reason}.");
+        }
+
+        context.Logger.LogInformation(
+            "NuGet publish complete: {NewlyPublished} newly published, {Duplicates} skipped as duplicates",
+            newlyPublished, duplicates);
 
         return results;
 
