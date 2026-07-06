@@ -371,6 +371,9 @@ public class RecordAccumulatorTests
         try
         {
             await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(
+                () => IsAppendInProgress(accumulator, topicPartition),
+                TimeSpan.FromSeconds(5));
 
             var disposeTask = Task.Run(async () => await accumulator.DisposeAsync());
             await WaitUntilAsync(
@@ -3208,6 +3211,13 @@ public class RecordAccumulatorTests
             throw new InvalidOperationException("Partition deque was not found.");
 
         return parameters[1]!;
+    }
+
+    private static bool IsAppendInProgress(RecordAccumulator accumulator, TopicPartition topicPartition)
+    {
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var appendInProgressField = partitionDeque.GetType().GetField("AppendInProgress");
+        return (bool)appendInProgressField!.GetValue(partitionDeque)!;
     }
 
     private static void EnableThreadOwnerTrackingForPartitionLock(
