@@ -144,7 +144,15 @@ public class KafkaProtocolWriterTests
             typeof(KafkaProtocolWriter).GetMethod(
                 nameof(KafkaProtocolWriter.WriteCompactString),
                 BindingFlags.Instance | BindingFlags.Public,
-                [typeof(string)])
+                [typeof(string)]),
+            typeof(KafkaProtocolWriter).GetMethod(
+                nameof(KafkaProtocolWriter.WriteString),
+                BindingFlags.Instance | BindingFlags.Public,
+                [typeof(ReadOnlySpan<char>)]),
+            typeof(KafkaProtocolWriter).GetMethod(
+                nameof(KafkaProtocolWriter.WriteCompactString),
+                BindingFlags.Instance | BindingFlags.Public,
+                [typeof(ReadOnlySpan<char>)])
         };
 
         foreach (var method in methods)

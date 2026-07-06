@@ -11,6 +11,10 @@ namespace Dekaf.Protocol;
 /// </summary>
 public ref struct KafkaProtocolWriter
 {
+    private const int StackallocCharThreshold = 128;
+    private const int StackallocUtf8ByteCount = StackallocCharThreshold * 4;
+    private const int MaxUnsignedVarIntByteCount = 5;
+
     private readonly IBufferWriter<byte> _output;
     private int _bytesWritten;
 
@@ -137,6 +141,20 @@ public ref struct KafkaProtocolWriter
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int WriteVarUIntToSpan(uint value, Span<byte> span)
+    {
+        var pos = 0;
+        while (value >= 0x80)
+        {
+            span[pos++] = (byte)(value | 0x80);
+            value >>= 7;
+        }
+
+        span[pos++] = (byte)value;
+        return pos;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteVarUInt(uint value)
     {
         // Fast path: single byte (0-127) - most common case
@@ -249,40 +267,7 @@ public ref struct KafkaProtocolWriter
             return;
         }
 
-        // Fast path for short strings (topic names, client IDs, etc.)
-        // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
-        if (value.Length <= 128)
-        {
-            // Max UTF-8 expansion is 4 bytes per char (surrogate pairs)
-            // For 128 chars, 512 bytes covers all cases including emojis
-            Span<byte> buffer = stackalloc byte[512];
-            var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
-            WriteInt16((short)actualBytes);
-            if (actualBytes > 0)
-            {
-                var outputSpan = _output.GetSpan(actualBytes);
-                buffer[..actualBytes].CopyTo(outputSpan);
-                _output.Advance(actualBytes);
-                _bytesWritten += actualBytes;
-            }
-            return;
-        }
-
-        // Slow path for long strings
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-
-        if (byteCount > short.MaxValue)
-            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
-
-        WriteInt16((short)byteCount);
-
-        if (byteCount > 0)
-        {
-            var span = _output.GetSpan(byteCount);
-            Encoding.UTF8.GetBytes(value, span);
-            _output.Advance(byteCount);
-            _bytesWritten += byteCount;
-        }
+        WriteStringValue(value);
     }
 
     /// <summary>
@@ -292,53 +277,17 @@ public ref struct KafkaProtocolWriter
     [SkipLocalsInit]
     public void WriteStringContent(string value)
     {
-        // Fast path for short strings
-        // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
-        if (value.Length <= 128)
-        {
-            // Max UTF-8 expansion is 4 bytes per char (surrogate pairs)
-            Span<byte> buffer = stackalloc byte[512];
-            var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
-            if (actualBytes > 0)
-            {
-                var outputSpan = _output.GetSpan(actualBytes);
-                buffer[..actualBytes].CopyTo(outputSpan);
-                _output.Advance(actualBytes);
-                _bytesWritten += actualBytes;
-            }
-            return;
-        }
-
-        // Slow path for long strings
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-        if (byteCount > 0)
-        {
-            var span = _output.GetSpan(byteCount);
-            Encoding.UTF8.GetBytes(value, span);
-            _output.Advance(byteCount);
-            _bytesWritten += byteCount;
-        }
+        ArgumentNullException.ThrowIfNull(value);
+        WriteStringContent(value.AsSpan());
     }
 
     /// <summary>
     /// Writes a string with 2-byte length prefix (legacy format) from a span.
     /// </summary>
+    [SkipLocalsInit]
     public void WriteString(ReadOnlySpan<char> value)
     {
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-
-        if (byteCount > short.MaxValue)
-            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
-
-        WriteInt16((short)byteCount);
-
-        if (byteCount > 0)
-        {
-            var span = _output.GetSpan(byteCount);
-            Encoding.UTF8.GetBytes(value, span);
-            _output.Advance(byteCount);
-            _bytesWritten += byteCount;
-        }
+        WriteStringValue(value);
     }
 
     /// <summary>
@@ -354,53 +303,100 @@ public ref struct KafkaProtocolWriter
             return;
         }
 
-        // Fast path for short strings (topic names, header keys, etc.)
-        // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
-        if (value.Length <= 128)
-        {
-            // Max UTF-8 expansion is 4 bytes per char (surrogate pairs)
-            // For 128 chars, 512 bytes covers all cases including emojis
-            Span<byte> buffer = stackalloc byte[512];
-            var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
-            WriteUnsignedVarInt(actualBytes + 1);
-            if (actualBytes > 0)
-            {
-                var outputSpan = _output.GetSpan(actualBytes);
-                buffer[..actualBytes].CopyTo(outputSpan);
-                _output.Advance(actualBytes);
-                _bytesWritten += actualBytes;
-            }
-            return;
-        }
-
-        // Slow path for long strings
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-        WriteUnsignedVarInt(byteCount + 1);
-
-        if (byteCount > 0)
-        {
-            var span = _output.GetSpan(byteCount);
-            Encoding.UTF8.GetBytes(value, span);
-            _output.Advance(byteCount);
-            _bytesWritten += byteCount;
-        }
+        WriteCompactStringValue(value);
     }
 
     /// <summary>
     /// Writes a compact string with unsigned varint length prefix (flexible format) from a span.
     /// </summary>
+    [SkipLocalsInit]
     public void WriteCompactString(ReadOnlySpan<char> value)
     {
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-        WriteUnsignedVarInt(byteCount + 1);
+        WriteCompactStringValue(value);
+    }
 
-        if (byteCount > 0)
+    [SkipLocalsInit]
+    private void WriteStringValue(ReadOnlySpan<char> value)
+    {
+        if (value.Length <= StackallocCharThreshold)
         {
-            var span = _output.GetSpan(byteCount);
-            Encoding.UTF8.GetBytes(value, span);
-            _output.Advance(byteCount);
-            _bytesWritten += byteCount;
+            Span<byte> buffer = stackalloc byte[StackallocUtf8ByteCount];
+            var byteCount = Encoding.UTF8.GetBytes(value, buffer);
+            WriteInt16((short)byteCount);
+            WriteUtf8Bytes(buffer[..byteCount]);
+            return;
         }
+
+        if (value.Length > short.MaxValue)
+        {
+            var byteCount = Encoding.UTF8.GetByteCount(value);
+            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
+        }
+
+        var maxByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
+        var span = _output.GetSpan(sizeof(short) + maxByteCount);
+        var actualBytes = Encoding.UTF8.GetBytes(value, span[sizeof(short)..]);
+
+        if (actualBytes > short.MaxValue)
+            throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({actualBytes} bytes > {short.MaxValue}).", nameof(value));
+
+        BinaryPrimitives.WriteInt16BigEndian(span, (short)actualBytes);
+        _output.Advance(sizeof(short) + actualBytes);
+        _bytesWritten += sizeof(short) + actualBytes;
+    }
+
+    [SkipLocalsInit]
+    private void WriteStringContent(ReadOnlySpan<char> value)
+    {
+        if (value.Length <= StackallocCharThreshold)
+        {
+            Span<byte> buffer = stackalloc byte[StackallocUtf8ByteCount];
+            var byteCount = Encoding.UTF8.GetBytes(value, buffer);
+            WriteUtf8Bytes(buffer[..byteCount]);
+            return;
+        }
+
+        var maxByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
+        var span = _output.GetSpan(maxByteCount);
+        var actualBytes = Encoding.UTF8.GetBytes(value, span);
+        _output.Advance(actualBytes);
+        _bytesWritten += actualBytes;
+    }
+
+    [SkipLocalsInit]
+    private void WriteCompactStringValue(ReadOnlySpan<char> value)
+    {
+        if (value.Length <= StackallocCharThreshold)
+        {
+            Span<byte> buffer = stackalloc byte[StackallocUtf8ByteCount];
+            var byteCount = Encoding.UTF8.GetBytes(value, buffer);
+            WriteUnsignedVarInt(byteCount + 1);
+            WriteUtf8Bytes(buffer[..byteCount]);
+            return;
+        }
+
+        var maxByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
+        var span = _output.GetSpan(MaxUnsignedVarIntByteCount + maxByteCount);
+        var actualBytes = Encoding.UTF8.GetBytes(value, span[MaxUnsignedVarIntByteCount..]);
+        var lengthBytes = WriteVarUIntToSpan((uint)(actualBytes + 1), span);
+
+        if (actualBytes > 0 && lengthBytes != MaxUnsignedVarIntByteCount)
+            span.Slice(MaxUnsignedVarIntByteCount, actualBytes).CopyTo(span[lengthBytes..]);
+
+        _output.Advance(lengthBytes + actualBytes);
+        _bytesWritten += lengthBytes + actualBytes;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteUtf8Bytes(scoped ReadOnlySpan<byte> value)
+    {
+        if (value.Length == 0)
+            return;
+
+        var span = _output.GetSpan(value.Length);
+        value.CopyTo(span);
+        _output.Advance(value.Length);
+        _bytesWritten += value.Length;
     }
 
     /// <summary>
