@@ -57,6 +57,18 @@ public sealed class ShareConsumerOptions
     public int MaxPollRecords { get; init; } = 500;
 
     /// <summary>
+    /// Controls whether records are acknowledged implicitly or only through Acknowledge.
+    /// Equivalent to Kafka's share.acknowledgement.mode.
+    /// </summary>
+    public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Implicit;
+
+    /// <summary>
+    /// Controls ShareFetch record acquisition behavior.
+    /// Equivalent to Kafka's share.acquire.mode.
+    /// </summary>
+    public ShareAcquireMode ShareAcquireMode { get; init; } = global::Dekaf.ShareConsumer.ShareAcquireMode.BatchOptimized;
+
+    /// <summary>
     /// Session timeout in milliseconds. The coordinator will remove the member if no heartbeat
     /// is received within this interval.
     /// </summary>

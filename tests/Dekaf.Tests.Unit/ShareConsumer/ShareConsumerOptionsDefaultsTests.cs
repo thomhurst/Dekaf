@@ -38,4 +38,18 @@ public sealed class ShareConsumerOptionsDefaultsTests
         var options = CreateOptions();
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.UseAllDnsIps);
     }
+
+    [Test]
+    public async Task AcknowledgementMode_DefaultsTo_Implicit()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.AcknowledgementMode).IsEqualTo(ShareAcknowledgementMode.Implicit);
+    }
+
+    [Test]
+    public async Task ShareAcquireMode_DefaultsTo_BatchOptimized()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ShareAcquireMode).IsEqualTo(ShareAcquireMode.BatchOptimized);
+    }
 }

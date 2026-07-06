@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -79,6 +80,22 @@ public sealed class KafkaFactoryTests
     }
 
     [Test]
+    public async Task CreateShareConsumer_BuilderConfiguresKip1206Options()
+    {
+        await using var consumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("my-group")
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithShareAcquireMode(ShareAcquireMode.RecordLimit)
+            .Build();
+
+        var options = GetPrivateField<ShareConsumerOptions>(consumer, "_options");
+
+        await Assert.That(options.AcknowledgementMode).IsEqualTo(ShareAcknowledgementMode.Explicit);
+        await Assert.That(options.ShareAcquireMode).IsEqualTo(ShareAcquireMode.RecordLimit);
+    }
+
+    [Test]
     public async Task CreateAdminClient_ReturnsBuilder()
     {
         var builder = Kafka.CreateAdminClient();
@@ -94,5 +111,11 @@ public sealed class KafkaFactoryTests
             .Build();
 
         await Assert.That(admin).IsAssignableTo<IAdminClient>();
+    }
+
+    private static T GetPrivateField<T>(object target, string name)
+    {
+        var field = target.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
+        return (T)field!.GetValue(target)!;
     }
 }

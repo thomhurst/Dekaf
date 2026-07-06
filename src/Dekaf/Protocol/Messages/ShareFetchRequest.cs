@@ -52,7 +52,7 @@ public sealed class ShareFetchRequest : IKafkaRequest<ShareFetchResponse>
     public int BatchSize { get; init; }
 
     /// <summary>
-    /// The share acquire mode (v2+). 0 = normal acquire.
+    /// The share acquire mode (v2+). 0 = batch_optimized, 1 = record_limit.
     /// </summary>
     public sbyte ShareAcquireMode { get; init; }
 

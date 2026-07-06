@@ -32,11 +32,22 @@ internal sealed class AcknowledgementTracker
 
     /// <summary>
     /// Sets an explicit acknowledgement type for a specific record.
-    /// Throws if the record was not delivered by the current poll.
+    /// Throws if the record was not delivered by the current poll unless requireTracked is false.
     /// </summary>
-    internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type)
+    internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type, bool requireTracked = true)
     {
-        if (!_pendingAcks.TryGetValue(tp, out var offsets) || !offsets.ContainsKey(offset))
+        if (!_pendingAcks.TryGetValue(tp, out var offsets))
+        {
+            if (requireTracked)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
+            }
+
+            offsets = new Dictionary<long, AcknowledgeType>();
+            _pendingAcks[tp] = offsets;
+        }
+        else if (requireTracked && !offsets.ContainsKey(offset))
         {
             throw new InvalidOperationException(
                 $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");

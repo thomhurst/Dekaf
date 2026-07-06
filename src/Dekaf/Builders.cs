@@ -2340,6 +2340,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _maxPartitionFetchBytes = 1048576;
     private int _fetchMaxWaitMs = 200;
     private int _maxPollRecords = 500;
+    private ShareAcknowledgementMode _acknowledgementMode = ShareAcknowledgementMode.Implicit;
+    private ShareAcquireMode _shareAcquireMode = ShareAcquireMode.BatchOptimized;
     private int _sessionTimeoutMs = 45000;
     private int _heartbeatIntervalMs = 3000;
     private int _requestTimeoutMs = 30000;
@@ -2437,6 +2439,26 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithMaxPollRecords(int maxPollRecords)
     {
         _maxPollRecords = maxPollRecords;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets whether records are acknowledged implicitly or only through Acknowledge.
+    /// Equivalent to Kafka's share.acknowledgement.mode.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithAcknowledgementMode(ShareAcknowledgementMode mode)
+    {
+        _acknowledgementMode = mode;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the ShareFetch acquire mode.
+    /// Equivalent to Kafka's share.acquire.mode.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithShareAcquireMode(ShareAcquireMode mode)
+    {
+        _shareAcquireMode = mode;
         return this;
     }
 
@@ -2743,6 +2765,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             MaxPartitionFetchBytes = _maxPartitionFetchBytes,
             FetchMaxWaitMs = _fetchMaxWaitMs,
             MaxPollRecords = _maxPollRecords,
+            AcknowledgementMode = _acknowledgementMode,
+            ShareAcquireMode = _shareAcquireMode,
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs,
             RequestTimeoutMs = _requestTimeoutMs,

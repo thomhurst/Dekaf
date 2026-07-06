@@ -91,6 +91,23 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
+    public async Task Acknowledge_UntrackedAllowed_AddsExplicitAck()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.Acknowledge(tp, 10, AcknowledgeType.Release, requireTracked: false);
+
+        var result = tracker.Flush();
+        var batch = result[tp][0];
+
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(10);
+        await Assert.That(batch.AcknowledgeTypes.Length).IsEqualTo(1);
+        await Assert.That(batch.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
     public async Task Flush_ClearsTrackedState()
     {
         var tracker = new AcknowledgementTracker();

@@ -52,21 +52,20 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// <summary>
     /// Polls for records from the share group. Returns an async enumerable of acquired records.
     /// <para>
-    /// <b>Important:</b> Any records from the previous poll that were not explicitly acknowledged
-    /// via <see cref="Acknowledge"/> are implicitly accepted (per the KIP-932 specification).
-    /// If you intend to release or reject records, you must call <see cref="Acknowledge"/> before
-    /// the next <see cref="PollAsync"/> or <see cref="CommitAsync"/> call.
+    /// <b>Important:</b> In <see cref="ShareAcknowledgementMode.Implicit"/> mode, records from
+    /// the previous poll that were not explicitly acknowledged via <see cref="Acknowledge"/> are
+    /// accepted automatically. In <see cref="ShareAcknowledgementMode.Explicit"/> mode, only
+    /// records passed to <see cref="Acknowledge"/> are sent to the broker.
     /// </para>
     /// </summary>
     IAsyncEnumerable<ShareConsumeResult<TKey, TValue>> PollAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Sets the acknowledgement type for a specific record.
-    /// If not called, records default to <see cref="AcknowledgeType.Accept"/>.
+    /// In implicit acknowledgement mode, records default to <see cref="AcknowledgeType.Accept"/>.
     /// <para>
-    /// <b>Warning:</b> You must call this before the next <see cref="PollAsync"/> or
-    /// <see cref="CommitAsync"/>. Any records not explicitly acknowledged are implicitly
-    /// accepted — there is no way to release or reject them after that point.
+    /// <b>Warning:</b> In implicit mode, call this before the next <see cref="PollAsync"/> or
+    /// <see cref="CommitAsync"/> if you need to release or reject a record.
     /// </para>
     /// </summary>
     /// <param name="record">The record to acknowledge.</param>
@@ -75,7 +74,7 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
 
     /// <summary>
     /// Commits all pending acknowledgements to the broker via a standalone ShareAcknowledge request.
-    /// All unacknowledged records are implicitly accepted.
+    /// In implicit mode, pending records default to accepted.
     /// </summary>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
