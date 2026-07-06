@@ -40,8 +40,9 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
             return [];
         }
 
-        var results = new List<CommandResult>();
-        var newlyPublished = 0;
+        // Holds only the packages that were newly published this run (duplicates are excluded), so
+        // the returned count is an honest "did we ship anything new?" signal for CreateReleaseModule.
+        var newlyPublished = new List<CommandResult>();
         var duplicates = 0;
 
         foreach (var package in packedProjects)
@@ -57,7 +58,6 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
             context.Logger.LogInformation("Uploading {PackageName}", package.Name);
 
             var result = await PushPackageAsync(nupkgFile.Path);
-            results.Add(result);
 
             // A non-duplicate push failure throws (non-zero exit), so anything reaching here either
             // published or was skipped as a duplicate. --skip-duplicate reports "already exists" on
@@ -74,14 +74,14 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
             }
             else
             {
-                newlyPublished++;
+                newlyPublished.Add(result);
                 context.Logger.LogInformation("Published {PackageName} {Version}", package.Name, package.Version);
             }
         }
 
         // Guard against silent no-op releases: the job succeeds but ships nothing because every
         // package version already exists (e.g. the version stopped advancing). Fail loudly instead.
-        if (newlyPublished == 0)
+        if (newlyPublished.Count == 0)
         {
             var reason = duplicates > 0
                 ? $"every push was a duplicate of an already-released version ({packedProjects[0].Version}); the package version likely did not advance"
@@ -93,9 +93,9 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
 
         context.Logger.LogInformation(
             "NuGet publish complete: {NewlyPublished} newly published, {Duplicates} skipped as duplicates",
-            newlyPublished, duplicates);
+            newlyPublished.Count, duplicates);
 
-        return results;
+        return newlyPublished;
 
         Task<CommandResult> PushPackageAsync(string packagePath)
         {

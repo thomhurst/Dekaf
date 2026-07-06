@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using ModularPipelines.Context;
 using ModularPipelines.Git.Extensions;
@@ -11,20 +12,33 @@ public class GenerateVersionModule : Module<VersionInfo>
 {
     protected override async Task<VersionInfo?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
-        // Prefer a monotonic, unique-per-commit stable version composed from the GitVersion
-        // environment variables set by GitHub Actions: {Major}.{Minor}.{CommitsSinceVersionSource}.
-        // Commit height on main strictly increases, so every publish gets a fresh version.
+        // Prefer a monotonic, unique-per-commit stable version: {Major}.{Minor}.{commit height}.
+        // Major/Minor come from GitVersion (so +semver bump messages still work); the height is the
+        // commit count, which strictly increases on main so every publish gets a fresh version.
         // Without this, GitVersion emits a frozen MajorMinorPatch (1.0.0) on every commit, which
         // made each NuGet push a duplicate that --skip-duplicate silently swallowed (nothing shipped).
         var major = Environment.GetEnvironmentVariable("GitVersion_Major");
         var minor = Environment.GetEnvironmentVariable("GitVersion_Minor");
-        var commitHeight = Environment.GetEnvironmentVariable("GitVersion_CommitsSinceVersionSource");
 
-        if (!string.IsNullOrEmpty(major) && !string.IsNullOrEmpty(minor) && !string.IsNullOrEmpty(commitHeight))
+        if (!string.IsNullOrEmpty(major) && !string.IsNullOrEmpty(minor))
         {
-            var version = $"{major}.{minor}.{commitHeight}";
-            context.Logger.LogInformation("Using commit-height version: {Version}", version);
-            return new VersionInfo(version, version);
+            // Use commit height from the repository root (git rev-list --count HEAD) rather than
+            // GitVersion's CommitsSinceVersionSource. The latter resets whenever a version-shaped tag
+            // is the nearest version source, so the v{version} release tags CreateReleaseModule pushes
+            // would make the height — and thus the composed version — jump backwards. Commit height is
+            // strictly increasing and tag-independent. Falls back to the GitVersion value if git can't
+            // be queried (identical to the root count while no such tags exist).
+            var commitsOnBranch = context.Git().Information.CommitsOnBranch;
+            var height = commitsOnBranch > 0
+                ? commitsOnBranch.ToString(CultureInfo.InvariantCulture)
+                : Environment.GetEnvironmentVariable("GitVersion_CommitsSinceVersionSource");
+
+            if (!string.IsNullOrEmpty(height))
+            {
+                var version = $"{major}.{minor}.{height}";
+                context.Logger.LogInformation("Using commit-height version: {Version}", version);
+                return new VersionInfo(version, version);
+            }
         }
 
         // Fallback for when the Major/Minor/height variables are unavailable (e.g. GitVersion only

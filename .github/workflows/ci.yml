@@ -31,6 +31,11 @@ jobs:
   build-and-unit-test:
     name: Build & Unit Test
     runs-on: ubuntu-latest
+    # Declaring permissions drops all other scopes to none; contents:write is the only scope any
+    # step here needs (release/tag creation). NuGet push authenticates with an API-key secret, and
+    # artifact upload uses the exposed Actions runtime token — neither relies on GITHUB_TOKEN scopes.
+    permissions:
+      contents: write  # Create GitHub releases (and their tags) when publishing
 
     steps:
       - name: Checkout
@@ -67,6 +72,7 @@ jobs:
           SKIP_AOT_SMOKE_TESTS: 'true'
           NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
           NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Used by CreateReleaseModule when a publish ships packages
         run: dotnet run --project tools/Dekaf.Pipeline
 
       - name: Upload Test Results

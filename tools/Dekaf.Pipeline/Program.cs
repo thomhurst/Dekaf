@@ -37,6 +37,7 @@ if (!skipUnitTests)
 
     builder.Services.AddModule<PackModule>();
     builder.Services.AddModule<UploadToNuGetModule>();
+    builder.Services.AddModule<CreateReleaseModule>();
     builder.Services.AddModule<RunBenchmarksModule>();
 }
 
