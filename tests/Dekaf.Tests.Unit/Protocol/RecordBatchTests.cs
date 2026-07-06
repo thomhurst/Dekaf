@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using Dekaf.Compression;
 using Dekaf.Protocol;
@@ -568,6 +569,32 @@ public class RecordBatchTests
     }
 
     [Test]
+    public async Task Write_WithPreCompressedRecords_WritesMatchingCrc()
+    {
+        using var batch = CreateTwoRecordBatch();
+        batch.PreCompress(CompressionType.Gzip, null);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+
+        var (storedCrc, computedCrc) = ReadRecordBatchCrcs(buffer.WrittenSpan);
+        await Assert.That(storedCrc).IsEqualTo(computedCrc);
+    }
+
+    [Test]
+    public async Task Write_WithPreEncodedRecords_WritesMatchingCrc()
+    {
+        using var batch = CreateTwoRecordBatch();
+        batch.SetPreEncodedRecords(EncodeRecords(batch.Records));
+
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+
+        var (storedCrc, computedCrc) = ReadRecordBatchCrcs(buffer.WrittenSpan);
+        await Assert.That(storedCrc).IsEqualTo(computedCrc);
+    }
+
+    [Test]
     public async Task PreCompress_None_RoundTripsThroughRead()
     {
         using var batch = CreateTwoRecordBatch();
@@ -610,6 +637,27 @@ public class RecordBatchTests
             }
         ]
     };
+
+    private static byte[] EncodeRecords(IReadOnlyList<Record> records)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static (uint Stored, uint Computed) ReadRecordBatchCrcs(ReadOnlySpan<byte> batch)
+    {
+        const int crcOffset = 8 + 4 + 4 + 1;
+        const int crcContentOffset = crcOffset + 4;
+
+        var stored = BinaryPrimitives.ReadUInt32BigEndian(batch.Slice(crcOffset, 4));
+        var computed = Crc32C.Compute(batch[crcContentOffset..]);
+        return (stored, computed);
+    }
 
     [Test]
     public async Task ReturnPreCompressedBuffer_CalledTwice_IsIdempotent()

@@ -153,7 +153,7 @@ public class Crc32CTests
 
     private static int[] CombineLengths() =>
     [
-        0, 1, 2, 3, 7, 8, 31, 32, 63, 64, 255, 512, 513, 1024, 4096, 65536
+        0, 1, 2, 3, 7, 8, 31, 32, 63, 64, 255, 512, 513, 1024, 4096, 65536, 1048576
     ];
 
     private static uint ComputeBitwise(ReadOnlySpan<byte> data)

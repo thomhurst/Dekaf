@@ -450,6 +450,7 @@ public sealed class RecordBatch : IDisposable
 
     /// <summary>
     /// CRC32C of the bytes in <see cref="PreCompressedRecords"/>.
+    /// Valid only while the pooled buffer remains retained for this batch and unmodified through Write().
     /// </summary>
     internal uint PreCompressedRecordsCrc { get; private set; }
 
@@ -457,6 +458,7 @@ public sealed class RecordBatch : IDisposable
 
     private ReadOnlyMemory<byte> _preEncodedRecords;
     private bool _hasPreEncodedRecords;
+    // Valid only while _preEncodedRecords remains retained for this batch and unmodified through Write().
     private uint _preEncodedRecordsCrc;
 
     internal bool HasPreEncodedRecords => _hasPreEncodedRecords;
