@@ -163,6 +163,55 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ShareConsumer_ExplicitAcknowledgement_DoesNotAutoAcceptPolledRecord()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"share-group-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await using var firstConsumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithMaxPollRecords(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        firstConsumer.Subscribe(topic);
+
+        var produceTask = ProduceAfterDelayAsync(producer, topic, count: 1);
+        var first = await ConsumeOneAsync(firstConsumer);
+        await produceTask;
+
+        await Assert.That(first.Value).IsEqualTo("value-0");
+
+        await firstConsumer.CommitAsync(CancellationToken.None);
+        firstConsumer.Acknowledge(first, AcknowledgeType.Release);
+        await firstConsumer.CommitAsync(CancellationToken.None);
+        await firstConsumer.CloseAsync(CancellationToken.None);
+
+        await using var secondConsumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithMaxPollRecords(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        secondConsumer.Subscribe(topic);
+
+        var redelivered = await ConsumeOneAsync(secondConsumer);
+
+        await Assert.That(redelivered.Value).IsEqualTo(first.Value);
+        await Assert.That(redelivered.Offset).IsEqualTo(first.Offset);
+        await Assert.That(redelivered.DeliveryCount).IsGreaterThan(first.DeliveryCount);
+    }
+
+    [Test]
     public async Task ShareConsumer_Builder_ConfiguresCorrectly()
     {
         var groupId = $"share-group-{Guid.NewGuid():N}";
@@ -224,6 +273,25 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         IKafkaProducer<string, string> producer, string topic, int count,
         int delayMs = 5000)
         => ShareConsumerTestHelper.ProduceAfterDelayAsync(producer, topic, count, delayMs);
+
+    private static async Task<ShareConsumeResult<string, string>> ConsumeOneAsync(
+        IKafkaShareConsumer<string, string> consumer)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        try
+        {
+            await foreach (var msg in consumer.PollAsync(cts.Token))
+            {
+                return msg;
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
+
+        throw new InvalidOperationException("Share consumer completed without returning a record.");
+    }
 }
 
 /// <summary>

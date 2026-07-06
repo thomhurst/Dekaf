@@ -66,7 +66,7 @@ public sealed class ShareConsumerOptions
     /// Controls ShareFetch record acquisition behavior.
     /// Equivalent to Kafka's share.acquire.mode.
     /// </summary>
-    public ShareAcquireMode ShareAcquireMode { get; init; } = global::Dekaf.ShareConsumer.ShareAcquireMode.BatchOptimized;
+    public ShareAcquireMode ShareAcquireMode { get; init; } = ShareAcquireMode.BatchOptimized;
 
     /// <summary>
     /// Session timeout in milliseconds. The coordinator will remove the member if no heartbeat
