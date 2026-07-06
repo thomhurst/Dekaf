@@ -83,17 +83,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
             return cachedId;
 
-        var request = new RegisterSchemaRequest
-        {
-            Schema = schema.SchemaString,
-            SchemaType = schema.SchemaType == SchemaType.Avro ? null : schema.SchemaType.ToString().ToUpperInvariant(),
-            References = schema.References?.Select(r => new SchemaReferenceDto
-            {
-                Name = r.Name,
-                Subject = r.Subject,
-                Version = r.Version
-            }).ToList()
-        };
+        var request = CreateRegisterSchemaRequest(schema);
 
         using var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}/versions",
@@ -126,18 +116,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
             SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
-        var schema = new Schema
-        {
-            SchemaString = result!.Schema,
-            SchemaType = ParseSchemaType(result.SchemaType),
-            References = result.References?.Select(r => new SchemaReference
-            {
-                Name = r.Name,
-                Subject = r.Subject,
-                Version = r.Version
-            }).ToList()
-        };
+        var schema = CreateSchema(result);
 
         CacheSchema(id, subject: null, schema);
         return schema;
@@ -156,18 +138,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
             SchemaRegistryJsonContext.Default.GetSubjectVersionResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
-        var schema = new Schema
-        {
-            SchemaString = result!.Schema,
-            SchemaType = ParseSchemaType(result.SchemaType),
-            References = result.References?.Select(r => new SchemaReference
-            {
-                Name = r.Name,
-                Subject = r.Subject,
-                Version = r.Version
-            }).ToList()
-        };
+        var schema = CreateSchema(result);
 
         CacheSchema(result.Id, subject: null, schema);
 
@@ -187,17 +161,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             return cachedId;
 
         // Try to get existing schema first
-        var request = new RegisterSchemaRequest
-        {
-            Schema = schema.SchemaString,
-            SchemaType = schema.SchemaType == SchemaType.Avro ? null : schema.SchemaType.ToString().ToUpperInvariant(),
-            References = schema.References?.Select(r => new SchemaReferenceDto
-            {
-                Name = r.Name,
-                Subject = r.Subject,
-                Version = r.Version
-            }).ToList()
-        };
+        var request = CreateRegisterSchemaRequest(schema);
 
         using var response = await _httpClient.PostAsJsonAsync(
             $"subjects/{Uri.EscapeDataString(subject)}",
@@ -215,8 +179,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
             SchemaRegistryJsonContext.Default.GetSubjectVersionResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
-        var id = result!.Id;
+        var id = result.Id;
 
         CacheSchema(id, subject, schema);
 
@@ -267,17 +233,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
     public async Task<bool> IsCompatibleAsync(string subject, Schema schema, string version = "latest", CancellationToken cancellationToken = default)
     {
-        var request = new RegisterSchemaRequest
-        {
-            Schema = schema.SchemaString,
-            SchemaType = schema.SchemaType == SchemaType.Avro ? null : schema.SchemaType.ToString().ToUpperInvariant(),
-            References = schema.References?.Select(r => new SchemaReferenceDto
-            {
-                Name = r.Name,
-                Subject = r.Subject,
-                Version = r.Version
-            }).ToList()
-        };
+        var request = CreateRegisterSchemaRequest(schema);
 
         using var response = await _httpClient.PostAsJsonAsync(
             $"compatibility/subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
@@ -309,6 +265,143 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
+    private static RegisterSchemaRequest CreateRegisterSchemaRequest(Schema schema) => new()
+    {
+        Schema = schema.SchemaString,
+        SchemaType = schema.SchemaType == SchemaType.Avro ? null : schema.SchemaType.ToString().ToUpperInvariant(),
+        References = schema.References?.Select(ToReferenceDto).ToList(),
+        Metadata = ToMetadataDto(schema.Metadata),
+        RuleSet = ToRuleSetDto(schema.RuleSet)
+    };
+
+    private static Schema CreateSchema(GetSchemaResponse response) => new()
+    {
+        SchemaString = response.Schema,
+        SchemaType = ParseSchemaType(response.SchemaType),
+        References = response.References?.Select(ToReference).ToList(),
+        Metadata = ToMetadata(response.Metadata),
+        RuleSet = ToRuleSet(response.RuleSet)
+    };
+
+    private static Schema CreateSchema(GetSubjectVersionResponse response) => new()
+    {
+        SchemaString = response.Schema,
+        SchemaType = ParseSchemaType(response.SchemaType),
+        References = response.References?.Select(ToReference).ToList(),
+        Metadata = ToMetadata(response.Metadata),
+        RuleSet = ToRuleSet(response.RuleSet)
+    };
+
+    private static SchemaReferenceDto ToReferenceDto(SchemaReference reference) => new()
+    {
+        Name = reference.Name,
+        Subject = reference.Subject,
+        Version = reference.Version
+    };
+
+    private static SchemaReference ToReference(SchemaReferenceDto reference) => new()
+    {
+        Name = reference.Name,
+        Subject = reference.Subject,
+        Version = reference.Version
+    };
+
+    private static SchemaMetadataDto? ToMetadataDto(SchemaMetadata? metadata)
+    {
+        if (metadata is null)
+            return null;
+
+        return new SchemaMetadataDto
+        {
+            Tags = metadata.Tags?.ToDictionary(
+                static kvp => kvp.Key,
+                static kvp => kvp.Value.ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal),
+            Properties = metadata.Properties?.ToDictionary(
+                static kvp => kvp.Key,
+                static kvp => kvp.Value,
+                StringComparer.Ordinal),
+            Sensitive = metadata.Sensitive?.ToHashSet(StringComparer.Ordinal)
+        };
+    }
+
+    private static SchemaMetadata? ToMetadata(SchemaMetadataDto? metadata)
+    {
+        if (metadata is null)
+            return null;
+
+        return new SchemaMetadata
+        {
+            Tags = metadata.Tags?.ToDictionary(
+                static kvp => kvp.Key,
+                static kvp => (IReadOnlySet<string>)kvp.Value,
+                StringComparer.Ordinal),
+            Properties = metadata.Properties,
+            Sensitive = metadata.Sensitive
+        };
+    }
+
+    private static SchemaRuleSetDto? ToRuleSetDto(SchemaRuleSet? ruleSet)
+    {
+        if (ruleSet is null)
+            return null;
+
+        return new SchemaRuleSetDto
+        {
+            MigrationRules = ruleSet.MigrationRules?.Select(ToRuleDto).ToList(),
+            DomainRules = ruleSet.DomainRules?.Select(ToRuleDto).ToList(),
+            EncodingRules = ruleSet.EncodingRules?.Select(ToRuleDto).ToList(),
+            EnableAt = ruleSet.EnableAt
+        };
+    }
+
+    private static SchemaRuleSet? ToRuleSet(SchemaRuleSetDto? ruleSet)
+    {
+        if (ruleSet is null)
+            return null;
+
+        return new SchemaRuleSet
+        {
+            MigrationRules = ruleSet.MigrationRules?.Select(ToRule).ToList(),
+            DomainRules = ruleSet.DomainRules?.Select(ToRule).ToList(),
+            EncodingRules = ruleSet.EncodingRules?.Select(ToRule).ToList(),
+            EnableAt = ruleSet.EnableAt
+        };
+    }
+
+    private static SchemaRuleDto ToRuleDto(SchemaRule rule) => new()
+    {
+        Name = rule.Name,
+        Doc = rule.Doc,
+        Kind = FormatRuleKind(rule.Kind),
+        Mode = FormatRuleMode(rule.Mode),
+        Type = rule.Type,
+        Tags = rule.Tags?.ToHashSet(StringComparer.Ordinal),
+        Params = rule.Parameters?.ToDictionary(
+            static kvp => kvp.Key,
+            static kvp => kvp.Value,
+            StringComparer.Ordinal),
+        Expr = rule.Expr,
+        OnSuccess = rule.OnSuccess,
+        OnFailure = rule.OnFailure,
+        Disabled = rule.Disabled
+    };
+
+    private static SchemaRule ToRule(SchemaRuleDto rule) => new()
+    {
+        Name = rule.Name ?? string.Empty,
+        Doc = rule.Doc,
+        Kind = ParseRuleKind(rule.Kind),
+        Mode = ParseRuleMode(rule.Mode),
+        Type = rule.Type ?? string.Empty,
+        Tags = rule.Tags,
+        Parameters = rule.Params,
+        Expr = rule.Expr,
+        OnSuccess = rule.OnSuccess,
+        OnFailure = rule.OnFailure,
+        Disabled = rule.Disabled
+    };
+
     private static SchemaType ParseSchemaType(string? schemaType)
     {
         return schemaType?.ToUpperInvariant() switch
@@ -318,6 +411,41 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             _ => SchemaType.Avro
         };
     }
+
+    private static string FormatRuleKind(SchemaRuleKind kind)
+        => kind switch
+        {
+            SchemaRuleKind.Condition => "CONDITION",
+            _ => "TRANSFORM"
+        };
+
+    private static SchemaRuleKind ParseRuleKind(string? kind)
+        => string.Equals(kind, "CONDITION", StringComparison.OrdinalIgnoreCase)
+            ? SchemaRuleKind.Condition
+            : SchemaRuleKind.Transform;
+
+    private static string FormatRuleMode(SchemaRuleMode mode)
+        => mode switch
+        {
+            SchemaRuleMode.Upgrade => "UPGRADE",
+            SchemaRuleMode.Downgrade => "DOWNGRADE",
+            SchemaRuleMode.UpDown => "UPDOWN",
+            SchemaRuleMode.Read => "READ",
+            SchemaRuleMode.Write => "WRITE",
+            SchemaRuleMode.WriteRead => "WRITEREAD",
+            _ => "WRITE"
+        };
+
+    private static SchemaRuleMode ParseRuleMode(string? mode)
+        => mode?.ToUpperInvariant() switch
+        {
+            "UPGRADE" => SchemaRuleMode.Upgrade,
+            "DOWNGRADE" => SchemaRuleMode.Downgrade,
+            "UPDOWN" => SchemaRuleMode.UpDown,
+            "READ" => SchemaRuleMode.Read,
+            "WRITEREAD" => SchemaRuleMode.WriteRead,
+            _ => SchemaRuleMode.Write
+        };
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
