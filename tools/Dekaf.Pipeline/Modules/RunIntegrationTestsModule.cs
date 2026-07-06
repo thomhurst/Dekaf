@@ -19,10 +19,16 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
     /// </summary>
     protected new abstract string Category { get; }
 
+    protected virtual TimeSpan ModuleTimeout => TimeSpan.FromMinutes(30);
+
+    protected virtual TimeSpan ProcessTimeout => TimeSpan.FromMinutes(20);
+
+    protected virtual int? MaximumParallelTests => null;
+
     protected override ModuleConfiguration Configure()
     {
         return new ModuleConfigurationBuilder()
-            .WithTimeout(TimeSpan.FromMinutes(30))
+            .WithTimeout(ModuleTimeout)
             .Build();
     }
 
@@ -56,10 +62,16 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
             "--treenode-filter", $"/**[Category={Category}]"
         };
 
+        if (MaximumParallelTests is { } maximumParallelTests)
+        {
+            arguments.Add("--maximum-parallel-tests");
+            arguments.Add(maximumParallelTests.ToString());
+        }
+
         context.Logger.LogInformation("Running integration tests for category: {Category}", Category);
 
         // Process-level timeout as safety fallback (matches TestBaseModule pattern)
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var timeoutCts = new CancellationTokenSource(ProcessTimeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         try
@@ -88,7 +100,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
             throw new TimeoutException(
-                $"Integration tests for category '{Category}' exceeded 20 minute process timeout");
+                $"Integration tests for category '{Category}' exceeded {ProcessTimeout.TotalMinutes:0} minute process timeout");
         }
 
         return results;

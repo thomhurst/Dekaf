@@ -22,9 +22,13 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly DeadLetterOptions? _deadLetterOptions;
     private readonly IDeadLetterPolicy<TKey, TValue>? _deadLetterPolicy;
     private readonly IRetryPolicy? _retryPolicy;
+    private readonly RetryTopicOptions? _retryTopicOptions;
     private readonly KafkaConsumerServiceOptions _serviceOptions;
+    private readonly object _retryTopicPostponementsLock = new();
+    private readonly Dictionary<TopicPartition, RetryTopicPostponement> _retryTopicPostponements = [];
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
+    private static readonly TimeSpan MaxRetryTopicDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="KafkaConsumerService{TKey, TValue}"/> class.
@@ -45,6 +49,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         _logger = logger;
         _deadLetterOptions = deadLetterOptions;
         _retryPolicy = retryPolicy;
+        _retryTopicOptions = deadLetterOptions?.RetryTopics;
         _serviceOptions = serviceOptions ?? new KafkaConsumerServiceOptions();
         if (deadLetterOptions is not null)
         {
@@ -83,6 +88,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// Called when routing a message to a retry topic fails.
+    /// Override to implement custom failure handling (e.g., metrics, alerts).
+    /// Default implementation logs the error.
+    /// </summary>
+    protected virtual ValueTask OnRetryTopicRoutingFailedAsync(
+        Exception exception, ConsumeResult<TKey, TValue> result, CancellationToken cancellationToken)
+    {
+        LogRetryTopicRoutingFailed(exception, result.Topic, result.Partition, result.Offset);
+        return ValueTask.CompletedTask;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Enable raw byte capture and create DLQ producer if configured
@@ -95,11 +112,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
 
-        _consumer.Subscribe(Topics.ToArray());
+        var subscriptionTopics = BuildSubscriptionTopics();
+        _consumer.Subscribe(subscriptionTopics);
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            var topics = string.Join(", ", Topics);
+            var topics = string.Join(", ", subscriptionTopics);
             LogStartedConsuming(topics);
         }
 
@@ -269,54 +287,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private async ValueTask ProcessWithRetriesAsync(
         ConsumeResult<TKey, TValue> result, CancellationToken stoppingToken)
     {
+        if (PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
+            return;
+
         byte[]? rawKey = null;
         byte[]? rawValue = null;
+        var previousFailureCount = RetryTopicHeaders.GetFailureCount(result.Headers);
 
-        if (_retryPolicy is not null)
+        var maxAttemptsWithoutPolicy = _retryTopicOptions?.IsEnabled == true ? 1 : _deadLetterOptions?.MaxFailures ?? 1;
+        var attempt = 0;
+        while (true)
         {
-            // Retry policy drives retry count and delays
-            var attempt = 0;
-            while (true)
-            {
-                attempt++;
-                try
-                {
-                    await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
-                    return;
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    CaptureRawBytesOnFirstFailure(attempt, ref rawKey, ref rawValue);
-
-                    await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
-
-                    var delay = _retryPolicy.GetNextDelay(attempt, ex);
-                    if (delay is not null)
-                    {
-                        await Task.Delay(delay.Value, stoppingToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // Policy says stop retrying - check DLQ
-                    if (_deadLetterPolicy is not null &&
-                        _deadLetterPolicy.ShouldDeadLetter(result, ex, attempt))
-                    {
-                        await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, attempt, stoppingToken)
-                            .ConfigureAwait(false);
-                    }
-                    return;
-                }
-            }
-        }
-
-        // No retry policy: existing behavior (immediate retry up to MaxFailures)
-        var maxAttempts = _deadLetterOptions?.MaxFailures ?? 1;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
-        {
+            attempt++;
             try
             {
                 await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
@@ -332,16 +314,197 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
                 await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
 
-                if (_deadLetterPolicy is not null &&
-                    _deadLetterPolicy.ShouldDeadLetter(result, ex, attempt))
+                var delay = _retryPolicy?.GetNextDelay(attempt, ex);
+                if (delay is not null)
                 {
-                    await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, attempt, stoppingToken)
+                    await Task.Delay(delay.Value, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var deadLetterFailureCount = previousFailureCount + attempt;
+                var retryTopicFailureCount = GetNextRetryTopicFailureCount(previousFailureCount);
+                var retryTopicResult = await TryRouteToRetryTopicAsync(
+                        result,
+                        rawKey,
+                        rawValue,
+                        retryTopicFailureCount,
+                        stoppingToken)
+                    .ConfigureAwait(false);
+                if (retryTopicResult == RetryTopicRouteResult.Routed)
+                {
+                    return;
+                }
+
+                if (ShouldRouteToDeadLetter(result, ex, deadLetterFailureCount, retryTopicResult))
+                {
+                    await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, deadLetterFailureCount, stoppingToken)
                         .ConfigureAwait(false);
                     return;
                 }
+
+                if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
+                    continue;
+
+                return;
             }
         }
     }
+
+    private static int GetNextRetryTopicFailureCount(int previousFailureCount) => previousFailureCount + 1;
+
+    private bool ShouldRouteToDeadLetter(
+        ConsumeResult<TKey, TValue> result,
+        Exception exception,
+        int failureCount,
+        RetryTopicRouteResult retryTopicResult)
+    {
+        if (_deadLetterPolicy is null)
+            return false;
+
+        return retryTopicResult == RetryTopicRouteResult.Exhausted ||
+            _deadLetterPolicy.ShouldDeadLetter(result, exception, failureCount);
+    }
+
+    private string[] BuildSubscriptionTopics()
+    {
+        var sourceTopics = Topics.ToArray();
+        if (_retryTopicOptions?.IsEnabled != true)
+            return sourceTopics;
+
+        var topics = new HashSet<string>(sourceTopics, StringComparer.Ordinal);
+        foreach (var sourceTopic in sourceTopics)
+        {
+            foreach (var retryTopic in _retryTopicOptions.GetRetryTopics(sourceTopic))
+            {
+                topics.Add(retryTopic);
+            }
+        }
+
+        return topics.ToArray();
+    }
+
+    private bool PostponeRetryTopicMessageIfNeeded(
+        ConsumeResult<TKey, TValue> result,
+        CancellationToken cancellationToken)
+    {
+        if (_retryTopicOptions?.IsEnabled != true ||
+            !RetryTopicHeaders.TryGetDueAt(result.Headers, out var dueAt))
+        {
+            return false;
+        }
+
+        var delay = dueAt - DateTimeOffset.UtcNow;
+        if (delay <= TimeSpan.Zero)
+            return false;
+
+        var partition = new TopicPartition(result.Topic, result.Partition);
+        var postponement = new RetryTopicPostponement(result.Offset, dueAt, delay);
+        if (!TryBeginRetryTopicPostponement(partition, postponement))
+            return true;
+
+        LogRetryTopicDelay(result.Topic, result.Partition, result.Offset, delay);
+
+        _consumer.Partitions.Pause(partition);
+        _consumer.Positions.Seek(new TopicPartitionOffset(
+            result.Topic,
+            result.Partition,
+            result.Offset,
+            result.LeaderEpoch ?? -1));
+
+        _ = ResumeRetryTopicPartitionAfterDelayAsync(partition, postponement, cancellationToken);
+        return true;
+    }
+
+    private bool TryBeginRetryTopicPostponement(
+        TopicPartition partition,
+        RetryTopicPostponement postponement)
+    {
+        lock (_retryTopicPostponementsLock)
+        {
+            if (_retryTopicPostponements.TryGetValue(partition, out var pending) &&
+                !IsEarlierRetryTopicPostponement(postponement, pending))
+            {
+                return false;
+            }
+
+            _retryTopicPostponements[partition] = postponement;
+            return true;
+        }
+    }
+
+    private bool TryCompleteRetryTopicPostponement(
+        TopicPartition partition,
+        RetryTopicPostponement postponement)
+    {
+        lock (_retryTopicPostponementsLock)
+        {
+            if (!_retryTopicPostponements.TryGetValue(partition, out var pending) ||
+                pending != postponement)
+            {
+                return false;
+            }
+
+            _retryTopicPostponements.Remove(partition);
+            return true;
+        }
+    }
+
+    private static bool IsEarlierRetryTopicPostponement(
+        RetryTopicPostponement candidate,
+        RetryTopicPostponement pending)
+    {
+        // Partition order wins over due time; seeking to a later offset can skip an earlier postponed record.
+        if (candidate.Offset != pending.Offset)
+            return candidate.Offset < pending.Offset;
+
+        return candidate.DueAt < pending.DueAt;
+    }
+
+    private async Task ResumeRetryTopicPartitionAfterDelayAsync(
+        TopicPartition partition,
+        RetryTopicPostponement postponement,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await DelayUntilRetryTopicDueAsync(postponement.DueAt, cancellationToken).ConfigureAwait(false);
+            if (!TryCompleteRetryTopicPostponement(partition, postponement))
+                return;
+
+            _consumer.Partitions.Resume(partition);
+            LogRetryTopicPartitionResumed(partition.Topic, partition.Partition, postponement.Delay);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            LogRetryTopicPartitionResumeFailed(ex, partition.Topic, partition.Partition);
+        }
+    }
+
+    private static async Task DelayUntilRetryTopicDueAsync(
+        DateTimeOffset dueAt,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var remaining = dueAt - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                return;
+
+            var delay = remaining <= MaxRetryTopicDelayChunk
+                ? remaining
+                : MaxRetryTopicDelayChunk;
+
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private readonly record struct RetryTopicPostponement(
+        long Offset,
+        DateTimeOffset DueAt,
+        TimeSpan Delay);
 
     private void CaptureRawBytesOnFirstFailure(int attempt, ref byte[]? rawKey, ref byte[]? rawValue)
     {
@@ -365,7 +528,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         try
         {
-            var dlqTopic = _deadLetterPolicy.GetDeadLetterTopic(result.Topic);
+            var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
+            var dlqTopic = _deadLetterPolicy.GetDeadLetterTopic(sourceTopic);
 
             var headers = DeadLetterHeaders.Build(
                 result, exception, failureCount,
@@ -396,12 +560,66 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
     }
 
+    private async ValueTask<RetryTopicRouteResult> TryRouteToRetryTopicAsync(
+        ConsumeResult<TKey, TValue> result,
+        byte[]? rawKey, byte[]? rawValue, int failureCount,
+        CancellationToken cancellationToken)
+    {
+        if (_dlqProducer is null ||
+            _retryTopicOptions?.IsEnabled != true)
+        {
+            return RetryTopicRouteResult.Disabled;
+        }
+
+        var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
+        if (!_retryTopicOptions.TryGetRetryTopic(sourceTopic, failureCount, out var retryTopic, out var delay))
+            return RetryTopicRouteResult.Exhausted;
+
+        try
+        {
+            var dueAt = DateTimeOffset.UtcNow + delay;
+            var headers = RetryTopicHeaders.Build(result, failureCount, delay, dueAt);
+            var message = new ProducerMessage<byte[]?, byte[]?>
+            {
+                Topic = retryTopic,
+                Key = rawKey,
+                Value = rawValue ?? [],
+                Headers = headers
+            };
+
+            if (_deadLetterOptions?.AwaitDelivery == true)
+            {
+                await _dlqProducer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _dlqProducer.FireAsync(message).ConfigureAwait(false);
+            }
+
+            LogMessageRoutedToRetryTopic(result.Topic, result.Partition, result.Offset, retryTopic, delay, failureCount);
+            return RetryTopicRouteResult.Routed;
+        }
+        catch (Exception retryEx)
+        {
+            await OnRetryTopicRoutingFailedAsync(retryEx, result, cancellationToken).ConfigureAwait(false);
+            return RetryTopicRouteResult.Failed;
+        }
+    }
+
+    private enum RetryTopicRouteResult
+    {
+        Disabled,
+        Routed,
+        Exhausted,
+        Failed
+    }
+
     private IKafkaProducer<byte[]?, byte[]?> BuildDlqProducer()
     {
         if (_deadLetterOptions?.BootstrapServers is null && _deadLetterOptions?.ConfigureProducer is null)
         {
             throw new InvalidOperationException(
-                "Dead letter queue bootstrap servers must be configured. " +
+                "Dead letter or retry topic producer bootstrap servers must be configured. " +
                 "Call WithBootstrapServers() on the dead letter queue builder, " +
                 "or provide a ConfigureProducer action that sets bootstrap servers.");
         }
@@ -467,8 +685,23 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     [LoggerMessage(Level = LogLevel.Information, Message = "Message from {Topic}[{Partition}]@{Offset} routed to dead letter topic {DlqTopic}")]
     private partial void LogMessageRoutedToDeadLetter(string topic, int partition, long offset, string dlqTopic);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "Message from {Topic}[{Partition}]@{Offset} routed to retry topic {RetryTopic} for {Delay} after failure {FailureCount}")]
+    private partial void LogMessageRoutedToRetryTopic(string topic, int partition, long offset, string retryTopic, TimeSpan delay, int failureCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Delaying retry topic message {Topic}[{Partition}]@{Offset} for {Delay}")]
+    private partial void LogRetryTopicDelay(string topic, int partition, long offset, TimeSpan delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Resumed retry topic partition {Topic}[{Partition}] after {Delay}")]
+    private partial void LogRetryTopicPartitionResumed(string topic, int partition, TimeSpan delay);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to resume retry topic partition {Topic}[{Partition}]")]
+    private partial void LogRetryTopicPartitionResumeFailed(Exception ex, string topic, int partition);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to route message from {Topic}[{Partition}]@{Offset} to dead letter queue")]
     private partial void LogDeadLetterRoutingFailed(Exception ex, string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to route message from {Topic}[{Partition}]@{Offset} to retry topic")]
+    private partial void LogRetryTopicRoutingFailed(Exception ex, string topic, int partition, long offset);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to flush DLQ producer during shutdown")]
     private partial void LogDlqProducerFlushError(Exception ex);

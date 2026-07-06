@@ -1,5 +1,3 @@
-using System.Buffers.Text;
-using System.Text;
 using Dekaf.Serialization;
 
 namespace Dekaf.Consumer.DeadLetter;
@@ -54,10 +52,13 @@ public static class DeadLetterHeaders
         }
 
         // Source metadata
-        headers.Add(SourceTopicKey, result.Topic);
-        headers.Add(SourcePartitionKey, FormatInt(result.Partition));
-        headers.Add(SourceOffsetKey, FormatLong(result.Offset));
-        headers.Add(FailureCountKey, FormatInt(failureCount));
+        var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
+        var sourcePartition = RetryTopicHeaders.GetSourcePartition(result.Headers) ?? result.Partition;
+        var sourceOffset = RetryTopicHeaders.GetSourceOffset(result.Headers) ?? result.Offset;
+        headers.Add(SourceTopicKey, sourceTopic);
+        headers.Add(SourcePartitionKey, DeadLetterHeaderFormatting.FormatInt(sourcePartition));
+        headers.Add(SourceOffsetKey, DeadLetterHeaderFormatting.FormatLong(sourceOffset));
+        headers.Add(FailureCountKey, DeadLetterHeaderFormatting.FormatInt(failureCount));
         headers.Add(TimestampKey, DateTimeOffset.UtcNow.ToString("O"));
 
         // Error details (optional)
@@ -68,25 +69,5 @@ public static class DeadLetterHeaders
         }
 
         return headers;
-    }
-
-    private static string FormatInt(int value)
-    {
-        Span<byte> buffer = stackalloc byte[11];
-        if (Utf8Formatter.TryFormat(value, buffer, out var bytesWritten))
-        {
-            return Encoding.UTF8.GetString(buffer[..bytesWritten]);
-        }
-        return value.ToString();
-    }
-
-    private static string FormatLong(long value)
-    {
-        Span<byte> buffer = stackalloc byte[20];
-        if (Utf8Formatter.TryFormat(value, buffer, out var bytesWritten))
-        {
-            return Encoding.UTF8.GetString(buffer[..bytesWritten]);
-        }
-        return value.ToString();
     }
 }

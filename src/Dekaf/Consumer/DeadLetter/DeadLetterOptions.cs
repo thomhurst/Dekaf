@@ -41,4 +41,10 @@ public sealed class DeadLetterOptions
     /// The producer uses byte[] serializers by default.
     /// </summary>
     public Action<ProducerBuilder<byte[]?, byte[]?>>? ConfigureProducer { get; init; }
+
+    /// <summary>
+    /// Optional tiered retry-topic configuration. When configured, failed messages are produced
+    /// to retry topics before the dead letter queue.
+    /// </summary>
+    public RetryTopicOptions? RetryTopics { get; init; }
 }

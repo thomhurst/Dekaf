@@ -144,6 +144,47 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task Seek_WithPendingFetches_RemovesOnlySeekedPartition()
+    {
+        var seekedPartition = new TopicPartition(Topic, Partition);
+        var retainedPartition = new TopicPartition(Topic, 1);
+        var seekedFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "seeked"))
+        ]);
+        var retainedFetch = PendingFetchData.Create(Topic, retainedPartition.Partition,
+        [
+            CreateBatch(30, CreateRecord(0, "b", "retained"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer();
+        consumer.Assign(seekedPartition, retainedPartition);
+        var fetchPositions = GetFetchPositions(consumer);
+        fetchPositions[seekedPartition] = 0;
+        fetchPositions[retainedPartition] = 0;
+
+        var pendingFetches = GetPendingFetches(consumer);
+        pendingFetches.Enqueue(seekedFetch);
+        pendingFetches.Enqueue(retainedFetch);
+        var pendingEofEvents = GetPendingEofEvents(consumer);
+        pendingEofEvents.Enqueue((seekedPartition, 20L));
+        pendingEofEvents.Enqueue((retainedPartition, 30L));
+
+        consumer.Seek(new TopicPartitionOffset(Topic, Partition, 20));
+
+        await Assert.That(pendingFetches.Count).IsEqualTo(1);
+        await Assert.That(pendingFetches.Peek().TopicPartition).IsEqualTo(retainedPartition);
+        await Assert.That(pendingEofEvents.ToArray())
+            .IsEquivalentTo([(retainedPartition, 30L)]);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Partition).IsEqualTo(retainedPartition.Partition);
+        await Assert.That(result.Value.Value).IsEqualTo("retained");
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_EmitsFetchMetricsAsDeltas()
     {
         var messagesReceived = new List<long>();
