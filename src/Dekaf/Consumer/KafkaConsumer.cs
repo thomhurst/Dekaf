@@ -681,6 +681,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Background prefetch support
     private readonly MpscFetchBuffer _prefetchBuffer;
+    private readonly object _prefetchStartLock = new();
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
@@ -702,7 +703,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
     //   2. _assignmentLock    — serializes assignment changes between the consume loop and prefetch loop
-    //   3. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
+    //   3. _autoCommitStartLock / _prefetchStartLock — guard background loop start/stop snapshots;
+    //      never held while awaiting. When both are needed, acquire auto-commit before prefetch.
+    //   4. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
     //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
     //      InvalidateFetchRequestCache) and independently; never nested with each other
     private readonly SemaphoreSlim _initLock = new(1, 1);
@@ -710,6 +713,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeConsumeCancellationSources = new();
     private readonly CancellationTokenSource _leaderRefreshCts = new();
+    private readonly object _autoCommitStartLock = new();
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
@@ -1853,11 +1857,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void StartPrefetch()
     {
-        if (_prefetchTask is not null)
+        if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
-        _prefetchCts = new CancellationTokenSource();
-        _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
+        lock (_prefetchStartLock)
+        {
+            if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+                return;
+
+            if (_prefetchTask is not null)
+                return;
+
+            _prefetchCts = new CancellationTokenSource();
+            _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
+        }
     }
 
     private Task PrefetchLoopAsync(CancellationToken cancellationToken)
@@ -5118,25 +5131,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)
     {
-        var currentTask = _autoCommitTask;
-        if (currentTask is { IsCompleted: false })
+        if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
-        if (currentTask is not null)
+        Task? oldTask;
+        CancellationTokenSource? oldCts;
+        lock (_autoCommitStartLock)
+        {
+            if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+                return;
+
+            var currentTask = _autoCommitTask;
+            if (currentTask is { IsCompleted: false })
+                return;
+
+            oldTask = currentTask;
+            oldCts = _autoCommitCts;
+
+            _autoCommitCts = new CancellationTokenSource();
+            _autoCommitTask = AutoCommitLoopAsync(_autoCommitCts.Token);
+        }
+
+        if (oldTask is not null)
         {
             try
             {
-                await currentTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await oldTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
                 // Swallow — old task may have completed from cancellation or fault.
             }
-            _autoCommitCts?.Dispose();
         }
 
-        _autoCommitCts = new CancellationTokenSource();
-        _autoCommitTask = AutoCommitLoopAsync(_autoCommitCts.Token);
+        oldCts?.Dispose();
     }
 
     private async Task AutoCommitLoopAsync(CancellationToken cancellationToken)
@@ -5204,12 +5232,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // CommitAsync (which waits up to RequestTimeoutMs=30s for network I/O) would cause
         // CloseAsync to hang for the full network timeout, chaining across multiple consumers
         // during sequential `await using` disposal and exceeding test timeouts.
-        _autoCommitCts?.Cancel();
-        if (_autoCommitTask is not null)
+        Task? autoCommitTask;
+        CancellationTokenSource? autoCommitCts;
+        lock (_autoCommitStartLock)
+        {
+            autoCommitCts = _autoCommitCts;
+            autoCommitTask = _autoCommitTask;
+        }
+
+        autoCommitCts?.Cancel();
+        if (autoCommitTask is not null)
         {
             try
             {
-                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -5220,12 +5256,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Step 4: Stop prefetch task
         // Same rationale as Step 3: a mid-flight FetchAsync network operation could hang for
         // up to RequestTimeoutMs without the WaitAsync timeout bounding it.
-        _prefetchCts?.Cancel();
-        if (_prefetchTask is not null)
+        Task? prefetchTask;
+        CancellationTokenSource? prefetchCts;
+        lock (_prefetchStartLock)
+        {
+            prefetchCts = _prefetchCts;
+            prefetchTask = _prefetchTask;
+        }
+
+        prefetchCts?.Cancel();
+        if (prefetchTask is not null)
         {
             try
             {
-                await _prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -5506,16 +5550,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         CancelActiveConsumeOperations();
         _leaderRefreshCts.Cancel();
-        _autoCommitCts?.Cancel();
-        _prefetchCts?.Cancel();
+        Task? autoCommitTask;
+        Task? prefetchTask;
+        CancellationTokenSource? autoCommitCts;
+        CancellationTokenSource? prefetchCts;
+        lock (_autoCommitStartLock)
+        {
+            autoCommitCts = _autoCommitCts;
+            autoCommitTask = _autoCommitTask;
+        }
+        lock (_prefetchStartLock)
+        {
+            prefetchCts = _prefetchCts;
+            prefetchTask = _prefetchTask;
+        }
+
+        autoCommitCts?.Cancel();
+        prefetchCts?.Cancel();
 
         await WaitForLeaderRefreshTasksAsync().ConfigureAwait(false);
 
-        if (_autoCommitTask is not null)
+        if (autoCommitTask is not null)
         {
             try
             {
-                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -5523,11 +5582,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        if (_prefetchTask is not null)
+        if (prefetchTask is not null)
         {
             try
             {
-                await _prefetchTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await prefetchTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -5535,8 +5594,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        _autoCommitCts?.Dispose();
-        _prefetchCts?.Dispose();
+        autoCommitCts?.Dispose();
+        prefetchCts?.Dispose();
         _leaderRefreshCts.Dispose();
 
         // Clear and dispose CancellationTokenSource pool
