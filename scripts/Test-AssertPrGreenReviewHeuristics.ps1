@@ -277,6 +277,89 @@ No bugs found. That said, this will throw a NullReferenceException whenever the 
         Blocks = $true
     },
     @{
+        Name = 'blocks no-bugs paragraph followed by leak without connector'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found.
+This leaks a socket on the retry path.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks looks-good paragraph followed by deadlock without connector'
+        Body = @'
+## Review
+
+### Correctness
+Looks good.
+
+The retry path deadlocks under high load.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks wrong after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No issues found, however this uses the wrong offset for negative timestamps.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks use-after-free after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No issues found. This creates a use-after-free when the callback runs late.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks double free after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found. The cleanup path can double free the native handle.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks infinite loop after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+Looks good. The parser enters an infinite loop on empty varints.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks silently drops messages after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No concerns. The producer silently drops messages after a retriable timeout.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks data loss after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No problems found. This creates data loss when compaction is enabled.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'blocks looks-good heading with actionable paragraph'
         Body = @'
 ## Review

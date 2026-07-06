@@ -24,12 +24,12 @@ function Get-ActionableReviewBodyReason {
     $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
     $positiveVerdictDefect =
-        'incorrectly|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
+        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
     $positiveVerdictBlocker = '\b(?:' + $positiveVerdictDefect + ')\b'
     $positiveVerdictContinuationDefect =
         "$positiveVerdictDefect|(?<!not\s+a\s)(?<!no\s)regressions?|duplicat(?:ed|es|ing|ion)|swallow(?:s|ed|ing)?"
     $positiveVerdictContinuationBlocker =
-        '\b(?:but|however|although|though|that\s+said|still)\b[\s\S]{0,400}\b(?:' + $positiveVerdictContinuationDefect + ')\b'
+        '\b(?:' + $positiveVerdictContinuationDefect + ')\b'
     $positiveVerdictAlternatives = @(
         "$noCategoryFindings(?:[\s\S]*)?"
         'looks?\s+(?:right|good)(?:[\s\S]*)?'
