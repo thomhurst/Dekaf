@@ -248,7 +248,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         for (; index != end; index += step)
         {
             var rule = rules[index];
-            if (!IsActiveTransformRule(rule, direction))
+            if (!IsActiveRule(rule, direction))
                 continue;
 
             if (!_handlers.TryGetValue(rule.Type, out var handler))
@@ -288,9 +288,13 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 ex);
         }
     }
-    private static bool IsActiveTransformRule(SchemaRule rule, SchemaRegistryRuleDirection direction)
+
+    private static bool IsActiveRule(SchemaRule rule, SchemaRegistryRuleDirection direction)
     {
-        if (rule.Disabled || rule.Kind != SchemaRuleKind.Transform || string.IsNullOrWhiteSpace(rule.Type))
+        if (rule.Disabled || string.IsNullOrWhiteSpace(rule.Type))
+            return false;
+
+        if (rule.Kind is not (SchemaRuleKind.Transform or SchemaRuleKind.Condition))
             return false;
 
         return direction == SchemaRegistryRuleDirection.Write
