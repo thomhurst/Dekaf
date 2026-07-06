@@ -117,12 +117,42 @@ public class Crc32CTests
         if (!ArmCrc32.IsSupported)
             return;
 
-        for (var length = 0; length <= 512; length++)
+        foreach (var length in MixedLengths())
         {
             var data = CreateDeterministicBytes(length);
             var expected = ComputeBitwise(data);
 
             await Assert.That(Crc32C.ComputeHardwareArm(data)).IsEqualTo(expected);
+        }
+    }
+
+    [Test]
+    public async Task ComputeHardwareArmScalar_WhenSupported_MatchesBitwiseReference()
+    {
+        if (!ArmCrc32.IsSupported)
+            return;
+
+        foreach (var length in MixedLengths())
+        {
+            var data = CreateDeterministicBytes(length);
+            var expected = ComputeBitwise(data);
+
+            await Assert.That(Crc32C.ComputeHardwareArmScalar(data)).IsEqualTo(expected);
+        }
+    }
+
+    [Test]
+    public async Task ComputeHardwareArmOptimized_WhenSupported_MatchesBitwiseReference()
+    {
+        if (!ArmCrc32.Arm64.IsSupported)
+            return;
+
+        foreach (var length in MixedLengths())
+        {
+            var data = CreateDeterministicBytes(length);
+            var expected = ComputeBitwise(data);
+
+            await Assert.That(Crc32C.ComputeHardwareArmOptimized(data)).IsEqualTo(expected);
         }
     }
 
