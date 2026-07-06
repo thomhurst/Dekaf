@@ -753,7 +753,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool ShouldUseFetchSessions => _options.EnableFetchSessions && !_options.EnablePartitionEof;
 
     // Cached partition grouping by broker to avoid allocations on every fetch.
-    // Invalidated whenever _assignment, _paused, or preferred read replicas change.
+    // Rebuilt when assignment, preferred replicas, or metadata freshness make it stale;
+    // pause/resume updates it incrementally when the cache is already populated.
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private PartitionBrokerCacheEntry? _cachedPartitionsByBroker;
     private readonly object _partitionCacheLock = new();
@@ -3430,24 +3431,44 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void Pause(params TopicPartition[] partitions)
     {
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        List<TopicPartition>? changedPartitions = null;
         foreach (var partition in partitions)
         {
-            _paused.TryAdd(partition, 0);
+            if (_paused.TryAdd(partition, 0))
+            {
+                changedPartitions ??= [];
+                changedPartitions.Add(partition);
+            }
         }
+
+        if (changedPartitions is null)
+            return;
+
         PublishPausedSnapshot();
-        InvalidatePartitionCache();
-        InvalidateFetchRequestCache();
+        UpdateCachesForPausedPartitions(changedPartitions);
     }
 
     public void Resume(params TopicPartition[] partitions)
     {
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        List<TopicPartition>? changedPartitions = null;
         foreach (var partition in partitions)
         {
-            _paused.TryRemove(partition, out _);
+            if (_paused.TryRemove(partition, out _))
+            {
+                changedPartitions ??= [];
+                changedPartitions.Add(partition);
+            }
         }
+
+        if (changedPartitions is null)
+            return;
+
         PublishPausedSnapshot();
-        InvalidatePartitionCache();
-        InvalidateFetchRequestCache();
+        UpdateCachesForResumedPartitions(changedPartitions);
     }
 
     private void CancelActiveConsumeOperations()
@@ -4200,6 +4221,102 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_partitionCacheLock)
         {
             _cachedPartitionsByBroker = null;
+        }
+    }
+
+    private void UpdateCachesForPausedPartitions(IReadOnlyList<TopicPartition> partitions)
+    {
+        Interlocked.Increment(ref _assignmentVersion);
+        RemovePausedPartitionsFromPartitionCache(partitions);
+        InvalidateFetchRequestCache();
+    }
+
+    private void UpdateCachesForResumedPartitions(IReadOnlyList<TopicPartition> partitions)
+    {
+        Interlocked.Increment(ref _assignmentVersion);
+        AddResumedPartitionsToPartitionCache(partitions);
+        InvalidateFetchRequestCache();
+    }
+
+    private void RemovePausedPartitionsFromPartitionCache(IReadOnlyList<TopicPartition> partitions)
+    {
+        lock (_partitionCacheLock)
+        {
+            var cached = _cachedPartitionsByBroker;
+            if (cached is null)
+                return;
+
+            var updated = new Dictionary<int, List<TopicPartition>>(cached.Count);
+            var changed = false;
+            foreach (var kvp in cached)
+            {
+                var filtered = RemovePartitions(kvp.Value, partitions);
+                if (filtered is null)
+                {
+                    updated.Add(kvp.Key, kvp.Value);
+                }
+                else if (filtered.Count > 0)
+                {
+                    changed = true;
+                    updated.Add(kvp.Key, filtered);
+                }
+                else
+                {
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                _cachedPartitionsByBroker = updated;
+        }
+    }
+
+    private void AddResumedPartitionsToPartitionCache(IReadOnlyList<TopicPartition> partitions)
+    {
+        lock (_partitionCacheLock)
+        {
+            var cached = _cachedPartitionsByBroker;
+            if (cached is null)
+                return;
+
+            if (!_preferredReadReplicas.IsEmpty)
+            {
+                _cachedPartitionsByBroker = null;
+                return;
+            }
+
+            Dictionary<int, List<TopicPartition>>? updated = null;
+            var assignment = _assignmentSnapshot;
+            foreach (var partition in partitions)
+            {
+                if (_paused.ContainsKey(partition) || !ContainsPartition(assignment, partition))
+                    continue;
+
+                var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
+                if (leader is null)
+                {
+                    _cachedPartitionsByBroker = null;
+                    return;
+                }
+
+                updated ??= new Dictionary<int, List<TopicPartition>>(cached);
+                if (!updated.TryGetValue(leader.NodeId, out var brokerPartitions))
+                {
+                    updated[leader.NodeId] = [partition];
+                    continue;
+                }
+
+                if (ContainsPartition(brokerPartitions, partition))
+                    continue;
+
+                var replacement = new List<TopicPartition>(brokerPartitions.Count + 1);
+                replacement.AddRange(brokerPartitions);
+                replacement.Add(partition);
+                updated[leader.NodeId] = replacement;
+            }
+
+            if (updated is not null)
+                _cachedPartitionsByBroker = updated;
         }
     }
 
@@ -5219,6 +5336,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             _fetchRequestTemplateCache.Clear();
         }
+    }
+
+    private static List<TopicPartition>? RemovePartitions(
+        List<TopicPartition> source,
+        IReadOnlyList<TopicPartition> partitions)
+    {
+        List<TopicPartition>? updated = null;
+        for (var i = 0; i < source.Count; i++)
+        {
+            var partition = source[i];
+            if (ContainsPartition(partitions, partition))
+            {
+                if (updated is null)
+                {
+                    updated = new List<TopicPartition>(source.Count - 1);
+                    for (var j = 0; j < i; j++)
+                        updated.Add(source[j]);
+                }
+
+                continue;
+            }
+
+            updated?.Add(partition);
+        }
+
+        return updated;
+    }
+
+    private static bool ContainsPartition(IEnumerable<TopicPartition> partitions, TopicPartition partition)
+    {
+        foreach (var candidate in partitions)
+        {
+            if (candidate == partition)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
