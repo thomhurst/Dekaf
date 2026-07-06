@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Dekaf;
@@ -45,6 +46,12 @@ public sealed class AdminClient : IAdminClient
             {
                 UseTls = options.UseTls,
                 TlsConfig = options.TlsConfig,
+                RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
+                ConnectionTimeout = options.ConnectionTimeout,
+                EnableTcpKeepAlive = options.EnableTcpKeepAlive,
+                TcpKeepAliveTime = options.TcpKeepAliveTime,
+                TcpKeepAliveInterval = options.TcpKeepAliveInterval,
+                TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
                 ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
@@ -3888,8 +3895,40 @@ public sealed class AdminClientOptions
     /// </summary>
     public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
+    /// <summary>
+    /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// </summary>
+    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+
+    /// <summary>
+    /// Whether to enable TCP keepalive on broker sockets.
+    /// </summary>
+    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+
+    /// <summary>
+    /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
+
+    /// <summary>
+    /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+
+    /// <summary>
+    /// Number of TCP keepalive probes before the connection is considered dead.
+    /// Unsupported platforms ignore this.
+    /// </summary>
+    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+
     public bool UseTls { get; init; }
     public TlsConfig? TlsConfig { get; init; }
+
+    /// <summary>
+    /// Custom TLS certificate validation callback.
+    /// </summary>
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
@@ -3970,6 +4009,12 @@ public sealed class AdminClientBuilder
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private AwsMskIamConfig? _awsMskIamConfig;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
@@ -4327,6 +4372,62 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
+    /// </summary>
+    /// <param name="timeout">The connection setup timeout. Must be positive.</param>
+    public AdminClientBuilder WithConnectionTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeout = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Connection timeout must be positive");
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables TCP keepalive on broker sockets.
+    /// Equivalent to Kafka's <c>socket.keepalive.enable</c>.
+    /// </summary>
+    public AdminClientBuilder WithTcpKeepAlive(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _enableTcpKeepAlive = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
+    /// Unsupported platforms ignore individual probe options.
+    /// </summary>
+    public AdminClientBuilder WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
+        _enableTcpKeepAlive = true;
+        _tcpKeepAliveTime = time;
+        _tcpKeepAliveInterval = interval;
+        _tcpKeepAliveRetryCount = retryCount;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom TLS certificate validation callback and enables TLS.
+    /// </summary>
+    public AdminClientBuilder WithRemoteCertificateValidationCallback(
+        RemoteCertificateValidationCallback callback)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _useTls = true;
+        _remoteCertificateValidationCallback = callback ?? throw new ArgumentNullException(nameof(callback));
+        return this;
+    }
+
     internal AdminClientBuilder WithSaslOptions(
         SaslMechanism mechanism,
         string? username,
@@ -4364,8 +4465,14 @@ public sealed class AdminClientBuilder
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
+            ConnectionTimeout = _connectionTimeout,
+            EnableTcpKeepAlive = _enableTcpKeepAlive,
+            TcpKeepAliveTime = _tcpKeepAliveTime,
+            TcpKeepAliveInterval = _tcpKeepAliveInterval,
+            TcpKeepAliveRetryCount = _tcpKeepAliveRetryCount,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
+            RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,

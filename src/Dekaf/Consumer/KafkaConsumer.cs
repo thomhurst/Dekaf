@@ -834,6 +834,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 UseTls = options.UseTls,
                 TlsConfig = options.TlsConfig,
+                RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
+                ConnectionTimeout = options.ConnectionTimeout,
+                EnableTcpKeepAlive = options.EnableTcpKeepAlive,
+                TcpKeepAliveTime = options.TcpKeepAliveTime,
+                TcpKeepAliveInterval = options.TcpKeepAliveInterval,
+                TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
                 ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),

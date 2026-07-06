@@ -1,3 +1,4 @@
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
 using Dekaf.Internal;
@@ -72,6 +73,12 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
@@ -279,6 +286,62 @@ public sealed class ProducerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
         _socketReceiveBufferBytes = bytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
+    /// </summary>
+    /// <param name="timeout">The connection setup timeout. Must be positive.</param>
+    public ProducerBuilder<TKey, TValue> WithConnectionTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeout = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Connection timeout must be positive");
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables TCP keepalive on broker sockets.
+    /// Equivalent to Kafka's <c>socket.keepalive.enable</c>.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithTcpKeepAlive(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _enableTcpKeepAlive = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
+    /// Unsupported platforms ignore individual probe options.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
+        _enableTcpKeepAlive = true;
+        _tcpKeepAliveTime = time;
+        _tcpKeepAliveInterval = interval;
+        _tcpKeepAliveRetryCount = retryCount;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom TLS certificate validation callback and enables TLS.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithRemoteCertificateValidationCallback(
+        RemoteCertificateValidationCallback callback)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _useTls = true;
+        _remoteCertificateValidationCallback = callback ?? throw new ArgumentNullException(nameof(callback));
         return this;
     }
 
@@ -1006,6 +1069,11 @@ public sealed class ProducerBuilder<TKey, TValue>
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
+            ConnectionTimeout = _connectionTimeout,
+            EnableTcpKeepAlive = _enableTcpKeepAlive,
+            TcpKeepAliveTime = _tcpKeepAliveTime,
+            TcpKeepAliveInterval = _tcpKeepAliveInterval,
+            TcpKeepAliveRetryCount = _tcpKeepAliveRetryCount,
             EnableIdempotence = _enableIdempotence,
             ConnectionsPerBroker = _connectionsPerBroker,
             TransactionalId = _transactionalId,
@@ -1018,6 +1086,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             CustomPartitioner = _customPartitioner,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
+            RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
@@ -1194,6 +1263,12 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
     private bool _enableFetchSessions = true;
@@ -1937,6 +2012,62 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
+    /// </summary>
+    /// <param name="timeout">The connection setup timeout. Must be positive.</param>
+    public ConsumerBuilder<TKey, TValue> WithConnectionTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeout = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Connection timeout must be positive");
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables TCP keepalive on broker sockets.
+    /// Equivalent to Kafka's <c>socket.keepalive.enable</c>.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithTcpKeepAlive(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _enableTcpKeepAlive = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
+    /// Unsupported platforms ignore individual probe options.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
+        _enableTcpKeepAlive = true;
+        _tcpKeepAliveTime = time;
+        _tcpKeepAliveInterval = interval;
+        _tcpKeepAliveRetryCount = retryCount;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom TLS certificate validation callback and enables TLS.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithRemoteCertificateValidationCallback(
+        RemoteCertificateValidationCallback callback)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _useTls = true;
+        _remoteCertificateValidationCallback = callback ?? throw new ArgumentNullException(nameof(callback));
+        return this;
+    }
+
+    /// <summary>
     /// Configures the consumer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -2213,9 +2344,15 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
+            ConnectionTimeout = _connectionTimeout,
+            EnableTcpKeepAlive = _enableTcpKeepAlive,
+            TcpKeepAliveTime = _tcpKeepAliveTime,
+            TcpKeepAliveInterval = _tcpKeepAliveInterval,
+            TcpKeepAliveRetryCount = _tcpKeepAliveRetryCount,
             CheckCrcs = _checkCrcs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
+            RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
@@ -2362,6 +2499,12 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
+    private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
@@ -2497,6 +2640,62 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         _connectionsMaxIdleMs = ConnectionOptions.ToConnectionsMaxIdleMs(idle, nameof(idle));
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
+    /// </summary>
+    /// <param name="timeout">The connection setup timeout. Must be positive.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithConnectionTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeout = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Connection timeout must be positive");
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables TCP keepalive on broker sockets.
+    /// Equivalent to Kafka's <c>socket.keepalive.enable</c>.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithTcpKeepAlive(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _enableTcpKeepAlive = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
+    /// Unsupported platforms ignore individual probe options.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithTcpKeepAlive(
+        TimeSpan time,
+        TimeSpan interval,
+        int retryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
+        _enableTcpKeepAlive = true;
+        _tcpKeepAliveTime = time;
+        _tcpKeepAliveInterval = interval;
+        _tcpKeepAliveRetryCount = retryCount;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom TLS certificate validation callback and enables TLS.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithRemoteCertificateValidationCallback(
+        RemoteCertificateValidationCallback callback)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _useTls = true;
+        _remoteCertificateValidationCallback = callback ?? throw new ArgumentNullException(nameof(callback));
         return this;
     }
 
@@ -2749,8 +2948,14 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
+            ConnectionTimeout = _connectionTimeout,
+            EnableTcpKeepAlive = _enableTcpKeepAlive,
+            TcpKeepAliveTime = _tcpKeepAliveTime,
+            TcpKeepAliveInterval = _tcpKeepAliveInterval,
+            TcpKeepAliveRetryCount = _tcpKeepAliveRetryCount,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
+            RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
