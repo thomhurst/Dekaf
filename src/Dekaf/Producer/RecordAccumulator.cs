@@ -4644,8 +4644,10 @@ internal sealed class PartitionBatch
             headerCount);
         var encodedRecordSize = checked(Record.VarIntSize(bodySize) + bodySize);
 
-        // Check size limit
-        if ((long)_estimatedSize + encodedRecordSize > _options.BatchSize && recordIndex > 0)
+        // Check size limit. BatchSize is the full wire batch budget, so records must
+        // leave room for the fixed RecordBatch header.
+        var maxRecordsSize = Math.Max(0, _options.BatchSize - RecordBatch.TotalBatchHeaderSize);
+        if ((long)_estimatedSize + encodedRecordSize > maxRecordsSize && recordIndex > 0)
         {
             return new RecordAppendResult(false);
         }

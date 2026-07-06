@@ -514,6 +514,71 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendFromSpansAsync_BatchSizeBudgetReservesWireBatchHeader()
+    {
+        const int firstValueLength = 32;
+        var firstRecordSize = EncodedRecordSize(
+            timestampDelta: 0,
+            offsetDelta: 0,
+            valueLength: firstValueLength);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = RecordBatch.TotalBatchHeaderSize + firstRecordSize,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var appended = await accumulator.AppendFromSpansAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            new byte[firstValueLength],
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+
+        appended = await accumulator.AppendFromSpansAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp + 1,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            new byte[] { 2 },
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+        await Assert.That(accumulator.TryDrainBatch(out var firstBatch)).IsTrue();
+        await Assert.That(firstBatch!.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(firstBatch.DataSize).IsEqualTo(firstRecordSize);
+        await Assert.That(firstBatch.RecordBatch.GetEncodedSize()).IsEqualTo(options.BatchSize);
+
+        var secondBatch = CompleteCurrentBatch(accumulator, topicPartition);
+        await Assert.That(secondBatch.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(secondBatch.RecordBatch.GetEncodedSize()).IsLessThanOrEqualTo(options.BatchSize);
+
+        firstBatch.CompleteSend(baseOffset: 0, DateTimeOffset.FromUnixTimeMilliseconds(timestamp));
+        secondBatch.CompleteSend(baseOffset: 1, DateTimeOffset.FromUnixTimeMilliseconds(timestamp + 1));
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_ArenaFullBeforeBatchSize_RotatesAndPreservesRecords()
     {
         var options = new ProducerOptions
@@ -2552,6 +2617,20 @@ public class RecordAccumulatorTests
         var partitionBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
         var completeMethod = partitionBatch.GetType().GetMethod("Complete");
         return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+    }
+
+    private static int EncodedRecordSize(long timestampDelta, int offsetDelta, int valueLength)
+    {
+        var bodySize = Record.ComputeBodySize(
+            timestampDelta,
+            offsetDelta,
+            isKeyNull: true,
+            keyLength: 0,
+            isValueNull: false,
+            valueLength,
+            headers: null,
+            headerCount: 0);
+        return Record.VarIntSize(bodySize) + bodySize;
     }
 
     private static ProduceException CreatePurgedException()
