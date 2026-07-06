@@ -739,6 +739,27 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_EmptyStaticMemberLeaveGroup_SendsMemberEpochNegativeTwo()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(groupInstanceId: string.Empty);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        _connection.ClearReceivedCalls();
+        SetupConsumerGroupHeartbeat();
+
+        await coordinator.LeaveGroupAsync(cancellationToken: CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r =>
+                r.MemberEpoch == -2 && r.InstanceId == string.Empty),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ConsumerProtocol_LeaveGroup_ResetsState()
     {
         SetupSuccessfulConsumerProtocolJoin();

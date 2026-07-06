@@ -1150,7 +1150,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 GroupId = _options.GroupId!,
                 MemberId = _memberId!,
-                MemberEpoch = string.IsNullOrEmpty(_options.GroupInstanceId) ? -1 : -2,
+                MemberEpoch = _options.GroupInstanceId is null ? -1 : -2,
                 InstanceId = _options.GroupInstanceId,
             };
 
