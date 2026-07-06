@@ -58,6 +58,46 @@ catch (Exception ex)
 }
 ```
 
+## Two-Phase Commit Participation
+
+For external transaction coordinators, enable KIP-939 two-phase commit participation:
+
+```csharp
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithTransactionalId("orders-2pc")
+    .WithTwoPhaseCommit()
+    .BuildAsync();
+
+await producer.InitTransactionsAsync();
+
+await using var transaction = producer.BeginTransaction();
+await transaction.ProduceAsync(new ProducerMessage<string, string>
+{
+    Topic = "orders",
+    Key = orderId,
+    Value = orderJson
+});
+
+var prepared = await transaction.PrepareAsync();
+
+// Store prepared.ToString() with the external transaction decision.
+await producer.CompletePreparedTransactionAsync(prepared);
+```
+
+If the process restarts after prepare, initialize with `keepPreparedTransaction: true`
+and complete using the stored state:
+
+```csharp
+await producer.InitTransactionsAsync(keepPreparedTransaction: true);
+var prepared = PreparedTransactionState.Parse(storedPreparedState);
+await producer.CompletePreparedTransactionAsync(prepared);
+```
+
+This requires broker support for `transaction.version` 3 and `InitProducerId` v6.
+After `PrepareAsync`, only commit, abort, dispose, or `CompletePreparedTransactionAsync`
+are valid until the prepared transaction is finished.
+
 ## Exactly-Once Processing (Consume-Transform-Produce)
 
 The most common use case for transactions is exactly-once stream processing:

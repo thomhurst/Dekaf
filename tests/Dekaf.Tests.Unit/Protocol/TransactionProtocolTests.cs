@@ -69,6 +69,43 @@ public sealed class TransactionProtocolTests
     }
 
     [Test]
+    public async Task InitProducerIdRequest_V6_IncludesTwoPhaseCommitFlags()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new InitProducerIdRequest
+        {
+            TransactionalId = "txn-2pc",
+            TransactionTimeoutMs = 60000,
+            ProducerId = 42,
+            ProducerEpoch = 5,
+            EnableTwoPhaseCommit = true,
+            KeepPreparedTransaction = true
+        };
+        request.Write(ref writer, version: 6);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        var txnId = reader.ReadCompactString();
+        var timeoutMs = reader.ReadInt32();
+        var producerId = reader.ReadInt64();
+        var producerEpoch = reader.ReadInt16();
+        var enableTwoPhaseCommit = reader.ReadBoolean();
+        var keepPreparedTransaction = reader.ReadBoolean();
+        reader.SkipTaggedFields();
+        var end = reader.End;
+
+        await Assert.That(txnId).IsEqualTo("txn-2pc");
+        await Assert.That(timeoutMs).IsEqualTo(60000);
+        await Assert.That(producerId).IsEqualTo(42L);
+        await Assert.That(producerEpoch).IsEqualTo((short)5);
+        await Assert.That(enableTwoPhaseCommit).IsTrue();
+        await Assert.That(keepPreparedTransaction).IsTrue();
+        await Assert.That(end).IsTrue();
+    }
+
+    [Test]
     public async Task InitProducerIdResponse_V2_Flexible_ReadsCorrectly()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -87,6 +124,31 @@ public sealed class TransactionProtocolTests
         await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(response.ProducerId).IsEqualTo(2000L);
         await Assert.That(response.ProducerEpoch).IsEqualTo((short)7);
+    }
+
+    [Test]
+    public async Task InitProducerIdResponse_V6_ReadsOngoingPreparedTransaction()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(50);
+        writer.WriteInt16(0);
+        writer.WriteInt64(2000);
+        writer.WriteInt16(7);
+        writer.WriteInt64(3000);
+        writer.WriteInt16(9);
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (InitProducerIdResponse)InitProducerIdResponse.Read(ref reader, version: 6);
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(50);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.ProducerId).IsEqualTo(2000L);
+        await Assert.That(response.ProducerEpoch).IsEqualTo((short)7);
+        await Assert.That(response.OngoingTransactionProducerId).IsEqualTo(3000L);
+        await Assert.That(response.OngoingTransactionProducerEpoch).IsEqualTo((short)9);
     }
 
     [Test]
@@ -508,7 +570,7 @@ public sealed class TransactionProtocolTests
     {
         await Assert.That(InitProducerIdRequest.ApiKey).IsEqualTo(ApiKey.InitProducerId);
         await Assert.That(InitProducerIdRequest.LowestSupportedVersion).IsEqualTo((short)2);
-        await Assert.That(InitProducerIdRequest.HighestSupportedVersion).IsEqualTo((short)5);
+        await Assert.That(InitProducerIdRequest.HighestSupportedVersion).IsEqualTo((short)6);
     }
 
     [Test]

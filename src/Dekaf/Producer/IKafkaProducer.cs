@@ -197,6 +197,21 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Initializes transactions and optionally keeps an existing prepared transaction for completion.
+    /// </summary>
+    ValueTask InitTransactionsAsync(
+        bool keepPreparedTransaction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Completes a prepared transaction. The transaction is committed when the provided state
+    /// matches the prepared state returned by the broker; otherwise it is aborted.
+    /// </summary>
+    ValueTask CompletePreparedTransactionAsync(
+        PreparedTransactionState preparedState,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates a topic-specific producer bound to the specified topic.
     /// </summary>
     /// <remarks>
@@ -333,6 +348,12 @@ public interface ITransaction<TKey, TValue> : IAsyncDisposable
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Flushes all pending records and prepares the transaction for a two-phase commit.
+    /// After prepare, only commit, abort, dispose, or producer-level completion are valid.
+    /// </summary>
+    ValueTask<PreparedTransactionState> PrepareAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Aborts the transaction.
     /// </summary>
     ValueTask AbortAsync(CancellationToken cancellationToken = default);
@@ -344,4 +365,58 @@ public interface ITransaction<TKey, TValue> : IAsyncDisposable
         IEnumerable<TopicPartitionOffset> offsets,
         string consumerGroupId,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Identifies a transaction that has been prepared for two-phase commit.
+/// </summary>
+public readonly record struct PreparedTransactionState(long ProducerId, short ProducerEpoch)
+{
+    /// <summary>
+    /// Empty state used when there is no prepared transaction.
+    /// </summary>
+    public static PreparedTransactionState Empty { get; } = new(-1, -1);
+
+    /// <summary>
+    /// True when this state identifies a prepared transaction.
+    /// </summary>
+    public bool HasTransaction => ProducerId >= 0 && ProducerEpoch >= 0;
+
+    /// <summary>
+    /// Parses the stable string form emitted by <see cref="ToString"/>.
+    /// </summary>
+    public static PreparedTransactionState Parse(string value)
+    {
+        if (TryParse(value, out var state))
+            return state;
+
+        throw new FormatException("Prepared transaction state must be empty or in 'producerId:producerEpoch' form.");
+    }
+
+    /// <summary>
+    /// Attempts to parse the stable string form emitted by <see cref="ToString"/>.
+    /// </summary>
+    public static bool TryParse(string? value, out PreparedTransactionState state)
+    {
+        state = Empty;
+
+        if (string.IsNullOrEmpty(value))
+            return true;
+
+        var parts = value!.Split(':');
+        if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0)
+            return false;
+
+        if (!long.TryParse(parts[0], out var producerId))
+            return false;
+
+        if (!short.TryParse(parts[1], out var producerEpoch))
+            return false;
+
+        state = new PreparedTransactionState(producerId, producerEpoch);
+        return state.HasTransaction;
+    }
+
+    public override string ToString()
+        => HasTransaction ? $"{ProducerId}:{ProducerEpoch}" : string.Empty;
 }

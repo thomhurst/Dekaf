@@ -8,7 +8,7 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
 {
     public static ApiKey ApiKey => ApiKey.InitProducerId;
     public static short LowestSupportedVersion => 2;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => 6;
 
     /// <summary>
     /// The transactional ID, or null for idempotent-only producers.
@@ -30,6 +30,16 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
     /// </summary>
     public short ProducerEpoch { get; init; } = -1;
 
+    /// <summary>
+    /// Enables KIP-939 two-phase commit participation (v6+).
+    /// </summary>
+    public bool EnableTwoPhaseCommit { get; init; }
+
+    /// <summary>
+    /// Keeps an existing prepared transaction when re-initializing (v6+).
+    /// </summary>
+    public bool KeepPreparedTransaction { get; init; }
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteCompactNullableString(TransactionalId);
@@ -40,6 +50,12 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
         {
             writer.WriteInt64(ProducerId);
             writer.WriteInt16(ProducerEpoch);
+        }
+
+        if (version >= 6)
+        {
+            writer.WriteBoolean(EnableTwoPhaseCommit);
+            writer.WriteBoolean(KeepPreparedTransaction);
         }
 
         writer.WriteEmptyTaggedFields();

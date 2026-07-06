@@ -247,6 +247,12 @@ public sealed class ProducerOptions
     public string? TransactionalId { get; init; }
 
     /// <summary>
+    /// Enables KIP-939 two-phase commit participation for transactional producers.
+    /// Requires broker support for <c>transaction.version</c> 3 and InitProducerId v6.
+    /// </summary>
+    public bool EnableTwoPhaseCommit { get; init; }
+
+    /// <summary>
     /// Transaction timeout in milliseconds.
     /// </summary>
     public int TransactionTimeoutMs { get; init; } = 60000;

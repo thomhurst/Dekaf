@@ -8,7 +8,7 @@ public sealed class InitProducerIdResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.InitProducerId;
     public static short LowestSupportedVersion => 2;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => 6;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -30,12 +30,30 @@ public sealed class InitProducerIdResponse : IKafkaResponse
     /// </summary>
     public short ProducerEpoch { get; init; } = -1;
 
+    /// <summary>
+    /// Producer ID for an ongoing prepared transaction returned by InitProducerId v6.
+    /// </summary>
+    public long OngoingTransactionProducerId { get; init; } = -1;
+
+    /// <summary>
+    /// Producer epoch for an ongoing prepared transaction returned by InitProducerId v6.
+    /// </summary>
+    public short OngoingTransactionProducerEpoch { get; init; } = -1;
+
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
         var producerId = reader.ReadInt64();
         var producerEpoch = reader.ReadInt16();
+        var ongoingTransactionProducerId = -1L;
+        short ongoingTransactionProducerEpoch = -1;
+
+        if (version >= 6)
+        {
+            ongoingTransactionProducerId = reader.ReadInt64();
+            ongoingTransactionProducerEpoch = reader.ReadInt16();
+        }
 
         reader.SkipTaggedFields();
 
@@ -44,7 +62,9 @@ public sealed class InitProducerIdResponse : IKafkaResponse
             ThrottleTimeMs = throttleTimeMs,
             ErrorCode = errorCode,
             ProducerId = producerId,
-            ProducerEpoch = producerEpoch
+            ProducerEpoch = producerEpoch,
+            OngoingTransactionProducerId = ongoingTransactionProducerId,
+            OngoingTransactionProducerEpoch = ongoingTransactionProducerEpoch
         };
     }
 }

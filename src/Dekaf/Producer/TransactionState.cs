@@ -21,6 +21,11 @@ internal enum TransactionState
     InTransaction,
 
     /// <summary>
+    /// The current transaction has been prepared for a two-phase commit.
+    /// </summary>
+    PreparedTransaction,
+
+    /// <summary>
     /// The current transaction is being committed.
     /// </summary>
     CommittingTransaction,

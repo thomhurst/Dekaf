@@ -211,6 +211,17 @@ Enable transactional producer:
 
 Must be unique per producer instance.
 
+### WithTwoPhaseCommit
+
+Enable KIP-939 two-phase commit participation for transactional producers:
+
+```csharp
+.WithTransactionalId("my-service-tx-1")
+.WithTwoPhaseCommit()
+```
+
+Requires broker support for `transaction.version` 3 and `InitProducerId` v6.
+
 ## Security
 
 ### UseTls

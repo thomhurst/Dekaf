@@ -105,6 +105,14 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
 
     public ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
+    public ValueTask InitTransactionsAsync(bool keepPreparedTransaction, CancellationToken cancellationToken = default)
+        => ValueTask.CompletedTask;
+
+    public ValueTask CompletePreparedTransactionAsync(
+        PreparedTransactionState preparedState,
+        CancellationToken cancellationToken = default)
+        => ValueTask.CompletedTask;
+
     public ITopicProducer<TKey, TValue> ForTopic(string topic) => new TopicProducer<TKey, TValue>(this, topic, ownsProducer: false);
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
