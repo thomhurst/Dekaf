@@ -166,7 +166,7 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
 
         // Verify we can seek to this offset and consume the correct message
         consumer.Seek(new TopicPartitionOffset(topic, 0, returnedOffset));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cts.Token);
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10));
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Timestamp).IsGreaterThanOrEqualTo(targetTimestamp);
