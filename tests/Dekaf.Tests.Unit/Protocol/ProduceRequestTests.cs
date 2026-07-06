@@ -217,6 +217,71 @@ public sealed class ProduceRequestTests
         await Assert.That(writerBytesWritten).IsEqualTo(bufferBytesWritten);
     }
 
+    [Test]
+    public async Task Request_Write_WithScratchSlices_MatchesListEncoding()
+    {
+        var partition0 = new ProduceRequestPartitionData
+        {
+            Index = 0,
+            Records = [CreateBatch(baseOffset: 0, offsetDelta: 0, value: "zero"u8.ToArray())]
+        };
+        var partition1 = new ProduceRequestPartitionData
+        {
+            Index = 1,
+            Records = [CreateBatch(baseOffset: 1, offsetDelta: 1, value: "one"u8.ToArray())]
+        };
+        var partition2 = new ProduceRequestPartitionData
+        {
+            Index = 2,
+            Records = [CreateBatch(baseOffset: 2, offsetDelta: 2, value: "two"u8.ToArray())]
+        };
+
+        var listRequest = new ProduceRequest
+        {
+            Acks = 1,
+            TimeoutMs = 30_000,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "topic-a",
+                    PartitionData = [partition0, partition1]
+                },
+                new ProduceRequestTopicData
+                {
+                    Name = "topic-b",
+                    PartitionData = [partition2]
+                }
+            ]
+        };
+
+        var scratchPartitions = new[] { partition0, partition1, partition2 };
+        var scratchTopics = new[]
+        {
+            new ProduceRequestTopicData { Name = "topic-a" },
+            new ProduceRequestTopicData { Name = "topic-b" }
+        };
+        scratchTopics[0].SetPartitionDataScratch(scratchPartitions, start: 0, count: 2);
+        scratchTopics[1].SetPartitionDataScratch(scratchPartitions, start: 2, count: 1);
+
+        var scratchRequest = new ProduceRequest
+        {
+            Acks = 1,
+            TimeoutMs = 30_000
+        };
+        scratchRequest.SetTopicDataScratch(scratchTopics, count: 2);
+
+        await Assert.That(WriteRequest(scratchRequest)).IsEquivalentTo(WriteRequest(listRequest));
+    }
+
+    private static byte[] WriteRequest(ProduceRequest request)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        request.Write(ref writer, ProduceRequest.HighestSupportedVersion);
+        return buffer.WrittenSpan.ToArray();
+    }
+
     private static RecordBatch CreateBatch(long baseOffset, int offsetDelta, byte[] value)
     {
         return new RecordBatch

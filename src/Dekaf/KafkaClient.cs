@@ -313,6 +313,24 @@ public sealed class KafkaClientBuilder
         return WithOAuthBearerJwtBearer(options);
     }
 
+    public KafkaClientBuilder WithOAuthBearerAzureImds(OAuthBearerAzureImdsOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = options.ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public KafkaClientBuilder WithOAuthBearerAzureImds(Action<OAuthBearerAzureImdsOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerAzureImdsOptions { Resource = string.Empty };
+        configure(options);
+        return WithOAuthBearerAzureImds(options);
+    }
+
     public KafkaClientBuilder WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
     {
         _saslMechanism = SaslMechanism.OAuthBearer;

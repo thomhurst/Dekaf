@@ -20,6 +20,13 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
 
+# Cancel superseded runs: a newer commit on the same PR/branch cancels older
+# in-progress runs. Manual workflow_dispatch runs (e.g. NuGet publish) are never
+# cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 jobs:
   build-and-unit-test:
     name: Build & Unit Test

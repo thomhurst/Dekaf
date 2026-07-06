@@ -20,9 +20,11 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
 
-# concurrency:
-#   group: "benchmarks"
-#   cancel-in-progress: false
+# Cancel superseded runs: a newer commit on main cancels older in-progress
+# benchmark runs. Manual workflow_dispatch runs are never cancelled.
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   unit-benchmarks:

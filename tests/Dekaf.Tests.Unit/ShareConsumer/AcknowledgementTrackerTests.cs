@@ -342,4 +342,125 @@ public class AcknowledgementTrackerTests
         await Assert.That(batch.AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Reject);
         await Assert.That(batch.AcknowledgeTypes[2]).IsEqualTo((byte)AcknowledgeType.Accept);
     }
+
+    [Test]
+    public async Task RequeueAcks_PreservesOlderRangeWhenNewerRangeAlreadyTracked()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 50, 60);
+        var flushed = tracker.Flush();
+
+        tracker.TrackDeliveredRecords(tp, 100, 110);
+        tracker.RequeueAcks(flushed);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+        await Assert.That(result[tp].Count).IsEqualTo(2);
+
+        var olderBatch = result[tp][0];
+        await Assert.That(olderBatch.FirstOffset).IsEqualTo(50);
+        await Assert.That(olderBatch.LastOffset).IsEqualTo(60);
+        await Assert.That(olderBatch.AcknowledgeTypes.Length).IsEqualTo(11);
+
+        foreach (var ackType in olderBatch.AcknowledgeTypes)
+        {
+            await Assert.That(ackType).IsEqualTo((byte)AcknowledgeType.Accept);
+        }
+
+        var newerBatch = result[tp][1];
+        await Assert.That(newerBatch.FirstOffset).IsEqualTo(100);
+        await Assert.That(newerBatch.LastOffset).IsEqualTo(110);
+        await Assert.That(newerBatch.AcknowledgeTypes.Length).IsEqualTo(11);
+    }
+
+    [Test]
+    public async Task RequeueAcks_PreservesOlderRangeAndExplicitGapAck()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 50, 60);
+        var flushed = tracker.Flush();
+
+        tracker.TrackDeliveredRecords(tp, 100, 110);
+        tracker.Acknowledge(tp, 75, AcknowledgeType.Release, requireTracked: false);
+        tracker.RequeueAcks(flushed);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+        await Assert.That(result[tp].Count).IsEqualTo(3);
+
+        var olderBatch = result[tp][0];
+        await Assert.That(olderBatch.FirstOffset).IsEqualTo(50);
+        await Assert.That(olderBatch.LastOffset).IsEqualTo(60);
+
+        var gapBatch = result[tp][1];
+        await Assert.That(gapBatch.FirstOffset).IsEqualTo(75);
+        await Assert.That(gapBatch.LastOffset).IsEqualTo(75);
+        await Assert.That(gapBatch.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Release);
+
+        var newerBatch = result[tp][2];
+        await Assert.That(newerBatch.FirstOffset).IsEqualTo(100);
+        await Assert.That(newerBatch.LastOffset).IsEqualTo(110);
+    }
+
+    [Test]
+    public async Task TrackDeliveredRecords_OverwritesRequeuedDifferentTypeRange()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 10, 10);
+        tracker.Acknowledge(tp, 10, AcknowledgeType.Reject);
+        var flushed = tracker.Flush();
+
+        tracker.RequeueAcks(flushed);
+        tracker.TrackDeliveredRecords(tp, 10, 10);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+        await Assert.That(result[tp].Count).IsEqualTo(1);
+
+        var batch = result[tp][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(10);
+        await Assert.That(batch.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+    }
+
+    [Test]
+    public async Task TrackDeliveredRecords_SplitsRequeuedDifferentTypeOverlap()
+    {
+        var tracker = new AcknowledgementTracker();
+        var tp = new TopicPartition("topic1", 0);
+
+        tracker.TrackDeliveredRecords(tp, 10, 14);
+        for (var offset = 10; offset <= 14; offset++)
+        {
+            tracker.Acknowledge(tp, offset, AcknowledgeType.Reject);
+        }
+
+        var flushed = tracker.Flush();
+
+        tracker.RequeueAcks(flushed);
+        tracker.TrackDeliveredRecords(tp, 12, 16);
+
+        var result = tracker.Flush();
+        await Assert.That(result).ContainsKey(tp);
+        await Assert.That(result[tp].Count).IsEqualTo(1);
+
+        var batch = result[tp][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(10);
+        await Assert.That(batch.LastOffset).IsEqualTo(16);
+        for (var i = 0; i < 2; i++)
+        {
+            await Assert.That(batch.AcknowledgeTypes[i]).IsEqualTo((byte)AcknowledgeType.Reject);
+        }
+
+        for (var i = 2; i < batch.AcknowledgeTypes.Length; i++)
+        {
+            await Assert.That(batch.AcknowledgeTypes[i]).IsEqualTo((byte)AcknowledgeType.Accept);
+        }
+    }
 }

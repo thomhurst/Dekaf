@@ -56,6 +56,25 @@ public class StringBytesEncodingTests
     }
 
     [Test]
+    public async Task String_SpanOverload_Utf8_EncodedCorrectly()
+    {
+        var bytes = WriteStringSpan("日本語");
+
+        var reader = new KafkaProtocolReader(bytes);
+        await Assert.That(reader.ReadString()).IsEqualTo("日本語");
+    }
+
+    [Test]
+    public async Task String_SpanOverload_LongUtf8_RoundTrips()
+    {
+        var value = string.Concat(Enumerable.Repeat("日本語", 50));
+        var bytes = WriteStringSpan(value);
+
+        var reader = new KafkaProtocolReader(bytes);
+        await Assert.That(reader.ReadString()).IsEqualTo(value);
+    }
+
+    [Test]
     public async Task NullableString_Null_EncodedAsMinusOne()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -102,6 +121,25 @@ public class StringBytesEncodingTests
         // length + 1 = 5 (0x05), then "test"
         await Assert.That(buffer.WrittenSpan.ToArray())
             .IsEquivalentTo(new byte[] { 0x05, (byte)'t', (byte)'e', (byte)'s', (byte)'t' });
+    }
+
+    [Test]
+    public async Task CompactString_SpanOverload_Utf8_EncodedCorrectly()
+    {
+        var bytes = WriteCompactStringSpan("日本語");
+
+        var reader = new KafkaProtocolReader(bytes);
+        await Assert.That(reader.ReadCompactString()).IsEqualTo("日本語");
+    }
+
+    [Test]
+    public async Task CompactString_SpanOverload_LongUtf8_RoundTrips()
+    {
+        var value = string.Concat(Enumerable.Repeat("日本語", 50));
+        var bytes = WriteCompactStringSpan(value);
+
+        var reader = new KafkaProtocolReader(bytes);
+        await Assert.That(reader.ReadCompactString()).IsEqualTo(value);
     }
 
     [Test]
@@ -281,4 +319,20 @@ public class StringBytesEncodingTests
     }
 
     #endregion
+
+    private static byte[] WriteStringSpan(string value)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteString(value.AsSpan());
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static byte[] WriteCompactStringSpan(string value)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteCompactString(value.AsSpan());
+        return buffer.WrittenSpan.ToArray();
+    }
 }

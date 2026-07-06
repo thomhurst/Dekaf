@@ -233,6 +233,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         private int _count;
 
         public int Count => _count;
+        public Dictionary<TopicPartition, List<ReadyBatch>> Partitions => _partitions;
 
         private List<ReadyBatch> GetOrCreateQueue(TopicPartition tp)
         {
@@ -306,36 +307,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _count = 0;
         }
 
-        /// <summary>Iterates all batches across all partitions (for fail/cleanup/wakeup).</summary>
-        public void ForEach(Action<ReadyBatch> action)
+        public void RemoveAt(List<ReadyBatch> queue, int index)
         {
-            foreach (var kvp in _partitions)
-            {
-                var queue = kvp.Value;
-                for (var i = 0; i < queue.Count; i++)
-                    action(queue[i]);
-            }
-        }
-
-        /// <summary>
-        /// Sweeps expired batches matching the predicate. Calls onRemoved for each,
-        /// then removes it from its partition queue.
-        /// </summary>
-        public void SweepWhere(Func<ReadyBatch, bool> shouldRemove, Action<ReadyBatch> onRemoved)
-        {
-            foreach (var kvp in _partitions)
-            {
-                var queue = kvp.Value;
-                for (var i = queue.Count - 1; i >= 0; i--)
-                {
-                    if (shouldRemove(queue[i]))
-                    {
-                        onRemoved(queue[i]);
-                        queue.RemoveAt(i);
-                        _count--;
-                    }
-                }
-            }
+            queue.RemoveAt(index);
+            _count--;
         }
     }
 
@@ -1807,15 +1782,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
-        carryOver.ForEach(batch =>
+        foreach (var kvp in carryOver.Partitions)
         {
-            if (batch.RetryNotBefore > 0 && batch.RetryNotBefore < earliestTicks)
-                earliestTicks = batch.RetryNotBefore;
+            var queue = kvp.Value;
+            for (var i = 0; i < queue.Count; i++)
+            {
+                var batch = queue[i];
+                if (batch.RetryNotBefore > 0 && batch.RetryNotBefore < earliestTicks)
+                    earliestTicks = batch.RetryNotBefore;
 
-            var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
-            if (deadlineTicks < earliestTicks)
-                earliestTicks = deadlineTicks;
-        });
+                var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
+                if (deadlineTicks < earliestTicks)
+                    earliestTicks = deadlineTicks;
+            }
+        }
 
         if (earliestTicks >= long.MaxValue)
             return int.MaxValue;
@@ -2296,7 +2276,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Pre-allocated scratch space for building ProduceRequest without per-send allocations.
     /// The send loop is single-threaded and awaits each send before reusing, so all
     /// arrays and objects are safe to reuse without synchronization.
-    /// Uses ArraySegment&lt;T&gt; to slice the scratch arrays for IReadOnlyList&lt;T&gt; compatibility.
+    /// Uses internal array slices so ProduceRequest can serialize scratch data without boxing ArraySegment&lt;T&gt;.
     /// </summary>
     private sealed class ProduceRequestScratch
     {
@@ -2443,15 +2423,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 var topicData = _topicData[topicIdx];
                 topicData.Name = topicName;
-                topicData.PartitionData = new ArraySegment<ProduceRequestPartitionData>(
-                    _partitionData, partitionDataStart, partCount);
+                topicData.SetPartitionDataScratch(_partitionData, partitionDataStart, partCount);
                 topicIdx++;
 
                 runStart = runEnd;
             }
 
-            _request.TopicData = new ArraySegment<ProduceRequestTopicData>(
-                _topicData, 0, topicCount);
+            _request.SetTopicDataScratch(_topicData, topicCount);
             _request.RequestBodySizeHint = requestBodySizeHint;
             _lastTopicCount = topicCount;
             _lastPartitionCount = partIdx;
@@ -2464,12 +2442,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public void ClearReferences()
         {
-            _request.TopicData = [];
+            _request.ClearTopicDataScratch();
             _request.RequestBodySizeHint = 0;
             for (var i = 0; i < _lastTopicCount; i++)
             {
                 _topicData[i].Name = string.Empty;
-                _topicData[i].PartitionData = [];
+                _topicData[i].ClearPartitionDataScratch();
             }
             for (var i = 0; i < _lastPartitionCount; i++)
             {
@@ -2757,13 +2735,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var now = Stopwatch.GetTimestamp();
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
-        carryOver.SweepWhere(
-            batch => now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks,
-            batch =>
+        foreach (var kvp in carryOver.Partitions)
+        {
+            var queue = kvp.Value;
+            for (var i = queue.Count - 1; i >= 0; i--)
             {
-                // Unmute partition for retry batches (they caused the mute).
-                // Non-retry muted batches: don't unmute — the retry batch for this
-                // partition may still be in play and will unmute on its own expiry.
+                var batch = queue[i];
+                if (now < batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
+                    continue;
+
                 if (batch.IsRetry)
                 {
                     batch.IsRetry = false;
@@ -2780,13 +2760,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     elapsed,
                     configured,
                     $"Delivery timeout exceeded for {batch.TopicPartition}"));
-            });
+                carryOver.RemoveAt(queue, i);
+            }
+        }
     }
 
     private void FailCarryOverBatches(PartitionCarryOver carryOver)
     {
         var disposedException = new ObjectDisposedException(nameof(BrokerSender));
-        carryOver.ForEach(batch => FailAndCleanupBatch(batch, disposedException));
+        foreach (var kvp in carryOver.Partitions)
+        {
+            var queue = kvp.Value;
+            for (var i = 0; i < queue.Count; i++)
+            {
+                FailAndCleanupBatch(queue[i], disposedException);
+            }
+        }
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)

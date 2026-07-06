@@ -4898,6 +4898,33 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Configures SASL/OAUTHBEARER authentication using Azure IMDS managed identity.
+    /// </summary>
+    /// <param name="options">The Azure IMDS OAuth options.</param>
+    public AdminClientBuilder WithOAuthBearerAzureImds(OAuthBearerAzureImdsOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = options.ToOAuthBearerConfig();
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures SASL/OAUTHBEARER authentication using Azure IMDS managed identity.
+    /// </summary>
+    /// <param name="configure">Callback that configures the Azure IMDS OAuth options.</param>
+    public AdminClientBuilder WithOAuthBearerAzureImds(Action<OAuthBearerAzureImdsOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerAzureImdsOptions { Resource = string.Empty };
+        configure(options);
+        return WithOAuthBearerAzureImds(options);
+    }
+
+    /// <summary>
     /// Configures SASL/OAUTHBEARER authentication using a custom token provider.
     /// </summary>
     /// <param name="tokenProvider">A callback that returns an OAuth bearer token on demand.</param>

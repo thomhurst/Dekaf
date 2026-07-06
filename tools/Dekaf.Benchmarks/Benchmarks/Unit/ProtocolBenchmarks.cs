@@ -19,12 +19,14 @@ public class ProtocolBenchmarks
     private byte[] _varIntData = null!;
     private byte[] _recordBatchBytes = null!;
     private string _testString = null!;
+    private string _longString = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         _buffer = new ArrayBufferWriter<byte>(65536);
         _testString = new string('a', 100);
+        _longString = new string('a', 300);
 
         // Pre-create int32 data for reading
         var tempBuffer = new ArrayBufferWriter<byte>(4096);
@@ -75,6 +77,7 @@ public class ProtocolBenchmarks
     [Benchmark(Description = "Write 1000 Int32s")]
     public void WriteInt32_Thousand()
     {
+        _buffer.Clear();
         var writer = new KafkaProtocolWriter(_buffer);
         for (var i = 0; i < 1000; i++)
         {
@@ -85,6 +88,7 @@ public class ProtocolBenchmarks
     [Benchmark(Description = "Write 100 Strings (100 chars)")]
     public void WriteString_Hundred()
     {
+        _buffer.Clear();
         var writer = new KafkaProtocolWriter(_buffer);
         for (var i = 0; i < 100; i++)
         {
@@ -92,9 +96,33 @@ public class ProtocolBenchmarks
         }
     }
 
+    [Benchmark(Description = "Write 100 Strings (300 chars)")]
+    public void WriteString_Long()
+    {
+        _buffer.Clear();
+        var writer = new KafkaProtocolWriter(_buffer);
+        for (var i = 0; i < 100; i++)
+        {
+            writer.WriteString(_longString);
+        }
+    }
+
+    [Benchmark(Description = "Write 100 String spans (300 chars)")]
+    public void WriteStringSpan_Long()
+    {
+        _buffer.Clear();
+        var writer = new KafkaProtocolWriter(_buffer);
+        var value = _longString.AsSpan();
+        for (var i = 0; i < 100; i++)
+        {
+            writer.WriteString(value);
+        }
+    }
+
     [Benchmark(Description = "Write 100 CompactStrings")]
     public void WriteCompactString_Hundred()
     {
+        _buffer.Clear();
         var writer = new KafkaProtocolWriter(_buffer);
         for (var i = 0; i < 100; i++)
         {
@@ -102,9 +130,33 @@ public class ProtocolBenchmarks
         }
     }
 
+    [Benchmark(Description = "Write 100 CompactStrings (300 chars)")]
+    public void WriteCompactString_Long()
+    {
+        _buffer.Clear();
+        var writer = new KafkaProtocolWriter(_buffer);
+        for (var i = 0; i < 100; i++)
+        {
+            writer.WriteCompactString(_longString);
+        }
+    }
+
+    [Benchmark(Description = "Write 100 CompactString spans (300 chars)")]
+    public void WriteCompactStringSpan_Long()
+    {
+        _buffer.Clear();
+        var writer = new KafkaProtocolWriter(_buffer);
+        var value = _longString.AsSpan();
+        for (var i = 0; i < 100; i++)
+        {
+            writer.WriteCompactString(value);
+        }
+    }
+
     [Benchmark(Description = "Write 1000 VarInts")]
     public void WriteVarInt_Thousand()
     {
+        _buffer.Clear();
         var writer = new KafkaProtocolWriter(_buffer);
         for (var i = -500; i < 500; i++)
         {
@@ -143,6 +195,7 @@ public class ProtocolBenchmarks
     [Benchmark(Description = "Write RecordBatch (10 records)")]
     public void WriteRecordBatch()
     {
+        _buffer.Clear();
         var batch = CreateTenRecordBatch();
 
         batch.Write(_buffer);
@@ -151,6 +204,7 @@ public class ProtocolBenchmarks
     [Benchmark(Description = "Write RecordBatch pre-serialized (10 records)")]
     public void WriteRecordBatchPreSerialized()
     {
+        _buffer.Clear();
         var batch = CreateTenRecordBatch();
 
         batch.PreCompress(CompressionType.None, null);

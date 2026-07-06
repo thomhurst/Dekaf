@@ -37,9 +37,24 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
     /// </summary>
     public IReadOnlyList<ProduceRequestTopicData> TopicData { get; internal set; } = [];
 
+    private ProduceRequestTopicData[]? _topicDataScratch;
+    private int _topicDataScratchCount;
+
     internal int RequestBodySizeHint { get; set; }
 
     int IKafkaRequestBodySizeHint.RequestBodySizeHint => RequestBodySizeHint;
+
+    internal void SetTopicDataScratch(ProduceRequestTopicData[] topicData, int count)
+    {
+        _topicDataScratch = topicData;
+        _topicDataScratchCount = count;
+    }
+
+    internal void ClearTopicDataScratch()
+    {
+        _topicDataScratch = null;
+        _topicDataScratchCount = 0;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -47,10 +62,20 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
         writer.WriteInt16(Acks);
         writer.WriteInt32(TimeoutMs);
 
-        writer.WriteCompactArray(
-            TopicData,
-            static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
-            version);
+        if (_topicDataScratch is { } topicDataScratch)
+        {
+            writer.WriteCompactArray(
+                topicDataScratch.AsSpan(0, _topicDataScratchCount),
+                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                version);
+        }
+        else
+        {
+            writer.WriteCompactArray(
+                TopicData,
+                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                version);
+        }
 
         writer.WriteEmptyTaggedFields();
     }
@@ -71,14 +96,42 @@ public sealed class ProduceRequestTopicData
     /// </summary>
     public IReadOnlyList<ProduceRequestPartitionData> PartitionData { get; internal set; } = [];
 
+    private ProduceRequestPartitionData[]? _partitionDataScratch;
+    private int _partitionDataScratchStart;
+    private int _partitionDataScratchCount;
+
+    internal void SetPartitionDataScratch(ProduceRequestPartitionData[] partitionData, int start, int count)
+    {
+        _partitionDataScratch = partitionData;
+        _partitionDataScratchStart = start;
+        _partitionDataScratchCount = count;
+    }
+
+    internal void ClearPartitionDataScratch()
+    {
+        _partitionDataScratch = null;
+        _partitionDataScratchStart = 0;
+        _partitionDataScratchCount = 0;
+    }
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteCompactString(Name);
 
-        writer.WriteCompactArray(
-            PartitionData,
-            static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
-            version);
+        if (_partitionDataScratch is { } partitionDataScratch)
+        {
+            writer.WriteCompactArray(
+                partitionDataScratch.AsSpan(_partitionDataScratchStart, _partitionDataScratchCount),
+                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                version);
+        }
+        else
+        {
+            writer.WriteCompactArray(
+                PartitionData,
+                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                version);
+        }
 
         writer.WriteEmptyTaggedFields();
     }

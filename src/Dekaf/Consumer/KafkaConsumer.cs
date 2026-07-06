@@ -82,6 +82,7 @@ internal sealed class PendingFetchData : IDisposable
     private int _disposed;
     private int _headerGeneration;
     private bool _eagerParsed;
+    private bool _hasBufferedCurrent;
 
     public string Topic { get; private set; } = null!;
     public int PartitionIndex { get; private set; }
@@ -129,6 +130,7 @@ internal sealed class PendingFetchData : IDisposable
     /// Using long to prevent overflow in long-running scenarios with large fetches.
     /// </summary>
     public long MessageCount { get; private set; }
+    internal bool IsExhausted { get; private set; }
 
     private long _emittedMessageCount;
     private long _emittedBytesConsumed;
@@ -326,12 +328,21 @@ internal sealed class PendingFetchData : IDisposable
     {
         Debug.Assert(Volatile.Read(ref _disposed) == 0, "MoveNext() called after Dispose()");
 
+        if (IsExhausted)
+            return false;
+
+        if (_hasBufferedCurrent)
+        {
+            _hasBufferedCurrent = false;
+            return true;
+        }
+
         // First call - start at first batch, first record
         if (_batchIndex < 0)
         {
             _batchIndex = 0;
             _recordIndex = 0;
-            return HasCurrentRecord();
+            return HasCurrentRecordOrMarkExhausted();
         }
 
         // Try next record in current batch (uses cached count to avoid Records property access)
@@ -342,7 +353,36 @@ internal sealed class PendingFetchData : IDisposable
         // Move to next batch
         _batchIndex++;
         _recordIndex = 0;
-        return HasCurrentRecord();
+        return HasCurrentRecordOrMarkExhausted();
+    }
+
+    /// <summary>
+    /// Advances to the next record and makes the following <see cref="MoveNext"/> return it.
+    /// Used when a bounded batch reaches its record limit and must distinguish
+    /// "more records remain" from "fetch exhausted" without dropping the next record.
+    /// </summary>
+    internal bool TryBufferNext()
+    {
+        if (IsExhausted)
+            return false;
+
+        if (_hasBufferedCurrent)
+            return true;
+
+        if (!MoveNext())
+            return false;
+
+        _hasBufferedCurrent = true;
+        return true;
+    }
+
+    private bool HasCurrentRecordOrMarkExhausted()
+    {
+        if (HasCurrentRecord())
+            return true;
+
+        IsExhausted = true;
+        return false;
     }
 
     private bool HasCurrentRecord()
@@ -449,6 +489,7 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecords = null;
         _currentRecordsCount = 0;
         _eagerParsed = false;
+        _hasBufferedCurrent = false;
         unchecked
         {
             _headerGeneration++;
@@ -463,6 +504,7 @@ internal sealed class PendingFetchData : IDisposable
         LastYieldedLeaderEpoch = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
+        IsExhausted = false;
         _emittedMessageCount = 0;
         _emittedBytesConsumed = 0;
         PartitionIndex = 0;
@@ -581,6 +623,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// cancellation and timeout handling (~10 checks per second).
     /// </summary>
     private const int AllPartitionsPausedDelayMs = 100;
+    private const int MaxConsecutivePrefetchErrors = 50;
     private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ConsumerOptions _options;
@@ -696,8 +739,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Per-fetch reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
     // Keyed by (brokerId, connectionIndex) since PrefetchFromBrokerAsync runs concurrently
     // for multiple brokers AND multiple connections to the same broker.
-    // Stale entries from scaled-down connections are pruned lazily in PrefetchRecordsAsync.
+    // Stale entries from scaled-down connections are pruned lazily before dispatching broker prefetches.
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
+    private readonly BrokerPrefetchScheduler _brokerPrefetchScheduler = new();
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler> _fetchSessions = new();
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
@@ -897,6 +941,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
@@ -1354,8 +1399,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             }
                             else if (_prefetchBuffer.IsCompleted)
                             {
-                                // Buffer completed without error — prefetch pipeline has stopped.
-                                // Reached when PrefetchPipelineRunner exits its loop normally
+                                // Buffer completed without error — prefetch has stopped.
+                                // Reached when the broker prefetch loop exits normally
                                 // (e.g., cancellation) and calls Complete() in its finally block.
                                 break;
                             }
@@ -1676,7 +1721,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (ClearFetchBufferForPendingCoordinatorRevocations())
                     continue;
 
-                PendingFetchData pending = _pendingFetches.Dequeue();
+                PendingFetchData pending = _pendingFetches.Peek();
+                int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
+                var batchYielded = false;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -1690,28 +1737,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pending,
                         _keyDeserializer,
                         _valueDeserializer,
-                        IsCurrentlyAssigned);
+                        IsCurrentlyAssigned,
+                        _options.MaxPollRecords);
+                    batchYielded = true;
                     yield return batch;
-
-                    // After caller finishes iterating: update positions once per batch
-                    FlushConsumedPositions(pending);
-
-                    // Record consumer metrics per-fetch
-                    if (metricsEnabled && pending.MessageCount > 0)
-                    {
-                        EmitFetchMetrics(pending);
-                    }
-
-                    // Report batch processing time to the adaptive fetch sizer
-                    if (batchProcessingStarted.HasValue)
-                    {
-                        TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
-                    }
                 }
                 finally
                 {
-                    pending.Dispose();
+                    CompleteBatchPoll(
+                        pending,
+                        pendingFetchesVersion,
+                        metricsEnabled,
+                        batchProcessingStarted,
+                        disposePending: !batchYielded);
                 }
             }
 
@@ -1823,7 +1861,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (ClearFetchBufferForPendingCoordinatorRevocations())
                     continue;
 
-                PendingFetchData pending = _pendingFetches.Dequeue();
+                PendingFetchData pending = _pendingFetches.Peek();
+                int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
+                var batchYielded = false;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -1833,28 +1873,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
-                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned);
+                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned, _options.MaxPollRecords);
+                    batchYielded = true;
                     yield return batch;
-
-                    // After caller finishes iterating: update positions once per batch
-                    FlushConsumedPositions(pending);
-
-                    // Record consumer metrics per-fetch
-                    if (metricsEnabled && pending.MessageCount > 0)
-                    {
-                        EmitFetchMetrics(pending);
-                    }
-
-                    // Report batch processing time to the adaptive fetch sizer
-                    if (batchProcessingStarted.HasValue)
-                    {
-                        TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
-                    }
                 }
                 finally
                 {
-                    pending.Dispose();
+                    CompleteBatchPoll(
+                        pending,
+                        pendingFetchesVersion,
+                        metricsEnabled,
+                        batchProcessingStarted,
+                        disposePending: !batchYielded);
                 }
             }
 
@@ -1864,6 +1894,36 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Discarded — EOF is informational and not relevant for raw batch throughput
             }
+        }
+    }
+
+    private void CompleteBatchPoll(
+        PendingFetchData pending,
+        int pendingFetchesVersion,
+        bool metricsEnabled,
+        long? batchProcessingStarted,
+        bool disposePending)
+    {
+        if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+            return;
+
+        if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
+            return;
+
+        FlushConsumedPositions(pending);
+
+        if (metricsEnabled && pending.MessageCount > 0)
+            EmitFetchMetrics(pending);
+
+        if (batchProcessingStarted.HasValue)
+        {
+            TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+            _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+        }
+
+        if (disposePending || pending.IsExhausted || !IsCurrentlyAssigned(pending.TopicPartition))
+        {
+            _pendingFetches.Dequeue().Dispose();
         }
     }
 
@@ -1885,165 +1945,252 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private Task PrefetchLoopAsync(CancellationToken cancellationToken)
+    private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
-        // Delegate to the extracted PrefetchPipelineRunner for testability.
-        // See PrefetchPipelineRunner.cs for the pipelining invariants and memory limit notes.
-        var runner = new PrefetchPipelineRunner(
-            ensureAssignment: EnsureAssignmentAsync,
-            getAssignmentCount: () => _assignmentSnapshot.Count,
-            getMaxBytes: () => CalculatePrefetchMaxBytes(
-                (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
-                _assignmentSnapshot.Count,
-                _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
-                _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
-                _options.PrefetchPipelineDepth),
-            getPrefetchedBytes: () => Interlocked.Read(ref _prefetchedBytes),
-            prefetchRecords: PrefetchRecordsAsync,
-            waitForMemoryAvailable: ct => _prefetchMemoryAvailable.WaitAsync(ct),
-            logError: LogPrefetchLoopError,
-            logMemoryLimitPaused: LogPrefetchMemoryLimitPaused,
-            onComplete: error => _prefetchBuffer.Complete(error),
-            pipelineDepth: _options.PrefetchPipelineDepth,
-            onIterationComplete: _connectionScaler is null ? null : (inFlightCount, pipelineDepth) =>
-            {
-                _connectionScaler.ReportPipelineUtilization(inFlightCount, pipelineDepth);
-                _connectionScaler.MaybeScale();
-            });
+        var consecutiveErrors = 0;
+        Exception? completionError = null;
 
-        return runner.RunAsync(cancellationToken);
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+                    var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
+                    if (PrefetchLoopControl.ShouldResetConsecutiveErrors(drained))
+                        consecutiveErrors = 0;
+
+                    if (_assignmentSnapshot.Count == 0)
+                    {
+                        await _brokerPrefetchScheduler.DrainAllSafelyAsync(LogPrefetchLoopError).ConfigureAwait(false);
+                        await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    var maxBytes = CalculatePrefetchMaxBytes(
+                        (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
+                        _assignmentSnapshot.Count,
+                        _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
+                        _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
+                        _options.PrefetchPipelineDepth);
+                    var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
+                    if (PrefetchLoopControl.ShouldWaitForMemory(currentPrefetchedBytes, maxBytes))
+                    {
+                        LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
+                        await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    var (started, targetCount) = await DispatchReadyBrokerPrefetchesAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    var decision = PrefetchLoopControl.DecideAfterDispatch(
+                        started,
+                        targetCount,
+                        _brokerPrefetchScheduler.HasInFlight);
+
+                    if (decision.Action == PrefetchLoopAction.WaitForAny)
+                    {
+                        ReportBrokerPrefetchBacklog(decision.ReportBacklog);
+                        if (decision.RecordFetchWait)
+                            _adaptiveFetchSizer?.RecordFetchStart();
+                        await _brokerPrefetchScheduler.WaitForAnyAsync(cancellationToken).ConfigureAwait(false);
+                        if (decision.RecordFetchWait)
+                            _adaptiveFetchSizer?.RecordFetchEnd();
+                        ReportBrokerPrefetchBacklog(decision.ReportBacklog);
+                    }
+                    else if (decision.Action == PrefetchLoopAction.DelayNoWork)
+                    {
+                        ReportBrokerPrefetchBacklog(isBacklogged: false);
+                        await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        ReportBrokerPrefetchBacklog(isBacklogged: false);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+                    LogPrefetchLoopError(ex);
+
+                    if (PrefetchLoopControl.ShouldBreakOnConsecutiveError(
+                        consecutiveErrors,
+                        MaxConsecutivePrefetchErrors))
+                    {
+                        completionError = new KafkaException(
+                            ErrorCode.UnknownServerError,
+                            $"Prefetch loop failed {consecutiveErrors} consecutive times, last error: {ex.Message}",
+                            ex);
+                        break;
+                    }
+
+                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            await _brokerPrefetchScheduler.DrainAllSafelyAsync(LogPrefetchLoopError).ConfigureAwait(false);
+            _prefetchBuffer.Complete(completionError);
+        }
     }
 
-    private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
+    private async ValueTask<(int Started, int TargetCount)> DispatchReadyBrokerPrefetchesAsync(CancellationToken cancellationToken)
+    {
+        var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
+        var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
+            ? _fetchSessions.ToArray()
+            : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
+        var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
+
+        // Lazily prune stale entries from scaled-down connections.
+        // Enumerate entries directly to avoid the allocating .Keys snapshot.
+        foreach (var entry in _prefetchPendingItemsByBroker)
+        {
+            var key = entry.Key;
+            if (key.ConnectionIndex >= fetchConnectionCount)
+                _prefetchPendingItemsByBroker.TryRemove(key, out _);
+        }
+
+        var started = 0;
+        var targetCount = 0;
+        HashSet<(int BrokerId, int ConnectionIndex)>? scheduledFetchSessions = fetchSessionSnapshot.Length == 0 ? null : [];
+
+        // Stack-allocate group ranges — bounded by MaxFetchConnectionsPerBroker
+        Span<(int StartIndex, int Count)> groups = stackalloc (int, int)[Math.Min(fetchConnectionCount, ConsumerConnectionScaler.MaxFetchConnectionsPerBroker)];
+
+        foreach (var (brokerId, partitions) in partitionsByBroker)
+        {
+            var groupCount = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(
+                partitions.Count, fetchConnectionCount, groups);
+
+            for (var g = 0; g < groupCount; g++)
+            {
+                var (startIndex, count) = groups[g];
+                // Deterministic: group g always maps to connection g, ensuring stable
+                // (brokerId, connectionIndex) keys across cycles for pendingItems lists
+                var connectionIndex = g % fetchConnectionCount;
+                scheduledFetchSessions?.Add((brokerId, connectionIndex));
+                targetCount++;
+
+                if (TryStartBrokerPrefetch(
+                    brokerId,
+                    partitions,
+                    startIndex,
+                    count,
+                    connectionIndex,
+                    cancellationToken))
+                {
+                    started++;
+                }
+            }
+        }
+
+        foreach (var (key, handler) in fetchSessionSnapshot)
+        {
+            if (!handler.HasActiveSession)
+            {
+                _fetchSessions.TryRemove(key, out _);
+                continue;
+            }
+
+            if (key.ConnectionIndex >= fetchConnectionCount)
+            {
+                _fetchSessions.TryRemove(key, out _);
+                continue;
+            }
+
+            if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
+                continue;
+
+            targetCount++;
+            if (TryStartBrokerPrefetch(
+                key.BrokerId,
+                [],
+                0,
+                0,
+                key.ConnectionIndex,
+                cancellationToken))
+            {
+                started++;
+            }
+        }
+
+        return (started, targetCount);
+    }
+
+    private bool TryStartBrokerPrefetch(
+        int brokerId,
+        List<TopicPartition> partitions,
+        int partitionStartIndex,
+        int partitionCount,
+        int connectionIndex,
+        CancellationToken cancellationToken)
+    {
+        return _brokerPrefetchScheduler.TryStart(
+            (brokerId, connectionIndex),
+            () => RunBrokerPrefetchAsync(
+                brokerId,
+                partitions,
+                partitionStartIndex,
+                partitionCount,
+                connectionIndex,
+                cancellationToken));
+    }
+
+    private async Task RunBrokerPrefetchAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        int partitionStartIndex,
+        int partitionCount,
+        int connectionIndex,
+        CancellationToken cancellationToken)
     {
         // Rent a CTS from the pool for the combined consume cancellation source
-        // instead of allocating a LinkedCTS
+        // instead of allocating a LinkedCTS.
         var consumeCts = _ctsPool.Rent();
         _activeConsumeCancellationSources.TryAdd(consumeCts, 0);
 
         try
         {
-            // Forward outer cancellation into the pooled CTS via registration
-            using var reg1 = cancellationToken.CanBeCanceled
+            using var reg = cancellationToken.CanBeCanceled
                 ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), consumeCts)
                 : default;
 
-            // Close any race window: if token was cancelled between method entry and registration
             if (cancellationToken.IsCancellationRequested)
                 consumeCts.Cancel();
 
-            var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
-            var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
-                ? _fetchSessions.ToArray()
-                : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
-            var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
-            var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
-
-            // If all partitions are paused, delay to prevent tight spin loop
-            // that would starve timeout/cancellation mechanisms of CPU time
-            var brokerCount = partitionsByBroker.Count;
-            if (brokerCount == 0 && fetchSessionSnapshot.Length == 0)
-            {
-                await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
-                return;
-            }
-
-            // Fetch from all brokers in parallel for maximum throughput.
-            // When multiple fetch connections are available, split each broker's partitions
-            // across connections to issue concurrent fetches to the same broker.
-
-            // Lazily prune stale entries from scaled-down connections.
-            // Enumerate entries directly to avoid the allocating .Keys snapshot.
-            foreach (var entry in _prefetchPendingItemsByBroker)
-            {
-                var key = entry.Key;
-                if (key.ConnectionIndex >= fetchConnectionCount)
-                    _prefetchPendingItemsByBroker.TryRemove(key, out _);
-            }
-
-            // Upper bound: each broker can produce up to fetchConnectionCount tasks
-            var maxTasks = (brokerCount * fetchConnectionCount) + fetchSessionSnapshot.Length;
-            var fetchTasks = ArrayPool<Task>.Shared.Rent(maxTasks);
-            try
-            {
-                var taskCount = 0;
-                HashSet<(int BrokerId, int ConnectionIndex)>? scheduledFetchSessions = fetchSessionSnapshot.Length == 0 ? null : [];
-
-                // Stack-allocate group ranges — bounded by MaxFetchConnectionsPerBroker
-                Span<(int StartIndex, int Count)> groups = stackalloc (int, int)[Math.Min(fetchConnectionCount, ConsumerConnectionScaler.MaxFetchConnectionsPerBroker)];
-
-                foreach (var (brokerId, partitions) in partitionsByBroker)
-                {
-                    var groupCount = ConsumerConnectionScaler.SplitPartitionsAcrossConnections(
-                        partitions.Count, fetchConnectionCount, groups);
-
-                    for (var g = 0; g < groupCount; g++)
-                    {
-                        var (startIndex, count) = groups[g];
-                        // Deterministic: group g always maps to connection g, ensuring stable
-                        // (brokerId, connectionIndex) keys across cycles for pendingItems lists
-                        var connectionIndex = g % fetchConnectionCount;
-                        scheduledFetchSessions?.Add((brokerId, connectionIndex));
-
-                        fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
-                            brokerId, partitions, startIndex, count, connectionIndex,
-                            consumeCts.Token, consumeCts.Token);
-                    }
-                }
-
-                foreach (var (key, handler) in fetchSessionSnapshot)
-                {
-                    if (!handler.HasActiveSession)
-                    {
-                        _fetchSessions.TryRemove(key, out _);
-                        continue;
-                    }
-
-                    if (key.ConnectionIndex >= fetchConnectionCount)
-                    {
-                        _fetchSessions.TryRemove(key, out _);
-                        continue;
-                    }
-
-                    if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
-                        continue;
-
-                    fetchTasks[taskCount++] = PrefetchFromBrokerWithErrorHandlingAsync(
-                        key.BrokerId, [], 0, 0, key.ConnectionIndex,
-                        consumeCts.Token, consumeCts.Token);
-                }
-
-                if (taskCount == 0)
-                {
-                    await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
-                    return;
-                }
-
-                // Timing wraps the entire parallel fetch cycle (all brokers via Task.WhenAll)
-                // rather than individual broker fetches. This avoids a data race on the timing
-                // fields from concurrent PrefetchFromBrokerAsync calls, and correctly measures
-                // the bottleneck (slowest broker) which is the right signal for adaptive sizing.
-                _adaptiveFetchSizer?.RecordFetchStart();
-
-#if NETSTANDARD2_0
-                await Task.WhenAll(fetchTasks.Take(taskCount)).ConfigureAwait(false);
-#else
-                // ReadOnlySpan overload (.NET 9+) avoids internal array copy and ArraySegment boxing
-                await Task.WhenAll(new ReadOnlySpan<Task>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
-#endif
-
-                _adaptiveFetchSizer?.RecordFetchEnd();
-            }
-            finally
-            {
-                ArrayPool<Task>.Shared.Return(fetchTasks, clearArray: true);
-            }
+            await PrefetchFromBrokerWithErrorHandlingAsync(
+                brokerId,
+                partitions,
+                partitionStartIndex,
+                partitionCount,
+                connectionIndex,
+                consumeCts.Token,
+                consumeCts.Token).ConfigureAwait(false);
         }
         finally
         {
             _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
             consumeCts.Dispose();
         }
+    }
+
+    private void ReportBrokerPrefetchBacklog(bool isBacklogged)
+    {
+        if (_connectionScaler is null)
+            return;
+
+        _connectionScaler.ReportPipelineUtilization(
+            isBacklogged ? 1 : 0,
+            pipelineDepth: 1);
+        _connectionScaler.MaybeScale();
     }
 
     private async Task PrefetchFromBrokerWithErrorHandlingAsync(
@@ -2065,7 +2212,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         catch (Exception ex) when (IsFatalPrefetchError(ex))
         {
-            // Non-recoverable errors that should propagate to PrefetchPipelineRunner's
+            // Non-recoverable errors that should propagate to the broker prefetch loop's
             // consecutive error counter. See IsFatalPrefetchError for classification logic.
             LogFatalPrefetchError(ex, brokerId);
             throw;

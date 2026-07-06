@@ -113,6 +113,31 @@ var producer = await Kafka.CreateProducer<string, string>()
     .BuildAsync();
 ```
 
+## Azure IMDS Managed Identity
+
+On Azure VMs and AKS nodes with managed identity, Dekaf can fetch OAUTHBEARER
+tokens directly from the Azure Instance Metadata Service:
+
+```csharp
+using Dekaf;
+
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("kafka.example.com:9092")
+    .UseTls()
+    .WithOAuthBearerAzureImds(options =>
+    {
+        options.Resource = "api://kafka";
+        // Optional: set for user-assigned managed identity.
+        options.ClientId = "managed-identity-client-id";
+    })
+    .BuildAsync();
+```
+
+The built-in provider calls
+`http://169.254.169.254/metadata/identity/oauth2/token` with
+`Metadata: true`, `api-version=2018-02-01`, and the configured `resource`.
+Omit `ClientId` for a system-assigned managed identity.
+
 ## AWS MSK IAM
 
 For Amazon MSK IAM access control, prefer the native AWS_MSK_IAM mechanism:

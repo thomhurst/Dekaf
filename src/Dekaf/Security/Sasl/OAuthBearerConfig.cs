@@ -42,6 +42,12 @@ public sealed class OAuthBearerConfig
     public OAuthBearerJwtBearerOptions? JwtBearer { get; init; }
 
     /// <summary>
+    /// Azure IMDS managed identity settings. Required when <see cref="GrantType"/> is
+    /// <see cref="OAuthBearerGrantType.AzureImds"/>.
+    /// </summary>
+    public OAuthBearerAzureImdsOptions? AzureImds { get; init; }
+
+    /// <summary>
     /// The number of seconds before token expiration to trigger a refresh.
     /// Default is 60 seconds.
     /// </summary>
@@ -61,5 +67,10 @@ public enum OAuthBearerGrantType
     /// <summary>
     /// OAuth 2.0 JWT bearer assertion grant.
     /// </summary>
-    JwtBearer
+    JwtBearer,
+
+    /// <summary>
+    /// Azure Instance Metadata Service managed identity token source.
+    /// </summary>
+    AzureImds
 }

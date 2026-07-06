@@ -59,6 +59,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
+    private IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? _cachedOwnedTopicPartitions;
+    private int _cachedOwnedTopicPartitionsVersion = -1;
+    private int _sentOwnedTopicPartitionsVersion = -1;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
@@ -774,8 +777,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
         // which is invalid when there's no previous state.
+        var assignmentVersion = Volatile.Read(ref _assignmentVersion);
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions =
-            isInitial ? [] : BuildOwnedTopicPartitions(_assignedPartitions);
+            isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
 
         // Atomically snapshot and clear the subscription-changed flag to prevent a race where
         // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
@@ -811,6 +815,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             HandleConsumerGroupHeartbeatError(response, subscribedTopicRegex);
         }
+
+        if (!isInitial && ownedTopicPartitions is not null)
+            Volatile.Write(ref _sentOwnedTopicPartitionsVersion, assignmentVersion);
 
         if (response.MemberId is not null)
             _memberId = response.MemberId;
@@ -904,6 +911,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         return result.Count > 0 ? result : null;
+    }
+
+    private IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? GetOwnedTopicPartitionsForHeartbeat(
+        int assignmentVersion)
+    {
+        if (Volatile.Read(ref _sentOwnedTopicPartitionsVersion) == assignmentVersion)
+            return null;
+
+        if (Volatile.Read(ref _cachedOwnedTopicPartitionsVersion) == assignmentVersion)
+            return _cachedOwnedTopicPartitions;
+
+        var ownedTopicPartitions = _assignedPartitions.Count == 0
+            ? []
+            : BuildOwnedTopicPartitions(_assignedPartitions);
+
+        if (ownedTopicPartitions is not null)
+        {
+            _cachedOwnedTopicPartitions = ownedTopicPartitions;
+            Volatile.Write(ref _cachedOwnedTopicPartitionsVersion, assignmentVersion);
+        }
+
+        return ownedTopicPartitions;
     }
 
     /// <summary>
