@@ -755,11 +755,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly object _partitionCacheLock = new();
     private int _assignmentVersion;
 
-    // Fetch request cache - reduces allocations when partition assignment is stable
-    // Cache is invalidated when assignment or paused partitions change
+    // Fetch request cache - reduces allocations when partition assignment is stable.
+    // Keyed by partition subrange so adaptive multi-connection fetches can reuse templates.
+    // Cache is invalidated when assignment or paused partitions change.
     private readonly object _fetchCacheLock = new();
-    private Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? _cachedTopicPartitions;
-    private List<TopicPartition>? _cachedPartitionsList;
+    private readonly Dictionary<FetchRequestCacheKey, FetchRequestTemplateCacheEntry> _fetchRequestTemplateCache = [];
     private readonly ConcurrentDictionary<TopicPartition, PreferredReadReplicaState> _preferredReadReplicas = new();
     private readonly object _leaderRefreshTasksLock = new();
     private readonly ConcurrentDictionary<string, Task> _pendingLeaderRefreshTasks = new();
@@ -4888,43 +4888,42 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (count == 0)
             return ConsumerFetchPools.RentFetchRequestTopicList(0);
 
-        var isFullList = startIndex == 0 && count == partitions.Count;
+        var cacheKey = new FetchRequestCacheKey(startIndex, count);
 
         // Take snapshots of current state under lock
-        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? cachedDict;
-        List<TopicPartition>? cachedList;
+        FetchRequestTemplateCacheEntry? cachedEntry;
 
         lock (_fetchCacheLock)
         {
-            cachedDict = _cachedTopicPartitions;
-            cachedList = _cachedPartitionsList;
+            _fetchRequestTemplateCache.TryGetValue(cacheKey, out cachedEntry);
         }
 
-        // Check if cache is valid (same partition list as before) — only for full-list case.
-        // When fetchConnectionCount > 1, all calls use subranges so the cache is bypassed.
-        // This is intentional: the cache avoids rebuilding the topic→partition dictionary when
-        // partitions are stable, but subranges change per-connection and aren't worth caching.
-        if (isFullList && cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
+        // Check if cache is valid for this range. Multi-connection fetches use deterministic
+        // subranges, so stable assignments can reuse one template per connection group.
+        if (cachedEntry is not null
+            && PartitionRangeEquals(partitions, startIndex, count, cachedEntry.Partitions))
         {
             // Cache hit: build a fresh result list with snapshot offsets under lock.
             // Each broker task gets its own FetchRequestPartition objects so that
             // concurrent calls cannot mutate offsets visible to another task.
             // This allocates per fetch cycle (per-batch), not per-message.
             return BuildFetchResult(
-                cachedDict,
+                cachedEntry.TopicPartitions,
                 _fetchPositions,
                 _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
                 _metadataManager.Metadata,
                 _lastConsumedLeaderEpochs);
         }
 
-        // Cache miss (or subrange): build fresh structure with TopicPartition stored alongside
+        // Cache miss: build fresh structure with TopicPartition stored alongside.
         var topicPartitions = new Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>();
+        var rangePartitions = new List<TopicPartition>(count);
 
         var endIndex = startIndex + count;
         for (var i = startIndex; i < endIndex; i++)
         {
             var p = partitions[i];
+            rangePartitions.Add(p);
             if (!topicPartitions.TryGetValue(p.Topic, out var list))
             {
                 list = [];
@@ -4952,20 +4951,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _metadataManager.Metadata,
             _lastConsumedLeaderEpochs);
 
-        // Update cache (first writer wins to avoid overwriting fresher data) — only for full-list case
-        if (isFullList)
+        // Update cache if this range is new or the cached partition range is stale.
+        lock (_fetchCacheLock)
         {
-            lock (_fetchCacheLock)
+            if (!_fetchRequestTemplateCache.TryGetValue(cacheKey, out var currentEntry)
+                || !PartitionRangeEquals(partitions, startIndex, count, currentEntry.Partitions))
             {
-                if (_cachedTopicPartitions is null)
-                {
-                    _cachedTopicPartitions = topicPartitions;
-                    _cachedPartitionsList = new List<TopicPartition>(partitions);
-                }
+                _fetchRequestTemplateCache[cacheKey] = new FetchRequestTemplateCacheEntry(
+                    rangePartitions,
+                    topicPartitions);
             }
         }
 
         return result;
+    }
+
+    private readonly record struct FetchRequestCacheKey(int StartIndex, int Count);
+
+    private sealed class FetchRequestTemplateCacheEntry(
+        List<TopicPartition> partitions,
+        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> topicPartitions)
+    {
+        public List<TopicPartition> Partitions { get; } = partitions;
+
+        public Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> TopicPartitions { get; }
+            = topicPartitions;
     }
 
     /// <summary>
@@ -5058,19 +5068,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool PartitionListsEqual(List<TopicPartition> a, List<TopicPartition> b)
+        => PartitionRangeEquals(a, 0, a.Count, b);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PartitionRangeEquals(
+        List<TopicPartition> partitions,
+        int startIndex,
+        int count,
+        List<TopicPartition> cached)
     {
-        if (a.Count != b.Count)
+        if (count != cached.Count)
             return false;
 
         // For small lists, use O(n²) comparison to avoid HashSet allocation
-        if (a.Count <= 16)
+        if (count <= 16)
         {
-            foreach (var partitionA in a)
+            var endIndex = startIndex + count;
+            for (var i = startIndex; i < endIndex; i++)
             {
+                var partition = partitions[i];
                 var found = false;
-                foreach (var partitionB in b)
+                foreach (var cachedPartition in cached)
                 {
-                    if (partitionA.Topic == partitionB.Topic && partitionA.Partition == partitionB.Partition)
+                    if (partition.Topic == cachedPartition.Topic && partition.Partition == cachedPartition.Partition)
                     {
                         found = true;
                         break;
@@ -5083,10 +5103,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // For larger lists, use HashSet for O(n) comparison
-        var setB = new HashSet<TopicPartition>(b);
-        foreach (var partitionA in a)
+        var cachedSet = new HashSet<TopicPartition>(cached);
+        var rangeEndIndex = startIndex + count;
+        for (var i = startIndex; i < rangeEndIndex; i++)
         {
-            if (!setB.Contains(partitionA))
+            if (!cachedSet.Contains(partitions[i]))
                 return false;
         }
         return true;
@@ -5100,8 +5121,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_fetchCacheLock)
         {
-            _cachedTopicPartitions = null;
-            _cachedPartitionsList = null;
+            _fetchRequestTemplateCache.Clear();
         }
     }
 

@@ -13,6 +13,11 @@ public sealed class ConsumerFetchPoolsTests
             "BuildFetchRequestTopics",
             BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Could not find BuildFetchRequestTopics");
+    private static readonly FieldInfo FetchRequestTemplateCacheField =
+        typeof(KafkaConsumer<string, string>).GetField(
+            "_fetchRequestTemplateCache",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("Could not find _fetchRequestTemplateCache");
 
     [Test]
     public async Task ReturnedPendingFetchDataLists_AreClearedBeforeRent()
@@ -89,12 +94,77 @@ public sealed class ConsumerFetchPoolsTests
         await AssertFetchPoolsRentClearedLists();
     }
 
+    [Test]
+    public async Task BuildFetchRequestTopics_SubrangeCacheHit_ReturnPooledLists()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var partitions = CreateTemplateCachePartitions();
+
+        var cacheMissResult = InvokeBuildFetchRequestTopics(consumer, partitions, startIndex: 1, count: 2);
+        await Assert.That(cacheMissResult.Sum(static topic => topic.Partitions.Count)).IsEqualTo(2);
+        await Assert.That(GetFetchRequestTemplateCacheCount(consumer)).IsEqualTo(1);
+        ConsumerFetchPools.ReturnFetchRequestTopics(cacheMissResult);
+        await AssertFetchPoolsRentClearedLists();
+
+        var cacheHitResult = InvokeBuildFetchRequestTopics(consumer, partitions, startIndex: 1, count: 2);
+        await Assert.That(cacheHitResult.Sum(static topic => topic.Partitions.Count)).IsEqualTo(2);
+        await Assert.That(GetFetchRequestTemplateCacheCount(consumer)).IsEqualTo(1);
+        await Assert.That(cacheHitResult[0].Partitions).IsTypeOf<List<FetchRequestPartition>>();
+        ConsumerFetchPools.ReturnFetchRequestTopics(cacheHitResult);
+        await AssertFetchPoolsRentClearedLists();
+    }
+
+    [Test]
+    public async Task BuildFetchRequestTopics_DifferentSubranges_CacheSeparateTemplates()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var partitions = CreateTemplateCachePartitions();
+
+        var firstRange = InvokeBuildFetchRequestTopics(consumer, partitions, startIndex: 0, count: 2);
+        ConsumerFetchPools.ReturnFetchRequestTopics(firstRange);
+
+        var secondRange = InvokeBuildFetchRequestTopics(consumer, partitions, startIndex: 2, count: 2);
+        ConsumerFetchPools.ReturnFetchRequestTopics(secondRange);
+
+        await Assert.That(GetFetchRequestTemplateCacheCount(consumer)).IsEqualTo(2);
+    }
+
     private static List<FetchRequestTopic> InvokeBuildFetchRequestTopics(
         KafkaConsumer<string, string> consumer,
         List<TopicPartition> partitions)
+        => InvokeBuildFetchRequestTopics(consumer, partitions, 0, partitions.Count);
+
+    private static List<FetchRequestTopic> InvokeBuildFetchRequestTopics(
+        KafkaConsumer<string, string> consumer,
+        List<TopicPartition> partitions,
+        int startIndex,
+        int count)
         => (List<FetchRequestTopic>)BuildFetchRequestTopicsMethod.Invoke(
             consumer,
-            [partitions, 0, partitions.Count])!;
+            [partitions, startIndex, count])!;
+
+    private static int GetFetchRequestTemplateCacheCount(KafkaConsumer<string, string> consumer)
+    {
+        var cache = FetchRequestTemplateCacheField.GetValue(consumer)
+            ?? throw new InvalidOperationException("Fetch request template cache is null");
+        return ((System.Collections.ICollection)cache).Count;
+    }
+
+    private static List<TopicPartition> CreateTemplateCachePartitions() =>
+    [
+        new("topic-a", 0),
+        new("topic-a", 1),
+        new("topic-b", 0),
+        new("topic-b", 1)
+    ];
 
     private static async Task AssertFetchPoolsRentClearedLists()
     {
