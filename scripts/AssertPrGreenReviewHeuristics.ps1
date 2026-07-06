@@ -185,7 +185,7 @@ function Get-ActionableReviewBodyReason {
     $globalNoIssueVerdict =
         $Body -match "(?im)^\s*$noCategoryFindings\s*(?:to\s+flag|found|detected|identified|seen|remain|remaining)?\s*\.?(?:\s+(?!but\b|however\b|though\b|except\b).*)?$"
     $positiveVerdictDefect =
-        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|throws?\s+(?:an?\s+)?exception|crash(?:es|ing|ed)?|fixme|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|will\s+allocate|allocate\s+per|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|still\s+broken|remains?\s+broken|is\s+broken|leak(?:s|ing|ed)?|never\s+disposed|not\s+disposed|race\s+condition|(?<!under a )race|(?<!not\s)corrupt(?:s|ion|ed|ing)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|expos(?:es|ed|ing)?\s+(?:credentials?|secrets?|tokens?)|stack\s+overflow|hang(?:s|ing)?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|double[- ]charges?|not\s+idempotent|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|skip(?:s|ped|ping)?\s+validation|design\s+risk|risk\s+(?:for|of)|real\s+concerns?|concerns?\s+about|(?:test\s+)?coverage\s+gap|(?<!no\s)(?<!non[- ])block(?:er|ing)|fix\s+is\s+required|required\s+fix|required\s+before|real\s+(?:bug|issue)|edge\s+case|go(?:es|ing)?\s+stale|stale\s+(?:cache|entry)|never\s+refresh|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
+        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|throws?\s+(?:an?\s+)?exception|crash(?:es|ing|ed)?|fixme|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|will\s+allocate|allocate\s+per|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|still\s+broken|remains?\s+broken|is\s+broken|leak(?:s|ing|ed)?|never\s+disposed|not\s+disposed|race\s+condition|(?<!under a )race|(?<!not\s)corrupt(?:s|ion|ed|ing)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|expos(?:es|ed|ing)?\s+(?:credentials?|secrets?|tokens?)|stack\s+overflow|hang(?:s|ing)?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|double[- ]charges?|not\s+idempotent|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|skip(?:s|ped|ping)?\s+validation|design\s+risk|risk\s+(?:for|of)|real\s+concerns?|concerns?\s+about|(?:test\s+)?coverage\s+gap|(?<!no\s)(?<!non[- ])block(?:er|ing)|fix\s+is\s+required|required\s+fix|required\s+before|real\s+(?:bug|issue)|edge\s+case|go(?:es|ing)?\s+stale|stale\s+(?:cache|entry)|never\s+refresh|not\s+(?:thread[- ]safe(?!\s+by\s+design)|safe|correct|fixed|resolved|addressed|scoped)'
     $positiveVerdictBlocker = '\b(?:' + $positiveVerdictDefect + ')\b'
     $positiveVerdictContinuationDefect =
         "$positiveVerdictDefect|(?<!not\s+a\s)(?<!no\s)regressions?(?!\s+(?:coverage|tests?|risk))|now\s+duplicated|(?<!used\s+to\s+be\s)(?<!previously\s)duplicated\s+across|duplicates?\s+logic|duplication\s+of|swallow(?:s|ed|ing)?"
@@ -209,6 +209,17 @@ function Get-ActionableReviewBodyReason {
         "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:[-*]\s*)?(?:$positiveVerdictAlternatives)\.?\s*$"
     $positiveCategoryHeadingVerdict = $positiveCategoryVerdict
     $positiveCategorySection = $positiveCategoryVerdict
+    $positiveVerdictLineAlternatives = @(
+        "$noCategoryFindings[^\r\n]*"
+        "looks?$horizontalWhitespace+(?:right|good)[^\r\n]*"
+        "verified(?:$horizontalWhitespace+against\b[^\r\n]*)?"
+        'confirmed\b[^\r\n]*'
+        "no$horizontalWhitespace+concerns\b[^\r\n]*"
+        "(?:the$horizontalWhitespace+)?core$horizontalWhitespace+fix$horizontalWhitespace+is$horizontalWhitespace+(?:sound|correct)\b[^\r\n]*"
+        "fix$horizontalWhitespace+is$horizontalWhitespace+scoped(?:$horizontalWhitespace+to\b[^\r\n]*)?"
+    ) -join '|'
+    $positiveCategoryVerdictLine =
+        "(?im)^$horizontalWhitespace*(?:[-*]$horizontalWhitespace*)?(?![^\r\n]*\b(?:but|however|though|except)\b)(?:$positiveVerdictLineAlternatives)\.?$horizontalWhitespace*\r?$"
 
     $categoryHeadingWithOptionalVerdict = "$categoryOnlyHeading(?:(?:$horizontalWhitespace*(?:[-:]|\p{Pd})$horizontalWhitespace*\S[^\r\n#]*)|(?:$horizontalWhitespace*\([^\r\n#)]*\))|(?:$horizontalWhitespace+\S[^\r\n#]*))?:?"
     $categoryHeadingPattern = "(?im)^$horizontalWhitespace*#{2,4}$horizontalWhitespace+($categoryOnlyHeading)(?:(?:$horizontalWhitespace*(?:[-:]|\p{Pd})$horizontalWhitespace*(?<verdict>\S[^\r\n#]*))|(?:$horizontalWhitespace*\((?<parentheticalVerdict>[^)\r\n#]+)\))|(?:$horizontalWhitespace+(?<bareVerdict>\S[^\r\n#]*)))?:?$horizontalWhitespace*\r?$"
@@ -236,6 +247,8 @@ function Get-ActionableReviewBodyReason {
         }
         $firstVerdictMatch = [regex]::Match($sectionBody, '(?m)\S[^\r\n]*')
         $firstVerdict = $firstVerdictMatch.Value.Trim()
+        $sectionHasPositiveVerdictLine = $sectionBody -match $positiveCategoryVerdictLine
+        $sectionStartsWithTraceAndAllClear = $firstVerdict -match "(?i)^\s*(?:[-*]\s*)?traced\b" -and $sectionHasPositiveVerdictLine
 
         if ([string]::IsNullOrWhiteSpace($firstVerdict)) {
             if ($headingVerdict) {
@@ -247,6 +260,7 @@ function Get-ActionableReviewBodyReason {
 
         if ($firstVerdict -notmatch $positiveCategorySection -and
             -not ($headingVerdictResolvesPriorFindings -and $sectionBody -notmatch $positiveVerdictContinuationBlocker) -and
+            -not ($sectionStartsWithTraceAndAllClear -and $sectionBody -notmatch $positiveVerdictContinuationBlocker) -and
             -not ($allowsGlobalNoIssueVerdict -and $globalNoIssueVerdict -and $sectionBody -notmatch $positiveVerdictContinuationBlocker)) {
             return "actionable category heading: $($heading.Value.Trim())"
         }

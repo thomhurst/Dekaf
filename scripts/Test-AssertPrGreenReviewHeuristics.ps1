@@ -109,6 +109,27 @@ No blocking issues.
         Blocks = $false
     },
     @{
+        Name = 'allows explanatory correctness section with later all-clear'
+        Body = @'
+## Review
+
+### Correctness
+
+Traced the capping logic end-to-end across the batch enumerators and pending fetch state.
+
+- Boundary case is handled correctly when the cap lands on the final record.
+- Partial-batch break resumes from the same fetch without skipping or duplicating records.
+- Metrics and position flushing are idempotent under the new per-sub-batch completion.
+
+No issues found with cancellation, disposal, or thread-safety (all mutated state is only ever touched from the single sequential consume-loop, consistent with the existing "not thread-safe by design" contract).
+
+### Zero-allocation / hot path
+
+No new allocations found.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'allows positive category heading verdict'
         Body = @"
 ## Review
