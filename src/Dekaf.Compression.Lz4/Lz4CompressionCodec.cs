@@ -36,23 +36,13 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        // Use LZ4 frame format as required by Kafka, with independent blocks (no block chaining)
-        using var outputStream = new BufferWriterStream(destination);
-        using var lz4Stream = LZ4Stream.Encode(outputStream, _encoderSettings, leaveOpen: true);
-
-        foreach (var segment in source)
-        {
-            lz4Stream.Write(segment.Span);
-        }
+        LZ4Frame.Encode(source, destination, _encoderSettings);
     }
 
     /// <inheritdoc />
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        using var inputStream = new ReadOnlySequenceStream(source);
-        using var lz4Stream = LZ4Stream.Decode(inputStream, leaveOpen: true);
-
-        CompressionStreamCopy.CopyToBufferWriter(lz4Stream, destination);
+        LZ4Frame.Decode(source).CopyTo(destination);
     }
 }
 
