@@ -214,6 +214,45 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task Purge_Queue_CompleteFailure_ReleasesSealOverestimate()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var appended = await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None);
+
+            await Assert.That(appended).IsTrue();
+
+            var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+            var overestimatedBytes = ForceSealOverestimateForTest(accumulator, currentBatch);
+            var expectedBufferedBytes = accumulator.BufferedBytes - overestimatedBytes;
+
+            PoisonBatchArena(currentBatch);
+
+            await Assert.That(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
+                .Throws<NullReferenceException>();
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(expectedBufferedBytes);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Purge_Queue_FailsSealedQueuedBatch()
     {
         var options = new ProducerOptions
@@ -259,6 +298,38 @@ public class RecordAccumulatorTests
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task DisposeAsync_CompleteFailure_ReleasesSealOverestimate()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        var appended = await accumulator.AppendAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None);
+
+        await Assert.That(appended).IsTrue();
+
+        var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+        var overestimatedBytes = ForceSealOverestimateForTest(accumulator, currentBatch);
+        var expectedBufferedBytes = accumulator.BufferedBytes - overestimatedBytes;
+
+        PoisonBatchArena(currentBatch);
+
+        await Assert.That(async () => await accumulator.DisposeAsync())
+            .Throws<NullReferenceException>();
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(expectedBufferedBytes);
     }
 
     [Test]
@@ -2969,6 +3040,23 @@ public class RecordAccumulatorTests
         var bufferedBytesField = typeof(RecordAccumulator).GetField("_bufferedBytes",
             BindingFlags.NonPublic | BindingFlags.Instance);
         bufferedBytesField!.SetValue(accumulator, value);
+    }
+
+    private static int ForceSealOverestimateForTest(RecordAccumulator accumulator, PartitionBatch batch)
+    {
+        const int overestimatedBytes = 123;
+        SetPrivateField(batch, "_reservedSize", batch.EstimatedSize + overestimatedBytes);
+        SetBufferedBytesForTest(accumulator, batch.ReservedSize);
+        return overestimatedBytes;
+    }
+
+    private static void PoisonBatchArena(PartitionBatch batch) =>
+        SetPrivateField<BatchArena?>(batch, "_arena", null);
+
+    private static void SetPrivateField<T>(object instance, string fieldName, T value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        field!.SetValue(instance, value);
     }
 
     private static T GetPrivateField<T>(object instance, string fieldName)
