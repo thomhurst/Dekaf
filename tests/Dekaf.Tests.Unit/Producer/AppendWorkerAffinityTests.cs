@@ -26,7 +26,7 @@ public class AppendWorkerAffinityTests
 
     /// <summary>
     /// Returns the _partitionDeques dictionary. To check for a batch, callers should
-    /// verify the deque contains the key and CurrentBatch is non-null.
+    /// verify the deque contains the key and either current or sealed work is present.
     /// </summary>
     private static object GetPartitionDeques(RecordAccumulator accumulator)
     {
@@ -43,12 +43,11 @@ public class AppendWorkerAffinityTests
         if (!found) return false;
         var pd = parameters[1]!;
         var currentBatch = pd.GetType().GetField("CurrentBatch")!.GetValue(pd);
-        return currentBatch != null;
-    }
+        if (currentBatch is not null)
+            return true;
 
-    private static int GetDequeCount(object deques)
-    {
-        return (int)deques.GetType().GetProperty("Count")!.GetValue(deques)!;
+        var readyCount = (int)pd.GetType().GetProperty("Count")!.GetValue(pd)!;
+        return readyCount > 0;
     }
 
     [Test]
@@ -84,7 +83,7 @@ public class AppendWorkerAffinityTests
         var deques = GetPartitionDeques(accumulator);
         var tp = new TopicPartition("test-topic", 0);
 
-        // Wait deterministically for the worker to create the batch, bounded by the test's
+        // Wait deterministically for the worker to create or seal a batch, bounded by the test's
         // [Timeout] cancellation rather than an arbitrary fixed deadline that flakes when the
         // append workers are thread-pool-starved on loaded runners.
         await TestWait.UntilAsync(
@@ -135,7 +134,7 @@ public class AppendWorkerAffinityTests
 
         var deques = GetPartitionDeques(accumulator);
 
-        // Wait deterministically until workers have created batches for ALL partitions,
+        // Wait deterministically until workers have created or sealed batches for ALL partitions,
         // bounded by the test's [Timeout] cancellation rather than an arbitrary fixed deadline
         // that flakes when the append workers are thread-pool-starved on loaded runners.
         await TestWait.UntilAsync(() =>

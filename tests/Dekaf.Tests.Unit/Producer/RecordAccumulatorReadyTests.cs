@@ -594,25 +594,37 @@ public class RecordAccumulatorReadyTests
     public async Task ReadyPartitionsQueue_SealViaLinger_EnqueuesNotification()
     {
         // Tests that sealing via linger/flush also pushes to the notification queue.
-        // Use large batch size so only linger (not size) triggers seal, with LingerMs=0 for immediate seal.
-        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0);
+        // Use large batch size so only linger (not size) triggers seal.
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 10_000);
         var accumulator = new RecordAccumulator(options);
-        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
 
         try
         {
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-
-            // Append one record (batch won't seal from size)
-            var completion = pool.Rent();
-            accumulator.TryAppendWithCompletion("test-topic", 0,
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, completion);
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
 
             var lingerQueue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions");
             await Assert.That(lingerQueue.Count).IsEqualTo(1);
+
+            var partitionDeque = GetPartitionDeque(accumulator, "test-topic", 0);
+            var currentBatch = partitionDeque.GetType().GetField("CurrentBatch")!.GetValue(partitionDeque)!;
+            var expiredCreatedTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 20;
+            SetInstanceField(currentBatch, "_createdStopwatchTimestamp", expiredCreatedTicks);
+            SetPrivateField(accumulator, "_oldestBatchCreatedTicks", expiredCreatedTicks);
 
             // Seal via linger expiry (doesn't wait for delivery like FlushAsync does)
             await accumulator.ExpireLingerAsync(CancellationToken.None);
@@ -628,7 +640,6 @@ public class RecordAccumulatorReadyTests
         finally
         {
             await accumulator.DisposeAsync();
-            await pool.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
     }
@@ -672,21 +683,33 @@ public class RecordAccumulatorReadyTests
 
         try
         {
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-
-            var firstCompletion = pool.Rent();
-            accumulator.TryAppendWithCompletion("test-topic", 0,
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, 0, firstCompletion);
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
 
             var lingerQueue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions");
             await Assert.That(lingerQueue.TryDequeue(out _)).IsTrue();
 
             var partitionDeque = GetPartitionDeque(accumulator, "test-topic", 0);
             SetInstanceField(partitionDeque, "LingerQueued", 0);
+            var currentBatch = partitionDeque.GetType().GetField("CurrentBatch")!.GetValue(partitionDeque)!;
+            SetInstanceField(currentBatch, "_createdStopwatchTimestamp", Stopwatch.GetTimestamp() + Stopwatch.Frequency * 20);
 
             var secondCompletion = pool.Rent();
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
             accumulator.TryAppendWithCompletion("test-topic", 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey, pooledValue, null, 0, secondCompletion);

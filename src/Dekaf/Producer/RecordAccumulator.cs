@@ -2242,7 +2242,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             rentedBatch = null;
                             pd.CurrentBatch = newBatch;
                             Interlocked.Increment(ref _unsealedBatchCount);
-                            TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
                                 completionSource, callback, recordSize, out var overestimatedBytesToRelease,
@@ -2260,6 +2259,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 }
                                 else
                                 {
+                                    TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
                                     ClearRotationInProgressUnderLock(pd);
                                     ownsRotation = false;
                                 }
@@ -2617,7 +2617,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             rentedBatch = null;
                             pd.CurrentBatch = newBatch;
                             Interlocked.Increment(ref _unsealedBatchCount);
-                            TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
                                 headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease,
@@ -2635,6 +2634,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 }
                                 else
                                 {
+                                    TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
                                     ClearRotationInProgressUnderLock(pd);
                                     ownsRotation = false;
                                 }
@@ -2944,7 +2944,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldSealAppendedBatch(PartitionBatch batch)
-        => batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs);
+        => _options.LingerMs == 0 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs);
 
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
