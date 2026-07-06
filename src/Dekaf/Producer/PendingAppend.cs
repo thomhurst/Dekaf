@@ -34,7 +34,7 @@ namespace Dekaf.Producer;
 internal sealed class PendingAppend : IValueTaskSource<bool>
 {
     private ManualResetValueTaskSourceCore<bool> _core;
-    private int _completed; // 0 = pending, 1 = completed (CAS guard)
+    private int _completed = 1; // 0 = pending, 1 = completed or idle (CAS guard)
 
     // Append parameters — stored on Initialize, consumed by drain
     private string _topic = null!;
@@ -54,6 +54,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private CancellationTokenRegistration _cancellationRegistration;
     private CancellationToken _cancellationToken;
     private long _startTicks;
+    private long _deadlineTickCount;
     private RecordAccumulator _accumulator = null!;
 
     // Pool return
@@ -127,9 +128,11 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _callback = callback;
         _recordSize = recordSize;
         _startTicks = startTicks;
+        _deadlineTickCount = deadlineTickCount;
         _cancellationToken = cancellationToken;
         _accumulator = accumulator;
         _pool = pool;
+        Volatile.Write(ref _completed, 0);
 
         // Arm timeout timer. Compute remaining ms from deadline.
         var remainingMs = deadlineTickCount - Dekaf.MonotonicClock.GetMilliseconds();
@@ -219,15 +222,31 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     private void OnTimeout()
     {
-        var configured = TimeSpan.FromMilliseconds(_accumulator.MaxBlockMsOption);
-        var elapsed = TimeSpan.FromMilliseconds(Dekaf.MonotonicClock.GetMilliseconds() - _startTicks);
+        // Timer.Change(Infinite) can leave an already-queued callback from a previous rental.
+        if (Volatile.Read(ref _completed) != 0)
+            return;
+
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
+        var deadlineTickCount = Volatile.Read(ref _deadlineTickCount);
+        if (now < deadlineTickCount)
+        {
+            _timer.Change(deadlineTickCount - now, Timeout.Infinite);
+            return;
+        }
+
+        var accumulator = _accumulator;
+        if (accumulator is null)
+            return;
+
+        var configured = TimeSpan.FromMilliseconds(accumulator.MaxBlockMsOption);
+        var elapsed = TimeSpan.FromMilliseconds(now - _startTicks);
 
         var exception = new KafkaTimeoutException(
             TimeoutKind.MaxBlock,
             elapsed,
             configured,
-            $"Failed to allocate buffer within max.block.ms ({_accumulator.MaxBlockMsOption}ms). " +
-            $"Requested {_recordSize} bytes, current usage: {_accumulator.BufferedBytes}/{_accumulator.MaxBufferMemory} bytes. " +
+            $"Failed to allocate buffer within max.block.ms ({accumulator.MaxBlockMsOption}ms). " +
+            $"Requested {_recordSize} bytes, current usage: {accumulator.BufferedBytes}/{accumulator.MaxBufferMemory} bytes. " +
             $"Producer is generating messages faster than the network can send them. " +
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
 
@@ -254,9 +273,8 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _completionSource = null;
         _callback = null;
         _cancellationToken = default;
+        _deadlineTickCount = 0;
         _accumulator = null!;
-
-        Volatile.Write(ref _completed, 0);
         _core.Reset();
         _pool.Return(this);
     }

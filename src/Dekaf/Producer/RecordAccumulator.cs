@@ -2212,8 +2212,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 ownsPendingCount = false;
-                                if (completionSource is not null)
+                                if (ShouldSealAppendedBatch(currentBatch))
+                                {
+                                    batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+                                    ownsRotation = true;
+                                }
+                                else if (completionSource is not null)
+                                {
                                     QueueLingerPartition(pd, topicPartition);
+                                }
                                 batchToReturn = rentedBatch;
                                 rentedBatch = null;
                                 appendSucceeded = true;
@@ -2235,7 +2242,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             rentedBatch = null;
                             pd.CurrentBatch = newBatch;
                             Interlocked.Increment(ref _unsealedBatchCount);
-                            TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
                                 completionSource, callback, recordSize, out var overestimatedBytesToRelease,
@@ -2246,8 +2252,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 ownsPendingCount = false;
-                                ClearRotationInProgressUnderLock(pd);
-                                ownsRotation = false;
+                                if (ShouldSealAppendedBatch(newBatch))
+                                {
+                                    batchToComplete = DetachCurrentBatchForSealUnderLock(pd, newBatch);
+                                    ownsRotation = true;
+                                }
+                                else
+                                {
+                                    TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
+                                    ClearRotationInProgressUnderLock(pd);
+                                    ownsRotation = false;
+                                }
                                 appendSucceeded = true;
                             }
                             else
@@ -2297,6 +2312,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (appendSucceeded)
                 {
                     NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
+                    if (batchToComplete is not null)
+                    {
+                        var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
+                        if (readyBatch is not null)
+                            PublishSealedBatch(readyBatch);
+                    }
+
                     return true;
                 }
 
@@ -2565,8 +2587,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 ownsPendingCount = false;
-                                if (completionSource is not null)
+                                if (ShouldSealAppendedBatch(currentBatch))
+                                {
+                                    batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+                                    ownsRotation = true;
+                                }
+                                else if (completionSource is not null)
+                                {
                                     QueueLingerPartition(pd, topicPartition);
+                                }
                                 batchToReturn = rentedBatch;
                                 rentedBatch = null;
                                 appendSucceeded = true;
@@ -2588,7 +2617,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             rentedBatch = null;
                             pd.CurrentBatch = newBatch;
                             Interlocked.Increment(ref _unsealedBatchCount);
-                            TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
 
                             if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
                                 headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease,
@@ -2599,8 +2627,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 ownsPendingCount = false;
-                                ClearRotationInProgressUnderLock(pd);
-                                ownsRotation = false;
+                                if (ShouldSealAppendedBatch(newBatch))
+                                {
+                                    batchToComplete = DetachCurrentBatchForSealUnderLock(pd, newBatch);
+                                    ownsRotation = true;
+                                }
+                                else
+                                {
+                                    TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
+                                    ClearRotationInProgressUnderLock(pd);
+                                    ownsRotation = false;
+                                }
                                 appendSucceeded = true;
                             }
                             else
@@ -2650,6 +2687,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (appendSucceeded)
                 {
                     NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
+                    if (batchToComplete is not null)
+                    {
+                        var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
+                        if (readyBatch is not null)
+                            PublishSealedBatch(readyBatch);
+                    }
+
                     return true;
                 }
 
@@ -2903,6 +2947,33 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var result = current + value;
         return result < current ? long.MaxValue : result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool ShouldSealAppendedBatch(PartitionBatch batch)
+        => _options.LingerMs == 0 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs);
+
+    private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
+    {
+        ReadyBatch? readyBatch;
+        try
+        {
+            readyBatch = CompleteDetachedBatch(batchToComplete);
+        }
+        catch
+        {
+            ClearRotationInProgress(pd);
+            throw;
+        }
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+            if (readyBatch is not null)
+                EnqueueCompletedBatchUnderLock(pd, readyBatch);
+            ClearRotationInProgressUnderLock(pd);
+        }
+
+        return readyBatch;
     }
 
     /// <summary>
@@ -3553,22 +3624,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (batchToComplete is null)
             return false;
 
-        try
-        {
-            sealedBatch = CompleteDetachedBatch(batchToComplete);
-        }
-        catch
-        {
-            ClearRotationInProgress(pd);
-            throw;
-        }
-
-        {
-            using var guard = new SpinLockGuard(ref pd.Lock);
-            if (sealedBatch is not null)
-                EnqueueCompletedBatchUnderLock(pd, sealedBatch);
-            ClearRotationInProgressUnderLock(pd);
-        }
+        sealedBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
 
         if (sealedBatch is null)
             return false;
