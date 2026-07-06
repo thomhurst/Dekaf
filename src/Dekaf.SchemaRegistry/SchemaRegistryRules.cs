@@ -236,9 +236,21 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var rules = GetActiveEncodingRules(context.Schema, direction);
-        foreach (var rule in rules)
+        var rules = context.Schema?.RuleSet?.EncodingRules;
+        if (rules is null || rules.Count == 0)
+            return payload;
+
+        var isWrite = direction == SchemaRegistryRuleDirection.Write;
+        var index = isWrite ? 0 : rules.Count - 1;
+        var end = isWrite ? rules.Count : -1;
+        var step = isWrite ? 1 : -1;
+
+        for (; index != end; index += step)
         {
+            var rule = rules[index];
+            if (!IsActiveTransformRule(rule, direction))
+                continue;
+
             if (!_handlers.TryGetValue(rule.Type, out var handler))
                 throw new SchemaRegistryRuleException(
                     $"No Schema Registry rule handler is registered for rule type '{rule.Type}' (rule '{rule.Name}').");
@@ -276,42 +288,6 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 ex);
         }
     }
-
-    private static IEnumerable<SchemaRule> GetActiveEncodingRules(
-        Schema? schema,
-        SchemaRegistryRuleDirection direction)
-    {
-        var rules = schema?.RuleSet?.EncodingRules;
-        if (rules is null || rules.Count == 0)
-            return [];
-
-        return direction == SchemaRegistryRuleDirection.Write
-            ? EnumerateRules(rules, direction)
-            : EnumerateRulesReverse(rules, direction);
-    }
-
-    private static IEnumerable<SchemaRule> EnumerateRules(
-        IReadOnlyList<SchemaRule> rules,
-        SchemaRegistryRuleDirection direction)
-    {
-        for (var i = 0; i < rules.Count; i++)
-        {
-            if (IsActiveTransformRule(rules[i], direction))
-                yield return rules[i];
-        }
-    }
-
-    private static IEnumerable<SchemaRule> EnumerateRulesReverse(
-        IReadOnlyList<SchemaRule> rules,
-        SchemaRegistryRuleDirection direction)
-    {
-        for (var i = rules.Count - 1; i >= 0; i--)
-        {
-            if (IsActiveTransformRule(rules[i], direction))
-                yield return rules[i];
-        }
-    }
-
     private static bool IsActiveTransformRule(SchemaRule rule, SchemaRegistryRuleDirection direction)
     {
         if (rule.Disabled || rule.Kind != SchemaRuleKind.Transform || string.IsNullOrWhiteSpace(rule.Type))

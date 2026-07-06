@@ -84,6 +84,19 @@ public sealed class SchemaRegistryRuleExecutorTests
     }
 
     [Test]
+    public async Task TransformSerializedPayload_ConditionKindEncodingRule_SkipsRule()
+    {
+        var executor = new SchemaRegistryRuleExecutor([]);
+        var payload = "payload"u8.ToArray();
+        var schema = CreateSchema(
+            CreateRule("condition", "missing", SchemaRuleMode.WriteRead, kind: SchemaRuleKind.Condition));
+
+        var result = executor.TransformSerializedPayload(payload, CreateContext(schema));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    [Test]
     public async Task Constructor_DuplicateHandlerType_Throws()
     {
         var calls = new List<string>();
@@ -124,11 +137,12 @@ public sealed class SchemaRegistryRuleExecutorTests
         string name,
         string type,
         SchemaRuleMode mode,
-        bool disabled = false) =>
+        bool disabled = false,
+        SchemaRuleKind kind = SchemaRuleKind.Transform) =>
         new()
         {
             Name = name,
-            Kind = SchemaRuleKind.Transform,
+            Kind = kind,
             Mode = mode,
             Type = type,
             Disabled = disabled
