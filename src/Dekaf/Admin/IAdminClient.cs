@@ -368,6 +368,38 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes the KRaft metadata quorum.
+    /// </summary>
+    ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adds a voter to the KRaft metadata quorum.
+    /// </summary>
+    ValueTask AddRaftVoterAsync(
+        int voterId,
+        Guid voterDirectoryId,
+        IEnumerable<RaftVoterEndpoint> endpoints,
+        AddRaftVoterOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a voter from the KRaft metadata quorum.
+    /// </summary>
+    ValueTask RemoveRaftVoterAsync(
+        int voterId,
+        Guid voterDirectoryId,
+        RemoveRaftVoterOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Unregisters a broker from KRaft metadata.
+    /// </summary>
+    ValueTask UnregisterBrokerAsync(
+        int brokerId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes log directories on the specified brokers.
     /// </summary>
     /// <param name="brokerIds">The broker IDs to query.</param>
