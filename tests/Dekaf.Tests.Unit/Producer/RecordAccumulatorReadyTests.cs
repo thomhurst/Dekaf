@@ -304,6 +304,49 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
+    public async Task Ready_LingerMs0_CompressedAwaitedAppend_StartsPreSerialization()
+    {
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0, compressionType: CompressionType.Gzip);
+        var codec = new CountingCompressionCodec(CompressionType.Gzip);
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(codec);
+
+        var accumulator = new RecordAccumulator(options, compressionCodecs);
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+        ReadyBatch? batch = null;
+
+        try
+        {
+            var appended = await accumulator.AppendAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
+
+            batch = await DrainSingleReadyBatchAsync(accumulator, metadataManager);
+
+            await Assert.That(batch.IsPreSerialized).IsTrue();
+            await Assert.That(batch.RecordBatch.HasPreCompressedRecords).IsTrue();
+            await Assert.That(codec.CompressCount).IsEqualTo(1);
+        }
+        finally
+        {
+            CompleteAndReturnIfDrained(accumulator, batch);
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Ready_LingerMs0_FireAndForgetSpanAppend_SealsInline()
     {
         var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0);
@@ -336,6 +379,50 @@ public class RecordAccumulatorReadyTests
         }
         finally
         {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_LingerMs0_CompressedSpanAppend_StartsPreSerialization()
+    {
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0, compressionType: CompressionType.Gzip);
+        var codec = new CountingCompressionCodec(CompressionType.Gzip);
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(codec);
+
+        var accumulator = new RecordAccumulator(options, compressionCodecs);
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+        ReadyBatch? batch = null;
+
+        try
+        {
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
+
+            batch = await DrainSingleReadyBatchAsync(accumulator, metadataManager);
+
+            await Assert.That(batch.IsPreSerialized).IsTrue();
+            await Assert.That(batch.RecordBatch.HasPreCompressedRecords).IsTrue();
+            await Assert.That(codec.CompressCount).IsEqualTo(1);
+        }
+        finally
+        {
+            CompleteAndReturnIfDrained(accumulator, batch);
             await accumulator.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
@@ -1177,6 +1264,36 @@ public class RecordAccumulatorReadyTests
             await pool.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
+    }
+
+    private static async Task<ReadyBatch> DrainSingleReadyBatchAsync(
+        RecordAccumulator accumulator,
+        MetadataManager metadataManager)
+    {
+        var readyNodes = new HashSet<int>();
+        await TestWait.UntilAsync(
+            () =>
+            {
+                readyNodes.Clear();
+                accumulator.Ready(metadataManager, readyNodes);
+                return readyNodes.Contains(1);
+            },
+            TimeSpan.FromSeconds(5));
+
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+
+        return drainResult[1][0];
+    }
+
+    private static void CompleteAndReturnIfDrained(RecordAccumulator accumulator, ReadyBatch? batch)
+    {
+        if (batch is null)
+            return;
+
+        batch.CompleteSend(0, DateTimeOffset.UtcNow);
+        accumulator.ReturnReadyBatch(batch);
     }
 
     private sealed class CountingCompressionCodec(CompressionType type) : ICompressionCodec

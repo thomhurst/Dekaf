@@ -2325,7 +2325,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     {
                         var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
                         if (readyBatch is not null)
-                            PublishSealedBatch(readyBatch);
+                            StartPreSerialization(readyBatch);
                     }
 
                     return true;
