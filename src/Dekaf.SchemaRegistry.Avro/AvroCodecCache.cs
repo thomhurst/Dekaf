@@ -37,12 +37,17 @@ internal sealed class AvroSerializationThreadState
 {
     internal AvroSerializationThreadState()
     {
-        Stream = new PooledMemoryStream([]);
-        Encoder = new BinaryEncoder(Stream);
+        BufferedStream = new PooledMemoryStream([]);
+        BufferedEncoder = new BinaryEncoder(BufferedStream);
+        DirectStream = new FixedMemoryStream();
+        DirectEncoder = new BinaryEncoder(DirectStream);
     }
 
-    internal PooledMemoryStream Stream { get; }
-    internal BinaryEncoder Encoder { get; }
+    internal PooledMemoryStream BufferedStream { get; }
+    internal BinaryEncoder BufferedEncoder { get; }
+    internal FixedMemoryStream DirectStream { get; }
+    internal BinaryEncoder DirectEncoder { get; }
+    internal int PayloadSizeHint { get; set; } = 1024;
 }
 
 internal sealed class AvroDeserializationThreadState

@@ -171,6 +171,36 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Deserializer_DeserializesGenericRecord_FromSlicedWireMemory()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schemaObj = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schemaObj);
+
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
+        await deserializer.WarmupAsync(schemaId);
+
+        var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(avroSchema!);
+        record.Add("id", 64);
+        record.Add("name", "offset");
+
+        var wireFormat = CreateWireFormat(schemaId, SerializeAvroRecord(record, avroSchema!));
+        var offset = 7;
+        var backing = new byte[offset + wireFormat.Length + 3];
+        wireFormat.CopyTo(backing.AsSpan(offset));
+
+        var result = deserializer.Deserialize(backing.AsMemory(offset, wireFormat.Length), CreateContext());
+
+        await Assert.That((int)result["id"]!).IsEqualTo(64);
+        await Assert.That((string)result["name"]!).IsEqualTo("offset");
+    }
+
+    [Test]
     public async Task Deserializer_RuleExecutor_TransformsAvroPayload()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -224,6 +254,28 @@ public sealed class AvroSerializerTests
         // Assert
         await Assert.That((int)result["id"]!).IsEqualTo(123);
         await Assert.That((string)result["name"]!).IsEqualTo("round trip test");
+    }
+
+    [Test]
+    public async Task Serializer_RoundTrips_GenericRecord_LargerThanInitialBuffer()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
+
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(schema!);
+        var name = new string('x', 5000);
+        record.Add("id", 321);
+        record.Add("name", name);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        var result = deserializer.Deserialize(buffer.WrittenMemory, CreateContext());
+
+        await Assert.That((int)result["id"]!).IsEqualTo(321);
+        await Assert.That((string)result["name"]!).IsEqualTo(name);
     }
 
     [Test]
@@ -484,6 +536,20 @@ public sealed class AvroSerializerTests
 
         await Assert.That(deserializer.CachedGenericReaderCount).IsEqualTo(1);
         await Assert.That(deserializer.CachedSpecificReaderCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PooledMemoryStream_ResetWithOffset_ReadsOnlyRequestedRange()
+    {
+        var stream = new PooledMemoryStream([]);
+        var source = new byte[] { 9, 1, 2, 3, 8 };
+        var buffer = new byte[5];
+
+        stream.Reset(source, offset: 1, length: 3);
+        var count = stream.Read(buffer, 0, buffer.Length);
+
+        await Assert.That(count).IsEqualTo(3);
+        await Assert.That(buffer.AsSpan(0, count).ToArray()).IsEquivalentTo(new byte[] { 1, 2, 3 });
     }
 
     private static byte[] CreateWireFormat(int schemaId, byte[] avroPayload)

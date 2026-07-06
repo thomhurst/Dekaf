@@ -38,6 +38,9 @@ public sealed class AvroSchemaRegistrySerializer<
     : ISerializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+    private const int WireHeaderSize = 5;
+    private const int InitialAvroPayloadBufferSize = 1024;
+    private const int MaxRetainedAvroPayloadBufferSize = 1024 * 1024;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
@@ -115,37 +118,95 @@ public sealed class AvroSchemaRegistrySerializer<
         var schemaId = schemaEntry.SchemaId;
 
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
-        var memoryStream = codecState.Stream;
-        var rentedBuffer = ArrayPool<byte>.Shared.Rent(1024);
+        if (_config.RuleExecutor is null)
+        {
+            SerializeDirect(value, ref destination, schemaId, codecState);
+            return;
+        }
+
+        SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, codecState);
+    }
+
+    private void SerializeDirect<TWriter>(
+        T value,
+        ref TWriter destination,
+        int schemaId,
+        AvroSerializationThreadState codecState)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        var payloadSizeHint = codecState.PayloadSizeHint;
+
+        while (true)
+        {
+            var memory = destination.GetMemory(WireHeaderSize + payloadSizeHint);
+            var stream = codecState.DirectStream;
+            stream.Reset(memory.Slice(WireHeaderSize));
+
+            try
+            {
+                WriteAvroValue(value, codecState.DirectEncoder);
+                codecState.DirectEncoder.Flush();
+
+                var payloadLength = stream.WrittenCount;
+                var span = memory.Span;
+                span[0] = MagicByte;
+                BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+
+                destination.Advance(WireHeaderSize + payloadLength);
+                codecState.PayloadSizeHint = payloadLength > MaxRetainedAvroPayloadBufferSize
+                    ? InitialAvroPayloadBufferSize
+                    : Math.Max(InitialAvroPayloadBufferSize, payloadLength);
+                stream.Reset(default);
+                return;
+            }
+            catch (FixedMemoryStreamOverflowException ex)
+            {
+                stream.Reset(default);
+                payloadSizeHint = GrowPayloadSizeHint(payloadSizeHint, ex.RequiredCapacity);
+            }
+            catch
+            {
+                stream.Reset(default);
+                throw;
+            }
+        }
+    }
+
+    private void SerializeWithRuleExecutor<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
+        int schemaId,
+        AvroSerializationThreadState codecState)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        var memoryStream = codecState.BufferedStream;
+        memoryStream.ResetForWriting(InitialAvroPayloadBufferSize);
 
         try
         {
-            // Initial estimate: 1KB should handle most messages; the stream grows if needed.
-            memoryStream.Reset(rentedBuffer);
-            var encoder = codecState.Encoder;
+            var encoder = codecState.BufferedEncoder;
 
             WriteAvroValue(value, encoder);
             encoder.Flush();
 
             var avroPayloadLength = (int)memoryStream.Position;
             var payload = new ReadOnlyMemory<byte>(memoryStream.GetBuffer(), 0, avroPayloadLength);
-            if (_config.RuleExecutor is not null)
-            {
-                payload = _config.RuleExecutor.TransformSerializedPayload(
-                    payload,
-                    new SchemaRegistryRuleContext
-                    {
-                        Topic = context.Topic,
-                        Component = context.Component,
-                        SchemaId = schemaId,
-                        Subject = schemaEntry.Subject,
-                        Schema = schemaEntry.Schema,
-                        PayloadFormat = SchemaRegistryPayloadFormat.Avro
-                    });
-            }
+            payload = _config.RuleExecutor!.TransformSerializedPayload(
+                payload,
+                new SchemaRegistryRuleContext
+                {
+                    Topic = context.Topic,
+                    Component = context.Component,
+                    SchemaId = schemaId,
+                    Subject = schemaEntry.Subject,
+                    Schema = schemaEntry.Schema,
+                    PayloadFormat = SchemaRegistryPayloadFormat.Avro
+                });
 
             // Write wire format: [0x00] [schema ID] [Avro payload]
-            var totalSize = 1 + 4 + payload.Length;
+            var totalSize = WireHeaderSize + payload.Length;
             var span = destination.GetSpan(totalSize);
 
             span[0] = MagicByte;
@@ -156,9 +217,19 @@ public sealed class AvroSchemaRegistrySerializer<
         }
         finally
         {
-            memoryStream.DetachBuffer();
-            ArrayPool<byte>.Shared.Return(rentedBuffer);
+            if (memoryStream.Capacity > MaxRetainedAvroPayloadBufferSize)
+                memoryStream.DetachBuffer();
         }
+    }
+
+    private static int GrowPayloadSizeHint(int currentHint, int requiredCapacity)
+    {
+        var maxPayloadSize = Array.MaxLength - WireHeaderSize;
+        if (requiredCapacity > maxPayloadSize)
+            throw new NotSupportedException($"Avro payloads larger than {maxPayloadSize} bytes are not supported.");
+
+        var nextHint = Math.Max((long)currentHint * 2, requiredCapacity);
+        return (int)Math.Min(nextHint, maxPayloadSize);
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey, T value)
