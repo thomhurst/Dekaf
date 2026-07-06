@@ -13,6 +13,7 @@ public class TlsConfigTests
         var config = new TlsConfig();
 
         await Assert.That(config.ValidateServerCertificate).IsTrue();
+        await Assert.That(config.ValidateServerCertificateHostName).IsTrue();
         await Assert.That(config.CheckCertificateRevocation).IsFalse();
         await Assert.That(config.CaCertificatePath).IsNull();
         await Assert.That(config.CaCertificateObject).IsNull();
@@ -112,6 +113,17 @@ public class TlsConfigTests
         };
 
         await Assert.That(config.ValidateServerCertificate).IsFalse();
+    }
+
+    [Test]
+    public async Task Config_CanDisableServerCertificateHostNameValidation()
+    {
+        var config = new TlsConfig
+        {
+            ValidateServerCertificateHostName = false
+        };
+
+        await Assert.That(config.ValidateServerCertificateHostName).IsFalse();
     }
 
     [Test]

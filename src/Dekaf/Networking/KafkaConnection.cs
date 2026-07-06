@@ -1692,6 +1692,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     {
         var tlsConfig = _options.TlsConfig;
         var callback = _options.RemoteCertificateValidationCallback;
+        var validateServerCertificateHostName = tlsConfig?.ValidateServerCertificateHostName ?? true;
 
         // Configure server certificate validation
         if (tlsConfig is not null && !tlsConfig.ValidateServerCertificate)
@@ -1703,15 +1704,40 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 #pragma warning restore CA5359
         }
 
-        if (callback is null && HasCustomCaCertificate(tlsConfig))
+        if (callback is not null)
+        {
+            return callback;
+        }
+
+        if (HasCustomCaCertificate(tlsConfig))
         {
             // Custom CA certificate validation
             var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
             return (_, certificate, chain, sslPolicyErrors) =>
-                ValidateServerCertificate(certificate, chain, sslPolicyErrors, caCertificates);
+                ValidateServerCertificate(
+                    certificate,
+                    chain,
+                    ApplyServerCertificateHostNamePolicy(sslPolicyErrors, validateServerCertificateHostName),
+                    caCertificates);
         }
 
-        return callback;
+        if (!validateServerCertificateHostName)
+        {
+            return static (_, _, _, sslPolicyErrors) =>
+                ApplyServerCertificateHostNamePolicy(sslPolicyErrors, validateServerCertificateHostName: false) ==
+                SslPolicyErrors.None;
+        }
+
+        return null;
+    }
+
+    internal static SslPolicyErrors ApplyServerCertificateHostNamePolicy(
+        SslPolicyErrors sslPolicyErrors,
+        bool validateServerCertificateHostName)
+    {
+        return validateServerCertificateHostName
+            ? sslPolicyErrors
+            : sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateNameMismatch;
     }
 
     private X509CertificateCollection? BuildClientCertificates(TlsConfig? tlsConfig)

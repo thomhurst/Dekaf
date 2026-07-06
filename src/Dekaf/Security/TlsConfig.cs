@@ -56,6 +56,13 @@ public sealed class TlsConfig
     public bool ValidateServerCertificate { get; init; } = true;
 
     /// <summary>
+    /// Whether to verify that the server certificate matches the connection host name.
+    /// Set to false to ignore only host-name mismatches while still validating the certificate chain.
+    /// Default is true.
+    /// </summary>
+    public bool ValidateServerCertificateHostName { get; init; } = true;
+
+    /// <summary>
     /// The expected host name in the server's certificate.
     /// If null, the connection host name is used.
     /// </summary>
