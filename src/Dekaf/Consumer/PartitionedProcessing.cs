@@ -1451,13 +1451,12 @@ internal sealed class PartitionLane<TKey, TValue>
         if (Volatile.Read(ref _completed) != 0)
             return false;
 
+        if (!_channel.Writer.TryWrite(result))
+            return false;
+
         TrackPending(result);
         Interlocked.Increment(ref _bufferedCount);
-        if (_channel.Writer.TryWrite(result))
-            return true;
-
-        Interlocked.Decrement(ref _bufferedCount);
-        return false;
+        return true;
     }
 
     public ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
