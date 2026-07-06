@@ -2161,7 +2161,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var appendSucceeded = false;
                 var disposed = false;
                 var messageTooLarge = false;
-                var memoryToReleaseAfterLock = 0;
                 var actualBytesAdded = 0;
 
                 {
@@ -2196,10 +2195,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize, out var overestimatedBytesToRelease,
-                                out var appendedBytes, out var firstAwaitedProduceInBatch))
+                                completionSource, callback, recordSize, out var appendedBytes,
+                                out var firstAwaitedProduceInBatch))
                             {
-                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
@@ -2237,10 +2235,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             Interlocked.Increment(ref _unsealedBatchCount);
 
                             if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize, out var overestimatedBytesToRelease,
-                                out var appendedBytes, out var firstAwaitedProduceInBatch))
+                                completionSource, callback, recordSize, out var appendedBytes,
+                                out var firstAwaitedProduceInBatch))
                             {
-                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
@@ -2286,9 +2283,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (batchToFail.TrySetMemoryReleased())
                         ReleaseMemory(batchToFail.DataSize);
                 }
-
-                if (memoryToReleaseAfterLock > 0)
-                    ReleaseMemory(memoryToReleaseAfterLock);
 
                 if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchOverestimateToRelease > 0)
                 {
@@ -2337,7 +2331,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                     catch
                     {
-                        ClearRotationInProgress(pd);
+                        ClearRotationAndReleaseSealOverestimate(pd, ref sealedBatchOverestimateToRelease);
                         throw;
                     }
                 }
@@ -2535,7 +2529,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var appendSucceeded = false;
                 var disposed = false;
                 var messageTooLarge = false;
-                var memoryToReleaseAfterLock = 0;
                 var actualBytesAdded = 0;
 
                 {
@@ -2570,10 +2563,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease,
-                                out var appendedBytes, out var firstAwaitedProduceInBatch))
+                                headers, headerCount, completionSource, callback, recordSize, out var appendedBytes,
+                                out var firstAwaitedProduceInBatch))
                             {
-                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
@@ -2611,10 +2603,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             Interlocked.Increment(ref _unsealedBatchCount);
 
                             if (TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize, out var overestimatedBytesToRelease,
-                                out var appendedBytes, out var firstAwaitedProduceInBatch))
+                                headers, headerCount, completionSource, callback, recordSize, out var appendedBytes,
+                                out var firstAwaitedProduceInBatch))
                             {
-                                memoryToReleaseAfterLock = overestimatedBytesToRelease;
                                 actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
@@ -2660,9 +2651,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (batchToFail.TrySetMemoryReleased())
                         ReleaseMemory(batchToFail.DataSize);
                 }
-
-                if (memoryToReleaseAfterLock > 0)
-                    ReleaseMemory(memoryToReleaseAfterLock);
 
                 if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchOverestimateToRelease > 0)
                 {
@@ -2711,7 +2699,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                     catch
                     {
-                        ClearRotationInProgress(pd);
+                        ClearRotationAndReleaseSealOverestimate(pd, ref sealedBatchOverestimateToRelease);
                         throw;
                     }
                 }
@@ -2741,20 +2729,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize,
-        out int overestimatedBytesToRelease,
         out int actualBytesAdded,
         out bool firstAwaitedProduceInBatch)
     {
-        overestimatedBytesToRelease = 0;
         actualBytesAdded = 0;
         firstAwaitedProduceInBatch = false;
+        var estimatedSizeBefore = batch.EstimatedSize;
         var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback, estimatedSize);
 
         if (result.Success)
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
-            overestimatedBytesToRelease = Math.Max(0, estimatedSize - result.ActualSizeAdded);
-            actualBytesAdded = result.ActualSizeAdded;
+            actualBytesAdded = batch.EstimatedSize - estimatedSizeBefore;
             firstAwaitedProduceInBatch = result.FirstCompletionSourceInBatch;
             return true;
         }
@@ -2882,21 +2868,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize,
-        out int overestimatedBytesToRelease,
         out int actualBytesAdded,
         out bool firstAwaitedProduceInBatch)
     {
-        overestimatedBytesToRelease = 0;
         actualBytesAdded = 0;
         firstAwaitedProduceInBatch = false;
+        var estimatedSizeBefore = batch.EstimatedSize;
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
             headers, headerCount, completionSource, callback, estimatedSize);
 
         if (result.Success)
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
-            overestimatedBytesToRelease = Math.Max(0, estimatedSize - result.ActualSizeAdded);
-            actualBytesAdded = result.ActualSizeAdded;
+            actualBytesAdded = batch.EstimatedSize - estimatedSizeBefore;
             firstAwaitedProduceInBatch = result.FirstCompletionSourceInBatch;
             return true;
         }
@@ -2968,14 +2952,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
         ReadyBatch? readyBatch;
-        int overestimatedBytesToRelease;
+        var overestimatedBytesToRelease = 0;
         try
         {
             readyBatch = CompleteDetachedBatch(batchToComplete, out overestimatedBytesToRelease);
         }
         catch
         {
-            ClearRotationInProgress(pd);
+            ClearRotationAndReleaseSealOverestimate(pd, ref overestimatedBytesToRelease);
             throw;
         }
 
@@ -3015,6 +2999,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         using var guard = new SpinLockGuard(ref pd.Lock);
         ClearRotationInProgressUnderLock(pd);
+    }
+
+    private void ClearRotationAndReleaseSealOverestimate(PartitionDeque pd, ref int overestimatedBytesToRelease)
+    {
+        ClearRotationInProgress(pd);
+        if (overestimatedBytesToRelease <= 0)
+            return;
+
+        var bytesToRelease = overestimatedBytesToRelease;
+        overestimatedBytesToRelease = 0;
+        ReleaseMemory(bytesToRelease);
     }
 
     /// <summary>
