@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -2595,6 +2596,43 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task PendingAppend_StaleTimeoutCallbackAfterPoolReturn_DoesNotThrow()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+
+        await Assert.That(op.TryClaim()).IsTrue();
+        op.CompleteResult(true);
+        ((IValueTaskSource<bool>)op).GetResult(op.Version);
+
+        Action action = () => InvokePendingAppendTimeout(op);
+
+        await Assert.That(action).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task PendingAppend_TimeoutCallbackBeforeDeadline_DoesNotComplete()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+
+        try
+        {
+            Action action = () => InvokePendingAppendTimeout(op);
+
+            await Assert.That(action).ThrowsNothing();
+            await Assert.That(op.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                op.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_SlowPath_CompletesWhenMemoryReleased()
     {
         var options = new ProducerOptions
@@ -2775,6 +2813,45 @@ public class RecordAccumulatorTests
         var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
         var lockField = partitionDeque.GetType().GetField("Lock");
         lockField!.SetValue(partitionDeque, new SpinLock(enableThreadOwnerTracking: true));
+    }
+
+    private static PendingAppend CreatePendingAppend(RecordAccumulator accumulator, PendingAppendPool pool)
+    {
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
+        var op = pool.Rent();
+        op.Initialize(
+            "test-topic",
+            partition: 0,
+            partitionCount: 1,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            recordSize: PartitionBatch.EstimateRecordSize(0, 0, null, 0),
+            startTicks: now,
+            deadlineTickCount: now + 30000,
+            accumulator: accumulator,
+            pool: pool,
+            cancellationToken: CancellationToken.None);
+        return op;
+    }
+
+    private static ProducerOptions CreatePendingAppendTestOptions() => new()
+    {
+        BootstrapServers = new[] { "localhost:9092" },
+        BufferMemory = 4096,
+        BatchSize = 4096,
+        LingerMs = 10,
+        MaxBlockMs = 30000
+    };
+
+    private static void InvokePendingAppendTimeout(PendingAppend op)
+    {
+        var method = typeof(PendingAppend).GetMethod("OnTimeout", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(op, null);
     }
 
     private static void SetBufferedBytesForTest(RecordAccumulator accumulator, long value)

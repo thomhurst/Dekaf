@@ -114,7 +114,7 @@ public class RecordAccumulatorReadyTests
     [Test]
     public async Task Ready_CompressesSealedBatch_OutsideAppendPath()
     {
-        var options = CreateTestOptions(batchSize: 50, compressionType: CompressionType.Gzip);
+        var options = CreateTestOptions(batchSize: 50, lingerMs: 10_000, compressionType: CompressionType.Gzip);
 
         var codec = new CountingCompressionCodec(CompressionType.Gzip);
         var compressionCodecs = new CompressionCodecRegistry();
@@ -270,7 +270,7 @@ public class RecordAccumulatorReadyTests
     public async Task Ready_MutedPartition_SkipsNotification()
     {
         // Arrange
-        var options = CreateTestOptions(batchSize: 50);
+        var options = CreateTestOptions(batchSize: 50, lingerMs: 10_000);
         var accumulator = new RecordAccumulator(options);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
