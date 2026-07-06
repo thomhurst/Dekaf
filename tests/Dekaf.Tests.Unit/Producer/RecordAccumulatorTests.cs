@@ -215,7 +215,7 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task Purge_Queue_CompleteFailure_ReleasesSealOverestimate()
+    public async Task Purge_Queue_CompleteFailure_ReleasesReservedMemory()
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
@@ -238,14 +238,13 @@ public class RecordAccumulatorTests
             await Assert.That(appended).IsTrue();
 
             var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
-            var overestimatedBytes = ForceSealOverestimateForTest(accumulator, currentBatch);
-            var expectedBufferedBytes = accumulator.BufferedBytes - overestimatedBytes;
+            ForceSealOverestimateForTest(accumulator, currentBatch);
 
             PoisonBatchArena(currentBatch);
 
             await Assert.That(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
                 .Throws<NullReferenceException>();
-            await Assert.That(accumulator.BufferedBytes).IsEqualTo(expectedBufferedBytes);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
         finally
         {
@@ -311,6 +310,7 @@ public class RecordAccumulatorTests
         try
         {
             var completion = pool.Rent();
+            var completionTask = completion.Task;
 
             var appended = await accumulator.AppendAsync(
                 topicPartition.Topic,
@@ -333,6 +333,8 @@ public class RecordAccumulatorTests
             await Assert.That(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
                 .Throws<NullReferenceException>();
             await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(0);
+            await Assert.ThrowsAsync<NullReferenceException>(async () => await completionTask);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
         finally
         {
@@ -440,35 +442,46 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task DisposeAsync_CompleteFailure_ReleasesSealOverestimate()
+    public async Task DisposeAsync_CompleteFailure_ReleasesReservedMemory()
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
-        var appended = await accumulator.AppendAsync(
-            topicPartition.Topic,
-            topicPartition.Partition,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            PooledMemory.Null,
-            PooledMemory.Null,
-            headers: null,
-            headerCount: 0,
-            completionSource: null,
-            callback: null,
-            CancellationToken.None);
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
 
-        await Assert.That(appended).IsTrue();
+            var appended = await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completion,
+                callback: null,
+                CancellationToken.None);
 
-        var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
-        var overestimatedBytes = ForceSealOverestimateForTest(accumulator, currentBatch);
-        var expectedBufferedBytes = accumulator.BufferedBytes - overestimatedBytes;
+            await Assert.That(appended).IsTrue();
 
-        PoisonBatchArena(currentBatch);
+            var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
+            ForceSealOverestimateForTest(accumulator, currentBatch);
 
-        await Assert.That(async () => await accumulator.DisposeAsync())
-            .Throws<NullReferenceException>();
-        await Assert.That(accumulator.BufferedBytes).IsEqualTo(expectedBufferedBytes);
+            PoisonBatchArena(currentBatch);
+
+            await Assert.That(async () => await accumulator.DisposeAsync())
+                .Throws<NullReferenceException>();
+            await Assert.ThrowsAsync<NullReferenceException>(async () => await completionTask);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
     }
 
     [Test]

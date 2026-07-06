@@ -2134,7 +2134,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var topicPartition = new TopicPartition(topic, partition);
         var pd = GetOrCreateDeque(topic, partition);
         ReadyBatch? sealedBatchToEnqueue = null;
-        var sealedBatchOverestimateToRelease = 0;
+        var sealedBatchBytesToRelease = 0;
         PartitionBatch? rentedBatch = null;
         var ownsRotation = false;
         var ownsReservation = true;
@@ -2293,10 +2293,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         ReleaseMemory(batchToFail.DataSize);
                 }
 
-                if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchOverestimateToRelease > 0)
+                if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
                 {
-                    var bytesToRelease = sealedBatchOverestimateToRelease;
-                    sealedBatchOverestimateToRelease = 0;
+                    var bytesToRelease = sealedBatchBytesToRelease;
+                    sealedBatchBytesToRelease = 0;
                     ReleaseMemory(bytesToRelease);
                 }
 
@@ -2338,12 +2338,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     {
                         sealedBatchToEnqueue = CompleteDetachedBatch(
                             batchToComplete,
-                            out sealedBatchOverestimateToRelease,
-                            releaseOverestimateOnFailure: false);
+                            out sealedBatchBytesToRelease,
+                            releaseMemoryOnFailure: false);
                     }
                     catch
                     {
-                        ClearRotationAndReleaseSealOverestimate(pd, ref sealedBatchOverestimateToRelease);
+                        ClearRotationAndReleaseDetachedBatchBytes(pd, ref sealedBatchBytesToRelease);
                         throw;
                     }
                 }
@@ -2507,7 +2507,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var topicPartition = new TopicPartition(topic, partition);
         var pd = GetOrCreateDeque(topic, partition);
         ReadyBatch? sealedBatchToEnqueue = null;
-        var sealedBatchOverestimateToRelease = 0;
+        var sealedBatchBytesToRelease = 0;
         PartitionBatch? rentedBatch = null;
         var ownsRotation = false;
         var ownsReservation = true;
@@ -2657,10 +2657,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         ReleaseMemory(batchToFail.DataSize);
                 }
 
-                if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchOverestimateToRelease > 0)
+                if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
                 {
-                    var bytesToRelease = sealedBatchOverestimateToRelease;
-                    sealedBatchOverestimateToRelease = 0;
+                    var bytesToRelease = sealedBatchBytesToRelease;
+                    sealedBatchBytesToRelease = 0;
                     ReleaseMemory(bytesToRelease);
                 }
 
@@ -2777,12 +2777,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     {
                         sealedBatchToEnqueue = CompleteDetachedBatch(
                             batchToComplete,
-                            out sealedBatchOverestimateToRelease,
-                            releaseOverestimateOnFailure: false);
+                            out sealedBatchBytesToRelease,
+                            releaseMemoryOnFailure: false);
                     }
                     catch
                     {
-                        ClearRotationAndReleaseSealOverestimate(pd, ref sealedBatchOverestimateToRelease);
+                        ClearRotationAndReleaseDetachedBatchBytes(pd, ref sealedBatchBytesToRelease);
                         throw;
                     }
                 }
@@ -2985,17 +2985,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Completes and returns a batch removed from the active append path.
-    /// The caller must release <paramref name="overestimatedBytesToRelease"/> after
-    /// the partition rotation gate is cleared. If completion fails, the overestimate
-    /// is released here unless <paramref name="releaseOverestimateOnFailure"/> is false.
+    /// The caller must release <paramref name="bytesToRelease"/> after the partition
+    /// rotation gate is cleared. On success this is the seal-time overestimate refund.
+    /// On failure this is the whole reserved batch size unless released here.
     /// </summary>
     private ReadyBatch? CompleteDetachedBatch(
         PartitionBatch currentBatch,
-        out int overestimatedBytesToRelease,
+        out int bytesToRelease,
         bool preSerialize = true,
-        bool releaseOverestimateOnFailure = true)
+        bool releaseMemoryOnFailure = true)
     {
-        overestimatedBytesToRelease = currentBatch.OverestimatedBytes;
+        bytesToRelease = currentBatch.OverestimatedBytes;
         var completionSourcesCount = currentBatch.CompletionSourcesCount;
         var pendingAwaitedProduceBatchReleased = false;
         try
@@ -3019,11 +3019,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _batchPool.Return(currentBatch);
             return readyBatch;
         }
-        catch
+        catch (Exception ex)
         {
             ReleasePendingAwaitedProduceBatch(completionSourcesCount, ref pendingAwaitedProduceBatchReleased);
-            if (releaseOverestimateOnFailure)
-                ReleaseSealOverestimate(ref overestimatedBytesToRelease);
+            bytesToRelease = currentBatch.FailCompleteFailure(ex);
+            try { _batchPool.Return(currentBatch); }
+            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+            if (releaseMemoryOnFailure)
+                ReleaseDetachedBatchBytes(ref bytesToRelease);
             throw;
         }
     }
@@ -3058,17 +3061,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
         ReadyBatch? readyBatch;
-        var overestimatedBytesToRelease = 0;
+        var bytesToRelease = 0;
         try
         {
             readyBatch = CompleteDetachedBatch(
                 batchToComplete,
-                out overestimatedBytesToRelease,
-                releaseOverestimateOnFailure: false);
+                out bytesToRelease,
+                releaseMemoryOnFailure: false);
         }
         catch
         {
-            ClearRotationAndReleaseSealOverestimate(pd, ref overestimatedBytesToRelease);
+            ClearRotationAndReleaseDetachedBatchBytes(pd, ref bytesToRelease);
             throw;
         }
 
@@ -3079,8 +3082,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ClearRotationInProgressUnderLock(pd);
         }
 
-        if (overestimatedBytesToRelease > 0)
-            ReleaseMemory(overestimatedBytesToRelease);
+        if (bytesToRelease > 0)
+            ReleaseMemory(bytesToRelease);
 
         return readyBatch;
     }
@@ -3110,20 +3113,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ClearRotationInProgressUnderLock(pd);
     }
 
-    private void ClearRotationAndReleaseSealOverestimate(PartitionDeque pd, ref int overestimatedBytesToRelease)
+    private void ClearRotationAndReleaseDetachedBatchBytes(PartitionDeque pd, ref int bytesToRelease)
     {
         ClearRotationInProgress(pd);
-        ReleaseSealOverestimate(ref overestimatedBytesToRelease);
+        ReleaseDetachedBatchBytes(ref bytesToRelease);
     }
 
-    private void ReleaseSealOverestimate(ref int overestimatedBytesToRelease)
+    private void ReleaseDetachedBatchBytes(ref int bytesToRelease)
     {
-        if (overestimatedBytesToRelease <= 0)
+        if (bytesToRelease <= 0)
             return;
 
-        var bytesToRelease = overestimatedBytesToRelease;
-        overestimatedBytesToRelease = 0;
-        ReleaseMemory(bytesToRelease);
+        var bytes = bytesToRelease;
+        bytesToRelease = 0;
+        ReleaseMemory(bytes);
     }
 
     private static void ClearAppendInProgressUnderLock(PartitionDeque pd)
@@ -4102,10 +4105,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 var readyBatch = CompleteDetachedBatch(
                     currentBatch,
-                    out var overestimatedBytesToRelease,
+                    out var bytesToRelease,
                     preSerialize: false);
-                if (overestimatedBytesToRelease > 0)
-                    ReleaseMemory(overestimatedBytesToRelease);
+                if (bytesToRelease > 0)
+                    ReleaseMemory(bytesToRelease);
                 if (readyBatch is not null)
                 {
                     readyBatches ??= new List<ReadyBatch>();
@@ -4485,7 +4488,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                                 var readyBatch = CompleteDetachedBatch(
                                     current,
-                                    out var overestimatedBytesToRelease,
+                                    out var bytesToRelease,
                                     preSerialize: false);
                                 if (readyBatch is not null)
                                 {
@@ -4495,8 +4498,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                         ReleaseMemory(readyBatch.DataSize);
                                     }
                                 }
-                                if (overestimatedBytesToRelease > 0)
-                                    ReleaseMemory(overestimatedBytesToRelease);
+                                if (bytesToRelease > 0)
+                                    ReleaseMemory(bytesToRelease);
                             }
 
                             DrainReadyBatchesForDisposeUnderLock(pd, disposedException);
@@ -5348,47 +5351,107 @@ internal sealed class PartitionBatch
         // GetAndIncrementSequence on the same shared counter.
         var baseSequence = -1;
 
-        // Rent from pool to eliminate per-batch RecordBatch class allocation.
-        // The batch lives through the send pipeline (1-10ms) and would otherwise
-        // survive Gen0 collection, contributing to high Gen1/Gen0 promotion rate.
-        var batch = RecordBatch.RentFromPool();
-        batch.BaseOffset = 0;
-        batch.BaseTimestamp = _baseTimestamp;
-        batch.MaxTimestamp = _maxTimestamp;
-        batch.LastOffsetDelta = _recordCount - 1;
-        batch.ProducerId = _producerId;
-        batch.ProducerEpoch = _producerEpoch;
-        batch.BaseSequence = baseSequence;
-        batch.Attributes = attributes;
-        var encodedRecords = _arena!.GetMemory(_encodedRecordsStart, _encodedRecordsLength);
-        batch.SetPreEncodedRecords(encodedRecords);
-        batch.Records = LazyRecordList.Create(encodedRecords, _recordCount);
+        RecordBatch? batch = null;
+        ReadyBatch? readyBatch = null;
+        try
+        {
+            var encodedRecords = _arena!.GetMemory(_encodedRecordsStart, _encodedRecordsLength);
 
-        // Rent ReadyBatch from pool or create new if no pool available
-        // This eliminates per-batch class allocations at high throughput
-        var readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
+            // Rent from pool to eliminate per-batch RecordBatch class allocation.
+            // The batch lives through the send pipeline (1-10ms) and would otherwise
+            // survive Gen0 collection, contributing to high Gen1/Gen0 promotion rate.
+            batch = RecordBatch.RentFromPool();
+            batch.BaseOffset = 0;
+            batch.BaseTimestamp = _baseTimestamp;
+            batch.MaxTimestamp = _maxTimestamp;
+            batch.LastOffsetDelta = _recordCount - 1;
+            batch.ProducerId = _producerId;
+            batch.ProducerEpoch = _producerEpoch;
+            batch.BaseSequence = baseSequence;
+            batch.Attributes = attributes;
+            batch.SetPreEncodedRecords(encodedRecords);
+            batch.Records = LazyRecordList.Create(encodedRecords, _recordCount);
 
-        // Initialize with batch data - ownership of arrays transfers to ReadyBatch
-        // PooledValueTaskSource auto-returns to its pool when GetResult() is called
-        readyBatch.Initialize(
-            _topicPartition,
-            batch,
-            _completionSources,
-            _completionSourceCount,
-            _estimatedSize,
-            _arena,
-            _callbacks,
-            _callbackCount,
-            _arrayReuseQueue);
+            // Rent ReadyBatch from pool or create new if no pool available
+            // This eliminates per-batch class allocations at high throughput
+            readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
 
-        _completedBatch = readyBatch;
+            // Initialize with batch data - ownership of arrays transfers to ReadyBatch
+            // PooledValueTaskSource auto-returns to its pool when GetResult() is called
+            readyBatch.Initialize(
+                _topicPartition,
+                batch,
+                _completionSources,
+                _completionSourceCount,
+                _estimatedSize,
+                _arena,
+                _callbacks,
+                _callbackCount,
+                _arrayReuseQueue);
 
-        // Null out references - ownership transferred to ReadyBatch
-        _completionSources = null!;
-        _arena = null;
-        _callbacks = null;
+            _completedBatch = readyBatch;
+
+            batch = null;
+            readyBatch = null;
+
+            // Null out references - ownership transferred to ReadyBatch
+            _completionSources = null!;
+            _arena = null;
+            _callbacks = null;
+        }
+        catch
+        {
+            if (readyBatch is not null && _readyBatchPool is not null)
+                _readyBatchPool.Return(readyBatch);
+
+            if (batch is not null)
+            {
+                batch.ReturnPreCompressedBuffer();
+                batch.DisposeRecordList();
+                batch.ReturnToPool();
+            }
+
+            throw;
+        }
 
         return _completedBatch;
+    }
+
+    internal int FailCompleteFailure(Exception exception)
+    {
+        var bytesToRelease = _reservedSize;
+
+        if (_completionSourceCount > 0 && _completionSources is not null)
+        {
+            for (var i = 0; i < _completionSourceCount; i++)
+                _completionSources[i]?.TrySetException(exception);
+        }
+
+        if (_callbackCount > 0 && _callbacks is not null)
+        {
+            for (var i = 0; i < _callbackCount; i++)
+            {
+                var callback = _callbacks[i];
+                if (callback is null)
+                    continue;
+
+                try { ProducerCallbackContext.Invoke(callback, default, exception); }
+                catch { }
+                _callbacks[i] = null;
+            }
+        }
+
+        ReturnBatchArraysToPool();
+        _recordCount = 0;
+        _completionSourceCount = 0;
+        _callbackCount = 0;
+        _encodedRecordsStart = 0;
+        _encodedRecordsLength = 0;
+        _estimatedSize = 0;
+        _reservedSize = 0;
+        _completedBatch = null;
+
+        return bytesToRelease;
     }
 
     private void ReturnBatchArraysToPool()
@@ -5404,6 +5467,12 @@ internal sealed class PartitionBatch
         // Null out references to prevent accidental reuse
         _completionSources = null!;
         _arena = null;
+
+        if (_callbacks is not null)
+        {
+            ProducerContainerPools.Callbacks.Return(_callbacks, clearArray: true);
+            _callbacks = null;
+        }
     }
 
     /// <summary>
