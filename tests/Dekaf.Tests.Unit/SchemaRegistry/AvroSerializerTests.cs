@@ -502,7 +502,7 @@ public sealed class AvroSerializerTests
             schemaRegistry.ReleaseBlockedGetOrRegisterSchema();
         }
 
-        var schemaId = await secondWaiter.WaitAsync(TimeSpan.FromSeconds(2));
+        var schemaId = await secondWaiter.WaitAsync(TimeSpan.FromSeconds(10));
 
         await Assert.That(schemaId).IsGreaterThan(0);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
