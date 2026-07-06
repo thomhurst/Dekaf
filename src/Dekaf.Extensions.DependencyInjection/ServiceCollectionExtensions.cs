@@ -738,6 +738,8 @@ public sealed class AdminClientServiceBuilder
         return this;
     }
 
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
     internal AdminClientServiceBuilder ApplyConfiguration(IConfiguration configuration)
     {
         DekafConfigurationBinding.ApplyAdmin(configuration, _builder);
@@ -1098,8 +1100,18 @@ internal static class DekafOptionsBinding
     }
 }
 
+// Binds Kafka options from IConfiguration via reflection-based ConfigurationBinder.Get<T>.
+// The whole type is marked Requires* so the trim/AOT analyzers are satisfied internally and the
+// requirement propagates to callers (the public IConfiguration overloads carry the same attributes).
+[RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+[RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
 internal static class DekafConfigurationBinding
 {
+    internal const string RequiresDynamicCodeMessage =
+        "IConfiguration binding uses Microsoft.Extensions.Configuration.Binder. Use typed options overloads for NativeAOT.";
+    internal const string RequiresUnreferencedCodeMessage =
+        "IConfiguration binding may require members that are trimmed. Use typed options overloads for NativeAOT.";
+
     public static void ApplyProducer<TKey, TValue>(
         IConfiguration configuration,
         ProducerBuilder<TKey, TValue> builder)

@@ -4,13 +4,16 @@
     <PackageId>Dekaf.Extensions.DependencyInjection</PackageId>
     <Description>Microsoft.Extensions.DependencyInjection integration for Dekaf Kafka client</Description>
     <PackageTags>kafka;dependency-injection;di</PackageTags>
+    <!--
+      This project is AOT/trim-compatible (IsAotCompatible is inherited from src/Directory.Build.props).
+      The programmatic AddDekaf/AddProducer/AddConsumer/AddAdminClient overloads are fully AOT-safe.
+      The IConfiguration-binding overloads use reflection-based ConfigurationBinder.Get<T> and are
+      honestly annotated with [RequiresDynamicCode]/[RequiresUnreferencedCode] so callers get a warning.
+      Under an AOT/trimmed publish the configuration binding source generator auto-enables and reports
+      SYSLIB1104 for the intentionally-generic binding helper (which cannot be intercepted); that call
+      is already guarded by the Requires* annotations, so the diagnostic is suppressed here.
+    -->
     <NoWarn>$(NoWarn);SYSLIB1104</NoWarn>
-    <!-- TODO(AOT): IConfiguration binding uses reflection-based ConfigurationBinder.Get<T>.
-         The binding source generator cannot bind the complex option types (TlsConfig holds
-         X509Certificate2; Gssapi/OAuth/AwsMskIam have required members), so the DI project is
-         not yet trim/AOT-clean. Opt out of the inherited IsAotCompatible analyzer until the
-         config-binding path is reworked (manual binders) or annotated. -->
-    <IsAotCompatible>false</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
