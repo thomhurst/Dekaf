@@ -112,7 +112,7 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
-    public async Task Ready_CompressesSealedBatch_OutsideAppendPath()
+    public async Task Ready_SealedCompressedBatch_DoesNotCompressOnSenderCoordinator()
     {
         var options = CreateTestOptions(batchSize: 50, compressionType: CompressionType.Gzip);
 
@@ -137,12 +137,13 @@ public class RecordAccumulatorReadyTests
                     pooledKey, pooledValue, null, 0, completion);
             }
 
-            await Assert.That(codec.CompressCount).IsEqualTo(0);
+            var compressCountBeforeReady = codec.CompressCount;
+            await Assert.That(compressCountBeforeReady).IsGreaterThan(0);
 
             var readyNodes = new HashSet<int>();
             var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
 
-            await Assert.That(codec.CompressCount).IsEqualTo(1);
+            await Assert.That(codec.CompressCount).IsEqualTo(compressCountBeforeReady);
             await Assert.That(readyNodes).Contains(1);
             await Assert.That(unknownLeadersExist).IsFalse();
         }

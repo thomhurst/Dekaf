@@ -1275,9 +1275,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
             }
 
-            // Pre-serialize only batches that will actually drain this cycle — batches
-            // deferred above (backoff, unknown leader) would waste the encode and hold
-            // the pooled buffer for the whole deferral window.
+            // Batches are pre-serialized when sealed. Keep a defensive fallback so a
+            // manually-created or legacy batch cannot be orphaned in the ready queue.
             if (!head.IsPreSerialized)
                 PreSerializeBatch(head);
 
@@ -2837,7 +2836,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Completes and returns a detached batch outside the partition SpinLock.
     /// </summary>
-    private ReadyBatch? CompleteDetachedBatch(PartitionBatch currentBatch)
+    private ReadyBatch? CompleteDetachedBatch(PartitionBatch currentBatch, bool preSerialize = true)
     {
         var readyBatch = currentBatch.Complete();
         if (readyBatch is not null)
@@ -2847,6 +2846,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
             if (currentBatch.PartitionCount > 1)
                 _onBatchComplete?.Invoke(readyBatch.TopicPartition.Topic, currentBatch.PartitionCount);
+            if (preSerialize)
+                PreSerializeBatch(readyBatch);
         }
 
         _batchPool.Return(currentBatch);
@@ -2879,9 +2880,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Publishes a sealed batch to the sender loop. Record serialization (and compression,
-    /// when enabled) is deferred to <see cref="Ready"/> so the append caller only pays the
-    /// queue notification cost.
+    /// Publishes a sealed, wire-ready batch to the sender loop.
     /// </summary>
     private void PublishSealedBatch(ReadyBatch readyBatch, bool signalWakeup = true)
     {
@@ -2891,14 +2890,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Prepares a sealed batch's records for send, compressing when configured. Called by the
-    /// sender thread from <see cref="Ready"/>, outside the partition SpinLock, before the
-    /// batch can drain. Record bytes are already encoded at append time, so this step either
-    /// leaves the arena-backed records in place or compresses those encoded bytes.
+    /// Prepares a sealed batch's records for send, compressing when configured. Called when
+    /// completing a detached batch, outside the partition SpinLock, before it is enqueued as
+    /// ready. Record bytes are already encoded at append time, so this step either leaves
+    /// the arena-backed records in place or compresses those encoded bytes.
     ///
-    /// Thread safety: the batch is already sealed and in the deque; no other thread can
-    /// modify it. The drain loop skips batches where <see cref="ReadyBatch.IsPreSerialized"/>
-    /// is false, so the sender won't pick it up until we finish and set the flag.
+    /// Thread safety: the batch is already sealed and detached from its mutable
+    /// <see cref="PartitionBatch"/>, so no append thread can modify it. The drain loop skips
+    /// batches where <see cref="ReadyBatch.IsPreSerialized"/> is false, so the sender only
+    /// picks up wire-ready batches.
     /// </summary>
     private void PreSerializeBatch(ReadyBatch readyBatch)
     {
@@ -3796,7 +3796,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             foreach (var currentBatch in currentBatches)
             {
-                var readyBatch = CompleteDetachedBatch(currentBatch);
+                var readyBatch = CompleteDetachedBatch(currentBatch, preSerialize: false);
                 if (readyBatch is not null)
                 {
                     readyBatches ??= new List<ReadyBatch>();
