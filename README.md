@@ -15,6 +15,7 @@ Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation wit
 - **Pure C#** - No native dependencies, no interop overhead
 - **Zero-allocation hot paths** - Uses `Span<T>`, `ref struct`, and object pooling for minimal GC pressure
 - **Modern .NET** - Built for .NET 10+ with nullable reference types, `IAsyncEnumerable`, and all the good stuff
+- **Native AOT compatible** - Trim-safe and Native AOT ready, verified by CI smoke tests on every build
 - **Simple API** - Intuitive fluent builders that do what you'd expect
 
 ## Getting Started

@@ -5,6 +5,12 @@
     <Description>Microsoft.Extensions.DependencyInjection integration for Dekaf Kafka client</Description>
     <PackageTags>kafka;dependency-injection;di</PackageTags>
     <NoWarn>$(NoWarn);SYSLIB1104</NoWarn>
+    <!-- TODO(AOT): IConfiguration binding uses reflection-based ConfigurationBinder.Get<T>.
+         The binding source generator cannot bind the complex option types (TlsConfig holds
+         X509Certificate2; Gssapi/OAuth/AwsMskIam have required members), so the DI project is
+         not yet trim/AOT-clean. Opt out of the inherited IsAotCompatible analyzer until the
+         config-binding path is reworked (manual binders) or annotated. -->
+    <IsAotCompatible>false</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
