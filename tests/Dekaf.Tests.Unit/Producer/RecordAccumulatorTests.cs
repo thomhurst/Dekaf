@@ -242,8 +242,9 @@ public class RecordAccumulatorTests
 
             PoisonBatchArena(currentBatch);
 
-            await Assert.That(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
-                .Throws<NullReferenceException>();
+            var purged = accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
+
+            await Assert.That(purged).IsEqualTo(1);
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
         finally
@@ -330,10 +331,68 @@ public class RecordAccumulatorTests
             var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
             PoisonBatchArena(currentBatch);
 
-            await Assert.That(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
-                .Throws<NullReferenceException>();
+            var purged = accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
+
+            await Assert.That(purged).IsEqualTo(1);
             await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(0);
             await Assert.ThrowsAsync<NullReferenceException>(async () => await completionTask);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Purge_Queue_CompleteFailure_ContinuesToLaterPartitions()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var poisonedPartition = new TopicPartition("test-topic", 0);
+        var healthyPartition = new TopicPartition("test-topic", 1);
+
+        try
+        {
+            var poisonedCompletion = pool.Rent();
+            var poisonedTask = poisonedCompletion.Task;
+            var healthyCompletion = pool.Rent();
+            var healthyTask = healthyCompletion.Task;
+
+            await Assert.That(await accumulator.AppendAsync(
+                poisonedPartition.Topic,
+                poisonedPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                poisonedCompletion,
+                callback: null,
+                CancellationToken.None)).IsTrue();
+
+            await Assert.That(await accumulator.AppendAsync(
+                healthyPartition.Topic,
+                healthyPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                healthyCompletion,
+                callback: null,
+                CancellationToken.None)).IsTrue();
+
+            PoisonBatchArena(GetCurrentPartitionBatch(accumulator, poisonedPartition));
+
+            var purged = accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
+
+            await Assert.That(purged).IsEqualTo(2);
+            await Assert.ThrowsAsync<NullReferenceException>(async () => await poisonedTask);
+            var healthyException = await Assert.ThrowsAsync<ProduceException>(async () => await healthyTask);
+            await Assert.That(healthyException!.Kind).IsEqualTo(ProduceErrorKind.Purged);
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
         finally
@@ -476,9 +535,62 @@ public class RecordAccumulatorTests
 
             PoisonBatchArena(currentBatch);
 
-            await Assert.That(async () => await accumulator.DisposeAsync())
-                .Throws<NullReferenceException>();
+            await accumulator.DisposeAsync();
             await Assert.ThrowsAsync<NullReferenceException>(async () => await completionTask);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task DisposeAsync_CompleteFailure_ContinuesToLaterPartitions()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var poisonedPartition = new TopicPartition("test-topic", 0);
+        var healthyPartition = new TopicPartition("test-topic", 1);
+
+        try
+        {
+            var poisonedCompletion = pool.Rent();
+            var poisonedTask = poisonedCompletion.Task;
+            var healthyCompletion = pool.Rent();
+            var healthyTask = healthyCompletion.Task;
+
+            await Assert.That(await accumulator.AppendAsync(
+                poisonedPartition.Topic,
+                poisonedPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                poisonedCompletion,
+                callback: null,
+                CancellationToken.None)).IsTrue();
+
+            await Assert.That(await accumulator.AppendAsync(
+                healthyPartition.Topic,
+                healthyPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                healthyCompletion,
+                callback: null,
+                CancellationToken.None)).IsTrue();
+
+            PoisonBatchArena(GetCurrentPartitionBatch(accumulator, poisonedPartition));
+
+            await accumulator.DisposeAsync();
+
+            await Assert.ThrowsAsync<NullReferenceException>(async () => await poisonedTask);
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () => await healthyTask);
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
         finally

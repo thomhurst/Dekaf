@@ -3040,6 +3040,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         released = true;
     }
 
+    private bool TryCompleteDetachedBatchForCleanup(
+        PartitionBatch currentBatch,
+        out ReadyBatch? readyBatch,
+        out int bytesToRelease)
+    {
+        try
+        {
+            readyBatch = CompleteDetachedBatch(
+                currentBatch,
+                out bytesToRelease,
+                preSerialize: false);
+            return true;
+        }
+        catch (Exception completeEx)
+        {
+            LogBatchCleanupStepFailed(completeEx);
+            readyBatch = null;
+            bytesToRelease = 0;
+            return false;
+        }
+    }
+
     private void NotifyRecordAppended(string topic, int partition, int actualBytesAdded, int partitionCount)
     {
         if (partitionCount > 1 && actualBytesAdded > 0)
@@ -4103,10 +4125,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             foreach (var currentBatch in currentBatches)
             {
-                var readyBatch = CompleteDetachedBatch(
+                if (!TryCompleteDetachedBatchForCleanup(
                     currentBatch,
-                    out var bytesToRelease,
-                    preSerialize: false);
+                    out var readyBatch,
+                    out var bytesToRelease))
+                {
+                    purgedCount++;
+                    continue;
+                }
+
                 if (bytesToRelease > 0)
                     ReleaseMemory(bytesToRelease);
                 if (readyBatch is not null)
@@ -4486,20 +4513,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 MarkLingerPartitionDequeued(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
 
-                                var readyBatch = CompleteDetachedBatch(
+                                if (TryCompleteDetachedBatchForCleanup(
                                     current,
-                                    out var bytesToRelease,
-                                    preSerialize: false);
-                                if (readyBatch is not null)
+                                    out var readyBatch,
+                                    out var bytesToRelease))
                                 {
-                                    readyBatch.Fail(disposedException);
-                                    if (readyBatch.TrySetMemoryReleased())
+                                    if (readyBatch is not null)
                                     {
-                                        ReleaseMemory(readyBatch.DataSize);
+                                        readyBatch.Fail(disposedException);
+                                        if (readyBatch.TrySetMemoryReleased())
+                                        {
+                                            ReleaseMemory(readyBatch.DataSize);
+                                        }
                                     }
+                                    if (bytesToRelease > 0)
+                                        ReleaseMemory(bytesToRelease);
                                 }
-                                if (bytesToRelease > 0)
-                                    ReleaseMemory(bytesToRelease);
                             }
 
                             DrainReadyBatchesForDisposeUnderLock(pd, disposedException);
