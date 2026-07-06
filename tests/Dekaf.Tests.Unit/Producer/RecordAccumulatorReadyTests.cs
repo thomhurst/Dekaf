@@ -144,7 +144,15 @@ public class RecordAccumulatorReadyTests
             var compressCountBeforeReady = codec.CompressCount;
 
             var readyNodes = new HashSet<int>();
-            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+            var unknownLeadersExist = false;
+            await TestWait.UntilAsync(
+                () =>
+                {
+                    readyNodes.Clear();
+                    (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+                    return readyNodes.Contains(1);
+                },
+                TimeSpan.FromSeconds(5));
 
             await Assert.That(codec.CompressCount).IsEqualTo(compressCountBeforeReady);
             await Assert.That(readyNodes).Contains(1);
@@ -175,7 +183,7 @@ public class RecordAccumulatorReadyTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var fillTask = Task.Run(async () =>
+            var fillTask = Task.Run(() =>
             {
                 for (var i = 0; i < 10; i++)
                 {
@@ -183,7 +191,6 @@ public class RecordAccumulatorReadyTests
                     accumulator.TryAppendWithCompletion("test-topic", 0,
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         pooledKey, pooledValue, null, 0, completion);
-                    await Task.Yield();
                 }
             });
 
