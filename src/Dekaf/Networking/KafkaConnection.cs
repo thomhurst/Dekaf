@@ -170,6 +170,9 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private const int MinimumResponseFrameSize = 4; // Correlation ID is always first in the response header.
     // SASL handshake/auth responses are small; this pre-auth path must not honor untrusted large frame claims.
     private const int MaxSaslResponseFrameSize = 1024 * 1024;
+    internal const int DefaultPreSerializeInitialCapacity = 4096;
+    private const int MessageSizePrefixLength = 4;
+    private const int RequestHeaderSizeSlack = 128;
     private static int s_globalCorrelationId;
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
@@ -910,7 +913,9 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     {
         // Serialize directly into a rented array at offset 4 (reserving space for the size
         // prefix). The only copy is rented array -> PipeWriter under the write lock.
-        using var writer = new RentedBufferWriter(initialCapacity: 4096, offset: 4);
+        using var writer = new RentedBufferWriter(
+            GetPreSerializeInitialCapacity<TResponse>(request),
+            MessageSizePrefixLength);
 
         var bodyWriter = new KafkaProtocolWriter(writer);
         var header = new RequestHeader
@@ -931,6 +936,19 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         BinaryPrimitives.WriteInt32BigEndian(rentedArray, bodyWriter.BytesWritten);
 
         return (rentedArray, totalLength);
+    }
+
+    internal static int GetPreSerializeInitialCapacity<TResponse>(IKafkaRequest<TResponse> request)
+        where TResponse : IKafkaResponse
+    {
+        if (request is not IKafkaRequestBodySizeHint { RequestBodySizeHint: > 0 } sizeHint)
+            return DefaultPreSerializeInitialCapacity;
+
+        var hintedCapacity = Math.Min(
+            (long)Array.MaxLength - MessageSizePrefixLength,
+            (long)sizeHint.RequestBodySizeHint + RequestHeaderSizeSlack);
+
+        return Math.Max(DefaultPreSerializeInitialCapacity, (int)hintedCapacity);
     }
 
 

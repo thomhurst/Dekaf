@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
@@ -2366,6 +2367,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var topicIdx = 0;
             var partIdx = 0;
             var runStart = 0;
+            var requestBodySizeHint = checked(
+                CompactStringSize(_request.TransactionalId) +
+                2 + // Acks
+                4 + // TimeoutMs
+                CompactArrayLengthSize(topicCount) +
+                1); // Request tagged fields
 
             // Single pass: populate scratch topic and partition data from contiguous runs
             while (runStart < count)
@@ -2379,6 +2386,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 var partCount = runEnd - runStart;
                 var partitionDataStart = partIdx;
+                requestBodySizeHint = checked(
+                    requestBodySizeHint +
+                    CompactStringSize(topicName) +
+                    CompactArrayLengthSize(partCount) +
+                    1); // Topic tagged fields
+
                 for (var p = 0; p < partCount; p++)
                 {
                     var batch = batchesSpan[runStart + p];
@@ -2386,6 +2399,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var partData = _partitionData[partIdx];
                     partData.Index = batch.TopicPartition.Partition;
                     partData.Records = _recordBatches[partIdx];
+                    requestBodySizeHint = checked(
+                        requestBodySizeHint +
+                        4 + // Partition index
+                        CompactBytesLengthSize(batch.EncodedSize) +
+                        batch.EncodedSize +
+                        1); // Partition tagged fields
                     partIdx++;
                 }
 
@@ -2400,6 +2419,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             _request.TopicData = new ArraySegment<ProduceRequestTopicData>(
                 _topicData, 0, topicCount);
+            _request.RequestBodySizeHint = requestBodySizeHint;
             _lastTopicCount = topicCount;
             _lastPartitionCount = partIdx;
             return _request;
@@ -2412,6 +2432,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public void ClearReferences()
         {
             _request.TopicData = [];
+            _request.RequestBodySizeHint = 0;
             for (var i = 0; i < _lastTopicCount; i++)
             {
                 _topicData[i].Name = string.Empty;
@@ -2425,6 +2446,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _lastTopicCount = 0;
             _lastPartitionCount = 0;
         }
+
+        private static int CompactStringSize(string? value)
+        {
+            if (value is null)
+                return 1;
+
+            var byteCount = Encoding.UTF8.GetByteCount(value);
+            return checked(CompactBytesLengthSize(byteCount) + byteCount);
+        }
+
+        private static int CompactArrayLengthSize(int count)
+            => Record.VarUIntSize((uint)checked(count + 1));
+
+        private static int CompactBytesLengthSize(int byteCount)
+            => Record.VarUIntSize((uint)checked(byteCount + 1));
     }
 
     /// <summary>

@@ -82,6 +82,29 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task GetPreSerializeInitialCapacity_WithoutHint_ReturnsDefault()
+    {
+        var request = new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" };
+
+        var capacity = KafkaConnection.GetPreSerializeInitialCapacity<ApiVersionsResponse>(request);
+
+        await Assert.That(capacity).IsEqualTo(KafkaConnection.DefaultPreSerializeInitialCapacity);
+    }
+
+    [Test]
+    public async Task GetPreSerializeInitialCapacity_WithProduceHint_AddsHeaderSlack()
+    {
+        var request = new ProduceRequest
+        {
+            RequestBodySizeHint = 1_048_576
+        };
+
+        var capacity = KafkaConnection.GetPreSerializeInitialCapacity<ProduceResponse>(request);
+
+        await Assert.That(capacity).IsEqualTo(1_048_704);
+    }
+
+    [Test]
     public async Task Host_ReturnsConstructorValue()
     {
         var connection = new KafkaConnection("my-broker.example.com", 9092);

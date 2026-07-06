@@ -56,6 +56,14 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
 }
 
 /// <summary>
+/// Optional request-side hint for sizing the pre-serialization buffer.
+/// </summary>
+internal interface IKafkaRequestBodySizeHint
+{
+    int RequestBodySizeHint { get; }
+}
+
+/// <summary>
 /// Interface for Kafka response messages.
 /// </summary>
 public interface IKafkaResponse : IKafkaMessage

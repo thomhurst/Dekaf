@@ -8,7 +8,7 @@ namespace Dekaf.Protocol.Messages;
 /// Produce request (API key 0).
 /// Sends records to topic partitions.
 /// </summary>
-public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
+public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaRequestBodySizeHint
 {
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 9;
@@ -36,6 +36,10 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
     /// Topic data to produce.
     /// </summary>
     public IReadOnlyList<ProduceRequestTopicData> TopicData { get; internal set; } = [];
+
+    internal int RequestBodySizeHint { get; set; }
+
+    int IKafkaRequestBodySizeHint.RequestBodySizeHint => RequestBodySizeHint;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
