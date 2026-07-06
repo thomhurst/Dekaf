@@ -947,6 +947,24 @@ The missing tests are now present.
         Blocks = $false
     },
     @{
+        Name = 'blocks test coverage gap closed heading with trailing vulnerability'
+        Body = @'
+## Review
+
+### Test coverage gap closed. Also this endpoint is vulnerable to SQL injection
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks test coverage gap closed heading with trailing defect'
+        Body = @'
+## Review
+
+### Test coverage gap closed - deadlock still present in flush path
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'blocks previously flagged issue still not fixed'
         Body = @'
 ## Review

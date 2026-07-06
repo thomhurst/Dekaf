@@ -168,7 +168,7 @@ function Get-ActionableReviewBodyReason {
     $verifiedCleanHeading =
         '(?=.{1,300}\s*$)merge\s+correctness\b(?=[^\r\n]*\bverified\s+clean\b)[^\r\n]*\s*$'
     $closedCoverageGapHeading =
-        '(?=.{1,300}\s*$)test\s+coverage\b(?=[^\r\n]*\bgap\s+closed\b)[^\r\n]*\s*$'
+        '(?=.{1,300}\s*$)test\s+coverage\b[^\r\n]*\bgap\s+closed\b\s*\.?\s*$'
     $nonActionableHeading =
         '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
         '|not\s+a\s+regression\b(?:,\s+just\s+noting\s+scope)?\s*$' +
