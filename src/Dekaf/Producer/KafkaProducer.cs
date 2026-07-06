@@ -39,6 +39,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
+    // Non-null when a serializer needs a one-time async setup (e.g. a Schema Registry fetch) before the
+    // synchronous Serialize can run without blocking. Null for the common case (built-in serializers).
+    private readonly IAsyncSerializerPreparer<TKey>? _keyPreparer;
+    private readonly IAsyncSerializerPreparer<TValue>? _valuePreparer;
     private readonly IPartitioner _partitioner;
     private readonly bool _usesCustomPartitioner;
     private readonly IUniformStickyPartitioner? _uniformStickyPartitioner;
@@ -271,6 +275,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _options = options;
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
+        _keyPreparer = keySerializer as IAsyncSerializerPreparer<TKey>;
+        _valuePreparer = valueSerializer as IAsyncSerializerPreparer<TValue>;
         _memoryBudget = memoryBudget;
         _ownsInfrastructure = ownsInfrastructure;
         _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaProducer<TKey, TValue>>.Instance;
@@ -493,6 +499,26 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var activity = StartPublishActivity(ref message);
 
+        // If a serializer needs async setup (e.g. a one-time Schema Registry fetch), do it here on the
+        // async path so the synchronous serialize never blocks on it. After the first message for a
+        // subject this completes synchronously and falls straight through to the fast path below.
+        if (_keyPreparer is not null || _valuePreparer is not null)
+        {
+            var prepare = PrepareSerializersAsync(message.Topic, message.Key, message.Value, message.Headers, cancellationToken);
+            if (!prepare.IsCompletedSuccessfully)
+            {
+                return AwaitPrepareThenProduce(prepare, message, activity, cancellationToken);
+            }
+        }
+
+        return ProduceAfterPrepare(message, activity, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> ProduceAfterPrepare(
+        ProducerMessage<TKey, TValue> message,
+        Activity? activity,
+        CancellationToken cancellationToken)
+    {
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
@@ -517,6 +543,58 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, activity, cancellationToken);
+    }
+
+    private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
+        ValueTask prepare,
+        ProducerMessage<TKey, TValue> message,
+        Activity? activity,
+        CancellationToken cancellationToken)
+    {
+        await prepare.ConfigureAwait(false);
+        return await ProduceAfterPrepare(message, activity, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Ensures any serializer that implements IAsyncSerializerPreparer<T> has fetched its schema (or
+    // other async prerequisite) for this topic before the synchronous serialize runs. Returns a
+    // synchronously-completed ValueTask in the steady state (already prepared), keeping the fast path sync.
+    private ValueTask PrepareSerializersAsync(
+        string topic,
+        TKey? key,
+        TValue? value,
+        Headers? headers,
+        CancellationToken cancellationToken)
+    {
+        var keyPrepare = default(ValueTask);
+        if (_keyPreparer is not null && key is not null)
+        {
+            keyPrepare = _keyPreparer.PrepareAsync(
+                key,
+                new SerializationContext { Topic = topic, Component = SerializationComponent.Key, Headers = headers },
+                cancellationToken);
+        }
+
+        var valuePrepare = default(ValueTask);
+        if (_valuePreparer is not null && value is not null)
+        {
+            valuePrepare = _valuePreparer.PrepareAsync(
+                value,
+                new SerializationContext { Topic = topic, Component = SerializationComponent.Value, Headers = headers },
+                cancellationToken);
+        }
+
+        if (keyPrepare.IsCompletedSuccessfully && valuePrepare.IsCompletedSuccessfully)
+        {
+            return default;
+        }
+
+        return AwaitBothAsync(keyPrepare, valuePrepare);
+
+        static async ValueTask AwaitBothAsync(ValueTask keyPrepare, ValueTask valuePrepare)
+        {
+            await keyPrepare.ConfigureAwait(false);
+            await valuePrepare.ConfigureAwait(false);
+        }
     }
 
     private ValueTask<RecordMetadata> ProduceAsync(
@@ -558,6 +636,29 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Check cancellation upfront before any work
         cancellationToken.ThrowIfCancellationRequested();
 
+        // See ProduceAsyncCore(ProducerMessage): resolve any async serializer prerequisite before the
+        // synchronous serialize so it never blocks. Steady state completes synchronously and falls through.
+        if (_keyPreparer is not null || _valuePreparer is not null)
+        {
+            var prepare = PrepareSerializersAsync(topic, key, value, headers, cancellationToken);
+            if (!prepare.IsCompletedSuccessfully)
+            {
+                return AwaitPrepareThenProduce(prepare, topic, key, value, headers, partition, timestamp, cancellationToken);
+            }
+        }
+
+        return ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> ProduceAfterPrepare(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        CancellationToken cancellationToken)
+    {
         if (TryProduceSyncForAsync(topic, key, value, headers, partition, timestamp, out var completion))
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
@@ -583,6 +684,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             Partition = partition,
             Timestamp = timestamp
         }, activity: null, cancellationToken);
+    }
+
+    private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
+        ValueTask prepare,
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        CancellationToken cancellationToken)
+    {
+        await prepare.ConfigureAwait(false);
+        return await ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, cancellationToken).ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
