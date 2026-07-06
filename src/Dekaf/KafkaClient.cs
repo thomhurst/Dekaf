@@ -1,5 +1,6 @@
 namespace Dekaf;
 
+using System.Net.Security;
 using Admin;
 using Consumer;
 using Dekaf.Internal;
@@ -98,6 +99,12 @@ public sealed class KafkaClientBuilder
     private int _maxInFlightRequestsPerConnection = 5;
     private int _maxConnectionsPerBroker = 10;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    private TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30);
+    private bool _enableTcpKeepAlive = true;
+    private TimeSpan _tcpKeepAliveTime = TimeSpan.FromMinutes(2);
+    private TimeSpan _tcpKeepAliveInterval = TimeSpan.FromSeconds(30);
+    private int _tcpKeepAliveRetryCount = 3;
+    private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private TimeSpan? _metadataMaxAge;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -171,6 +178,54 @@ public sealed class KafkaClientBuilder
     {
         _useTls = true;
         _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
+    /// </summary>
+    /// <param name="timeout">The connection setup timeout. Must be positive.</param>
+    public KafkaClientBuilder WithConnectionTimeout(TimeSpan timeout)
+    {
+        _connectionTimeout = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Connection timeout must be positive");
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables TCP keepalive on broker sockets.
+    /// Equivalent to Kafka's <c>socket.keepalive.enable</c>.
+    /// </summary>
+    public KafkaClientBuilder WithTcpKeepAlive(bool enabled = true)
+    {
+        _enableTcpKeepAlive = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TCP keepalive probe timing on broker sockets and enables TCP keepalive.
+    /// Unsupported platforms ignore individual probe options.
+    /// </summary>
+    public KafkaClientBuilder WithTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount = 3)
+    {
+        ConnectionOptionValidation.ValidateTcpKeepAlive(time, interval, retryCount);
+        _enableTcpKeepAlive = true;
+        _tcpKeepAliveTime = time;
+        _tcpKeepAliveInterval = interval;
+        _tcpKeepAliveRetryCount = retryCount;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom TLS certificate validation callback and enables TLS.
+    /// </summary>
+    public KafkaClientBuilder WithRemoteCertificateValidationCallback(RemoteCertificateValidationCallback callback)
+    {
+        _useTls = true;
+        _remoteCertificateValidationCallback = callback ?? throw new ArgumentNullException(nameof(callback));
         return this;
     }
 
@@ -388,6 +443,12 @@ public sealed class KafkaClientBuilder
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
+            RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
+            ConnectionTimeout = _connectionTimeout,
+            EnableTcpKeepAlive = _enableTcpKeepAlive,
+            TcpKeepAliveTime = _tcpKeepAliveTime,
+            TcpKeepAliveInterval = _tcpKeepAliveInterval,
+            TcpKeepAliveRetryCount = _tcpKeepAliveRetryCount,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
@@ -422,6 +483,12 @@ internal sealed class KafkaClientOptions
     public int ReconnectBackoffMaxMs { get; init; }
     public bool UseTls { get; init; }
     public TlsConfig? TlsConfig { get; init; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+    public TimeSpan ConnectionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public bool EnableTcpKeepAlive { get; init; } = true;
+    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
+    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
+    public int TcpKeepAliveRetryCount { get; init; } = 3;
     public SaslMechanism SaslMechanism { get; init; }
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
@@ -491,6 +558,12 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             {
                 UseTls = options.UseTls,
                 TlsConfig = options.TlsConfig,
+                RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
+                ConnectionTimeout = options.ConnectionTimeout,
+                EnableTcpKeepAlive = options.EnableTcpKeepAlive,
+                TcpKeepAliveTime = options.TcpKeepAliveTime,
+                TcpKeepAliveInterval = options.TcpKeepAliveInterval,
+                TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
                 ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),

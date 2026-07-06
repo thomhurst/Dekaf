@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Net.Security;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
@@ -86,6 +87,12 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithTcpKeepAlive(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithRemoteCertificateValidationCallback(AcceptCertificate))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
             .Throws<InvalidOperationException>();
 
@@ -105,6 +112,12 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithTcpKeepAlive(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithRemoteCertificateValidationCallback(AcceptCertificate))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
             .Throws<InvalidOperationException>();
 
@@ -119,6 +132,12 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithTcpKeepAlive(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithRemoteCertificateValidationCallback(AcceptCertificate))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
             .Throws<InvalidOperationException>();
@@ -136,6 +155,12 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateAdminClient().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithTcpKeepAlive(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithRemoteCertificateValidationCallback(AcceptCertificate))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
             .Throws<InvalidOperationException>();
@@ -247,4 +272,10 @@ public sealed class KafkaClientBuilderTests
             ?? throw new InvalidOperationException($"Could not find {name} on {instance.GetType()}");
         return (T)field.GetValue(instance)!;
     }
+
+    private static bool AcceptCertificate(
+        object sender,
+        System.Security.Cryptography.X509Certificates.X509Certificate? certificate,
+        System.Security.Cryptography.X509Certificates.X509Chain? chain,
+        SslPolicyErrors sslPolicyErrors) => sslPolicyErrors == SslPolicyErrors.None;
 }

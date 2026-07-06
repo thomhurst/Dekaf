@@ -98,10 +98,13 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithQueuedMaxMessagesKbytes(...)` | `QueuedMaxMessagesKbytes` | KiB; omit to keep auto-tuning |
 | `WithPrefetchPipelineDepth(...)` | `PrefetchPipelineDepth` | Integer |
 | `WithConnectionsMaxIdle(...)` | `ConnectionsMaxIdleMs` | Milliseconds; `-1` disables |
+| `WithConnectionTimeout(...)` | `ConnectionTimeout` | TimeSpan |
+| `WithTcpKeepAlive(...)` | `EnableTcpKeepAlive`, `TcpKeepAliveTime`, `TcpKeepAliveInterval`, `TcpKeepAliveRetryCount` | Socket keepalive |
 | `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
 | `WithAdaptiveFetchSizing(...)` | `EnableAdaptiveFetchSizing`, `AdaptiveFetchSizingOptions` | Bind nested adaptive sizing fields |
 | `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
+| `WithRemoteCertificateValidationCallback(...)` | Runtime callback | Custom TLS certificate validation |
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
 | `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
 | `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
@@ -282,6 +285,23 @@ Maximum time an unused broker connection stays open before the client closes it:
 
 The default is 9 minutes, slightly below Kafka's broker-side `connections.max.idle.ms` default of 10 minutes. Connections with in-flight requests are not reaped.
 
+### WithConnectionTimeout
+
+Maximum time allowed for socket connection setup, including TLS and SASL handshakes:
+
+```csharp
+.WithConnectionTimeout(TimeSpan.FromSeconds(10))
+```
+
+### WithTcpKeepAlive
+
+Enable, disable, or tune TCP keepalive probes:
+
+```csharp
+.WithTcpKeepAlive(false) // Disable keepalive
+.WithTcpKeepAlive(TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), retryCount: 3)
+```
+
 ## Security
 
 ### UseTls
@@ -292,6 +312,13 @@ Enable TLS:
 .UseTls()
 .UseTls(tlsConfig)
 .UseMutualTls(caCert, clientCert, clientKey)
+```
+
+Custom TLS certificate validation can be attached for pinning or private PKI:
+
+```csharp
+.WithRemoteCertificateValidationCallback((sender, cert, chain, errors) =>
+    errors == SslPolicyErrors.None)
 ```
 
 ### SASL Authentication
@@ -378,4 +405,7 @@ For transactional reads:
 | `WithConnectionsMaxIdle` | 540000ms | Close unused broker connections; `Timeout.InfiniteTimeSpan` disables |
 | `WithConnectionsPerBroker` | 2 | TCP connections per broker |
 | `WithAdaptiveConnections` | enabled (max 4) | Auto-scale connections under load |
+| `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |
+| `WithTcpKeepAlive` | enabled | TCP keepalive; 2m idle, 30s interval, 3 retries |
 | `UseTls` | false | Enable TLS |
+| `WithRemoteCertificateValidationCallback` | null | Custom TLS certificate validation |

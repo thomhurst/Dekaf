@@ -80,6 +80,8 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithRequestTimeout(...)` | `RequestTimeoutMs` | Milliseconds |
 | `WithIdempotence(...)` | `EnableIdempotence` | Boolean |
 | `WithConnectionsMaxIdle(...)` | `ConnectionsMaxIdleMs` | Milliseconds; `-1` disables |
+| `WithConnectionTimeout(...)` | `ConnectionTimeout` | TimeSpan |
+| `WithTcpKeepAlive(...)` | `EnableTcpKeepAlive`, `TcpKeepAliveTime`, `TcpKeepAliveInterval`, `TcpKeepAliveRetryCount` | Socket keepalive |
 | `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
 | `WithTransactionalId(...)` | `TransactionalId` | String |
@@ -88,6 +90,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithCompressionLevel(...)` | `CompressionLevel` | Codec-specific integer |
 | `WithPartitioner(...)` | `Partitioner` | `Default`, `Sticky`, `RoundRobin` |
 | `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
+| `WithRemoteCertificateValidationCallback(...)` | Runtime callback | Custom TLS certificate validation |
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
 | `WithGssapi(...)` | `SaslMechanism`, `GssapiConfig` | Use `SaslMechanism: Gssapi` |
 | `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
@@ -270,6 +273,32 @@ Maximum time an unused broker connection stays open before the client closes it:
 
 The default is 9 minutes, slightly below Kafka's broker-side `connections.max.idle.ms` default of 10 minutes. This lets Dekaf close unused connections first and avoid a request racing a broker idle close.
 
+### WithConnectionTimeout
+
+Maximum time allowed for socket connection setup, including TLS and SASL handshakes:
+
+```csharp
+.WithConnectionTimeout(TimeSpan.FromSeconds(10))
+```
+
+### WithTcpKeepAlive
+
+Enable, disable, or tune TCP keepalive probes:
+
+```csharp
+.WithTcpKeepAlive(false) // Disable keepalive
+.WithTcpKeepAlive(TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), retryCount: 3)
+```
+
+### WithRemoteCertificateValidationCallback
+
+Attach a custom TLS certificate validation callback for pinning or private PKI:
+
+```csharp
+.WithRemoteCertificateValidationCallback((sender, cert, chain, errors) =>
+    errors == SslPolicyErrors.None)
+```
+
 ### WithAdaptiveConnections
 
 Configure adaptive connection scaling. When sustained buffer backpressure is detected, the producer automatically adds connections per broker to increase drain throughput:
@@ -344,6 +373,8 @@ Enable logging:
 | `WithPartitioner` | Default | Partition strategy |
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
 | `WithConnectionsMaxIdle` | 540000ms | Close unused broker connections; `Timeout.InfiniteTimeSpan` disables |
+| `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |
+| `WithTcpKeepAlive` | enabled | TCP keepalive; 2m idle, 30s interval, 3 retries |
 | `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
@@ -353,5 +384,6 @@ Enable logging:
 | `WithSocketSendBufferBytes` | OS default | TCP send buffer size |
 | `WithSocketReceiveBufferBytes` | OS default | TCP receive buffer size |
 | `UseTls` | false | Enable TLS |
+| `WithRemoteCertificateValidationCallback` | null | Custom TLS certificate validation |
 | `WithKeySerializer` | inferred | Key serializer |
 | `WithValueSerializer` | inferred | Value serializer |

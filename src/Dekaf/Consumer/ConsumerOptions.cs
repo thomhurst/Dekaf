@@ -1,3 +1,4 @@
+using System.Net.Security;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
@@ -173,6 +174,32 @@ public sealed class ConsumerOptions
     public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
     /// <summary>
+    /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
+    /// </summary>
+    public TimeSpan ConnectionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Whether to enable TCP keepalive on broker sockets.
+    /// </summary>
+    public bool EnableTcpKeepAlive { get; init; } = true;
+
+    /// <summary>
+    /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
+    /// </summary>
+    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Number of TCP keepalive probes before the connection is considered dead.
+    /// Unsupported platforms ignore this.
+    /// </summary>
+    public int TcpKeepAliveRetryCount { get; init; } = 3;
+
+    /// <summary>
     /// Check CRCs.
     /// </summary>
     public bool CheckCrcs { get; init; }
@@ -187,6 +214,11 @@ public sealed class ConsumerOptions
     /// When set, <see cref="UseTls"/> is automatically enabled.
     /// </summary>
     public TlsConfig? TlsConfig { get; init; }
+
+    /// <summary>
+    /// Custom TLS certificate validation callback.
+    /// </summary>
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
 
     /// <summary>
     /// SASL authentication mechanism.
