@@ -38,6 +38,15 @@ public sealed class InMemoryAdminClient : IAdminClient
         ThrowIfDisposed();
     }
 
+    public ValueTask<IReadOnlyList<ClientMetricsResourceListing>> ListClientMetricsResourcesAsync(
+        ListClientMetricsResourcesOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        return ValueTask.FromResult<IReadOnlyList<ClientMetricsResourceListing>>(Array.Empty<ClientMetricsResourceListing>());
+    }
+
     public ValueTask CreateTopicsAsync(
         IEnumerable<NewTopic> topics,
         CreateTopicsOptions? options = null,

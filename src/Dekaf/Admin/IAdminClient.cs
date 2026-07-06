@@ -23,6 +23,13 @@ public interface IAdminClient : IAsyncDisposable
     void UnregisterMetricFromSubscription(string name);
 
     /// <summary>
+    /// Lists client metrics configuration resources available in the cluster.
+    /// </summary>
+    ValueTask<IReadOnlyList<ClientMetricsResourceListing>> ListClientMetricsResourcesAsync(
+        ListClientMetricsResourcesOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates topics.
     /// </summary>
     ValueTask CreateTopicsAsync(IEnumerable<NewTopic> topics, CreateTopicsOptions? options = null, CancellationToken cancellationToken = default);
@@ -533,6 +540,21 @@ public sealed class ListConsumerGroupsOptions
 {
     public IReadOnlyList<string>? States { get; init; }
     public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Options for ListClientMetricsResources.
+/// </summary>
+public sealed class ListClientMetricsResourcesOptions
+{
+}
+
+/// <summary>
+/// Client metrics configuration resource listing.
+/// </summary>
+public sealed class ClientMetricsResourceListing
+{
+    public required string Name { get; init; }
 }
 
 /// <summary>

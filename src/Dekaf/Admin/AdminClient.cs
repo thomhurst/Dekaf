@@ -127,6 +127,44 @@ public sealed class AdminClient : IAdminClient
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
     }
 
+    public async ValueTask<IReadOnlyList<ClientMetricsResourceListing>> ListClientMetricsResourcesAsync(
+        ListClientMetricsResourcesOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ListClientMetricsResources))
+        {
+            throw new Errors.BrokerVersionException("Broker does not support ListClientMetricsResources (API key 74).");
+        }
+
+        return await WithRetryAsync<IReadOnlyList<ClientMetricsResourceListing>>(async () =>
+        {
+            var connection = await GetAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var request = new ListClientMetricsResourcesRequest();
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListClientMetricsResources,
+                ListClientMetricsResourcesRequest.LowestSupportedVersion,
+                ListClientMetricsResourcesRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<ListClientMetricsResourcesRequest, ListClientMetricsResourcesResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(response.ErrorCode,
+                    $"ListClientMetricsResources failed: {response.ErrorCode}");
+            }
+
+            return response.ClientMetricsResources
+                .Select(static resource => new ClientMetricsResourceListing { Name = resource.Name })
+                .ToList();
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask CreateTopicsAsync(
         IEnumerable<NewTopic> topics,
         CreateTopicsOptions? options = null,

@@ -101,6 +101,43 @@ public sealed class TelemetryProtocolMessageTests
     }
 
     [Test]
+    public async Task ListClientMetricsResourcesRequest_V0_WritesOnlyTaggedFields()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        var request = new ListClientMetricsResourcesRequest();
+
+        request.Write(ref writer, version: 0);
+
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo([(byte)0x00]);
+    }
+
+    [Test]
+    public async Task ListClientMetricsResourcesResponse_V0_ReadsResourceNames()
+    {
+        var data = new List<byte>();
+
+        data.AddRange([0x00, 0x00, 0x00, 0x0A]);
+        data.AddRange([0x00, 0x00]);
+        data.Add(0x03);
+        data.Add(0x05);
+        data.AddRange("prod"u8.ToArray());
+        data.Add(0x00);
+        data.Add(0x0A);
+        data.AddRange("analytics"u8.ToArray());
+        data.Add(0x00);
+        data.Add(0x00);
+
+        var reader = new KafkaProtocolReader(data.ToArray());
+        var response = (ListClientMetricsResourcesResponse)ListClientMetricsResourcesResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(10);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.ClientMetricsResources.Select(static resource => resource.Name))
+            .IsEquivalentTo(["prod", "analytics"]);
+    }
+
+    [Test]
     public async Task TelemetryRequests_UseFlexibleHeaders()
     {
         await Assert.That(GetRequestHeaderVersion<GetTelemetrySubscriptionsRequest, GetTelemetrySubscriptionsResponse>(0))
@@ -110,6 +147,10 @@ public sealed class TelemetryProtocolMessageTests
         await Assert.That(GetRequestHeaderVersion<PushTelemetryRequest, PushTelemetryResponse>(0))
             .IsEqualTo((short)2);
         await Assert.That(GetResponseHeaderVersion<PushTelemetryRequest, PushTelemetryResponse>(0))
+            .IsEqualTo((short)1);
+        await Assert.That(GetRequestHeaderVersion<ListClientMetricsResourcesRequest, ListClientMetricsResourcesResponse>(0))
+            .IsEqualTo((short)2);
+        await Assert.That(GetResponseHeaderVersion<ListClientMetricsResourcesRequest, ListClientMetricsResourcesResponse>(0))
             .IsEqualTo((short)1);
     }
 
