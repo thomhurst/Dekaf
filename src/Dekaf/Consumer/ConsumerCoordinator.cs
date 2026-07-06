@@ -926,7 +926,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? []
             : BuildOwnedTopicPartitions(_assignedPartitions);
 
-        if (ownedTopicPartitions is not null || _assignedPartitions.Count == 0)
+        if (ownedTopicPartitions is not null)
         {
             _cachedOwnedTopicPartitions = ownedTopicPartitions;
             Volatile.Write(ref _cachedOwnedTopicPartitionsVersion, assignmentVersion);

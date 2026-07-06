@@ -182,6 +182,20 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         };
     }
 
+    private static async Task AssertOwnedTopicPartitionsAsync(
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? topicPartitions,
+        Guid topicId,
+        params int[] partitions)
+    {
+        await Assert.That(topicPartitions).IsNotNull();
+        await Assert.That(topicPartitions!).Count().IsEqualTo(1);
+        await Assert.That(topicPartitions![0].TopicId).IsEqualTo(topicId);
+        await Assert.That(topicPartitions![0].Partitions).Count().IsEqualTo(partitions.Length);
+
+        for (var i = 0; i < partitions.Length; i++)
+            await Assert.That(topicPartitions![0].Partitions[i]).IsEqualTo(partitions[i]);
+    }
+
     #region Broker Version Guard
 
     [Test]
@@ -466,14 +480,60 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(requests[0].TopicPartitions).IsNotNull();
         await Assert.That(requests[0].TopicPartitions!).IsEmpty();
 
-        await Assert.That(requests[1].TopicPartitions).IsNotNull();
-        await Assert.That(requests[1].TopicPartitions!).Count().IsEqualTo(1);
-        await Assert.That(requests[1].TopicPartitions![0].TopicId).IsEqualTo(TestTopicId);
-        await Assert.That(requests[1].TopicPartitions![0].Partitions).Count().IsEqualTo(2);
-        await Assert.That(requests[1].TopicPartitions![0].Partitions[0]).IsEqualTo(0);
-        await Assert.That(requests[1].TopicPartitions![0].Partitions[1]).IsEqualTo(1);
+        await AssertOwnedTopicPartitionsAsync(requests[1].TopicPartitions, TestTopicId, 0, 1);
 
         await Assert.That(requests[2].TopicPartitions).IsNull();
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_SteadyHeartbeat_RetriesOwnedPartitionsAfterFailedHeartbeat()
+    {
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                requests.Add(request);
+                var call = requests.Count;
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = call == 2 ? ErrorCode.NotCoordinator : ErrorCode.None,
+                    ErrorMessage = call == 2 ? "Coordinator moved" : null,
+                    MemberId = request.MemberId.Length == 0 ? "member-1" : request.MemberId,
+                    MemberEpoch = request.MemberEpoch == 0 ? 1 : request.MemberEpoch,
+                    HeartbeatIntervalMs = 60000,
+                    Assignment = call == 1 ? CreateAssignment(TestTopicId, 0, 1) : null
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        GroupException? caught = null;
+        try
+        {
+            await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        }
+        catch (GroupException ex)
+        {
+            caught = ex;
+        }
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ErrorCode).IsEqualTo(ErrorCode.NotCoordinator);
+        await Assert.That(requests).Count().IsEqualTo(3);
+        await AssertOwnedTopicPartitionsAsync(requests[1].TopicPartitions, TestTopicId, 0, 1);
+        await AssertOwnedTopicPartitionsAsync(requests[2].TopicPartitions, TestTopicId, 0, 1);
     }
 
     [Test]
