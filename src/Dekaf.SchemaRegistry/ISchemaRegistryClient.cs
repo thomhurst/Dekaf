@@ -132,6 +132,178 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of deleted version numbers.</returns>
     Task<IReadOnlyList<int>> DeleteSubjectAsync(string subject, bool permanent = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists Schema Registry Key Encryption Key (KEK) names.
+    /// </summary>
+    /// <param name="deleted">Whether to include soft-deleted KEKs.</param>
+    /// <param name="offset">Pagination offset.</param>
+    /// <param name="limit">Pagination size.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of KEK names.</returns>
+    Task<IReadOnlyList<string>> GetKekNamesAsync(
+        bool deleted = false,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry KEK operations.");
+
+    /// <summary>
+    /// Registers a Schema Registry Key Encryption Key (KEK).
+    /// </summary>
+    /// <param name="request">KEK registration request.</param>
+    /// <param name="testSharing">Whether Schema Registry should test KEK sharing.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The registered KEK.</returns>
+    Task<Kek> RegisterKekAsync(
+        RegisterKekRequest request,
+        bool testSharing = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry KEK operations.");
+
+    /// <summary>
+    /// Gets a Schema Registry Key Encryption Key (KEK) by name.
+    /// </summary>
+    /// <param name="name">KEK name.</param>
+    /// <param name="deleted">Whether to include soft-deleted KEKs.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The KEK.</returns>
+    Task<Kek> GetKekAsync(
+        string name,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry KEK operations.");
+
+    /// <summary>
+    /// Deletes a Schema Registry Key Encryption Key (KEK).
+    /// </summary>
+    /// <param name="name">KEK name.</param>
+    /// <param name="permanent">Whether to permanently delete the KEK.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteKekAsync(
+        string name,
+        bool permanent = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry KEK operations.");
+
+    /// <summary>
+    /// Lists Data Encryption Key (DEK) subjects for a KEK.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
+    /// <param name="offset">Pagination offset.</param>
+    /// <param name="limit">Pagination size.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of DEK subjects.</returns>
+    Task<IReadOnlyList<string>> GetDekSubjectsAsync(
+        string kekName,
+        bool deleted = false,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Registers a Data Encryption Key (DEK) under a KEK.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="request">DEK registration request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The registered DEK.</returns>
+    Task<Dek> RegisterDekAsync(
+        string kekName,
+        RegisterDekRequest request,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Gets the latest Data Encryption Key (DEK) for a KEK and subject.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="algorithm">Optional DEK algorithm filter.</param>
+    /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The DEK.</returns>
+    Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        DekAlgorithm? algorithm = null,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Gets a Data Encryption Key (DEK) by version.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="version">DEK version.</param>
+    /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The DEK.</returns>
+    Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Lists Data Encryption Key (DEK) versions for a KEK and subject.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="algorithm">Optional DEK algorithm filter.</param>
+    /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
+    /// <param name="offset">Pagination offset.</param>
+    /// <param name="limit">Pagination size.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of DEK versions.</returns>
+    Task<IReadOnlyList<int>> GetDekVersionsAsync(
+        string kekName,
+        string subject,
+        DekAlgorithm? algorithm = null,
+        bool deleted = false,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Deletes all versions of a Data Encryption Key (DEK).
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="algorithm">Optional DEK algorithm filter.</param>
+    /// <param name="permanent">Whether to permanently delete the DEK.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteDekAsync(
+        string kekName,
+        string subject,
+        DekAlgorithm? algorithm = null,
+        bool permanent = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Deletes one version of a Data Encryption Key (DEK).
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="version">DEK version.</param>
+    /// <param name="algorithm">Optional DEK algorithm filter.</param>
+    /// <param name="permanent">Whether to permanently delete the DEK.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteDekVersionAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm? algorithm = null,
+        bool permanent = false,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
 }
 
 /// <summary>
@@ -203,6 +375,196 @@ public sealed class RegisteredSchema
     /// The schema.
     /// </summary>
     public required Schema Schema { get; init; }
+}
+
+/// <summary>
+/// Schema Registry Key Encryption Key (KEK).
+/// </summary>
+public sealed class Kek
+{
+    /// <summary>
+    /// KEK name.
+    /// </summary>
+    public required string Name { get; init; }
+
+    /// <summary>
+    /// KMS provider type, for example aws-kms, azure-kv, or gcp-kms.
+    /// </summary>
+    public required string KmsType { get; init; }
+
+    /// <summary>
+    /// Provider-specific KMS key identifier.
+    /// </summary>
+    public required string KmsKeyId { get; init; }
+
+    /// <summary>
+    /// Provider-specific KMS properties.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? KmsProps { get; init; }
+
+    /// <summary>
+    /// Optional KEK documentation.
+    /// </summary>
+    public string? Doc { get; init; }
+
+    /// <summary>
+    /// Whether this KEK is shared across multiple subjects.
+    /// </summary>
+    public bool Shared { get; init; }
+
+    /// <summary>
+    /// Whether this KEK has been soft-deleted.
+    /// </summary>
+    public bool Deleted { get; init; }
+
+    /// <summary>
+    /// Schema Registry timestamp for this KEK, when returned by the server.
+    /// </summary>
+    public long? Timestamp { get; init; }
+}
+
+/// <summary>
+/// Request used to register a Schema Registry Key Encryption Key (KEK).
+/// </summary>
+public sealed class RegisterKekRequest
+{
+    /// <summary>
+    /// KEK name.
+    /// </summary>
+    public required string Name { get; init; }
+
+    /// <summary>
+    /// KMS provider type, for example aws-kms, azure-kv, or gcp-kms.
+    /// </summary>
+    public required string KmsType { get; init; }
+
+    /// <summary>
+    /// Provider-specific KMS key identifier.
+    /// </summary>
+    public required string KmsKeyId { get; init; }
+
+    /// <summary>
+    /// Provider-specific KMS properties.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? KmsProps { get; init; }
+
+    /// <summary>
+    /// Optional KEK documentation.
+    /// </summary>
+    public string? Doc { get; init; }
+
+    /// <summary>
+    /// Whether this KEK is shared across multiple subjects.
+    /// </summary>
+    public bool? Shared { get; init; }
+
+    /// <summary>
+    /// Whether this KEK should be registered as deleted.
+    /// </summary>
+    public bool? Deleted { get; init; }
+}
+
+/// <summary>
+/// Schema Registry Data Encryption Key (DEK) algorithm.
+/// </summary>
+public enum DekAlgorithm
+{
+    /// <summary>
+    /// Unknown or server-specific algorithm.
+    /// </summary>
+    Unknown,
+
+    /// <summary>
+    /// AES-128 GCM.
+    /// </summary>
+    Aes128Gcm,
+
+    /// <summary>
+    /// AES-256 GCM.
+    /// </summary>
+    Aes256Gcm,
+
+    /// <summary>
+    /// AES-256 SIV.
+    /// </summary>
+    Aes256Siv
+}
+
+/// <summary>
+/// Schema Registry Data Encryption Key (DEK).
+/// </summary>
+public sealed class Dek
+{
+    /// <summary>
+    /// KEK name associated with this DEK.
+    /// </summary>
+    public required string KekName { get; init; }
+
+    /// <summary>
+    /// Subject associated with this DEK.
+    /// </summary>
+    public required string Subject { get; init; }
+
+    /// <summary>
+    /// DEK version.
+    /// </summary>
+    public required int Version { get; init; }
+
+    /// <summary>
+    /// Encryption algorithm used by this DEK.
+    /// </summary>
+    public DekAlgorithm Algorithm { get; init; }
+
+    /// <summary>
+    /// Encrypted DEK material, base64 encoded by Schema Registry.
+    /// </summary>
+    public string? EncryptedKeyMaterial { get; init; }
+
+    /// <summary>
+    /// Raw DEK material when the server returns it.
+    /// </summary>
+    public string? KeyMaterial { get; init; }
+
+    /// <summary>
+    /// Whether this DEK has been soft-deleted.
+    /// </summary>
+    public bool Deleted { get; init; }
+
+    /// <summary>
+    /// Schema Registry timestamp for this DEK, when returned by the server.
+    /// </summary>
+    public long? Timestamp { get; init; }
+}
+
+/// <summary>
+/// Request used to register a Schema Registry Data Encryption Key (DEK).
+/// </summary>
+public sealed class RegisterDekRequest
+{
+    /// <summary>
+    /// Subject associated with this DEK.
+    /// </summary>
+    public required string Subject { get; init; }
+
+    /// <summary>
+    /// Optional explicit DEK version.
+    /// </summary>
+    public int? Version { get; init; }
+
+    /// <summary>
+    /// Optional DEK algorithm. When omitted, Schema Registry chooses its default.
+    /// </summary>
+    public DekAlgorithm? Algorithm { get; init; }
+
+    /// <summary>
+    /// Optional encrypted DEK material.
+    /// </summary>
+    public string? EncryptedKeyMaterial { get; init; }
+
+    /// <summary>
+    /// Whether this DEK should be registered as deleted.
+    /// </summary>
+    public bool? Deleted { get; init; }
 }
 
 /// <summary>

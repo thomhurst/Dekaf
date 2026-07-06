@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -13,6 +14,10 @@ namespace Dekaf.SchemaRegistry;
 [JsonSerializable(typeof(SchemaMetadataDto))]
 [JsonSerializable(typeof(SchemaRuleSetDto))]
 [JsonSerializable(typeof(SchemaRuleDto))]
+[JsonSerializable(typeof(RegisterKekRequestDto))]
+[JsonSerializable(typeof(KekDto))]
+[JsonSerializable(typeof(RegisterDekRequestDto))]
+[JsonSerializable(typeof(DekDto))]
 [JsonSerializable(typeof(CompatibilityResponse))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(List<string>))]
@@ -90,6 +95,50 @@ internal sealed class SchemaRuleDto
     public string? OnSuccess { get; init; }
     public string? OnFailure { get; init; }
     public bool Disabled { get; init; }
+}
+
+internal sealed class RegisterKekRequestDto
+{
+    public required string Name { get; init; }
+    public required string KmsType { get; init; }
+    public required string KmsKeyId { get; init; }
+    public Dictionary<string, string>? KmsProps { get; init; }
+    public string? Doc { get; init; }
+    public bool? Shared { get; init; }
+    public bool? Deleted { get; init; }
+}
+
+internal sealed class KekDto
+{
+    public string? Name { get; init; }
+    public string? KmsType { get; init; }
+    public string? KmsKeyId { get; init; }
+    public Dictionary<string, string>? KmsProps { get; init; }
+    public string? Doc { get; init; }
+    public bool Shared { get; init; }
+    public bool Deleted { get; init; }
+    public JsonElement? Ts { get; init; }
+}
+
+internal sealed class RegisterDekRequestDto
+{
+    public required string Subject { get; init; }
+    public int? Version { get; init; }
+    public string? Algorithm { get; init; }
+    public string? EncryptedKeyMaterial { get; init; }
+    public bool? Deleted { get; init; }
+}
+
+internal sealed class DekDto
+{
+    public string? KekName { get; init; }
+    public string? Subject { get; init; }
+    public int Version { get; init; }
+    public string? Algorithm { get; init; }
+    public string? EncryptedKeyMaterial { get; init; }
+    public string? KeyMaterial { get; init; }
+    public JsonElement? Ts { get; init; }
+    public bool Deleted { get; init; }
 }
 
 internal sealed class CompatibilityResponse

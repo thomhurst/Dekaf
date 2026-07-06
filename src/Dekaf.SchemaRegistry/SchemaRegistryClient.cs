@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Dekaf.Security.Sasl;
 
@@ -105,6 +108,29 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             ? path + "&normalize=true"
             : path + "?normalize=true";
     }
+
+    private static string WithQuery(string path, params (string Name, string? Value)[] parameters)
+    {
+        StringBuilder? builder = null;
+        foreach (var (name, value) in parameters)
+        {
+            if (value is null)
+                continue;
+
+            builder ??= new StringBuilder(path);
+            builder.Append(builder.Length == path.Length ? '?' : '&');
+            builder.Append(Uri.EscapeDataString(name));
+            builder.Append('=');
+            builder.Append(Uri.EscapeDataString(value));
+        }
+
+        return builder?.ToString() ?? path;
+    }
+
+    private static string? BoolQuery(bool value) => value ? "true" : null;
+
+    private static string? IntQuery(int? value) =>
+        value.HasValue ? value.Value.ToString(CultureInfo.InvariantCulture) : null;
 
     private Task<HttpResponseMessage> GetWithFailoverAsync(string path, CancellationToken cancellationToken) =>
         SendWithFailoverAsync(baseUri => _httpClient.GetAsync(new Uri(baseUri, path), cancellationToken), cancellationToken);
@@ -393,6 +419,234 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
+    public async Task<IReadOnlyList<string>> GetKekNamesAsync(
+        bool deleted = false,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                "dek-registry/v1/keks",
+                ("deleted", BoolQuery(deleted)),
+                ("offset", IntQuery(offset)),
+                ("limit", IntQuery(limit))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        return await response.Content.ReadFromJsonAsync<List<string>>(
+            SchemaRegistryJsonContext.Default.ListString, cancellationToken).ConfigureAwait(false) ?? [];
+    }
+
+    public async Task<Kek> RegisterKekAsync(
+        RegisterKekRequest request,
+        bool testSharing = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        using var response = await PostAsJsonWithFailoverAsync(
+            WithQuery("dek-registry/v1/keks", ("testSharing", BoolQuery(testSharing))),
+            ToRegisterKekRequestDto(request),
+            SchemaRegistryJsonContext.Default.RegisterKekRequestDto,
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<KekDto>(
+            SchemaRegistryJsonContext.Default.KekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty KEK response");
+
+        return ToKek(result);
+    }
+
+    public async Task<Kek> GetKekAsync(
+        string name,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(name)}",
+                ("deleted", BoolQuery(deleted))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<KekDto>(
+            SchemaRegistryJsonContext.Default.KekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty KEK response");
+
+        return ToKek(result);
+    }
+
+    public async Task DeleteKekAsync(
+        string name,
+        bool permanent = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await DeleteWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(name)}",
+                ("permanent", BoolQuery(permanent))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<string>> GetDekSubjectsAsync(
+        string kekName,
+        bool deleted = false,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks",
+                ("deleted", BoolQuery(deleted)),
+                ("offset", IntQuery(offset)),
+                ("limit", IntQuery(limit))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        return await response.Content.ReadFromJsonAsync<List<string>>(
+            SchemaRegistryJsonContext.Default.ListString, cancellationToken).ConfigureAwait(false) ?? [];
+    }
+
+    public async Task<Dek> RegisterDekAsync(
+        string kekName,
+        RegisterDekRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        using var response = await PostAsJsonWithFailoverAsync(
+            $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks",
+            ToRegisterDekRequestDto(request),
+            SchemaRegistryJsonContext.Default.RegisterDekRequestDto,
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<DekDto>(
+            SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+
+        return ToDek(result);
+    }
+
+    public async Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        DekAlgorithm? algorithm = null,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("deleted", BoolQuery(deleted))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<DekDto>(
+            SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+
+        return ToDek(result);
+    }
+
+    public async Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}/versions/{version.ToString(CultureInfo.InvariantCulture)}",
+                ("deleted", BoolQuery(deleted))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<DekDto>(
+            SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+
+        return ToDek(result);
+    }
+
+    public async Task<IReadOnlyList<int>> GetDekVersionsAsync(
+        string kekName,
+        string subject,
+        DekAlgorithm? algorithm = null,
+        bool deleted = false,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}/versions",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("deleted", BoolQuery(deleted)),
+                ("offset", IntQuery(offset)),
+                ("limit", IntQuery(limit))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        return await response.Content.ReadFromJsonAsync<List<int>>(
+            SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
+    }
+
+    public async Task DeleteDekAsync(
+        string kekName,
+        string subject,
+        DekAlgorithm? algorithm = null,
+        bool permanent = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await DeleteWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("permanent", BoolQuery(permanent))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteDekVersionAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm? algorithm = null,
+        bool permanent = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await DeleteWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}/versions/{version.ToString(CultureInfo.InvariantCulture)}",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("permanent", BoolQuery(permanent))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
     private static RegisterSchemaRequest CreateRegisterSchemaRequest(Schema schema) => new()
     {
         Schema = schema.SchemaString,
@@ -515,6 +769,53 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         Disabled = rule.Disabled
     };
 
+    private static RegisterKekRequestDto ToRegisterKekRequestDto(RegisterKekRequest request) => new()
+    {
+        Name = request.Name,
+        KmsType = request.KmsType,
+        KmsKeyId = request.KmsKeyId,
+        KmsProps = request.KmsProps?.ToDictionary(
+            static kvp => kvp.Key,
+            static kvp => kvp.Value,
+            StringComparer.Ordinal),
+        Doc = request.Doc,
+        Shared = request.Shared,
+        Deleted = request.Deleted
+    };
+
+    private static Kek ToKek(KekDto dto) => new()
+    {
+        Name = dto.Name ?? string.Empty,
+        KmsType = dto.KmsType ?? string.Empty,
+        KmsKeyId = dto.KmsKeyId ?? string.Empty,
+        KmsProps = dto.KmsProps,
+        Doc = dto.Doc,
+        Shared = dto.Shared,
+        Deleted = dto.Deleted,
+        Timestamp = ReadTimestamp(dto.Ts)
+    };
+
+    private static RegisterDekRequestDto ToRegisterDekRequestDto(RegisterDekRequest request) => new()
+    {
+        Subject = request.Subject,
+        Version = request.Version,
+        Algorithm = FormatDekAlgorithm(request.Algorithm),
+        EncryptedKeyMaterial = request.EncryptedKeyMaterial,
+        Deleted = request.Deleted
+    };
+
+    private static Dek ToDek(DekDto dto) => new()
+    {
+        KekName = dto.KekName ?? string.Empty,
+        Subject = dto.Subject ?? string.Empty,
+        Version = dto.Version,
+        Algorithm = ParseDekAlgorithm(dto.Algorithm),
+        EncryptedKeyMaterial = dto.EncryptedKeyMaterial,
+        KeyMaterial = dto.KeyMaterial,
+        Deleted = dto.Deleted,
+        Timestamp = ReadTimestamp(dto.Ts)
+    };
+
     private static SchemaRule ToRule(SchemaRuleDto rule) => new()
     {
         Name = rule.Name ?? string.Empty,
@@ -574,6 +875,47 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             "WRITEREAD" => SchemaRuleMode.WriteRead,
             _ => SchemaRuleMode.Write
         };
+
+    private static string? FormatDekAlgorithm(DekAlgorithm? algorithm)
+        => algorithm.HasValue ? FormatDekAlgorithm(algorithm.Value) : null;
+
+    private static string FormatDekAlgorithm(DekAlgorithm algorithm)
+        => algorithm switch
+        {
+            DekAlgorithm.Aes128Gcm => "AES128_GCM",
+            DekAlgorithm.Aes256Gcm => "AES256_GCM",
+            DekAlgorithm.Aes256Siv => "AES256_SIV",
+            _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, "Unsupported DEK algorithm.")
+        };
+
+    private static DekAlgorithm ParseDekAlgorithm(string? algorithm)
+        => algorithm?.ToUpperInvariant() switch
+        {
+            "AES128_GCM" => DekAlgorithm.Aes128Gcm,
+            "AES256_GCM" => DekAlgorithm.Aes256Gcm,
+            "AES256_SIV" => DekAlgorithm.Aes256Siv,
+            _ => DekAlgorithm.Unknown
+        };
+
+    private static long? ReadTimestamp(JsonElement? value)
+    {
+        if (!value.HasValue)
+            return null;
+
+        var element = value.Value;
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var timestamp))
+            return timestamp;
+
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty("timestamp", out var timestampElement) &&
+            timestampElement.ValueKind == JsonValueKind.Number &&
+            timestampElement.TryGetInt64(out timestamp))
+        {
+            return timestamp;
+        }
+
+        return null;
+    }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
