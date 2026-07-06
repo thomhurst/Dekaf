@@ -144,7 +144,15 @@ public class RecordAccumulatorReadyTests
             var compressCountBeforeReady = codec.CompressCount;
 
             var readyNodes = new HashSet<int>();
-            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+            var unknownLeadersExist = false;
+            await TestWait.UntilAsync(
+                () =>
+                {
+                    readyNodes.Clear();
+                    (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+                    return readyNodes.Contains(1);
+                },
+                TimeSpan.FromSeconds(5));
 
             await Assert.That(codec.CompressCount).IsEqualTo(compressCountBeforeReady);
             await Assert.That(readyNodes).Contains(1);
