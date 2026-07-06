@@ -636,6 +636,19 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes a compact array with unsigned varint length prefix (flexible format).
+    /// State-passing span overload to avoid list wrappers on hot paths.
+    /// </summary>
+    public void WriteCompactArray<T, TState>(ReadOnlySpan<T> items, WriteAction<T, TState> writeItem, TState state)
+    {
+        WriteUnsignedVarInt(items.Length + 1);
+        foreach (ref readonly var item in items)
+        {
+            writeItem(ref this, item, state);
+        }
+    }
+
+    /// <summary>
     /// Writes a compact nullable array.
     /// State-passing overload to avoid closure allocations.
     /// </summary>
