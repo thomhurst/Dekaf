@@ -26,6 +26,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         """;
 
     [Test]
+    [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
     public async Task JsonSchemaRegistry_ProduceAndConsume_RoundTrips()
     {
         var topic = await testInfra.CreateTestTopicAsync();
@@ -139,6 +140,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
+    [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
     public async Task JsonSchemaRegistry_MultipleMessages_AllRoundTrip()
     {
         var topic = await testInfra.CreateTestTopicAsync();
@@ -200,6 +202,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
+    [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
     public async Task JsonSchemaRegistry_RegistersSchemaInRegistry()
     {
         var topic = $"json-sr-schema-{Guid.NewGuid():N}";
@@ -228,6 +231,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
+    [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
     public async Task JsonSchemaRegistry_CustomJsonOptions_RespectedDuringSerialization()
     {
         var topic = await testInfra.CreateTestTopicAsync();
