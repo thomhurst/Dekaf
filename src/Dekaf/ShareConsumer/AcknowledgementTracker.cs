@@ -98,9 +98,9 @@ internal sealed class AcknowledgementTracker
                 for (var i = 0; i < batch.AcknowledgeTypes.Length; i++)
                 {
                     var offset = batch.FirstOffset + i;
-                    // TryAdd intentionally: preserve any explicit acknowledgement the user set
-                    // after the flush. A newer Acknowledge() call takes priority over re-queued
-                    // stale acks from a failed CommitAsync.
+                    // Preserve any acknowledgement tracked after the flush. A newer
+                    // Acknowledge() call takes priority over stale re-queued acks
+                    // from a failed CommitAsync.
                     if (partitionAcks.ContainsOffset(offset))
                     {
                         if (runStart is not null)
