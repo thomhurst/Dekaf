@@ -6,7 +6,7 @@ sidebar_position: 13
 
 Live benchmark comparisons between Dekaf and Confluent.Kafka, automatically updated on every commit to main.
 
-**Last Updated:** 2026-07-06 00:49 UTC
+**Last Updated:** 2026-07-06 01:10 UTC
 
 :::info
 These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. 
@@ -17,43 +17,43 @@ These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet.
 
 Comparing Dekaf vs Confluent.Kafka for message production across different scenarios.
 
-| Method                  | Categories    | MessageSize | BatchSize | Mean        | Error        | StdDev       | Ratio | RatioSD | Gen0     | Gen1    | Allocated  | Alloc Ratio |
-|------------------------ |-------------- |------------ |---------- |------------:|-------------:|-------------:|------:|--------:|---------:|--------:|-----------:|------------:|
-| **Confluent_ProduceBatch**  | **BatchProduce**  | **100**         | **100**       | **5,882.81 μs** |    **485.05 μs** |    **26.587 μs** |  **1.00** |    **0.01** |        **-** |       **-** |  **106.53 KB** |        **1.00** |
-| Dekaf_ProduceBatch      | BatchProduce  | 100         | 100       | 1,300.19 μs |  1,098.95 μs |    60.237 μs |  0.22 |    0.01 |   1.9531 |       - |   34.68 KB |        0.33 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceBatch**  | **BatchProduce**  | **100**         | **1000**      | **6,991.13 μs** |  **1,404.83 μs** |    **77.004 μs** |  **1.00** |    **0.01** |  **62.5000** | **31.2500** |  **1062.8 KB** |        **1.00** |
-| Dekaf_ProduceBatch      | BatchProduce  | 100         | 1000      | 2,120.77 μs |    321.25 μs |    17.609 μs |  0.30 |    0.00 |  19.5313 |  3.9063 |   339.5 KB |        0.32 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceBatch**  | **BatchProduce**  | **1000**        | **100**       | **6,378.85 μs** |    **188.44 μs** |    **10.329 μs** |  **1.00** |    **0.00** |   **7.8125** |       **-** |  **194.04 KB** |        **1.00** |
-| Dekaf_ProduceBatch      | BatchProduce  | 1000        | 100       | 1,098.20 μs |    241.93 μs |    13.261 μs |  0.17 |    0.00 |        - |       - |   36.31 KB |        0.19 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceBatch**  | **BatchProduce**  | **1000**        | **1000**      | **9,119.33 μs** |    **874.34 μs** |    **47.925 μs** |  **1.00** |    **0.01** | **109.3750** | **46.8750** | **1937.81 KB** |        **1.00** |
-| Dekaf_ProduceBatch      | BatchProduce  | 1000        | 1000      | 5,134.90 μs | 19,143.38 μs | 1,049.313 μs |  0.56 |    0.10 |  15.6250 |       - |  361.69 KB |        0.19 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_FireAndForget** | **FireAndForget** | **100**         | **100**       |   **103.19 μs** |    **168.16 μs** |     **9.217 μs** |  **1.01** |    **0.11** |   **1.9531** |       **-** |   **33.52 KB** |        **1.00** |
-| Dekaf_FireAndForget     | FireAndForget | 100         | 100       |    43.72 μs |    103.91 μs |     5.696 μs |  0.43 |    0.06 |   0.2441 |       - |    8.38 KB |        0.25 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_FireAndForget** | **FireAndForget** | **100**         | **1000**      |   **955.93 μs** |    **593.01 μs** |    **32.505 μs** |  **1.00** |    **0.04** |  **20.5078** |       **-** |  **335.86 KB** |        **1.00** |
-| Dekaf_FireAndForget     | FireAndForget | 100         | 1000      |   740.79 μs |  3,226.84 μs |   176.874 μs |  0.78 |    0.16 |        - |       - |   70.74 KB |        0.21 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_FireAndForget** | **FireAndForget** | **1000**        | **100**       |   **895.29 μs** |  **2,948.65 μs** |   **161.625 μs** |  **1.02** |    **0.22** |   **7.3242** |       **-** |  **122.11 KB** |        **1.00** |
-| Dekaf_FireAndForget     | FireAndForget | 1000        | 100       |   193.60 μs |  1,167.07 μs |    63.971 μs |  0.22 |    0.07 |   0.4883 |       - |   12.17 KB |        0.10 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_FireAndForget** | **FireAndForget** | **1000**        | **1000**      | **8,600.74 μs** | **28,128.46 μs** | **1,541.816 μs** |  **1.02** |    **0.22** |  **74.2188** |       **-** |  **1221.7 KB** |        **1.00** |
-| Dekaf_FireAndForget     | FireAndForget | 1000        | 1000      | 6,541.72 μs | 89,166.36 μs | 4,887.509 μs |  0.78 |    0.52 |   7.8125 |       - |  141.13 KB |        0.12 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceSingle** | **SingleProduce** | **100**         | **100**       | **5,338.60 μs** |     **23.39 μs** |     **1.282 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **1.17 KB** |        **1.00** |
-| Dekaf_ProduceSingle     | SingleProduce | 100         | 100       | 1,090.95 μs |     18.12 μs |     0.993 μs |  0.20 |    0.00 |        - |       - |    1.14 KB |        0.97 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceSingle** | **SingleProduce** | **100**         | **1000**      | **5,346.96 μs** |    **144.18 μs** |     **7.903 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **1.17 KB** |        **1.00** |
-| Dekaf_ProduceSingle     | SingleProduce | 100         | 1000      | 1,314.28 μs |    245.47 μs |    13.455 μs |  0.25 |    0.00 |        - |       - |    1.14 KB |        0.97 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceSingle** | **SingleProduce** | **1000**        | **100**       | **5,337.35 μs** |     **59.77 μs** |     **3.276 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **2.05 KB** |        **1.00** |
-| Dekaf_ProduceSingle     | SingleProduce | 1000        | 100       | 1,308.33 μs |  1,335.01 μs |    73.177 μs |  0.25 |    0.01 |        - |       - |    1.14 KB |        0.56 |
-|                         |               |             |           |             |              |              |       |         |          |         |            |             |
-| **Confluent_ProduceSingle** | **SingleProduce** | **1000**        | **1000**      | **5,342.10 μs** |    **102.63 μs** |     **5.626 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **2.05 KB** |        **1.00** |
-| Dekaf_ProduceSingle     | SingleProduce | 1000        | 1000      | 1,096.82 μs |     56.34 μs |     3.088 μs |  0.21 |    0.00 |        - |       - |    1.14 KB |        0.56 |
+| Method                  | Categories    | MessageSize | BatchSize | Mean         | Error        | StdDev       | Ratio | RatioSD | Gen0     | Gen1    | Allocated  | Alloc Ratio |
+|------------------------ |-------------- |------------ |---------- |-------------:|-------------:|-------------:|------:|--------:|---------:|--------:|-----------:|------------:|
+| **Confluent_ProduceBatch**  | **BatchProduce**  | **100**         | **100**       |  **6,232.39 μs** |    **616.04 μs** |    **33.767 μs** |  **1.00** |    **0.01** |        **-** |       **-** |  **106.53 KB** |        **1.00** |
+| Dekaf_ProduceBatch      | BatchProduce  | 100         | 100       |  1,339.37 μs |    556.63 μs |    30.511 μs |  0.21 |    0.00 |        - |       - |   34.68 KB |        0.33 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceBatch**  | **BatchProduce**  | **100**         | **1000**      |  **7,392.75 μs** |    **517.97 μs** |    **28.392 μs** |  **1.00** |    **0.00** |  **62.5000** | **15.6250** |  **1062.8 KB** |        **1.00** |
+| Dekaf_ProduceBatch      | BatchProduce  | 100         | 1000      |  2,362.90 μs |  1,138.02 μs |    62.379 μs |  0.32 |    0.01 |  15.6250 |       - |   339.4 KB |        0.32 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceBatch**  | **BatchProduce**  | **1000**        | **100**       |  **6,132.65 μs** |    **802.83 μs** |    **44.006 μs** |  **1.00** |    **0.01** |   **7.8125** |       **-** |  **194.04 KB** |        **1.00** |
+| Dekaf_ProduceBatch      | BatchProduce  | 1000        | 100       |  1,431.62 μs |  1,987.39 μs |   108.935 μs |  0.23 |    0.02 |        - |       - |   36.28 KB |        0.19 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceBatch**  | **BatchProduce**  | **1000**        | **1000**      | **12,922.67 μs** |  **1,913.27 μs** |   **104.873 μs** |  **1.00** |    **0.01** | **109.3750** | **46.8750** | **1937.81 KB** |        **1.00** |
+| Dekaf_ProduceBatch      | BatchProduce  | 1000        | 1000      |  7,103.63 μs |  7,199.70 μs |   394.640 μs |  0.55 |    0.03 |  15.6250 |       - |  361.82 KB |        0.19 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_FireAndForget** | **FireAndForget** | **100**         | **100**       |    **138.27 μs** |     **62.29 μs** |     **3.414 μs** |  **1.00** |    **0.03** |   **1.9531** |       **-** |   **33.52 KB** |        **1.00** |
+| Dekaf_FireAndForget     | FireAndForget | 100         | 100       |     68.18 μs |    173.03 μs |     9.484 μs |  0.49 |    0.06 |        - |       - |    7.14 KB |        0.21 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_FireAndForget** | **FireAndForget** | **100**         | **1000**      |  **1,404.33 μs** |    **352.54 μs** |    **19.324 μs** |  **1.00** |    **0.02** |  **19.5313** |       **-** |  **335.86 KB** |        **1.00** |
+| Dekaf_FireAndForget     | FireAndForget | 100         | 1000      |    637.08 μs |    312.67 μs |    17.138 μs |  0.45 |    0.01 |        - |       - |  112.58 KB |        0.34 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_FireAndForget** | **FireAndForget** | **1000**        | **100**       |  **1,123.67 μs** |    **155.13 μs** |     **8.503 μs** |  **1.00** |    **0.01** |   **7.3242** |       **-** |  **122.63 KB** |        **1.00** |
+| Dekaf_FireAndForget     | FireAndForget | 1000        | 100       |    221.70 μs |    151.15 μs |     8.285 μs |  0.20 |    0.01 |   0.9766 |       - |  106.41 KB |        0.87 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_FireAndForget** | **FireAndForget** | **1000**        | **1000**      | **10,336.52 μs** | **27,049.39 μs** | **1,482.669 μs** |  **1.02** |    **0.19** |  **74.2188** |       **-** | **1226.68 KB** |        **1.00** |
+| Dekaf_FireAndForget     | FireAndForget | 1000        | 1000      |  2,272.39 μs |  3,168.12 μs |   173.655 μs |  0.22 |    0.03 |   7.8125 |       - |  973.46 KB |        0.79 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceSingle** | **SingleProduce** | **100**         | **100**       |  **5,463.64 μs** |    **274.66 μs** |    **15.055 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **1.17 KB** |        **1.00** |
+| Dekaf_ProduceSingle     | SingleProduce | 100         | 100       |  1,378.32 μs |    640.12 μs |    35.087 μs |  0.25 |    0.01 |        - |       - |    1.14 KB |        0.97 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceSingle** | **SingleProduce** | **100**         | **1000**      |  **5,454.78 μs** |    **124.83 μs** |     **6.843 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **1.17 KB** |        **1.00** |
+| Dekaf_ProduceSingle     | SingleProduce | 100         | 1000      |  1,353.71 μs |    476.42 μs |    26.114 μs |  0.25 |    0.00 |        - |       - |    1.14 KB |        0.97 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceSingle** | **SingleProduce** | **1000**        | **100**       |  **5,462.63 μs** |     **31.35 μs** |     **1.718 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **2.05 KB** |        **1.00** |
+| Dekaf_ProduceSingle     | SingleProduce | 1000        | 100       |  1,200.86 μs |    165.02 μs |     9.045 μs |  0.22 |    0.00 |        - |       - |    1.14 KB |        0.56 |
+|                         |               |             |           |              |              |              |       |         |          |         |            |             |
+| **Confluent_ProduceSingle** | **SingleProduce** | **1000**        | **1000**      |  **5,465.10 μs** |    **366.14 μs** |    **20.069 μs** |  **1.00** |    **0.00** |        **-** |       **-** |    **2.05 KB** |        **1.00** |
+| Dekaf_ProduceSingle     | SingleProduce | 1000        | 1000      |  1,120.37 μs |     23.82 μs |     1.306 μs |  0.21 |    0.00 |        - |       - |    1.14 KB |        0.56 |
 
 
 ## Consumer Benchmarks
@@ -62,29 +62,29 @@ Comparing Dekaf vs Confluent.Kafka for message consumption.
 
 | Method               | Categories | MessageCount | MessageSize | Mean         | Error     | StdDev    | Ratio | Allocated  | Alloc Ratio |
 |--------------------- |----------- |------------- |------------ |-------------:|----------:|----------:|------:|-----------:|------------:|
-| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **100**         | **3,166.966 ms** |  **1.760 ms** | **0.0965 ms** | **1.000** |   **74.62 KB** |        **1.00** |
-| Dekaf_ConsumeAll     | ConsumeAll | 100          | 100         |    14.529 ms | 29.167 ms | 1.5987 ms | 0.005 |  600.91 KB |        8.05 |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **100**         | **3,169.836 ms** |  **6.920 ms** | **0.3793 ms** | **1.000** |   **74.62 KB** |        **1.00** |
+| Dekaf_ConsumeAll     | ConsumeAll | 100          | 100         |    17.087 ms | 73.903 ms | 4.0509 ms | 0.005 |  600.54 KB |        8.05 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **1000**        | **3,166.586 ms** | **80.641 ms** | **4.4202 ms** | **1.000** |   **250.4 KB** |        **1.00** |
-| Dekaf_ConsumeAll     | ConsumeAll | 100          | 1000        |    11.713 ms | 26.041 ms | 1.4274 ms | 0.004 |  785.45 KB |        3.14 |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **1000**        | **3,168.296 ms** | **66.091 ms** | **3.6227 ms** | **1.000** |   **250.4 KB** |        **1.00** |
+| Dekaf_ConsumeAll     | ConsumeAll | 100          | 1000        |    15.474 ms |  9.921 ms | 0.5438 ms | 0.005 |  785.13 KB |        3.14 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **100**         | **3,164.566 ms** | **32.795 ms** | **1.7976 ms** | **1.000** |  **601.96 KB** |        **1.00** |
-| Dekaf_ConsumeAll     | ConsumeAll | 1000         | 100         |    13.731 ms | 24.553 ms | 1.3458 ms | 0.004 | 1007.27 KB |        1.67 |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **100**         | **3,167.053 ms** | **34.604 ms** | **1.8968 ms** | **1.000** |  **601.96 KB** |        **1.00** |
+| Dekaf_ConsumeAll     | ConsumeAll | 1000         | 100         |    19.241 ms | 88.470 ms | 4.8493 ms | 0.006 | 1001.63 KB |        1.66 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **1000**        | **3,164.164 ms** | **13.997 ms** | **0.7672 ms** | **1.000** |  **2367.6 KB** |        **1.00** |
-| Dekaf_ConsumeAll     | ConsumeAll | 1000         | 1000        |    13.032 ms | 17.083 ms | 0.9364 ms | 0.004 | 2770.33 KB |        1.17 |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **1000**        | **3,165.378 ms** | **16.266 ms** | **0.8916 ms** | **1.000** |  **2367.6 KB** |        **1.00** |
+| Dekaf_ConsumeAll     | ConsumeAll | 1000         | 1000        |    17.192 ms | 24.781 ms | 1.3583 ms | 0.005 | 2771.08 KB |        1.17 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_PollSingle** | **PollSingle** | **100**          | **100**         | **3,156.195 ms** |  **3.736 ms** | **0.2048 ms** | **1.000** |    **2.41 KB** |        **1.00** |
-| Dekaf_PollSingle     | PollSingle | 100          | 100         |     5.545 ms | 32.355 ms | 1.7735 ms | 0.002 |  185.94 KB |       77.27 |
+| **Confluent_PollSingle** | **PollSingle** | **100**          | **100**         | **3,155.276 ms** | **27.083 ms** | **1.4845 ms** | **1.000** |    **2.41 KB** |        **1.00** |
+| Dekaf_PollSingle     | PollSingle | 100          | 100         |     6.054 ms |  3.552 ms | 0.1947 ms | 0.002 |  184.57 KB |       76.70 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_PollSingle** | **PollSingle** | **100**          | **1000**        | **3,156.932 ms** | **21.687 ms** | **1.1887 ms** | **1.000** |    **4.16 KB** |        **1.00** |
-| Dekaf_PollSingle     | PollSingle | 100          | 1000        |     5.268 ms |  9.427 ms | 0.5167 ms | 0.002 |  186.52 KB |       44.79 |
+| **Confluent_PollSingle** | **PollSingle** | **100**          | **1000**        | **3,157.391 ms** | **14.156 ms** | **0.7759 ms** | **1.000** |    **4.16 KB** |        **1.00** |
+| Dekaf_PollSingle     | PollSingle | 100          | 1000        |     5.927 ms |  3.471 ms | 0.1902 ms | 0.002 |  186.54 KB |       44.80 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_PollSingle** | **PollSingle** | **1000**         | **100**         | **3,156.132 ms** |  **9.014 ms** | **0.4941 ms** | **1.000** |    **2.41 KB** |        **1.00** |
-| Dekaf_PollSingle     | PollSingle | 1000         | 100         |     6.218 ms | 25.195 ms | 1.3810 ms | 0.002 |  184.72 KB |       76.77 |
+| **Confluent_PollSingle** | **PollSingle** | **1000**         | **100**         | **3,155.896 ms** | **14.065 ms** | **0.7709 ms** | **1.000** |    **2.41 KB** |        **1.00** |
+| Dekaf_PollSingle     | PollSingle | 1000         | 100         |     6.996 ms |  3.755 ms | 0.2058 ms | 0.002 |  184.75 KB |       76.78 |
 |                      |            |              |             |              |           |           |       |            |             |
-| **Confluent_PollSingle** | **PollSingle** | **1000**         | **1000**        | **3,156.393 ms** |  **8.121 ms** | **0.4452 ms** | **1.000** |    **4.18 KB** |        **1.00** |
-| Dekaf_PollSingle     | PollSingle | 1000         | 1000        |     5.046 ms |  3.771 ms | 0.2067 ms | 0.002 |  187.13 KB |       44.77 |
+| **Confluent_PollSingle** | **PollSingle** | **1000**         | **1000**        | **3,156.514 ms** | **38.425 ms** | **2.1062 ms** | **1.000** |    **4.18 KB** |        **1.00** |
+| Dekaf_PollSingle     | PollSingle | 1000         | 1000        |     6.781 ms | 28.198 ms | 1.5456 ms | 0.002 |  187.27 KB |       44.81 |
 
 
 ## Protocol Benchmarks
@@ -95,42 +95,42 @@ Zero-allocation wire protocol serialization/deserialization.
 **Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!
 :::
 
-| Method                                          | Mean      | Error      | StdDev     | Median    | Allocated |
-|------------------------------------------------ |----------:|-----------:|-----------:|----------:|----------:|
-| &#39;Write 1000 Int32s&#39;                             | 25.755 μs |   1.846 μs |  0.1012 μs | 25.769 μs |         - |
-| &#39;Write 100 Strings (100 chars)&#39;                 | 12.149 μs |   5.541 μs |  0.3037 μs | 12.102 μs |         - |
-| &#39;Write 100 CompactStrings&#39;                      | 10.289 μs |   3.604 μs |  0.1975 μs | 10.229 μs |         - |
-| &#39;Write 1000 VarInts&#39;                            | 26.797 μs |   1.076 μs |  0.0590 μs | 26.820 μs |         - |
-| &#39;Read 1000 Int32s&#39;                              | 10.976 μs |  69.556 μs |  3.8126 μs |  8.825 μs |         - |
-| &#39;Read 1000 VarInts&#39;                             | 20.230 μs |   1.753 μs |  0.0961 μs | 20.247 μs |         - |
-| &#39;Write RecordBatch (10 records)&#39;                | 17.813 μs |   3.753 μs |  0.2057 μs | 17.823 μs |    2416 B |
-| &#39;Write RecordBatch pre-serialized (10 records)&#39; | 26.639 μs | 212.436 μs | 11.6443 μs | 20.037 μs |    2456 B |
-| &#39;Read RecordBatch (10 records)&#39;                 |  4.436 μs |   1.530 μs |  0.0839 μs |  4.479 μs |         - |
-| &#39;Read + Iterate RecordBatch (10 records)&#39;       | 10.460 μs |   7.035 μs |  0.3856 μs | 10.450 μs |         - |
+| Method                                          | Mean      | Error     | StdDev    | Allocated |
+|------------------------------------------------ |----------:|----------:|----------:|----------:|
+| &#39;Write 1000 Int32s&#39;                             | 25.969 μs |  2.946 μs | 0.1615 μs |         - |
+| &#39;Write 100 Strings (100 chars)&#39;                 | 10.050 μs |  2.041 μs | 0.1119 μs |         - |
+| &#39;Write 100 CompactStrings&#39;                      | 10.571 μs |  3.386 μs | 0.1856 μs |         - |
+| &#39;Write 1000 VarInts&#39;                            | 26.877 μs |  3.395 μs | 0.1861 μs |         - |
+| &#39;Read 1000 Int32s&#39;                              | 14.438 μs | 88.393 μs | 4.8451 μs |         - |
+| &#39;Read 1000 VarInts&#39;                             | 20.177 μs |  1.651 μs | 0.0905 μs |         - |
+| &#39;Write RecordBatch (10 records)&#39;                | 20.489 μs | 35.316 μs | 1.9358 μs |    2416 B |
+| &#39;Write RecordBatch pre-serialized (10 records)&#39; | 23.590 μs | 59.824 μs | 3.2791 μs |    2456 B |
+| &#39;Read RecordBatch (10 records)&#39;                 |  5.283 μs |  7.443 μs | 0.4080 μs |         - |
+| &#39;Read + Iterate RecordBatch (10 records)&#39;       | 12.347 μs | 22.535 μs | 1.2352 μs |         - |
 
 
 ## Serializer Benchmarks
 
-| Method                               | Mean        | Error       | StdDev    | Ratio | RatioSD | Allocated | Alloc Ratio |
-|------------------------------------- |------------:|------------:|----------:|------:|--------:|----------:|------------:|
-| &#39;Serialize String (10 chars)&#39;        |  1,419.2 ns |  2,588.6 ns | 141.89 ns |  0.35 |    0.03 |         - |        0.00 |
-| &#39;Serialize String (100 chars)&#39;       |  1,334.2 ns |  2,281.1 ns | 125.03 ns |  0.33 |    0.03 |         - |        0.00 |
-| &#39;Serialize String (1000 chars)&#39;      |  1,368.3 ns |    276.9 ns |  15.18 ns |  0.34 |    0.01 |         - |        0.00 |
-| &#39;Deserialize String&#39;                 |  3,025.0 ns |  3,378.8 ns | 185.20 ns |  0.74 |    0.04 |     224 B |        0.21 |
-| &#39;Serialize Int32&#39;                    |    748.7 ns |    421.3 ns |  23.09 ns |  0.18 |    0.01 |         - |        0.00 |
-| &#39;Serialize 100 Messages (key+value)&#39; | 40,215.3 ns | 10,302.5 ns | 564.71 ns |  9.90 |    0.27 |    3920 B |        3.74 |
-| &#39;ArrayBufferWriter + Copy&#39;           |  4,063.7 ns |  2,114.5 ns | 115.90 ns |  1.00 |    0.03 |    1048 B |        1.00 |
-| &#39;PooledBufferWriter Direct&#39;          |  3,855.2 ns |  1,464.1 ns |  80.25 ns |  0.95 |    0.03 |     536 B |        0.51 |
+| Method                               | Mean        | Error      | StdDev    | Ratio | RatioSD | Allocated | Alloc Ratio |
+|------------------------------------- |------------:|-----------:|----------:|------:|--------:|----------:|------------:|
+| &#39;Serialize String (10 chars)&#39;        |  1,462.7 ns | 5,106.3 ns | 279.90 ns |  0.35 |    0.06 |         - |        0.00 |
+| &#39;Serialize String (100 chars)&#39;       |  1,389.0 ns | 1,630.4 ns |  89.37 ns |  0.34 |    0.02 |         - |        0.00 |
+| &#39;Serialize String (1000 chars)&#39;      |  1,238.0 ns | 1,072.7 ns |  58.80 ns |  0.30 |    0.01 |         - |        0.00 |
+| &#39;Deserialize String&#39;                 |  2,518.7 ns | 1,010.9 ns |  55.41 ns |  0.61 |    0.01 |     224 B |        0.21 |
+| &#39;Serialize Int32&#39;                    |    761.7 ns | 1,269.3 ns |  69.57 ns |  0.18 |    0.01 |         - |        0.00 |
+| &#39;Serialize 100 Messages (key+value)&#39; | 41,357.2 ns | 9,754.2 ns | 534.66 ns |  9.98 |    0.14 |    3920 B |        3.74 |
+| &#39;ArrayBufferWriter + Copy&#39;           |  4,143.7 ns |   690.7 ns |  37.86 ns |  1.00 |    0.01 |    1048 B |        1.00 |
+| &#39;PooledBufferWriter Direct&#39;          |  3,906.7 ns | 2,476.7 ns | 135.76 ns |  0.94 |    0.03 |     536 B |        0.51 |
 
 
 ## Compression Benchmarks
 
 | Method                  | Mean         | Error      | StdDev     | Allocated |
 |------------------------ |-------------:|-----------:|-----------:|----------:|
-| &#39;Snappy Compress 1KB&#39;   |    11.160 μs |   2.007 μs |  0.1100 μs |      48 B |
-| &#39;Snappy Compress 1MB&#39;   |   528.423 μs | 434.218 μs | 23.8010 μs |     768 B |
-| &#39;Snappy Decompress 1KB&#39; |     9.925 μs |   6.163 μs |  0.3378 μs |      80 B |
-| &#39;Snappy Decompress 1MB&#39; | 1,686.159 μs | 286.068 μs | 15.6804 μs |    1280 B |
+| &#39;Snappy Compress 1KB&#39;   |    14.176 μs |   5.039 μs |  0.2762 μs |      48 B |
+| &#39;Snappy Compress 1MB&#39;   |   511.885 μs | 256.177 μs | 14.0419 μs |     768 B |
+| &#39;Snappy Decompress 1KB&#39; |     8.328 μs |   1.173 μs |  0.0643 μs |      80 B |
+| &#39;Snappy Decompress 1MB&#39; | 1,661.131 μs | 161.315 μs |  8.8422 μs |    1280 B |
 
 
 ---
