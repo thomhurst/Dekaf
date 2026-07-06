@@ -90,6 +90,51 @@ public sealed class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task StopAsync_DuringSubscriptionFetch_PreventsLoopStart()
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            subscriptionId: 16,
+            pushIntervalMs: 60000));
+        context.Connection.BlockNextRequest<GetTelemetrySubscriptionsRequest>();
+
+        var startTask = context.Manager.StartAsync().AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+
+        var stopTask = context.Manager.StopAsync(TimeSpan.FromSeconds(2)).AsTask();
+
+        context.Connection.ReleaseBlockedRequest();
+        await startTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await Assert.That(context.Manager.IsStarted).IsFalse();
+        await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DisposeAsync_DuringSubscriptionFetch_DoesNotDisposeStartLockUnderStart()
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            subscriptionId: 17,
+            pushIntervalMs: 60000));
+        context.Connection.BlockNextRequest<GetTelemetrySubscriptionsRequest>();
+
+        var startTask = context.Manager.StartAsync().AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+
+        var disposeTask = context.Manager.DisposeAsync().AsTask();
+
+        context.Connection.ReleaseBlockedRequest();
+        await startTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await Assert.That(context.Manager.IsStarted).IsFalse();
+    }
+
+    [Test]
     public async Task StopAsync_TerminatingPushIncludesApplicationMetrics()
     {
         var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
@@ -397,6 +442,10 @@ public sealed class ClientTelemetryManagerTests
         private readonly ConcurrentQueue<object> _responses = new();
         private readonly ConcurrentQueue<object> _requests = new();
         private readonly SemaphoreSlim _requestSignal = new(0);
+        private readonly object _blockLock = new();
+        private Type? _blockedRequestType;
+        private TaskCompletionSource? _blockedRequestSeen;
+        private TaskCompletionSource? _blockedRequestRelease;
 
         public int BrokerId => 0;
         public string Host => "localhost";
@@ -409,6 +458,39 @@ public sealed class ClientTelemetryManagerTests
 
         public IReadOnlyList<T> RequestsOfType<T>() =>
             _requests.ToArray().OfType<T>().ToArray();
+
+        public void BlockNextRequest<TRequest>()
+        {
+            lock (_blockLock)
+            {
+                _blockedRequestType = typeof(TRequest);
+                _blockedRequestSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _blockedRequestRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        public async Task WaitForBlockedRequestAsync(TimeSpan timeout)
+        {
+            Task waitTask;
+            lock (_blockLock)
+            {
+                waitTask = _blockedRequestSeen?.Task
+                    ?? throw new InvalidOperationException("No blocked request was configured.");
+            }
+
+            await waitTask.WaitAsync(timeout).ConfigureAwait(false);
+        }
+
+        public void ReleaseBlockedRequest()
+        {
+            lock (_blockLock)
+            {
+                _blockedRequestRelease?.TrySetResult();
+                _blockedRequestType = null;
+                _blockedRequestSeen = null;
+                _blockedRequestRelease = null;
+            }
+        }
 
         public async Task<IReadOnlyList<T>> WaitForRequestsAsync<T>(int count, TimeSpan timeout)
         {
@@ -432,7 +514,7 @@ public sealed class ClientTelemetryManagerTests
             }
         }
 
-        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+        public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)
@@ -441,6 +523,24 @@ public sealed class ClientTelemetryManagerTests
         {
             _requests.Enqueue(request);
             _requestSignal.Release();
+
+            TaskCompletionSource? blockedRequestSeen = null;
+            TaskCompletionSource? blockedRequestRelease = null;
+            lock (_blockLock)
+            {
+                if (_blockedRequestType == typeof(TRequest))
+                {
+                    blockedRequestSeen = _blockedRequestSeen;
+                    blockedRequestRelease = _blockedRequestRelease;
+                    _blockedRequestType = null;
+                }
+            }
+
+            if (blockedRequestRelease is not null)
+            {
+                blockedRequestSeen!.TrySetResult();
+                await blockedRequestRelease.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             if (!_responses.TryDequeue(out var response))
             {
@@ -454,7 +554,7 @@ public sealed class ClientTelemetryManagerTests
                 }
             }
 
-            return ValueTask.FromResult((TResponse)response);
+            return (TResponse)response;
         }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(

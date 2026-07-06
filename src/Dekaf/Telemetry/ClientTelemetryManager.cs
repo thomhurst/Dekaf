@@ -105,6 +105,13 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 return;
             }
 
+            if (Volatile.Read(ref _disposed) != 0 ||
+                Volatile.Read(ref _stopped) != 0 ||
+                Volatile.Read(ref _disabled) != 0)
+            {
+                return;
+            }
+
             _subscription = subscription;
             var loopCts = new CancellationTokenSource();
             _loopCts = loopCts;
@@ -129,50 +136,58 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             timeout = DefaultStopTimeout;
         }
 
-        using var timeoutCts = new CancellationTokenSource(timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
-        var stopToken = linkedCts.Token;
-
-        _loopCts?.Cancel();
-
-        var loopTask = _loopTask;
-        if (loopTask is not null)
+        await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            try
-            {
-                await loopTask.WaitAsync(stopToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Shutdown is bounded by stopToken.
-            }
-            catch (Exception ex)
-            {
-                LogTelemetryLoopFailed(ex);
-            }
-        }
+            using var timeoutCts = new CancellationTokenSource(timeout);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
+            var stopToken = linkedCts.Token;
 
-        if (!stopToken.IsCancellationRequested &&
-            Volatile.Read(ref _disabled) == 0 &&
-            _subscription is { } subscription)
+            _loopCts?.Cancel();
+
+            var loopTask = _loopTask;
+            if (loopTask is not null)
+            {
+                try
+                {
+                    await loopTask.WaitAsync(stopToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Shutdown is bounded by stopToken.
+                }
+                catch (Exception ex)
+                {
+                    LogTelemetryLoopFailed(ex);
+                }
+            }
+
+            if (!stopToken.IsCancellationRequested &&
+                Volatile.Read(ref _disabled) == 0 &&
+                _subscription is { } subscription)
+            {
+                try
+                {
+                    _ = await PushTelemetryAsync(subscription, terminating: true, stopToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Shutdown is bounded by stopToken.
+                }
+                catch (Exception ex)
+                {
+                    LogTerminatingPushFailed(ex);
+                }
+            }
+
+            _loopCts?.Dispose();
+            _loopCts = null;
+            _loopTask = null;
+        }
+        finally
         {
-            try
-            {
-                _ = await PushTelemetryAsync(subscription, terminating: true, stopToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Shutdown is bounded by stopToken.
-            }
-            catch (Exception ex)
-            {
-                LogTerminatingPushFailed(ex);
-            }
+            _startLock.Release();
         }
-
-        _loopCts?.Dispose();
-        _loopCts = null;
-        _loopTask = null;
     }
 
     public async ValueTask DisposeAsync()
