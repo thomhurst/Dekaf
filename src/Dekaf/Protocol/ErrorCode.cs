@@ -135,7 +135,13 @@ public enum ErrorCode : short
     DuplicateVoter = 126,
     VoterNotFound = 127,
     InvalidRegularExpression = 128,
-    RebootstrapRequired = 129
+    RebootstrapRequired = 129,
+    StreamsInvalidTopology = 130,
+    StreamsInvalidTopologyEpoch = 131,
+    StreamsTopologyFenced = 132,
+    ShareSessionLimitReached = 133,
+    GroupDeletionFailed = 134,
+    StreamsTopologyDescriptionUpdateFailed = 135
 }
 
 /// <summary>

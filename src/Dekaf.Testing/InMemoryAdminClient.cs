@@ -776,6 +776,46 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(result);
     }
 
+    public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(groupIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = groupIds.ToDictionary(
+            groupId => groupId,
+            groupId => new StreamsGroupDescription
+            {
+                GroupId = groupId,
+                GroupState = "Stable",
+                Members = []
+            },
+            StringComparer.Ordinal);
+
+        return ValueTask.FromResult<IReadOnlyDictionary<string, StreamsGroupDescription>>(result);
+    }
+
+    public ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
+        ListStreamsGroupsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        IReadOnlyList<GroupListing> result = _cluster.ListGroups()
+            .Select(groupId => new GroupListing
+            {
+                GroupId = groupId,
+                ProtocolType = "streams",
+                State = "Stable"
+            })
+            .ToArray();
+
+        return ValueTask.FromResult(result);
+    }
+
     public ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)

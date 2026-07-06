@@ -390,6 +390,20 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes streams groups.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists streams groups across the cluster.
+    /// </summary>
+    ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
+        ListStreamsGroupsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes share groups.
     /// </summary>
     ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(

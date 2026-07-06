@@ -3255,6 +3255,269 @@ public sealed class AdminClient : IAdminClient
 
     private readonly record struct ReplicaLogDirAssignment(TopicPartitionReplica Replica, string LogDir);
 
+    public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var groupIdList = groupIds.ToList();
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupDescription>>(async () =>
+        {
+            var coordinatorTasks = groupIdList
+                .Select(async g => (GroupId: g, CoordinatorId: await FindGroupCoordinatorAsync(g, cancellationToken).ConfigureAwait(false)));
+            var coordinatorResults = await Task.WhenAll(coordinatorTasks).ConfigureAwait(false);
+
+            var groupsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var (groupId, coordinatorId) in coordinatorResults)
+            {
+                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
+                {
+                    groups = [];
+                    groupsByCoordinator[coordinatorId] = groups;
+                }
+                groups.Add(groupId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.StreamsGroupDescribe,
+                StreamsGroupDescribeRequest.LowestSupportedVersion,
+                StreamsGroupDescribeRequest.HighestSupportedVersion);
+
+            var describeResponses = await Task.WhenAll(groupsByCoordinator.Select(async kvp =>
+            {
+                var connection = await _connectionPool.GetConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
+
+                var request = new StreamsGroupDescribeRequest
+                {
+                    GroupIds = kvp.Value,
+                    IncludeAuthorizedOperations = true
+                };
+
+                return await connection.SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            })).ConfigureAwait(false);
+
+            var result = new Dictionary<string, StreamsGroupDescription>();
+
+            foreach (var response in describeResponses)
+            {
+                foreach (var group in response.Groups)
+                {
+                    if (group.ErrorCode != Protocol.ErrorCode.None)
+                    {
+                        throw new Errors.GroupException(group.ErrorCode,
+                            $"DescribeStreamsGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                        {
+                            GroupId = group.GroupId
+                        };
+                    }
+
+                    result[group.GroupId] = MapStreamsGroupDescription(group);
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
+        ListStreamsGroupsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new ListStreamsGroupsOptions();
+
+        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
+        {
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new InvalidOperationException("No brokers available");
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListGroups,
+                ListGroupsRequest.LowestSupportedVersion,
+                ListGroupsRequest.HighestSupportedVersion);
+
+            var request = new ListGroupsRequest
+            {
+                StatesFilter = apiVersion >= 4 ? opts.States : null,
+                TypesFilter = apiVersion >= 5 ? ["streams"] : null
+            };
+
+            var responses = await Task.WhenAll(brokers.Select(async broker =>
+            {
+                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+
+                var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"ListStreamsGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
+                }
+
+                return response;
+            })).ConfigureAwait(false);
+
+            var seenGroupIds = new HashSet<string>();
+            var result = new List<GroupListing>();
+
+            foreach (var response in responses)
+            {
+                foreach (var group in response.Groups)
+                {
+                    if (apiVersion < 5 || !string.Equals(group.GroupType, "streams", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (!seenGroupIds.Add(group.GroupId))
+                        continue;
+
+                    if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
+                    {
+                        if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
+                            continue;
+                    }
+
+                    result.Add(new GroupListing
+                    {
+                        GroupId = group.GroupId,
+                        ProtocolType = group.ProtocolType,
+                        State = group.GroupState
+                    });
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static StreamsGroupDescription MapStreamsGroupDescription(StreamsGroupDescribeGroup group)
+    {
+        return new StreamsGroupDescription
+        {
+            GroupId = group.GroupId,
+            GroupState = group.GroupState,
+            GroupEpoch = group.GroupEpoch,
+            AssignmentEpoch = group.AssignmentEpoch,
+            Topology = MapStreamsGroupTopology(group.Topology),
+            Members = group.Members.Select(MapStreamsGroupMember).ToList(),
+            AuthorizedOperations = group.AuthorizedOperations
+        };
+    }
+
+    private static StreamsGroupTopology? MapStreamsGroupTopology(StreamsGroupDescribeTopology? topology)
+    {
+        if (topology is null)
+        {
+            return null;
+        }
+
+        return new StreamsGroupTopology
+        {
+            Epoch = topology.Epoch,
+            Subtopologies = topology.Subtopologies?.Select(MapStreamsGroupSubtopology).ToList()
+        };
+    }
+
+    private static StreamsGroupSubtopology MapStreamsGroupSubtopology(StreamsGroupDescribeSubtopology subtopology)
+    {
+        return new StreamsGroupSubtopology
+        {
+            SubtopologyId = subtopology.SubtopologyId,
+            SourceTopics = subtopology.SourceTopics,
+            RepartitionSinkTopics = subtopology.RepartitionSinkTopics,
+            StateChangelogTopics = subtopology.StateChangelogTopics.Select(MapStreamsGroupTopicInfo).ToList(),
+            RepartitionSourceTopics = subtopology.RepartitionSourceTopics.Select(MapStreamsGroupTopicInfo).ToList()
+        };
+    }
+
+    private static StreamsGroupTopicInfo MapStreamsGroupTopicInfo(StreamsGroupDescribeTopicInfo topic)
+    {
+        return new StreamsGroupTopicInfo
+        {
+            Name = topic.Name,
+            Partitions = topic.Partitions,
+            ReplicationFactor = topic.ReplicationFactor,
+            TopicConfigs = topic.TopicConfigs.Select(MapStreamsGroupKeyValue).ToList()
+        };
+    }
+
+    private static StreamsGroupMemberDescription MapStreamsGroupMember(StreamsGroupDescribeMember member)
+    {
+        return new StreamsGroupMemberDescription
+        {
+            MemberId = member.MemberId,
+            MemberEpoch = member.MemberEpoch,
+            InstanceId = member.InstanceId,
+            RackId = member.RackId,
+            ClientId = member.ClientId,
+            ClientHost = member.ClientHost,
+            TopologyEpoch = member.TopologyEpoch,
+            ProcessId = member.ProcessId,
+            UserEndpoint = member.UserEndpoint is null
+                ? null
+                : new StreamsGroupEndpoint
+                {
+                    Host = member.UserEndpoint.Host,
+                    Port = member.UserEndpoint.Port
+                },
+            ClientTags = member.ClientTags.Select(MapStreamsGroupKeyValue).ToList(),
+            TaskOffsets = member.TaskOffsets.Select(MapStreamsGroupTaskOffset).ToList(),
+            TaskEndOffsets = member.TaskEndOffsets.Select(MapStreamsGroupTaskOffset).ToList(),
+            Assignment = MapStreamsGroupAssignment(member.Assignment),
+            TargetAssignment = MapStreamsGroupAssignment(member.TargetAssignment),
+            IsClassic = member.IsClassic
+        };
+    }
+
+    private static StreamsGroupKeyValue MapStreamsGroupKeyValue(StreamsGroupDescribeKeyValue keyValue)
+    {
+        return new StreamsGroupKeyValue
+        {
+            Key = keyValue.Key,
+            Value = keyValue.Value
+        };
+    }
+
+    private static StreamsGroupTaskOffset MapStreamsGroupTaskOffset(StreamsGroupDescribeTaskOffset taskOffset)
+    {
+        return new StreamsGroupTaskOffset
+        {
+            SubtopologyId = taskOffset.SubtopologyId,
+            Partition = taskOffset.Partition,
+            Offset = taskOffset.Offset
+        };
+    }
+
+    private static StreamsGroupMemberAssignment MapStreamsGroupAssignment(StreamsGroupDescribeAssignment assignment)
+    {
+        return new StreamsGroupMemberAssignment
+        {
+            ActiveTasks = assignment.ActiveTasks.Select(MapStreamsGroupTaskIds).ToList(),
+            StandbyTasks = assignment.StandbyTasks.Select(MapStreamsGroupTaskIds).ToList(),
+            WarmupTasks = assignment.WarmupTasks.Select(MapStreamsGroupTaskIds).ToList()
+        };
+    }
+
+    private static StreamsGroupTaskIds MapStreamsGroupTaskIds(StreamsGroupDescribeTaskIds taskIds)
+    {
+        return new StreamsGroupTaskIds
+        {
+            SubtopologyId = taskIds.SubtopologyId,
+            Partitions = taskIds.Partitions
+        };
+    }
+
     public async ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
