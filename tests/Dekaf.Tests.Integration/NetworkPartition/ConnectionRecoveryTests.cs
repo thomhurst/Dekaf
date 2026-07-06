@@ -8,7 +8,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 /// </summary>
 [Category("NetworkPartition")]
 [NotInParallel("NetworkPartitionKafkaContainer")]
-[ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerClass)]
+[ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerTestSession)]
 public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
 {
     [Test]
