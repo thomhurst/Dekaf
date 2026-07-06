@@ -378,6 +378,26 @@ public class PoolSizingTests
 
     [Test]
     [NotInParallel("DekafPools")]
+    public async Task SerializationBuffers_AboveLegacyFourMbCap_ReusesReturnedArray()
+    {
+        const int sizeAboveLegacyCap = 5 * 1024 * 1024;
+
+        var first = DekafPools.SerializationBuffers.Rent(sizeAboveLegacyCap);
+        DekafPools.SerializationBuffers.Return(first, clearArray: false);
+
+        var second = DekafPools.SerializationBuffers.Rent(sizeAboveLegacyCap);
+        try
+        {
+            await Assert.That(second).IsSameReferenceAs(first);
+        }
+        finally
+        {
+            DekafPools.SerializationBuffers.Return(second, clearArray: false);
+        }
+    }
+
+    [Test]
+    [NotInParallel("DekafPools")]
     public async Task SerializationBuffers_RatchetUp_ReplacesPool()
     {
         // This test must use the HIGHEST values across all DekafPools tests
