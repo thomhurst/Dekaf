@@ -7,7 +7,7 @@
 
   <PropertyGroup Condition="'$(PublishAot)' == 'true'">
     <!-- Full integration publish roots tests that intentionally exercise reflection-based APIs. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2026;IL3050</WarningsNotAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2026;IL2104;IL3050;IL3053</WarningsNotAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
