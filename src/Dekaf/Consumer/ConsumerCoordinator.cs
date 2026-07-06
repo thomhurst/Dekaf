@@ -50,6 +50,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
+    private GroupException? _fatalHeartbeatException;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -165,6 +166,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        ThrowIfFatalHeartbeatException();
+
         if (_state == CoordinatorState.Stable && SubscriptionMatches(topics, subscribedTopicRegex))
             return;
 
@@ -187,6 +190,36 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         errorCode is ErrorCode.NotCoordinator
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
+
+    private async ValueTask StoreFatalHeartbeatExceptionAsync(GroupException exception)
+    {
+        Interlocked.CompareExchange(ref _fatalHeartbeatException, exception, null);
+
+        try
+        {
+            await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            _state = CoordinatorState.Unjoined;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private void ThrowIfFatalHeartbeatException()
+    {
+        var exception = Interlocked.Exchange(ref _fatalHeartbeatException, null);
+        if (exception is not null)
+            throw exception;
+    }
 
     private static bool SetEquals(StringSet? current, StringSet next)
     {
@@ -962,6 +995,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ThrowIfFatalHeartbeatException();
+
             if (_state == CoordinatorState.Stable)
                 return;
 
@@ -1123,7 +1158,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             break;
 
                         default:
-                            continue; // Unrecognized group error — continue heartbeating
+                            await StoreFatalHeartbeatExceptionAsync(ge).ConfigureAwait(false);
+                            break;
                     }
 
                     break;

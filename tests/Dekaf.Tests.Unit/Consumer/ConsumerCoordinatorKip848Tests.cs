@@ -966,6 +966,73 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [Arguments(ErrorCode.GroupAuthorizationFailed)]
+    [Arguments(ErrorCode.InvalidGroupId)]
+    public async Task ConsumerProtocol_FatalGroupErrorDuringHeartbeat_PropagatesOnNextEnsureActiveGroup(
+        ErrorCode errorCode)
+    {
+        SetupFindCoordinator();
+
+        var callCount = 0;
+        var fatalHeartbeatReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+
+                if (count == 1)
+                {
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-1",
+                        MemberEpoch = 5,
+                        HeartbeatIntervalMs = 100
+                    });
+                }
+
+                fatalHeartbeatReturned.TrySetResult();
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = errorCode,
+                    ErrorMessage = "fatal group error",
+                    HeartbeatIntervalMs = 60000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 100);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+
+        await fatalHeartbeatReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await TestWait.UntilAsync(
+            () => coordinator.State == CoordinatorState.Unjoined,
+            TimeSpan.FromSeconds(5));
+
+        GroupException? caught = null;
+        try
+        {
+            await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        }
+        catch (GroupException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(caught.GroupId).IsEqualTo("test-group");
+        await Assert.That(callCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_UnknownMemberId_InJoinPath_ResetsAndRetries()
     {
         SetupFindCoordinator();
