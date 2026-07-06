@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
@@ -114,7 +115,7 @@ public sealed class AvroSchemaRegistryDeserializer<
         // Get writer schema from registry (cached with lazy initialization)
         var writerSchema = GetWriterSchemaCached(schemaId);
 
-        // Extract Avro payload using pooled buffer to avoid allocation
+        // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
         var payloadMemory = data.Slice(5);
         if (_config.RuleExecutor is not null)
         {
@@ -131,15 +132,35 @@ public sealed class AvroSchemaRegistryDeserializer<
                 });
         }
 
-        var payload = payloadMemory.Span;
         var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
-        var memoryStream = codecState.Stream;
-        var rentedBuffer = ArrayPool<byte>.Shared.Rent(payload.Length);
+        return ReadAvroPayload(payloadMemory, writerSchema, codecState);
+    }
 
+    private T ReadAvroPayload(
+        ReadOnlyMemory<byte> payloadMemory,
+        AvroSchema writerSchema,
+        AvroDeserializationThreadState codecState)
+    {
+        var memoryStream = codecState.Stream;
+
+        if (MemoryMarshal.TryGetArray(payloadMemory, out var segment) && segment.Array is not null)
+        {
+            memoryStream.Reset(segment.Array, segment.Offset, segment.Count);
+            try
+            {
+                return ReadAvroValue(writerSchema, codecState.Decoder);
+            }
+            finally
+            {
+                memoryStream.DetachBuffer();
+            }
+        }
+
+        var payload = payloadMemory.Span;
+        var rentedBuffer = ArrayPool<byte>.Shared.Rent(payload.Length);
         try
         {
             payload.CopyTo(rentedBuffer);
-
             memoryStream.Reset(rentedBuffer, payload.Length);
 
             return ReadAvroValue(writerSchema, codecState.Decoder);
