@@ -20,10 +20,13 @@ public class ConsumerBenchmarks
     private Confluent.Kafka.IProducer<string, string> _confluentProducer = null!;
 
     private const string TopicPrefix = "benchmark-consumer-";
+    private const int PollSingleWarmupMessages = 1;
+    private static readonly TimeSpan PollSingleTimeout = TimeSpan.FromSeconds(10);
+
     private string _topic = null!;
     private int _topicCounter;
 
-    // Pre-created consumers for PollSingle benchmarks (created in IterationSetup, disposed in IterationCleanup)
+    // Pre-created and primed consumers for warm PollSingle benchmarks.
     private Confluent.Kafka.IConsumer<string, string>? _confluentPollConsumer;
     private DekafConsumer.IKafkaConsumer<string, string>? _dekafPollConsumer;
 
@@ -46,13 +49,14 @@ public class ConsumerBenchmarks
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
     }
 
-    private void SeedTopic()
+    private void SeedTopic(int extraMessages = 0)
     {
         _topic = $"{TopicPrefix}{++_topicCounter}-{MessageCount}-{MessageSize}";
         _kafka.CreateTopicAsync(_topic, 1).GetAwaiter().GetResult();
 
         var value = new string('x', MessageSize);
-        for (var i = 0; i < MessageCount; i++)
+        var totalMessages = MessageCount + extraMessages;
+        for (var i = 0; i < totalMessages; i++)
         {
             _confluentProducer.Produce(_topic, new Confluent.Kafka.Message<string, string>
             {
@@ -69,9 +73,8 @@ public class ConsumerBenchmarks
     [IterationSetup(Targets = [nameof(Confluent_PollSingle), nameof(Dekaf_PollSingle)])]
     public void PollSingleIterationSetup()
     {
-        SeedTopic();
+        SeedTopic(PollSingleWarmupMessages);
 
-        // Pre-create consumers so PollSingle benchmarks only measure the actual poll
         _confluentPollConsumer = new Confluent.Kafka.ConsumerBuilder<string, string>(
             new Confluent.Kafka.ConsumerConfig
             {
@@ -91,6 +94,9 @@ public class ConsumerBenchmarks
             .GetAwaiter()
             .GetResult();
         _dekafPollConsumer.Subscribe(_topic);
+
+        PrimeConfluentPollConsumer();
+        PrimeDekafPollConsumer().GetAwaiter().GetResult();
     }
 
     [IterationCleanup(Targets = [nameof(Confluent_PollSingle), nameof(Dekaf_PollSingle)])]
@@ -179,13 +185,31 @@ public class ConsumerBenchmarks
     [Benchmark(Baseline = true)]
     public Confluent.Kafka.ConsumeResult<string, string>? Confluent_PollSingle()
     {
-        return _confluentPollConsumer!.Consume(TimeSpan.FromSeconds(10));
+        return _confluentPollConsumer!.Consume(PollSingleTimeout);
     }
 
     [BenchmarkCategory("PollSingle")]
     [Benchmark]
     public async Task<DekafConsumer.ConsumeResult<string, string>?> Dekaf_PollSingle()
     {
-        return await _dekafPollConsumer!.ConsumeOneAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        return await _dekafPollConsumer!.ConsumeOneAsync(PollSingleTimeout).ConfigureAwait(false);
+    }
+
+    private void PrimeConfluentPollConsumer()
+    {
+        var result = _confluentPollConsumer!.Consume(PollSingleTimeout);
+        if (result is null)
+        {
+            throw new InvalidOperationException("Confluent poll consumer did not receive a warmup message.");
+        }
+    }
+
+    private async Task PrimeDekafPollConsumer()
+    {
+        var result = await _dekafPollConsumer!.ConsumeOneAsync(PollSingleTimeout).ConfigureAwait(false);
+        if (result is null)
+        {
+            throw new InvalidOperationException("Dekaf poll consumer did not receive a warmup message.");
+        }
     }
 }
