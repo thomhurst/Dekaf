@@ -489,6 +489,108 @@ No issues found, though this silently swallows the exception.
         Blocks = $true
     },
     @{
+        Name = 'blocks positive heading verdict followed by design risk'
+        Body = @'
+## Review
+
+### Correctness - Looks good, though this is a design risk for concurrent readers.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks positive heading verdict followed by release blocker'
+        Body = @'
+## Review
+
+### Correctness - Looks good, but this is a blocker for release.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks positive heading verdict followed by coverage gap'
+        Body = @'
+## Review
+
+### Correctness - No issues found, but this leaves a test coverage gap.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks positive paragraph followed by FIXME crash'
+        Body = @'
+## Review
+
+### Correctness
+Looks good overall and the refactor is clean.
+FIXME this crashes on empty input.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks trailing no-concerns after finding'
+        Body = @'
+## Review
+
+### Correctness
+This skips validation entirely for negative offsets, no concerns.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks leaking inflection after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found, though the connection pool is leaking sockets under load.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks allocate base verb after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found, but this will allocate per message in the hot path.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks hanging inflection after positive opener'
+        Body = @'
+## Review
+
+### Correctness
+No bugs found, but the shutdown path is hanging under cancellation.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'allows live protocol clean review shape'
+        Body = @'
+## Review
+
+### Correctness / Security
+No bugs found. `ValidateReadableLength` is invoked before every allocation site touched by this PR, including branches that previously had no bounds check at all. Confirmed the boundary condition is correct and there is no overflow risk.
+
+### Design / CLAUDE.md compliance
+`ValidateReadableLength` is a small, allocation-free helper reused consistently across every call site.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'allows live admin compliance clean review shape'
+        Body = @'
+## Review
+
+### CLAUDE.md compliance
+- `ConfigureAwait(false)` is used consistently on all new/modified `await` calls in `src/`.
+- This is admin/control-plane code, not a hot path per the project's performance guidelines, so the zero-allocation rules don't apply here — no concerns.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'blocks category parenthetical finding'
         Body = @'
 ## Review
@@ -645,6 +747,12 @@ The finding remains open.
         Blocks = $true
     }
 )
+
+$cases += @{
+    Name = 'blocks long resolved-like heading without catastrophic backtracking'
+    Body = "## Review`n`n### $(('x' * 54000)) issue fixed"
+    Blocks = $true
+}
 
 $positivePrefixes = @(
     'No bugs found.'

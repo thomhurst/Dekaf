@@ -9,9 +9,9 @@ function Get-ActionableReviewBodyReason {
     }
 
     $previouslyResolvedHeading =
-        'previously[- ]flagged\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun(?:fixed|resolved|addressed|verified|handled)\b).)*\b(?:fixed|resolved|addressed|verified)\b\s*$'
+        '(?=.{1,300}\s*$)previously[- ]flagged\b(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fixed|resolved|addressed|verified)\b)[^\r\n]*\s*$'
     $resolvedFindingHeading =
-        '(?:(?:fix|change|commit|follow[- ]up)\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun(?:fixed|resolved|addressed|verified|handled)\b).)*\b(?:fix(?:es|ed)?|resolves?|resolved|addresses?|addressed)\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun(?:fixed|resolved|addressed|verified|handled)\b).)*\b(?:issues?|bugs?|findings?|concerns?|regressions?)|(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun(?:fixed|resolved|addressed|verified|handled)\b).)*\b(?:issues?|bugs?|findings?|concerns?|regressions?)\b(?:(?!\bnot\b|\bnever\b|\bstill\b|\bun(?:fixed|resolved|addressed|verified|handled)\b).)*\b(?:fixed|resolved|addressed|verified)\b(?:\s+in\s+`?[\w]+`?)?)\s*$'
+        '(?=.{1,300}\s*$)(?![^\r\n]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[^\r\n]*\b(?:fix|fix(?:es|ed)?|change|commit|follow[- ]up|resolves?|resolved|addresses?|addressed|verified)\b)(?=[^\r\n]*\b(?:issues?|bugs?|findings?|concerns?|regressions?)\b)[^\r\n]*\s*$'
     $nonActionableHeading =
         '(?:\d+\.\s+)?(?:minor|optional|nit|non[- ]blocking)\b' +
         '|not\s+a\s+regression\b(?:,\s+just\s+noting\s+scope)?\s*$' +
@@ -24,10 +24,10 @@ function Get-ActionableReviewBodyReason {
     $noCategoryFindings =
         '\bno\s+(?:\w+\s+){0,5}(?:bugs?|issues?|concerns?|blockers?|findings?|problems?)\b(?:\s+(?:found|detected|identified|seen|remain|remaining))?'
     $positiveVerdictDefect =
-        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|broken|leaks?|race|corrupt(?:s|ion)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hangs?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|real\s+bug|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
+        '(?<!not\s)incorrect(?:ly)?|(?<!not\s)(?<!nothing\s)wrong|miss(?:es|ing)?|deadlocks?|will\s+throw|crash(?:es|ing|ed)?|fixme|nullreferenceexception|box(?:es|ing|ed)?|allocat(?:es|ing|ed)|will\s+allocate|allocate\s+per|(?:per[- ]message|array)\s+(?:\w+\s+){0,3}allocations?|off[- ]by[- ]one|still\s+broken|remains?\s+broken|is\s+broken|leak(?:s|ing|ed)?|race|corrupt(?:s|ion|ed|ing)?|vulnerabilit(?:y|ies)|vulnerable|insecure|injection|hardcoded|guessable|session\s+token|stack\s+overflow|hang(?:s|ing)?|forever|infinite\s+loop|use[- ]after[- ]free|double[- ]free|(?<!no\s)data\s+loss|silent(?:ly)?\s+drops?(?:\s+\w+){0,2}\s+messages?|skip(?:s|ped|ping)?\s+validation|design\s+risk|risk\s+(?:for|of)|real\s+concerns?|concerns?\s+about|(?:test\s+)?coverage\s+gap|(?<!no\s)(?<!non[- ])block(?:er|ing)|fix\s+is\s+required|required\s+fix|required\s+before|real\s+(?:bug|issue)|edge\s+case|not\s+(?:thread[- ]safe|safe|correct|fixed|resolved|addressed|scoped)'
     $positiveVerdictBlocker = '\b(?:' + $positiveVerdictDefect + ')\b'
     $positiveVerdictContinuationDefect =
-        "$positiveVerdictDefect|(?<!not\s+a\s)(?<!no\s)regressions?|duplicat(?:ed|es|ing|ion)|swallow(?:s|ed|ing)?"
+        "$positiveVerdictDefect|(?<!not\s+a\s)(?<!no\s)regressions?(?!\s+(?:coverage|tests?|risk))|now\s+duplicated|(?<!used\s+to\s+be\s)(?<!previously\s)duplicated\s+across|duplicates?\s+logic|duplication\s+of|swallow(?:s|ed|ing)?"
     $positiveVerdictContinuationBlocker =
         '\b(?:' + $positiveVerdictContinuationDefect + ')\b'
     $positiveVerdictAlternatives = @(
@@ -35,8 +35,8 @@ function Get-ActionableReviewBodyReason {
         'looks?\s+(?:right|good)(?:[\s\S]*)?'
         'verified(?:\s+against\b[\s\S]*)?'
         'confirmed\b(?:[\s\S]*)?'
-        '(?:[\s\S]*\b)?no\s+concerns\b(?:[\s\S]*)?'
-        '(?:[\s\S]*\b)?configureawait\(false\)(?:[\s\S]*\b)?used\s+consistently(?:[\s\S]*)?'
+        'no\s+concerns\b(?:[\s\S]*)?'
+        '`?configureawait\(false\)`?(?:[\s\S]*\b)?used\s+consistently(?:[\s\S]*)?'
         '(?:the\s+)?core\s+fix\s+is\s+(?:sound|correct)(?:[\s\S]*)?'
         'genuine\s+improvement,\s+not\s+just\s+churn(?:[\s\S]*)?'
         'fix\s+is\s+scoped(?:\s+to\b[\s\S]*)?'
