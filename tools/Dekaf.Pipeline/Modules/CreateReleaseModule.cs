@@ -15,9 +15,10 @@ namespace Dekaf.Pipeline.Modules;
 /// actually shipped packages in this run.
 /// </summary>
 /// <remarks>
-/// The release is tagged <c>v{version}</c>. Versioning counts commit height from the repository
-/// root (see <see cref="GenerateVersionModule"/>), so these release tags do not feed back into and
-/// corrupt the computed version.
+/// The release is tagged <c>v{version}</c> with the version GitVersion computed (see
+/// <see cref="GenerateVersionModule"/>). These tags are GitVersion's version sources: each one lets
+/// the next commit on main advance the patch, so every publish gets a fresh, unique version. Because
+/// of that, a publish must always create its tag — see the uniqueness note in GenerateVersionModule.
 /// </remarks>
 [RunOnlyOnBranch("main")]
 [DependsOn<UploadToNuGetModule>(Optional = true)]
