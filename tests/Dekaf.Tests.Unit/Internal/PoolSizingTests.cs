@@ -115,6 +115,17 @@ public class PoolSizingTests
         await Assert.That(sizes.InflightEntries).IsLessThanOrEqualTo(16384);
     }
 
+    [Test]
+    public async Task ForProducer_PathologicalMaxInFlight_ClampsPendingAppendsWithoutOverflow()
+    {
+        var sizes = PoolSizing.ForProducer(
+            bufferMemory: 256UL * 1024 * 1024,
+            batchSize: 1024 * 1024,
+            maxInFlightRequestsPerConnection: int.MaxValue);
+
+        await Assert.That(sizes.PendingAppends).IsEqualTo(1024);
+    }
+
     // --- ForConnection tests ---
 
     [Test]
@@ -139,6 +150,15 @@ public class PoolSizingTests
         var sizes = PoolSizing.ForConnection(maxInFlightRequestsPerConnection: 500);
 
         await Assert.That(sizes.PendingRequests).IsLessThanOrEqualTo(1024);
+    }
+
+    [Test]
+    public async Task ForConnection_PathologicalMaxInFlight_ClampsWithoutOverflow()
+    {
+        var sizes = PoolSizing.ForConnection(maxInFlightRequestsPerConnection: int.MaxValue);
+
+        await Assert.That(sizes.PendingRequests).IsEqualTo(1024);
+        await Assert.That(sizes.CancellationTokenSources).IsEqualTo(2048);
     }
 
     [Test]

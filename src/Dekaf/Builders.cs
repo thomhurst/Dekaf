@@ -34,7 +34,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _enableTwoPhaseCommit;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private int? _compressionLevel;
-    private int _maxInFlightRequestsPerConnection = 5;
+    private int? _maxInFlightRequestsPerConnection;
     private int _retries = int.MaxValue;
     private int _retryBackoffMs = 100;
     private int _retryBackoffMaxMs = 1000;
@@ -947,6 +947,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            maxInFlightRequestsPerConnection,
+            ProducerOptions.MaxAllowedMaxInFlightRequestsPerConnection);
         _maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
         return this;
     }
@@ -1130,6 +1133,10 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
 
+        var maxInFlightRequestsPerConnection = ProducerOptions.ResolveMaxInFlightRequestsPerConnection(
+            _maxInFlightRequestsPerConnection,
+            _enableIdempotence);
+
         var options = new ProducerOptions
         {
             BootstrapServers = _bootstrapServers,
@@ -1139,7 +1146,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? memoryBudget.PreviewProducerLimit(),
             IsAutoTuned = _bufferMemory is null,
-            MaxInFlightRequestsPerConnection = _maxInFlightRequestsPerConnection,
+            MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection,
             Retries = _retries,
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs,

@@ -2,6 +2,9 @@ namespace Dekaf.Tests.Unit.Builder;
 
 public class ProducerBuilderValidationTests
 {
+    private const int DefaultIdempotentMaxInFlight = 5;
+    private const int DefaultNonIdempotentMaxInFlight = 100;
+
     #region Build Validation
 
     [Test]
@@ -388,6 +391,58 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task Build_WithDefaultIdempotence_DefaultsMaxInFlightTo5()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(DefaultIdempotentMaxInFlight);
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceDisabled_DefaultsMaxInFlightTo100()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(DefaultNonIdempotentMaxInFlight);
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceDisabledAndExplicitMaxInFlight_PreservesValue()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .WithMaxInFlightRequestsPerConnection(12)
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(12);
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceEnabledAndHighMaxInFlight_CapsAt5()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithMaxInFlightRequestsPerConnection(100)
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(DefaultIdempotentMaxInFlight);
+    }
+
+    [Test]
     public async Task WithIdempotence_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
@@ -518,4 +573,12 @@ public class ProducerBuilderValidationTests
     }
 
     #endregion
+
+    private static Dekaf.Producer.ProducerOptions GetOptions<TKey, TValue>(
+        Dekaf.Producer.IKafkaProducer<TKey, TValue> producer)
+    {
+        var field = producer.GetType().GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        return (Dekaf.Producer.ProducerOptions)field.GetValue(producer)!;
+    }
 }

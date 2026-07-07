@@ -81,7 +81,7 @@ internal static class PoolSizing
         var bufferDerivedEntries = (long)maxBatches * InflightEntriesPerBatch;
         var inflightEntries = Math.Max(peakInflightEntries, bufferDerivedEntries);
 
-        var pendingAppends = Math.Clamp(clampedMaxConns * clampedMaxInFlight * 4, 64, 1024);
+        var pendingAppends = (int)Math.Clamp((long)clampedMaxConns * clampedMaxInFlight * 4, 64L, 1024L);
 
         return new ProducerPoolSizes
         {
@@ -95,12 +95,13 @@ internal static class PoolSizing
 
     internal static ConnectionPoolSizes ForConnection(int maxInFlightRequestsPerConnection)
     {
-        var pendingRequests = Math.Clamp(maxInFlightRequestsPerConnection * 4, 64, 1024);
+        var clampedMaxInFlight = Math.Max(1, maxInFlightRequestsPerConnection);
+        var pendingRequests = (int)Math.Clamp((long)clampedMaxInFlight * 4, 64L, 1024L);
 
         return new ConnectionPoolSizes
         {
             PendingRequests = pendingRequests,
-            CancellationTokenSources = Math.Clamp(maxInFlightRequestsPerConnection * 8, 64, 2048),
+            CancellationTokenSources = (int)Math.Clamp((long)clampedMaxInFlight * 8, 64L, 2048L),
         };
     }
 

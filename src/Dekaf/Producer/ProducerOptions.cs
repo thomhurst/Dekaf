@@ -15,6 +15,10 @@ namespace Dekaf.Producer;
 /// </summary>
 public sealed class ProducerOptions
 {
+    internal const int IdempotentMaxInFlightRequestsPerConnection = 5;
+    internal const int NonIdempotentDefaultMaxInFlightRequestsPerConnection = 100;
+    internal const int MaxAllowedMaxInFlightRequestsPerConnection = 1_000_000;
+
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>
@@ -150,13 +154,44 @@ public sealed class ProducerOptions
     /// </summary>
     public int? CompressionLevel { get; init; }
 
+    private int _maxInFlightRequestsPerConnection = IdempotentMaxInFlightRequestsPerConnection;
+    private bool _isMaxInFlightRequestsPerConnectionConfigured;
+
     /// <summary>
     /// Maximum in-flight requests per connection.
     /// For idempotent producers (the default), values greater than 1 allow multiple batches
-    /// per partition to be in-flight simultaneously, improving throughput. Ordering is
-    /// guaranteed by Kafka's idempotent sequence numbers. Default is 5.
+    /// per partition to be in-flight simultaneously. Kafka caps idempotent and transactional
+    /// producers at 5. When idempotence is disabled and this value is not explicitly set,
+    /// Dekaf uses 100 to keep the non-idempotent pipeline full.
+    /// <para>
+    /// Non-idempotent producers with retries enabled and more than 1 in-flight request may
+    /// reorder messages if an earlier request is retried after a later one succeeds. Set this
+    /// to 1, or keep idempotence enabled, when strict per-partition ordering matters.
+    /// </para>
     /// </summary>
-    public int MaxInFlightRequestsPerConnection { get; init; } = 5;
+    public int MaxInFlightRequestsPerConnection
+    {
+        get => _maxInFlightRequestsPerConnection;
+        init
+        {
+            _maxInFlightRequestsPerConnection = value;
+            _isMaxInFlightRequestsPerConnectionConfigured = true;
+        }
+    }
+
+    internal bool IsMaxInFlightRequestsPerConnectionConfigured => _isMaxInFlightRequestsPerConnectionConfigured;
+
+    internal static int ResolveMaxInFlightRequestsPerConnection(int? configuredMaxInFlight, bool enableIdempotence)
+    {
+        var maxInFlight = configuredMaxInFlight
+            ?? (enableIdempotence
+                ? IdempotentMaxInFlightRequestsPerConnection
+                : NonIdempotentDefaultMaxInFlightRequestsPerConnection);
+
+        return enableIdempotence
+            ? Math.Min(maxInFlight, IdempotentMaxInFlightRequestsPerConnection)
+            : maxInFlight;
+    }
 
     /// <summary>
     /// Number of connections to maintain per broker for parallel request handling.

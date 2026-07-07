@@ -194,6 +194,53 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddProducer_WithTypedOptionsAndIdempotenceDisabled_UsesNonIdempotentMaxInFlightDefault()
+    {
+        var services = new ServiceCollection();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            EnableIdempotence = false
+        };
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(options);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var boundOptions = GetProducerOptions(producer);
+
+        await Assert.That(boundOptions.MaxInFlightRequestsPerConnection)
+            .IsEqualTo(ProducerOptions.NonIdempotentDefaultMaxInFlightRequestsPerConnection);
+    }
+
+    [Test]
+    public async Task AddProducer_WithTypedOptionsAndExplicitDefaultMaxInFlight_PreservesValue()
+    {
+        var services = new ServiceCollection();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            EnableIdempotence = false,
+            MaxInFlightRequestsPerConnection = ProducerOptions.IdempotentMaxInFlightRequestsPerConnection
+        };
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(options);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var boundOptions = GetProducerOptions(producer);
+
+        await Assert.That(boundOptions.MaxInFlightRequestsPerConnection)
+            .IsEqualTo(ProducerOptions.IdempotentMaxInFlightRequestsPerConnection);
+    }
+
+    [Test]
     public async Task AddProducer_WithTypedOptionsAndMismatchedInterceptor_ThrowsInvalidOperationException()
     {
         var services = new ServiceCollection();

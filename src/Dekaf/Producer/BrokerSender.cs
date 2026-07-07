@@ -108,6 +108,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private const int MicroLingerMaxSpins = 20;
 
+    /// <summary>
+    /// Maximum batches coalesced into one send-loop pass. The in-flight limit can be very
+    /// high for non-idempotent producers, but coalescing capacity should stay bounded.
+    /// </summary>
+    private const int MaxCoalescedBatchesPerPass = 1024;
+
     private static int s_instanceCounter;
     private readonly int _instanceId = Interlocked.Increment(ref s_instanceCounter);
 
@@ -614,7 +620,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private async Task SendLoopAsync(CancellationToken cancellationToken)
     {
         var eventReader = _eventChannel.Reader;
-        var maxCoalesce = _options.MaxInFlightRequestsPerConnection * 4;
+        var maxCoalesce = (int)Math.Clamp(
+            (long)_options.MaxInFlightRequestsPerConnection * 4,
+            4L,
+            MaxCoalescedBatchesPerPass);
 
         var coalescedPartitions = new HashSet<TopicPartition>();
         var carryOver = new PartitionCarryOver();

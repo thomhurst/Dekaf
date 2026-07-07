@@ -155,6 +155,12 @@ With idempotence enabled:
 - Messages are delivered in order
 - Requires `Acks.All` (set automatically)
 
+## In-Flight Requests and Ordering
+
+`MaxInFlightRequestsPerConnection` controls how many produce requests can be outstanding on one broker connection. Idempotent and transactional producers are capped at 5, which is the Kafka protocol limit for sequence tracking.
+
+When idempotence is disabled, Dekaf defaults to 100 in-flight requests per connection so fire-and-forget and `Acks.Leader` workloads can keep the broker pipeline full. With retries enabled, non-idempotent producers using more than 1 in-flight request can reorder messages if an earlier request is retried after a later request succeeds. Set `MaxInFlightRequestsPerConnection` to 1, or keep idempotence enabled, when strict per-partition ordering matters.
+
 ## Error Handling
 
 `ProduceAsync` throws exceptions for delivery failures:

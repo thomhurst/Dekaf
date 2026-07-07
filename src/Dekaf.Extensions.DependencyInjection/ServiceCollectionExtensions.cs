@@ -775,7 +775,8 @@ internal static class DekafOptionsBinding
         builder.WithLinger(TimeSpan.FromMilliseconds(options.LingerMs));
         builder.WithBatchSize(options.BatchSize);
         builder.WithBufferMemory(options.BufferMemory);
-        builder.WithMaxInFlightRequestsPerConnection(options.MaxInFlightRequestsPerConnection);
+        if (options.EnableIdempotence || options.IsMaxInFlightRequestsPerConnectionConfigured)
+            builder.WithMaxInFlightRequestsPerConnection(options.MaxInFlightRequestsPerConnection);
         builder.WithRetries(options.Retries);
         builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
         builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
