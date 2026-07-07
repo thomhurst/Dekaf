@@ -628,9 +628,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var responseLookup = new Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>();
 
         // Pre-allocate reusable ProduceRequest structures.
-        // The send loop is single-threaded and awaits each send before reusing,
-        // so these can be safely reused without synchronization.
+        // The send loop is single-threaded. Acks.None single-connection sends can be
+        // one write ahead, so that path gets a second scratch slot before reuse.
         var requestScratch = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
+        var singleConnectionFireAndForgetScratches = _options.Acks == Acks.None
+            ? new[] { requestScratch, new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce) }
+            : Array.Empty<ProduceRequestScratch>();
 
         // Per-connection scratch and buckets for partition-affined multi-send.
         // When _connectionCount == 1, single scratch and bucket — no grouping overhead.
@@ -644,6 +647,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             connectionBuckets[c].Batches = new ReadyBatch[maxCoalesce];
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var singleConnectionFireAndForgetTimeoutCts = _options.Acks == Acks.None
+            ? new[]
+            {
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken),
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            }
+            : Array.Empty<CancellationTokenSource>();
+        var pendingSingleConnectionFireAndForgetSend = default(ValueTask);
+        var hasPendingSingleConnectionFireAndForgetSend = false;
+        var nextSingleConnectionFireAndForgetSlot = 0;
 
         // Pre-allocated array for parallel multi-connection sends. Each entry holds
         // a pending SendConnectionBucketAsync ValueTask so connections can flush concurrently
@@ -667,6 +680,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Zero per-wait allocation: the signal uses an internal reusable timer for the
         // 100ms poll timeout, and this one-time registration handles shutdown cancellation.
         _anyResponseCompleted.RegisterShutdownToken(cancellationToken);
+
+        async ValueTask AwaitPendingSingleConnectionFireAndForgetSendAsync()
+        {
+            if (!hasPendingSingleConnectionFireAndForgetSend)
+                return;
+
+            await pendingSingleConnectionFireAndForgetSend.ConfigureAwait(false);
+            pendingSingleConnectionFireAndForgetSend = default;
+            hasPendingSingleConnectionFireAndForgetSend = false;
+        }
 
         try
         {
@@ -757,6 +780,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         parallelSends = new ValueTask[scaledToCount];
                     }
                 }
+
+                if (_connectionCount > 1)
+                    await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
 
                 // ── 5. Coalesce ──
                 coalescedPartitions.Clear();
@@ -954,16 +980,51 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             Array.Clear(coalescedBatches, 0, coalescedCount);
                             coalescedCount = 0;
 
-                            if (!sendTimeoutCts.TryReset())
+                            if (_options.Acks == Acks.None)
                             {
-                                sendTimeoutCts.Dispose();
-                                sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                            }
-                            sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
+                                var slot = nextSingleConnectionFireAndForgetSlot;
+                                nextSingleConnectionFireAndForgetSlot = 1 - nextSingleConnectionFireAndForgetSlot;
 
-                            await SendCoalescedAsync(batchesToSend, countToSend,
-                                    scratches[0], 0, sendTimeoutCts.Token)
-                                .ConfigureAwait(false);
+                                ResetBucketTimeout(ref singleConnectionFireAndForgetTimeoutCts[slot],
+                                    cancellationToken);
+
+                                var currentSend = SendCoalescedAsync(
+                                    batchesToSend,
+                                    countToSend,
+                                    singleConnectionFireAndForgetScratches[slot],
+                                    0,
+                                    singleConnectionFireAndForgetTimeoutCts[slot].Token);
+
+                                if (hasPendingSingleConnectionFireAndForgetSend)
+                                {
+                                    try
+                                    {
+                                        await pendingSingleConnectionFireAndForgetSend.ConfigureAwait(false);
+                                    }
+                                    catch
+                                    {
+                                        try { await currentSend.ConfigureAwait(false); }
+                                        catch { }
+                                        throw;
+                                    }
+                                }
+
+                                pendingSingleConnectionFireAndForgetSend = currentSend;
+                                hasPendingSingleConnectionFireAndForgetSend = true;
+                            }
+                            else
+                            {
+                                if (!sendTimeoutCts.TryReset())
+                                {
+                                    sendTimeoutCts.Dispose();
+                                    sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                                }
+                                sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
+
+                                await SendCoalescedAsync(batchesToSend, countToSend,
+                                        scratches[0], 0, sendTimeoutCts.Token)
+                                    .ConfigureAwait(false);
+                            }
                             sentThisIteration = true;
                         }
                         else
@@ -1065,6 +1126,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
                 if (carryOver.Count == 0 && waitPendingCount == 0 && _sendFailedRetries.IsEmpty)
                 {
+                    if (hasPendingSingleConnectionFireAndForgetSend && !eventReader.TryPeek(out _))
+                        await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
+
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
@@ -1138,7 +1202,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
         finally
         {
+            try { await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false); }
+            catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
+
             sendTimeoutCts.Dispose();
+            for (var c = 0; c < singleConnectionFireAndForgetTimeoutCts.Length; c++)
+                singleConnectionFireAndForgetTimeoutCts[c].Dispose();
             for (var c = 0; c < bucketTimeoutCts.Length; c++)
                 bucketTimeoutCts[c].Dispose();
             _eventChannel.Writer.TryComplete();
@@ -2111,11 +2180,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Add to _pendingResponsesByConnection for the send loop to process inline (like Java's client.poll()).
             // No fire-and-forget — responses are processed in the single-threaded send loop,
             // making retry ordering deterministic by construction.
-            // Use the caller-timeout overload to avoid per-write
-            // CancellationTokenSource + CancellationTokenRegistration allocations.
-            // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
-            var responseTask = connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                request, (short)apiVersion, cancellationToken);
+            //
+            // Use the connection-owned timeout path for pipelined sends. The send loop can
+            // have multiple responses in flight on this connection; a reusable caller-owned
+            // CTS would let a later send reset or cancel an earlier response timeout.
+            var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                request, (short)apiVersion, _cts.Token);
 
             // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
             scratch.ClearReferences();
@@ -2274,8 +2344,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Pre-allocated scratch space for building ProduceRequest without per-send allocations.
-    /// The send loop is single-threaded and awaits each send before reusing, so all
-    /// arrays and objects are safe to reuse without synchronization.
+    /// The send loop is single-threaded; callers keep one scratch per potentially
+    /// outstanding send so arrays and objects are not reused while a write still needs them.
     /// Uses internal array slices so ProduceRequest can serialize scratch data without boxing ArraySegment&lt;T&gt;.
     /// </summary>
     private sealed class ProduceRequestScratch

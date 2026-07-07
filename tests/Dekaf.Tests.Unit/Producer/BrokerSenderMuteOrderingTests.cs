@@ -52,14 +52,19 @@ public sealed class BrokerSenderMuteOrderingTests
         connection.IsConnected.Returns(true);
         connection.BrokerId.Returns(1);
 
+        Task<ProduceResponse> DequeueResponse()
+        {
+            var task = responseQueue.Dequeue().Task;
+            onSend?.Invoke();
+            return task;
+        }
+
         connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ =>
-            {
-                var task = responseQueue.Dequeue().Task;
-                onSend?.Invoke();
-                return task;
-            });
+            .Returns(_ => DequeueResponse());
+        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ => DequeueResponse());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())

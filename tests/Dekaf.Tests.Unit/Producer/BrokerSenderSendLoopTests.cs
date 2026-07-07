@@ -52,14 +52,19 @@ public sealed class BrokerSenderSendLoopTests
         connection.IsConnected.Returns(true);
         connection.BrokerId.Returns(1);
 
+        Task<ProduceResponse> DequeueResponse()
+        {
+            var task = responseQueue.Dequeue().Task;
+            onSend?.Invoke();
+            return task;
+        }
+
         connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ =>
-            {
-                var task = responseQueue.Dequeue().Task;
-                onSend?.Invoke();
-                return task;
-            });
+            .Returns(_ => DequeueResponse());
+        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ => DequeueResponse());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -143,6 +148,61 @@ public sealed class BrokerSenderSendLoopTests
             rerouteBatch: null,
             onAcknowledgement: onAcknowledgement,
             logger: null);
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_PipelinedProduce_UsesConnectionOwnedTimeoutsForConcurrentSends(CancellationToken cancellationToken)
+    {
+        var tcs1 = new TaskCompletionSource<ProduceResponse>();
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1);
+        responseQueue.Enqueue(tcs2);
+
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var (pool, connection) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 5);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var acknowledgedCount = 0;
+        var allAcknowledged = new TaskCompletionSource();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
+        {
+            if (ex is null && Interlocked.Increment(ref acknowledgedCount) == 2)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", 0));
+
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", 1));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+
+            await connection.Received(2).SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+            await connection.DidNotReceive().SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+
+            tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 43));
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
 
     [Test]
     [Timeout(120_000)]
@@ -580,6 +640,81 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_FireAndForget_StartsSecondWriteBeforeFirstFlushCompletes(CancellationToken cancellationToken)
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(1);
+
+        var firstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        BrokerSender? sender = null;
+
+        var options = CreateOptions(acks: Acks.None, maxInFlight: 5);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var secondBatch = CreateTestBatch(vtPool, "test-topic", 1);
+
+        connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var current = Interlocked.Increment(ref sendCount);
+                if (current == 1)
+                {
+                    sender!.Enqueue(secondBatch);
+                    return new ValueTask(firstWrite.Task);
+                }
+
+                if (current == 2)
+                {
+                    secondWriteStarted.TrySetResult();
+                    return new ValueTask(secondWrite.Task);
+                }
+
+                return ValueTask.CompletedTask;
+            });
+
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var acknowledgedCount = 0;
+        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
+        {
+            if (ex is null && Interlocked.Increment(ref acknowledgedCount) == 2)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", 0));
+
+            await secondWriteStarted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(firstWrite.Task.IsCompleted).IsFalse();
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+
+            firstWrite.SetResult();
+            secondWrite.SetResult();
+
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            if (sender is not null)
+                await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_FaultedResponseDuringInFlightWait_RetryBatchSurvivesCarryOverSwap(CancellationToken cancellationToken)
     {
         // Regression test for the carry-over list swap bug:
@@ -692,7 +827,7 @@ public sealed class BrokerSenderSendLoopTests
         connection.IsConnected.Returns(true);
         connection.BrokerId.Returns(1);
 
-        connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
+        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(successResponse));
 
