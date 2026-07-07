@@ -36,6 +36,7 @@
 
   <!-- Compatibility dependencies for the package's netstandard2.0 asset. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.9" />
     <PackageReference Include="Polyfill" Version="10.11.2" PrivateAssets="all" />
     <PackageReference Include="System.IO.Pipelines" Version="10.0.9" />
     <PackageReference Include="System.Text.Json" Version="10.0.9" />
