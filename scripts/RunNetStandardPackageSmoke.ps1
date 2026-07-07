@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$PackageVersion = '',
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$PackageSource = '',
+    [string]$RunnerFramework = 'net10.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,7 +46,14 @@ function Assert-PackageEntry {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$packageSource = Join-Path $repoRoot "src/Dekaf/bin/$Configuration"
+if ($PackageSource) {
+    $packageSource = (Resolve-Path -LiteralPath $PackageSource).Path
+    $packageSearchRoot = $packageSource
+}
+else {
+    $packageSource = Join-Path $repoRoot "src/Dekaf/bin/$Configuration"
+    $packageSearchRoot = Join-Path $repoRoot 'src'
+}
 
 if (-not (Test-Path -LiteralPath $packageSource)) {
     throw "Package source directory not found: $packageSource"
@@ -60,6 +69,7 @@ if ($PackageVersion) {
 }
 else {
     $corePackage = Get-ChildItem -LiteralPath $packageSource -Filter 'Dekaf.*.nupkg' |
+        Where-Object { $_.BaseName -match '^Dekaf\.\d' } |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1
 
@@ -82,8 +92,8 @@ finally {
     $zip.Dispose()
 }
 
-$otherPackages = Get-ChildItem -Path (Join-Path $repoRoot 'src') -Recurse -Filter 'Dekaf*.nupkg' |
-    Where-Object { $_.FullName -ne $corePackage.FullName }
+$otherPackages = Get-ChildItem -Path $packageSearchRoot -Recurse -Filter 'Dekaf*.nupkg' |
+    Where-Object { $_.FullName -ne $corePackage.FullName -and $_.BaseName -notmatch '^Dekaf\.\d' }
 
 foreach ($package in $otherPackages) {
     $otherZip = [System.IO.Compression.ZipFile]::OpenRead($package.FullName)
@@ -122,9 +132,12 @@ try {
         $smokeProject,
         '--configuration',
         $Configuration,
+        '--framework',
+        $RunnerFramework,
         '--no-restore',
         "-p:DekafPackageVersion=$PackageVersion",
-        '-p:TreatWarningsAsErrors=true'
+        '-p:TreatWarningsAsErrors=true',
+        '-p:EnforceCodeStyleInBuild=false'
     )
 
     Invoke-DotNet -Step 'package smoke run' -Arguments @(
@@ -134,7 +147,7 @@ try {
         '--configuration',
         $Configuration,
         '--framework',
-        'net10.0',
+        $RunnerFramework,
         '--no-build'
     )
 }
