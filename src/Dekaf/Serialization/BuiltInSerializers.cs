@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
+using Dekaf.Internal;
 
 namespace Dekaf.Serialization;
 
@@ -133,13 +134,13 @@ internal sealed class StringSerde : ISerde<string>
 #endif
     {
         var span = destination.GetSpan(checked(value.Length * 3));
-        var bytesWritten = Encoding.UTF8.GetBytes(value, span);
+        var bytesWritten = EncodingCompat.GetBytes(value, span);
         destination.Advance(bytesWritten);
     }
 
     public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return Encoding.UTF8.GetString(data.Span);
+        return EncodingCompat.GetString(data.Span);
     }
 }
 
@@ -155,7 +156,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
             return;
 
         var span = destination.GetSpan(checked(value.Length * 3));
-        var bytesWritten = Encoding.UTF8.GetBytes(value, span);
+        var bytesWritten = EncodingCompat.GetBytes(value, span);
         destination.Advance(bytesWritten);
     }
 
@@ -167,7 +168,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
         if (data.Length == 0)
             return string.Empty;
 
-        return Encoding.UTF8.GetString(data.Span);
+        return EncodingCompat.GetString(data.Span);
     }
 }
 

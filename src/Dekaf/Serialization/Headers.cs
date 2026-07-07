@@ -287,7 +287,7 @@ public readonly record struct Header
     /// </summary>
     public string? GetValueAsString()
     {
-        return IsValueNull ? null : Encoding.UTF8.GetString(Value.Span);
+        return IsValueNull ? null : EncodingCompat.GetString(Value.Span);
     }
 
     /// <inheritdoc/>
@@ -317,7 +317,7 @@ public readonly record struct Header
         if (key.Length <= 128)
         {
             Span<byte> buffer = stackalloc byte[512];
-            var actualBytes = Encoding.UTF8.GetBytes(key, buffer);
+            var actualBytes = EncodingCompat.GetBytes(key, buffer);
             writer.WriteVarInt(actualBytes);
             if (actualBytes > 0)
             {
@@ -329,13 +329,13 @@ public readonly record struct Header
             return;
         }
 
-        var keyByteCount = Encoding.UTF8.GetByteCount(key);
+        var keyByteCount = EncodingCompat.GetByteCount(key);
         writer.WriteVarInt(keyByteCount);
         if (keyByteCount == 0)
             return;
 
         var span = writer.BufferWriter.GetSpan(keyByteCount);
-        Encoding.UTF8.GetBytes(key, span);
+        EncodingCompat.GetBytes(key, span);
         writer.BufferWriter.Advance(keyByteCount);
         writer.AddBytesWritten(keyByteCount);
     }
@@ -369,16 +369,16 @@ public readonly record struct Header
             // Single-pass encode for short keys (the common case): UTF-8 worst case is
             // 3 bytes per char, so 128 chars always fit in the 512-byte scratch buffer.
             Span<byte> buffer = stackalloc byte[512];
-            var keyByteCount = Encoding.UTF8.GetBytes(key, buffer);
+            var keyByteCount = EncodingCompat.GetBytes(key, buffer);
             Record.WriteVarInt(destination, ref offset, keyByteCount);
             buffer[..keyByteCount].CopyTo(destination[offset..]);
             offset += keyByteCount;
         }
         else
         {
-            var keyByteCount = Encoding.UTF8.GetByteCount(key);
+            var keyByteCount = EncodingCompat.GetByteCount(key);
             Record.WriteVarInt(destination, ref offset, keyByteCount);
-            Encoding.UTF8.GetBytes(key, destination[offset..]);
+            EncodingCompat.GetBytes(key, destination[offset..]);
             offset += keyByteCount;
         }
 
@@ -398,7 +398,7 @@ public readonly record struct Header
     {
         // ASCII keys (99%+ of cases): byte count == char count. Ascii.IsValid is
         // SIMD-optimized and much cheaper than UTF8.GetByteCount for this case.
-        var keyBytes = Ascii.IsValid(Key) ? Key.Length : Encoding.UTF8.GetByteCount(Key);
+        var keyBytes = Ascii.IsValid(Key) ? Key.Length : EncodingCompat.GetByteCount(Key);
         var size = Record.VarIntSize(keyBytes) + keyBytes;
 
         if (IsValueNull)

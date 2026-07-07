@@ -1,4 +1,5 @@
 using System.Text;
+using Dekaf.Internal;
 
 namespace Dekaf.Security.Sasl;
 
@@ -41,18 +42,18 @@ public sealed class PlainAuthenticator : ISaslAuthenticator
         // passwd = password
         // Write directly to buffer to avoid string interpolation allocation
         var authzid = _authorizationId ?? string.Empty;
-        var totalBytes = Encoding.UTF8.GetByteCount(authzid) + 1 +
-                         Encoding.UTF8.GetByteCount(_username) + 1 +
-                         Encoding.UTF8.GetByteCount(_password);
+        var totalBytes = EncodingCompat.GetByteCount(authzid) + 1 +
+                         EncodingCompat.GetByteCount(_username) + 1 +
+                         EncodingCompat.GetByteCount(_password);
 
         var result = new byte[totalBytes];
         var offset = 0;
 
-        offset += Encoding.UTF8.GetBytes(authzid, result.AsSpan(offset));
+        offset += EncodingCompat.GetBytes(authzid, result.AsSpan(offset));
         result[offset++] = 0; // NUL separator
-        offset += Encoding.UTF8.GetBytes(_username, result.AsSpan(offset));
+        offset += EncodingCompat.GetBytes(_username, result.AsSpan(offset));
         result[offset++] = 0; // NUL separator
-        Encoding.UTF8.GetBytes(_password, result.AsSpan(offset));
+        EncodingCompat.GetBytes(_password, result.AsSpan(offset));
 
         _complete = true;
         return result;

@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using Dekaf.Compression;
+using Dekaf.Internal;
 using CompressionType = Dekaf.Protocol.Records.CompressionType;
 
 namespace Dekaf.Telemetry;
@@ -149,7 +150,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
         WriteTag(writer, fieldNumber, WireLengthDelimited);
         WriteVarint(writer, (ulong)byteCount);
         var span = writer.GetSpan(byteCount);
-        var written = System.Text.Encoding.UTF8.GetBytes(value, span);
+        var written = EncodingCompat.GetBytes(value, span);
         writer.Advance(written);
     }
 
