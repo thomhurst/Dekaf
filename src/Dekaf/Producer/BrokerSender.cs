@@ -411,6 +411,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _minConnectionCount; // Initial ConnectionsPerBroker — never scale below this
     private readonly int _maxConnectionsPerBroker;
     private long _lastPressureSnapshot;
+    private long _sendLoopPressureEvents;
+    private long _lastSendLoopPressureSnapshot;
     private long _lastScaleTimeTicks;
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
 
@@ -884,6 +886,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (carryOver.Count > 0)
                     SweepExpiredCarryOver(carryOver);
 
+                if (carryOver.Count > 0 || coalescedCount == maxCoalesce)
+                    RecordSendLoopPressureIfScaleUseful();
+
                 // ── 5b. Micro-linger for small coalesced batches ──
                 // When very few batches are coalesced (e.g., broker has only 2 partitions in a
                 // multi-broker setup), sending immediately produces many small ProduceRequests.
@@ -927,7 +932,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                     if (pendingCount >= _totalMaxInFlight)
+                    {
+                        RecordSendLoopPressureIfScaleUseful();
                         LogWaitingForInFlightCapacity(_brokerId, pendingCount, _totalMaxInFlight);
+                    }
 
                     while (pendingCount >= _totalMaxInFlight)
                     {
@@ -937,6 +945,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         if (pendingCount >= _totalMaxInFlight)
                         {
+                            RecordSendLoopPressureIfScaleUseful();
+
                             // Handle timed-out requests (Java pattern) to free zombie entries.
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
@@ -1619,6 +1629,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 _mutedPartitions.TryRemove(batch.TopicPartition, out _);
                 _accumulator.UnmutePartition(batch.TopicPartition);
             }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RecordSendLoopPressureIfScaleUseful()
+    {
+        if (IsSendLoopPressureScaleUseful(
+            _adaptiveScalingEnabled,
+            _connectionCount,
+            _maxConnectionsPerBroker,
+            _knownPartitions.Count))
+        {
+            _sendLoopPressureEvents++;
         }
     }
 
@@ -3373,9 +3396,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
 
         var utilization = _accumulator.BufferUtilization;
+        var bufferPressureDelta = _accumulator.BufferPressureEvents - _lastPressureSnapshot;
+        var sendLoopPressureDelta = _sendLoopPressureEvents - _lastSendLoopPressureSnapshot;
+        var scalePressureDelta = ComputeScalePressureDelta(bufferPressureDelta, sendLoopPressureDelta);
+        var hasScalePressure = scalePressureDelta >= ScalePressureDeltaThreshold;
 
         // Phase 2: Check if we should start a new scale-up
-        if (utilization >= ScaleUtilizationThreshold)
+        if (sendLoopPressureDelta >= ScalePressureDeltaThreshold
+            || (utilization >= ScaleUtilizationThreshold && hasScalePressure))
         {
             // High utilization — reset low-utilization tracking
             _lowUtilizationStartTicks = 0;
@@ -3383,13 +3411,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (_connectionCount >= _maxConnectionsPerBroker)
                 return 0; // At ceiling — cannot scale up, but scale-down remains active
 
-            var currentPressure = _accumulator.BufferPressureEvents;
-            var pressureDelta = currentPressure - _lastPressureSnapshot;
-
-            if (pressureDelta < ScalePressureDeltaThreshold)
-                return 0;
-
-            var targetCount = ComputeScaleTarget(pressureDelta, _connectionCount, _maxConnectionsPerBroker);
+            var targetCount = ComputeScaleTarget(scalePressureDelta, _connectionCount, _maxConnectionsPerBroker);
 
             // Launch connection creation in the background — send loop continues immediately
             _lastScaleTimeTicks = now;
@@ -3465,6 +3487,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // connections than requested, stale pressure keeps accumulating so the next
         // cooldown window retries with the full delta rather than starting from zero.
         _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+        _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
 
         var newPinned = new IKafkaConnection?[actualCount];
         Array.Copy(_pinnedConnections, newPinned, oldCount);
@@ -3566,6 +3589,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var step = (int)Math.Min(pressureDelta / ScalePressureDeltaThreshold, MaxScaleStep);
         return Math.Min(currentConnections + step, maxConnections);
     }
+
+    internal static long ComputeScalePressureDelta(long bufferPressureDelta, long sendLoopPressureDelta) =>
+        Math.Max(bufferPressureDelta, sendLoopPressureDelta);
+
+    internal static bool IsSendLoopPressureScaleUseful(
+        bool adaptiveScalingEnabled,
+        int connectionCount,
+        int maxConnectionsPerBroker,
+        int knownPartitionCount) =>
+        adaptiveScalingEnabled
+        && connectionCount < maxConnectionsPerBroker
+        && knownPartitionCount > connectionCount;
 
     #region Logging
 
