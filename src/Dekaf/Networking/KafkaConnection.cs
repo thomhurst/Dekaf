@@ -1010,6 +1010,12 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         if (_stream is null)
             throw new InvalidOperationException("Not connected");
 
+        // A previous write on this connection may have been aborted mid-frame, leaving the
+        // outgoing stream misaligned. Writers already queued on _writeLock must not append
+        // another frame to a poisoned stream.
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new KafkaException($"Connection to broker {BrokerId} is closed");
+
 #if DEBUG
         System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
             "callerOwnsTimeout path requires a timeout-bearing token");
@@ -1031,10 +1037,16 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             // Any OperationCanceledException here means the caller's timeout elapsed.
             catch (OperationCanceledException)
             {
+                AbortAfterWriteFailure();
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+            }
+            catch (Exception)
+            {
+                AbortAfterWriteFailure();
+                throw;
             }
         }
         else
@@ -1051,15 +1063,47 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                AbortAfterWriteFailure();
                 throw new OperationCanceledException(cancellationToken);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
+                AbortAfterWriteFailure();
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
             }
+            catch (Exception)
+            {
+                AbortAfterWriteFailure();
+                throw;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Marks the connection unusable after a frame write failed or was cancelled. A cancelled
+    /// or faulted <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/> can
+    /// have transmitted part of the frame, so the outgoing stream is no longer frame-aligned:
+    /// any further request written to it is misparsed by the broker (surfacing as broker-side
+    /// InvalidRequestException on PRODUCE, after which the broker closes the socket while the
+    /// producer keeps retrying into 30s timeouts). Marking the connection disposed makes the
+    /// ConnectionPool replace it, and disposing the socket unblocks the read pump so the
+    /// receive loop fails all in-flight requests promptly instead of each waiting out its
+    /// request timeout.
+    /// </summary>
+    private void AbortAfterWriteFailure()
+    {
+        MarkDisposed();
+        Volatile.Write(ref _connected, 0);
+        try
+        {
+            _socket?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LogWriteAbortSocketDisposeFailed(ex, BrokerId);
         }
     }
 
@@ -2718,6 +2762,9 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}")]
     private partial void LogFlushTimeout(double timeout, int correlationId, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose socket while aborting connection to broker {BrokerId} after a write failure")]
+    private partial void LogWriteAbortSocketDisposeFailed(Exception ex, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop started for {Host}:{Port}")]
     private partial void LogReceiveLoopStarted(string host, int port);
