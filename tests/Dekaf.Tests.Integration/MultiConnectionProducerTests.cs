@@ -340,34 +340,39 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
     [Test]
     public async Task IdempotentProducer_AdaptiveScaling_NoDuplicatesOrGaps()
     {
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 6);
-        const int messageCount = 10_000;
+        const int partitionCount = 6;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+        const int messageCount = 2_000;
+        var payload = new string('x', 512);
 
         // Start with 1 connection, enable adaptive scaling up to 3.
-        // High throughput fire-and-forget should trigger adaptive scale-up,
-        // exercising the per-partition migration fencing logic.
+        // Explicitly constrain buffering and batch size so this test exercises adaptive
+        // scale-up without relying on CI-wide memory pressure from parallel test runs.
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-adaptive-scale-idem")
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(1)
             .WithAdaptiveConnections(maxConnections: 3)
+            .WithBufferMemory(512UL * 1024)
+            .WithBatchSize(16 * 1024)
+            .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.FireAsync(topic, $"key-{i % 100}", $"msg-{i}");
+            await producer.FireAsync(topic, $"key-{i % 100}", $"msg-{i}:{payload}");
         }
 
-        await producer.FlushWithTimeoutAsync();
+        await producer.FlushWithTimeoutAsync(timeoutSeconds: 60);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
-        consumer.Assign(Enumerable.Range(0, 6)
+        consumer.Assign(Enumerable.Range(0, partitionCount)
             .Select(p => new TopicPartition(topic, p))
             .ToArray());
 
