@@ -122,6 +122,27 @@ public sealed class BrokerSenderSendLoopTests
             ]
         };
 
+    private static ProduceResponse CreateSuccessResponseForPartitions(string topic, int partitionCount) =>
+        new()
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = topic,
+                    PartitionCount = partitionCount,
+                    PartitionResponses = Enumerable.Range(0, partitionCount)
+                        .Select(partition => new ProduceResponsePartitionData
+                        {
+                            Index = partition,
+                            ErrorCode = ErrorCode.None,
+                            BaseOffset = partition + 1
+                        }).ToArray()
+                }
+            ]
+        };
+
     /// <summary>
     /// Creates a BrokerSender with standard test defaults, reducing constructor boilerplate.
     /// </summary>
@@ -152,6 +173,59 @@ public sealed class BrokerSenderSendLoopTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoopPressure_ScalesConnections_WhenCoalescingBacklogPersists(CancellationToken cancellationToken)
+    {
+        const int partitionCount = 8;
+        const int batchCount = 512;
+
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var connection = new TestKafkaConnection();
+        var sendCount = 0;
+        connection.SendProducePipelinedAfterWrite = () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            return new ValueTask<Task<ProduceResponse>>(
+                Task.FromResult(CreateSuccessResponseForPartitions("test-topic", partitionCount)));
+        };
+
+        var scaleRequested = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        pool.ScaleConnectionGroupAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var targetCount = (int)callInfo[1];
+                scaleRequested.TrySetResult(targetCount);
+                return new ValueTask<int>(targetCount);
+            });
+
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            for (var i = 0; i < batchCount; i++)
+                sender.Enqueue(CreateTestBatch(vtPool, "test-topic", i % partitionCount));
+
+            var targetCount = await scaleRequested.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(targetCount).IsGreaterThan(1);
+            await Assert.That(Volatile.Read(ref sendCount)).IsGreaterThan(0);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
         }
     }
 

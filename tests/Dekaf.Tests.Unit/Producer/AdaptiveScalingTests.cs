@@ -127,6 +127,50 @@ public class AdaptiveScalingTests
         await Assert.That(target).IsEqualTo(10);
     }
 
+    [Test]
+    public async Task ComputeScalePressureDelta_UsesSendLoopPressure_WhenBufferPressureIsQuiet()
+    {
+        var pressureDelta = BrokerSender.ComputeScalePressureDelta(
+            bufferPressureDelta: 0,
+            sendLoopPressureDelta: 250);
+
+        await Assert.That(pressureDelta).IsEqualTo(250);
+
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta, currentConnections: 1, maxConnections: 10);
+        await Assert.That(target).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ComputeScalePressureDelta_UsesLargestPressureSignal()
+    {
+        var pressureDelta = BrokerSender.ComputeScalePressureDelta(
+            bufferPressureDelta: 500,
+            sendLoopPressureDelta: 100);
+
+        await Assert.That(pressureDelta).IsEqualTo(500);
+    }
+
+    [Test]
+    [Arguments(true, 1, 10, 2, true)]
+    [Arguments(true, 1, 10, 1, false)]
+    [Arguments(true, 10, 10, 20, false)]
+    [Arguments(false, 1, 10, 20, false)]
+    public async Task IsSendLoopPressureScaleUseful_GatesOnAdaptiveCeilingAndPartitionFanout(
+        bool adaptiveScalingEnabled,
+        int connectionCount,
+        int maxConnectionsPerBroker,
+        int knownPartitionCount,
+        bool expected)
+    {
+        var isUseful = BrokerSender.IsSendLoopPressureScaleUseful(
+            adaptiveScalingEnabled,
+            connectionCount,
+            maxConnectionsPerBroker,
+            knownPartitionCount);
+
+        await Assert.That(isUseful).IsEqualTo(expected);
+    }
+
     #endregion
 
     #region Scale-Down Computation Tests
