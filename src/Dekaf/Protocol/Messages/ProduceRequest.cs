@@ -196,7 +196,10 @@ public sealed class ProduceRequestPartitionData
             var actualRecordsLength = 0;
             for (var i = 0; i < Records.Count; i++)
             {
-                actualRecordsLength += Records[i].Write(output, Compression, CompressionCodecs);
+                checked
+                {
+                    actualRecordsLength += Records[i].Write(output, Compression, CompressionCodecs);
+                }
             }
 
             if (actualRecordsLength != recordsLength)
@@ -208,8 +211,7 @@ public sealed class ProduceRequestPartitionData
                 // (InvalidRequestException + socket close). Fail before it reaches the wire.
                 throw new KafkaException(
                     ErrorCode.CorruptMessage,
-                    $"PRODUCE framing mismatch for partition {Index}: declared records length {recordsLength} but serialized {actualRecordsLength} bytes across {Records.Count} batch(es); request discarded before reaching the wire.",
-                    isRetriable: true);
+                    $"PRODUCE framing mismatch for partition {Index}: declared records length {recordsLength} but serialized {actualRecordsLength} bytes across {Records.Count} batch(es); request discarded before reaching the wire.");
             }
 
             writer.AddBytesWritten(recordsLength);
