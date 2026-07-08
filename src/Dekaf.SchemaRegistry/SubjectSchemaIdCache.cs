@@ -4,7 +4,7 @@ namespace Dekaf.SchemaRegistry;
 
 internal sealed class SubjectSchemaIdCache
 {
-    // Match CachingStringKeyDeserializer: fixed topic sets stay cached,
+    // Match CachingStringDeserializer: fixed topic sets stay cached,
     // dynamic topic names cannot grow without bound.
     internal const int MaxCachedEntries = 16_384;
 

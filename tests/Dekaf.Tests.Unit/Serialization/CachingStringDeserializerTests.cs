@@ -1,20 +1,41 @@
+using System.Reflection;
 using System.Text;
+using Dekaf.Consumer;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Serialization;
 
-public class CachingStringKeyDeserializerTests
+public class CachingStringDeserializerTests
 {
     private static SerializationContext KeyContext(string topic = "test") =>
         new() { Topic = topic, Component = SerializationComponent.Key };
 
+    private static SerializationContext ValueContext(string topic = "test") =>
+        new() { Topic = topic, Component = SerializationComponent.Value };
+
     private static ReadOnlyMemory<byte> ToUtf8(string value) =>
         Encoding.UTF8.GetBytes(value);
+
+    private static CachingStringDeserializer CreateKeyCache() =>
+        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
+
+    private static CachingStringDeserializer CreateValueCache() =>
+        new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
+
+    private static IDeserializer<string> GetValueDeserializer(IKafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_valueDeserializer",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_valueDeserializer field not found.");
+
+        return (IDeserializer<string>)field.GetValue(consumer)!;
+    }
 
     [Test]
     public async Task CacheHit_ReturnsSameReference()
     {
-        var sut = new CachingStringKeyDeserializer(Serializers.String);
+        var sut = CreateKeyCache();
         var context = KeyContext();
         var data = ToUtf8("my-key");
 
@@ -28,7 +49,7 @@ public class CachingStringKeyDeserializerTests
     [Test]
     public async Task KeyLongerThan128Bytes_BypassesCache()
     {
-        var sut = new CachingStringKeyDeserializer(Serializers.String);
+        var sut = CreateKeyCache();
         var context = KeyContext();
         var longKey = new string('x', 129); // 129 ASCII chars = 129 UTF-8 bytes
         var data = ToUtf8(longKey);
@@ -45,7 +66,7 @@ public class CachingStringKeyDeserializerTests
     [Test]
     public async Task MaxCachedEntries_StopsNewEntries()
     {
-        var sut = new CachingStringKeyDeserializer(Serializers.String);
+        var sut = CreateKeyCache();
         var context = KeyContext();
 
         // Fill the cache to capacity (16,384 entries).
@@ -73,7 +94,7 @@ public class CachingStringKeyDeserializerTests
         // The cache handles collisions by byte-level equality check: the first key to
         // claim a hash slot wins caching; a colliding second key falls through to the
         // inner deserializer (correct value, just no caching benefit).
-        var sut = new CachingStringKeyDeserializer(Serializers.String);
+        var sut = CreateKeyCache();
         var context = KeyContext();
 
         var dataA = ToUtf8("key-alpha");
@@ -98,7 +119,7 @@ public class CachingStringKeyDeserializerTests
     [Test]
     public async Task ConcurrentAccess_ReturnsCorrectValues()
     {
-        var sut = new CachingStringKeyDeserializer(Serializers.String);
+        var sut = CreateKeyCache();
         var context = KeyContext();
         var keys = Enumerable.Range(0, 100).Select(i => $"concurrent-key-{i}").ToArray();
 
@@ -127,12 +148,83 @@ public class CachingStringKeyDeserializerTests
     [Test]
     public async Task EmptyData_BypassesCache()
     {
-        var sut = new CachingStringKeyDeserializer(Serializers.String);
+        var sut = CreateKeyCache();
         var context = KeyContext();
         var data = ReadOnlyMemory<byte>.Empty;
 
         var result = sut.Deserialize(data, context);
 
         await Assert.That(result).IsEqualTo(string.Empty);
+    }
+
+    [Test]
+    public async Task ValueCache_Repeated1000BytePayload_ReturnsSameReference()
+    {
+        var sut = CreateValueCache();
+        var context = ValueContext();
+        var payload = new string('x', 1000);
+        var data = ToUtf8(payload);
+
+        var first = sut.Deserialize(data, context);
+        var second = sut.Deserialize(data, context);
+
+        await Assert.That(first).IsEqualTo(payload);
+        await Assert.That(ReferenceEquals(first, second)).IsTrue();
+    }
+
+    [Test]
+    public async Task ValueLongerThan4096Bytes_BypassesCache()
+    {
+        var sut = CreateValueCache();
+        var context = ValueContext();
+        var payload = new string('x', 4097);
+        var data = ToUtf8(payload);
+
+        var first = sut.Deserialize(data, context);
+        var second = sut.Deserialize(data, context);
+
+        await Assert.That(first).IsEqualTo(payload);
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumerBuilder_DefaultStringValueDeserializer_DoesNotCacheValues()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("cache-test")
+            .Build();
+
+        var deserializer = GetValueDeserializer(consumer);
+        var context = ValueContext();
+        var payload = new string('x', 1000);
+        var data = ToUtf8(payload);
+
+        var first = deserializer.Deserialize(data, context);
+        var second = deserializer.Deserialize(data, context);
+
+        await Assert.That(first).IsEqualTo(payload);
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumerBuilder_WithCachedStringValues_UsesBoundedCache()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("cache-test")
+            .WithCachedStringValues()
+            .Build();
+
+        var deserializer = GetValueDeserializer(consumer);
+        var context = ValueContext();
+        var payload = new string('x', 1000);
+        var data = ToUtf8(payload);
+
+        var first = deserializer.Deserialize(data, context);
+        var second = deserializer.Deserialize(data, context);
+
+        await Assert.That(first).IsEqualTo(payload);
+        await Assert.That(ReferenceEquals(first, second)).IsTrue();
     }
 }

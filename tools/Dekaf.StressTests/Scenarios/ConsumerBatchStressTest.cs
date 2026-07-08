@@ -28,6 +28,7 @@ internal sealed class ConsumerBatchStressTest : IStressTestScenario
             .WithClientId("stress-consumer-batch-dekaf")
             .WithGroupId($"stress-group-batch-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithCachedStringValues()
             .ForHighThroughput()
             .BuildAsync(cancellationToken);
 
