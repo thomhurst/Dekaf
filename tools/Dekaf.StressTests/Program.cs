@@ -196,7 +196,52 @@ public static class Program
         Console.WriteLine();
         Console.WriteLine(MarkdownReporter.Generate(allResults));
 
-        return 0;
+        return CheckForMessageLoss(results) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// The stress environment (healthy broker, tmpfs logs, no restarts) never justifies a
+    /// dropped message, so any produce/consume error or any accepted-but-never-delivered
+    /// message is a correctness bug and fails the run. Delivered can legitimately exceed
+    /// accepted-minus-errors when non-idempotent retries duplicate a batch, so only the
+    /// shortfall counts as loss. Results are already saved at this point; the non-zero
+    /// exit only fails the CI job.
+    /// </summary>
+    private static bool CheckForMessageLoss(List<StressTestResult> results)
+    {
+        var failures = new List<string>();
+
+        foreach (var result in results)
+        {
+            var errors = result.Throughput.TotalErrors;
+            if (errors > 0)
+            {
+                failures.Add($"{result.Client} {result.Scenario}: {errors:N0} errors");
+            }
+
+            if (result.DeliveredMessages is { } delivered)
+            {
+                var lost = result.Throughput.TotalMessages - delivered - errors;
+                if (lost > 0)
+                {
+                    failures.Add($"{result.Client} {result.Scenario}: {lost:N0} messages accepted but never delivered");
+                }
+            }
+        }
+
+        if (failures.Count == 0)
+        {
+            return false;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("MESSAGE LOSS DETECTED — failing the run:");
+        foreach (var failure in failures)
+        {
+            Console.WriteLine($"  {failure}");
+        }
+
+        return true;
     }
 
     private static async Task SeedConsumerTopicAsync(string bootstrapServers, string topic, CliOptions options)
