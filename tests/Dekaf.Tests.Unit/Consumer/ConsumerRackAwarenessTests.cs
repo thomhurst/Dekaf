@@ -342,7 +342,7 @@ public sealed class ConsumerRackAwarenessTests
             .GetMethod("FetchFromBrokerAsync", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("FetchFromBrokerAsync method not found");
 
-        var result = method.Invoke(consumer, [brokerId, partitions, CancellationToken.None]);
+        var result = method.Invoke(consumer, [brokerId, partitions, GetFetchBufferEpoch(consumer), CancellationToken.None]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
 
@@ -359,7 +359,9 @@ public sealed class ConsumerRackAwarenessTests
             .GetMethod("FetchFromBrokerWithErrorHandlingAsync", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("FetchFromBrokerWithErrorHandlingAsync method not found");
 
-        var result = method.Invoke(consumer, [brokerId, partitions, CancellationToken.None, CancellationToken.None]);
+        var result = method.Invoke(
+            consumer,
+            [brokerId, partitions, GetFetchBufferEpoch(consumer), CancellationToken.None, CancellationToken.None]);
         if (result is not Task<List<PendingFetchData>?> task)
             throw new InvalidOperationException("FetchFromBrokerWithErrorHandlingAsync returned unexpected type");
 
@@ -453,5 +455,15 @@ public sealed class ConsumerRackAwarenessTests
             ?? throw new InvalidOperationException("PartitionBrokerCacheEntry could not be created");
 
         cacheField.SetValue(consumer, expiredCache);
+    }
+
+    private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_fetchBufferEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fetchBufferEpoch field not found.");
+
+        return (int)field.GetValue(consumer)!;
     }
 }
