@@ -48,13 +48,11 @@ public sealed class BrokerSenderMuteOrderingTests
             LingerMs = 0
         };
 
-    private static (IConnectionPool pool, IKafkaConnection connection) CreateMockConnection(
+    private static (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
         Action? onSend = null)
     {
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.IsConnected.Returns(true);
-        connection.BrokerId.Returns(1);
+        var connection = new TestKafkaConnection();
 
         Task<ProduceResponse> DequeueResponse()
         {
@@ -63,12 +61,7 @@ public sealed class BrokerSenderMuteOrderingTests
             return task;
         }
 
-        connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ => DequeueResponse());
-        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ => DequeueResponse());
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(DequeueResponse());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())

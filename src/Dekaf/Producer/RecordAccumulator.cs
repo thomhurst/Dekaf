@@ -3250,29 +3250,36 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private bool PrepareBatchForPublish(ReadyBatch readyBatch, int generation)
     {
-        if (!readyBatch.IsCurrentIncarnation(generation))
+        if (!readyBatch.TryAcquireResourcePin(generation))
             return false;
 
-        Exception? failure = null;
         try
         {
-            readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
-            readyBatch.SetEncodedSize(readyBatch.RecordBatch.GetEncodedSize(_options.CompressionType));
+            Exception? failure = null;
+            try
+            {
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+                readyBatch.SetEncodedSize(readyBatch.RecordBatch.GetEncodedSize(_options.CompressionType));
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            if (!readyBatch.IsCurrentIncarnation(generation))
+                return false;
+
+            // Mark pre-serialization complete so the drain loop can pick up this batch.
+            readyBatch.MarkPreSerialized();
+            if (failure is null)
+                return !readyBatch.IsSendCompleted && readyBatch.IsCurrentIncarnation(generation);
+
+            return readyBatch.IsCurrentIncarnation(generation) && readyBatch.FailFromPreSerialization(failure);
         }
-        catch (Exception ex)
+        finally
         {
-            failure = ex;
+            readyBatch.ReleaseResourcePin();
         }
-
-        if (!readyBatch.IsCurrentIncarnation(generation))
-            return false;
-
-        // Mark pre-serialization complete so the drain loop can pick up this batch.
-        readyBatch.MarkPreSerialized();
-        if (failure is null)
-            return !readyBatch.IsSendCompleted && readyBatch.IsCurrentIncarnation(generation);
-
-        return readyBatch.IsCurrentIncarnation(generation) && readyBatch.FailFromPreSerialization(failure);
     }
 
     /// <summary>
@@ -5845,6 +5852,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private ManualResetValueTaskSourceCore<bool> _doneCore = new() { RunContinuationsAsynchronously = true };
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup in Cleanup())
+    private int _resourcesCleanedUp; // 0 = pooled resources retained, 1 = arena/RecordBatch returned
+    private int _activeResourcePins; // readers holding RecordBatch/arena stable during serialization
     private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
     private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
     internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
@@ -5884,6 +5893,33 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal bool IsCurrentIncarnation(int expectedGeneration)
         => !IsReturnedToPool && Generation == expectedGeneration;
 
+    internal bool TryAcquireResourcePin(int expectedGeneration)
+    {
+        while (true)
+        {
+            if (!IsCurrentIncarnation(expectedGeneration) || Volatile.Read(ref _cleanedUp) != 0)
+                return false;
+
+            var current = Volatile.Read(ref _activeResourcePins);
+            if (Interlocked.CompareExchange(ref _activeResourcePins, current + 1, current) == current)
+            {
+                if (IsCurrentIncarnation(expectedGeneration) && Volatile.Read(ref _cleanedUp) == 0)
+                    return true;
+
+                ReleaseResourcePin();
+                return false;
+            }
+        }
+    }
+
+    internal void ReleaseResourcePin()
+    {
+        var remaining = Interlocked.Decrement(ref _activeResourcePins);
+        Debug.Assert(remaining >= 0, "ReadyBatch resource pin count went negative");
+        if (remaining == 0 && Volatile.Read(ref _cleanedUp) != 0)
+            TryCleanupResources();
+    }
+
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
     /// </summary>
@@ -5922,6 +5958,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // _memoryReleased follows the same pattern: stale references seeing 1 (released)
         // will skip the release, which is the safe/defensive behavior.
         Interlocked.Exchange(ref _cleanedUp, 0);
+        Interlocked.Exchange(ref _resourcesCleanedUp, 0);
+        Interlocked.Exchange(ref _activeResourcePins, 0);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
@@ -5970,6 +6008,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
             Cleanup();
         }
+
+        WaitForCleanupIfStarted();
 
         // Clear all references to allow GC
         _topicPartition = default;
@@ -6209,9 +6249,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// (because BrokerSender's CompleteSend won it), then immediately returns the batch
     /// to pool via ReturnReadyBatch — before CompleteSend reaches its finally { Cleanup() }.
     /// Reset() would see _cleanedUp == 0 and fire the safety net, corrupting completion
-    /// sources that CompleteSend is still iterating.
-    /// Resolves in microseconds typically; under thread starvation SpinWait yields to the OS.
-    /// Bounded at 1000 iterations (~1ms) as defense against a stuck Cleanup thread.
+    /// sources that CompleteSend is still iterating. If cleanup is deferred behind active
+    /// resource pins, also waits until the final pin returns the arena and RecordBatch to pools.
     /// </remarks>
     internal void WaitForCleanupIfStarted()
     {
@@ -6219,15 +6258,35 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             var sw = new SpinWait();
             do { sw.SpinOnce(); }
-            while (Volatile.Read(ref _cleanedUp) == 0 && sw.Count < 1000);
+            while (Volatile.Read(ref _cleanedUp) == 0);
+        }
+
+        if (Volatile.Read(ref _cleanedUp) != 0 && Volatile.Read(ref _resourcesCleanedUp) == 0)
+        {
+            // Reset must wait for deferred resource cleanup; otherwise it can recycle fields
+            // while the last serialization pin is still returning the old RecordBatch/arena.
+            var sw = new SpinWait();
+            do { sw.SpinOnce(); }
+            while (Volatile.Read(ref _resourcesCleanedUp) == 0);
         }
     }
 
     private void Cleanup()
     {
-        // Guard against double-cleanup: If cleanup has already been performed, return immediately.
-        // This prevents double-return of pooled arrays which would corrupt ArrayPool.
+        // Guard against double-cleanup request. Actual pooled-resource return may be
+        // deferred until active serialization pins release.
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+            return;
+
+        TryCleanupResources();
+    }
+
+    private void TryCleanupResources()
+    {
+        if (Volatile.Read(ref _activeResourcePins) != 0)
+            return;
+
+        if (Interlocked.Exchange(ref _resourcesCleanedUp, 1) != 0)
             return;
 
         // Return the working (container) array: either to the reuse queue for fast recycling

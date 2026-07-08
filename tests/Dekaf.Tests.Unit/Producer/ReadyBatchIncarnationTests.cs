@@ -26,6 +26,11 @@ public sealed class ReadyBatchIncarnationTests
         "ProduceRequestScratch",
         BindingFlags.NonPublic)!;
 
+    private static int GetReadyBatchInt32(ReadyBatch batch, string fieldName)
+        => (int)typeof(ReadyBatch)
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(batch)!;
+
     private static ReadyBatch CreateInitializedBatch(string topic = "t", int partition = 0)
     {
         var batch = new ReadyBatch();
@@ -60,6 +65,45 @@ public sealed class ReadyBatchIncarnationTests
         var batch = CreateInitializedBatch();
 
         await Assert.That(batch.IsCurrentIncarnation(batch.Generation)).IsTrue();
+    }
+
+    [Test]
+    public async Task Cleanup_WithActiveResourcePin_DefersPooledResourceReturnUntilPinRelease()
+    {
+        var batch = new ReadyBatch();
+        var recordBatch = RecordBatch.RentFromPool();
+        recordBatch.Records = Array.Empty<Record>();
+        var arena = BatchArena.RentOrCreate(128);
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            recordBatch,
+            completionSourcesArray: null,
+            completionSourcesCount: 0,
+            dataSize: 100,
+            arena: arena);
+        var generation = batch.Generation;
+
+        await Assert.That(batch.TryAcquireResourcePin(generation)).IsTrue();
+
+        batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+        await Assert.That(GetReadyBatchInt32(batch, "_cleanedUp")).IsEqualTo(1);
+        await Assert.That(GetReadyBatchInt32(batch, "_resourcesCleanedUp")).IsEqualTo(0);
+
+        batch.ReleaseResourcePin();
+
+        await Assert.That(GetReadyBatchInt32(batch, "_resourcesCleanedUp")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryAcquireResourcePin_AfterCleanupRequested_ReturnsFalse()
+    {
+        var batch = CreateInitializedBatch();
+        var generation = batch.Generation;
+
+        batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+        await Assert.That(batch.TryAcquireResourcePin(generation)).IsFalse();
     }
 
     [Test]

@@ -1550,6 +1550,57 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return writeIdx;
     }
 
+    private int AcquireResourcePins(ReadyBatch[] batches, int[] generations, int count)
+    {
+        var writeIdx = 0;
+        for (var readIdx = 0; readIdx < count; readIdx++)
+        {
+            var batch = batches[readIdx];
+            var generation = generations[readIdx];
+            if (!batch.TryAcquireResourcePin(generation))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            batches[writeIdx] = batch;
+            generations[writeIdx] = generation;
+            writeIdx++;
+        }
+
+        for (var i = writeIdx; i < count; i++)
+        {
+            batches[i] = null!;
+            generations[i] = 0;
+        }
+
+        return writeIdx;
+    }
+
+    private static void ReleaseResourcePins(ReadyBatch[] batches, int count)
+    {
+        for (var i = 0; i < count; i++)
+            batches[i]?.ReleaseResourcePin();
+    }
+
+    private ValueTask<Task<ProduceResponse>> SendPipelinedAfterWriteAsync(
+        IKafkaConnection connection,
+        ProduceRequest request,
+        short apiVersion)
+    {
+        if (connection is IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
+        {
+            return writeCompletionConnection.SendPipelinedAfterWriteAsync<ProduceRequest, ProduceResponse>(
+                request,
+                apiVersion,
+                _cts.Token);
+        }
+
+        throw new InvalidOperationException(
+            $"{nameof(BrokerSender)} requires {nameof(IKafkaPipelinedWriteCompletionConnection)} for pipelined produce sends; " +
+            $"connection type '{connection.GetType().FullName}' cannot safely hold batch resources until the socket write completes.");
+    }
+
     /// <summary>
     /// Finalizes retry batches that have been coalesced and are about to be sent.
     /// Called after the epoch bump check passes to ensure retry state is only cleared
@@ -2311,24 +2362,90 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
-            var request = scratch.Build(batches, generations, count);
+            count = AcquireResourcePins(batches, generations, count);
+            if (count == 0)
+            {
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                return;
+            }
+
+            var resourcePinCount = count;
 
             var requestStartTime = Stopwatch.GetTimestamp();
 
-            // Handle Acks.None (fire-and-forget)
-            if (_options.Acks == Acks.None)
+            try
             {
-                // Use the caller-timeout overload to avoid per-write
-                // CancellationTokenSource + CancellationTokenRegistration allocations.
-                // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
-                await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                    request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
+                // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
+                var request = scratch.Build(batches, generations, count);
+
+                // Handle Acks.None (fire-and-forget)
+                if (_options.Acks == Acks.None)
+                {
+                    // Use the caller-timeout overload to avoid per-write
+                    // CancellationTokenSource + CancellationTokenRegistration allocations.
+                    // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
+                    await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
+                        request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
+
+                    // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
+                    scratch.ClearReferences();
+                    ReleaseResourcePins(batches, resourcePinCount);
+                    resourcePinCount = 0;
+
+                    var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
+                    for (var i = 0; i < count; i++)
+                    {
+                        var batch = batches[i];
+                        if (!batch.IsCurrentIncarnation(generations[i]))
+                        {
+                            LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                            batches[i] = null!;
+                            continue;
+                        }
+
+                        CompleteInflightEntry(batch);
+                        batch.CompleteSend(-1, fireAndForgetTimestamp);
+                        try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
+                        catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
+                    }
+
+                    // Release everything synchronously (no pipelined response — fire-and-forget
+                    // doesn't add to _pendingResponsesByConnection, so no in-flight slot to release)
+                    for (var i = 0; i < count; i++)
+                    {
+                        if (batches[i] is not null)
+                            CleanupBatch(batches[i]);
+                    }
+
+                    ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                    return;
+                }
+
+                // Pipelined send: write request, get response task.
+                // Add to _pendingResponsesByConnection for the send loop to process inline (like Java's client.poll()).
+                // No fire-and-forget — responses are processed in the single-threaded send loop,
+                // making retry ordering deterministic by construction.
+                //
+                // Use the connection-owned timeout path for pipelined sends. The send loop can
+                // have multiple responses in flight on this connection; a reusable caller-owned
+                // CTS would let a later send reset or cancel an earlier response timeout.
+                var responseTask = await SendPipelinedAfterWriteAsync(
+                    connection,
+                    request,
+                    (short)apiVersion).ConfigureAwait(false);
 
                 // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                 scratch.ClearReferences();
+                ReleaseResourcePins(batches, resourcePinCount);
+                resourcePinCount = 0;
 
-                var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
+                // Release buffer memory now that data is written to the TCP buffer.
+                // The untracked gap (between release and response) is bounded by
+                // MaxInFlightRequestsPerConnection × BatchSize (e.g. 5 × 1MB = 5MB).
+                // This is safe because: (1) the kernel has a copy in the TCP send buffer,
+                // (2) the gap is bounded and small, (3) it unblocks producers waiting on
+                // BufferMemory without the unbounded growth caused by drain-time release.
+                // CleanupBatch still releases for error paths where TCP send wasn't reached.
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
@@ -2339,118 +2456,81 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    CompleteInflightEntry(batch);
-                    batch.CompleteSend(-1, fireAndForgetTimestamp);
-                    try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
-                    catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
+                    if (batch.TrySetMemoryReleased())
+                    {
+                        _accumulator.ReleaseMemory(batch.DataSize);
+                    }
                 }
 
-                // Release everything synchronously (no pipelined response — fire-and-forget
-                // doesn't add to _pendingResponsesByConnection, so no in-flight slot to release)
+                var pendingResponse = PendingResponse.Create(responseTask, batches, generations, count, requestStartTime);
+                _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
+                pendingResponseAdded = true; // Array ownership transferred to PendingResponse
+                Interlocked.Increment(ref _totalPendingResponseCount);
+
+                // Diagnostic: log instance+task+partitions at PendingResponse creation time.
+                // This traces which batches are paired with which response task.
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    var pipelinedPartitions = string.Join(", ",
+                        Enumerable.Range(0, count)
+                            .Where(i => batches[i] is not null)
+                            .Select(i => $"{batches[i].TopicPartition.Topic}-{batches[i].TopicPartition.Partition}"));
+                    LogPendingResponseCreated(_instanceId, _brokerId, responseTask.Id, count, pipelinedPartitions);
+                }
+
+                // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
+                // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
                 for (var i = 0; i < count; i++)
+                    batches[i].AppendDiag('W');
+
+                // Signal the send loop to wake up and poll when the response arrives.
+                // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
+                // Two signal paths: (1) channel write for the main WaitToReadAsync path,
+                // (2) AsyncAutoResetSignal for the direct response-wait paths (replaces Task.WhenAny).
+                //
+                // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
+                // to avoid allocating a continuation Task on every pipelined send. The callback
+                // is pre-allocated once in the constructor and reused for all response tasks.
+                if (responseTask.IsCompleted)
                 {
-                    if (batches[i] is not null)
-                        CleanupBatch(batches[i]);
+                    // Already completed — signal inline without registering a continuation.
+                    _responseCompletionCallback();
+                }
+                else
+                {
+                    // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
+                    // callback on the ThreadPool rather than running inline on the completing thread.
+                    // This is intentional — it keeps the I/O completion thread free.
+                    responseTask.ConfigureAwait(false).GetAwaiter()
+                        .UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
-                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-                return;
-            }
-
-            // Pipelined send: write request, get response task.
-            // Add to _pendingResponsesByConnection for the send loop to process inline (like Java's client.poll()).
-            // No fire-and-forget — responses are processed in the single-threaded send loop,
-            // making retry ordering deterministic by construction.
-            //
-            // Use the connection-owned timeout path for pipelined sends. The send loop can
-            // have multiple responses in flight on this connection; a reusable caller-owned
-            // CTS would let a later send reset or cancel an earlier response timeout.
-            var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                request, (short)apiVersion, _cts.Token);
-
-            // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
-            scratch.ClearReferences();
-
-            // Release buffer memory now that data is written to the TCP buffer.
-            // The untracked gap (between release and response) is bounded by
-            // MaxInFlightRequestsPerConnection × BatchSize (e.g. 5 × 1MB = 5MB).
-            // This is safe because: (1) the kernel has a copy in the TCP send buffer,
-            // (2) the gap is bounded and small, (3) it unblocks producers waiting on
-            // BufferMemory without the unbounded growth caused by drain-time release.
-            // CleanupBatch still releases for error paths where TCP send wasn't reached.
-            for (var i = 0; i < count; i++)
-            {
-                var batch = batches[i];
-                if (!batch.IsCurrentIncarnation(generations[i]))
+                // Mute partitions at send time when limited to 1 in-flight request.
+                // This ensures at most one batch per partition in-flight across all requests.
+                // When maxInFlight > 1, sequence numbers guarantee ordering instead,
+                // and retry-time muting handles error recovery.
+                if (_muteOnSend)
                 {
-                    LogStaleBatchInSendSkipped(_instanceId, _brokerId);
-                    batches[i] = null!;
-                    continue;
+                    for (var i = 0; i < count; i++)
+                    {
+                        _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
+                        _accumulator.MutePartition(batches[i].TopicPartition);
+                    }
                 }
 
-                if (batch.TrySetMemoryReleased())
+                LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
+            }
+            catch
+            {
+                scratch.ClearReferences();
+                if (resourcePinCount > 0)
                 {
-                    _accumulator.ReleaseMemory(batch.DataSize);
+                    ReleaseResourcePins(batches, resourcePinCount);
+                    resourcePinCount = 0;
                 }
+
+                throw;
             }
-
-            var pendingResponse = PendingResponse.Create(responseTask, batches, generations, count, requestStartTime);
-            _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
-            pendingResponseAdded = true; // Array ownership transferred to PendingResponse
-            Interlocked.Increment(ref _totalPendingResponseCount);
-
-            // Diagnostic: log instance+task+partitions at PendingResponse creation time.
-            // This traces which batches are paired with which response task.
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                var pipelinedPartitions = string.Join(", ",
-                    Enumerable.Range(0, count)
-                        .Where(i => batches[i] is not null)
-                        .Select(i => $"{batches[i].TopicPartition.Topic}-{batches[i].TopicPartition.Partition}"));
-                LogPendingResponseCreated(_instanceId, _brokerId, responseTask.Id, count, pipelinedPartitions);
-            }
-
-            // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
-            // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
-            for (var i = 0; i < count; i++)
-                batches[i].AppendDiag('W');
-
-            // Signal the send loop to wake up and poll when the response arrives.
-            // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
-            // Two signal paths: (1) channel write for the main WaitToReadAsync path,
-            // (2) AsyncAutoResetSignal for the direct response-wait paths (replaces Task.WhenAny).
-            //
-            // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
-            // to avoid allocating a continuation Task on every pipelined send. The callback
-            // is pre-allocated once in the constructor and reused for all response tasks.
-            if (responseTask.IsCompleted)
-            {
-                // Already completed — signal inline without registering a continuation.
-                _responseCompletionCallback();
-            }
-            else
-            {
-                // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
-                // callback on the ThreadPool rather than running inline on the completing thread.
-                // This is intentional — it keeps the I/O completion thread free.
-                responseTask.ConfigureAwait(false).GetAwaiter()
-                    .UnsafeOnCompleted(_responseCompletionCallback);
-            }
-
-            // Mute partitions at send time when limited to 1 in-flight request.
-            // This ensures at most one batch per partition in-flight across all requests.
-            // When maxInFlight > 1, sequence numbers guarantee ordering instead,
-            // and retry-time muting handles error recovery.
-            if (_muteOnSend)
-            {
-                for (var i = 0; i < count; i++)
-                {
-                    _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
-                    _accumulator.MutePartition(batches[i].TopicPartition);
-                }
-            }
-
-            LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {

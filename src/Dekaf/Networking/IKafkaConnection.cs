@@ -101,3 +101,20 @@ public interface IKafkaConnection : IAsyncDisposable
     /// </summary>
     ValueTask ConnectAsync(CancellationToken cancellationToken = default);
 }
+
+internal interface IKafkaPipelinedWriteCompletionConnection
+{
+    ValueTask<Task<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    ValueTask<Task<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+}

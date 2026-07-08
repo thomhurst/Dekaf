@@ -131,7 +131,10 @@ internal static class ConnectionHelper
 /// <summary>
 /// A multiplexed connection to a Kafka broker using System.IO.Pipelines.
 /// </summary>
-public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafkaConnection
+public sealed partial class KafkaConnection :
+    IKafkaConnection,
+    IIdleTrackedKafkaConnection,
+    IKafkaPipelinedWriteCompletionConnection
 {
     private readonly string _host;
     private readonly int _port;
@@ -686,7 +689,11 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
-        => SendPipelinedCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: false, cancellationToken);
+        => SendPipelinedCoreAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            callerOwnsTimeout: false,
+            cancellationToken);
 
     /// <summary>
     /// Pipelined overload that skips the per-write CancellationTokenSource rent and
@@ -705,9 +712,51 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
-        => SendPipelinedCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: true, cancellationToken);
+        => SendPipelinedCoreAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            callerOwnsTimeout: true,
+            cancellationToken);
+
+    ValueTask<Task<TResponse>> IKafkaPipelinedWriteCompletionConnection.SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        => SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            callerOwnsTimeout: false,
+            cancellationToken);
+
+    ValueTask<Task<TResponse>>
+        IKafkaPipelinedWriteCompletionConnection.SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken)
+        => SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            callerOwnsTimeout: true,
+            cancellationToken);
 
     private async Task<TResponse> SendPipelinedCoreAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        var responseTask = await SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            callerOwnsTimeout,
+            cancellationToken).ConfigureAwait(false);
+
+        return await responseTask.ConfigureAwait(false);
+    }
+
+    private async ValueTask<Task<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         bool callerOwnsTimeout,
@@ -749,12 +798,13 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
                 .ConfigureAwait(false);
 
-            // Response phase: await response with timeout, then parse
-            var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
-                pending, correlationId, apiVersion, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
-            Touch();
-            _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
-            return response;
+            return AwaitPipelinedResponseAsync<TRequest, TResponse>(
+                pending,
+                correlationId,
+                apiVersion,
+                callerOwnsTimeout,
+                telemetryStartTimestamp,
+                cancellationToken);
         }
         catch
         {
@@ -766,6 +816,27 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
             throw;
         }
+    }
+
+    private async Task<TResponse> AwaitPipelinedResponseAsync<TRequest, TResponse>(
+        PooledPendingRequest pending,
+        int correlationId,
+        short apiVersion,
+        bool callerOwnsTimeout,
+        long telemetryStartTimestamp,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
+            pending,
+            correlationId,
+            apiVersion,
+            callerOwnsTimeout,
+            cancellationToken).ConfigureAwait(false);
+        Touch();
+        _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
+        return response;
     }
 
     /// <summary>
