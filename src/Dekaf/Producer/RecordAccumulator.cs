@@ -1475,7 +1475,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (batch is not null)
             {
-                batch.AppendDiag('D');
+                if (_options.EnableDeliveryDiagnostics)
+                    batch.AppendDiag('D');
                 size += batch.EncodedSize;
                 ready.Add(batch);
             }
@@ -3836,9 +3837,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // and the list add, the sweep will miss it in the snapshot — but that's acceptable
         // because the sweep is defense-in-depth at 3× delivery timeout and the batch will
         // be caught on the next sweep interval.
+        if (_options.EnableDeliveryDiagnostics)
+        {
+            batch.EnableDeliveryDiagnostics();
+            batch.AppendDiag('E');
+        }
         Interlocked.Increment(ref _inFlightBatchCount);
         InFlightBatchListAdd(batch);
-        batch.AppendDiag('E');
     }
 
     /// <summary>
@@ -3860,7 +3865,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             0,
             (_, current) => Math.Max(0, current - batch.DataSize));
 
-        batch.AppendDiag('X');
+        if (_options.EnableDeliveryDiagnostics)
+            batch.AppendDiag('X');
         var count = Interlocked.Decrement(ref _inFlightBatchCount);
         Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
         if (count <= 0)
@@ -3966,6 +3972,60 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             if (lockTaken) _inFlightBatchLock.Exit();
         }
+    }
+
+    private void InFlightBatchDiagnosticSnapshot(List<DiagnosticBatchReference> target)
+    {
+        var lockTaken = false;
+        try
+        {
+            _inFlightBatchLock.Enter(ref lockTaken);
+
+            var current = _inFlightBatchHead;
+            while (current is not null)
+            {
+                target.Add(new DiagnosticBatchReference(current, current.Generation, current.TopicPartition));
+                current = current.InFlightNext;
+            }
+        }
+        finally
+        {
+            if (lockTaken) _inFlightBatchLock.Exit();
+        }
+    }
+
+    private readonly struct DiagnosticBatchReference(ReadyBatch batch, int generation, TopicPartition topicPartition)
+    {
+        public ReadyBatch Batch { get; } = batch;
+        public int Generation { get; } = generation;
+        public TopicPartition TopicPartition { get; } = topicPartition;
+    }
+
+    internal ProducerDeliveryDiagnosticsSnapshot GetDeliveryDiagnosticsSnapshot()
+    {
+        if (!_options.EnableDeliveryDiagnostics)
+        {
+            return new ProducerDeliveryDiagnosticsSnapshot
+            {
+                CapturedAtUtc = DateTimeOffset.UtcNow,
+                DiagnosticsEnabled = false
+            };
+        }
+
+        var batches = new List<DiagnosticBatchReference>();
+        InFlightBatchDiagnosticSnapshot(batches);
+
+        var snapshot = new ProducerDeliveryDiagnosticsSnapshot
+        {
+            DiagnosticsEnabled = true,
+            CapturedAtUtc = DateTimeOffset.UtcNow,
+            InFlightBatchCount = Volatile.Read(ref _inFlightBatchCount)
+        };
+
+        foreach (var batch in batches)
+            snapshot.Batches.Add(batch.Batch.CreateDeliveryDiagnostic(batch.Generation, batch.TopicPartition));
+
+        return snapshot;
     }
 
     /// <summary>
@@ -5710,6 +5770,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Guards against double-remove races.
     internal bool InFlightLinked;
 
+    private int _pipelineGeneration;
+
+    internal int PipelineGeneration => Volatile.Read(ref _pipelineGeneration);
+
+    internal void EnableDeliveryDiagnostics() =>
+        Volatile.Write(ref _pipelineGeneration, Generation);
+
     /// <summary>
     /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
     /// Tracks the last few transitions as single-char codes to keep overhead minimal.
@@ -5721,7 +5788,19 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         get
         {
             var len = Volatile.Read(ref _diagTraceLen);
-            return len > 0 ? new string(_diagTrace, 0, Math.Min(len, _diagTrace.Length)) : "";
+            if (len <= 0)
+                return "";
+
+            var count = Math.Min(len, _diagTrace.Length);
+            if (len <= _diagTrace.Length)
+                return new string(_diagTrace, 0, count);
+
+            var chars = new char[count];
+            var start = len - count;
+            for (var i = 0; i < count; i++)
+                chars[i] = _diagTrace[(start + i) % _diagTrace.Length];
+
+            return new string(chars);
         }
     }
     private readonly char[] _diagTrace = new char[32];
@@ -5731,8 +5810,137 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal void AppendDiag(char code)
     {
         var idx = Interlocked.Increment(ref _diagTraceLen) - 1;
-        if (idx < _diagTrace.Length)
-            _diagTrace[idx] = code;
+        _diagTrace[idx % _diagTrace.Length] = code;
+    }
+
+    internal ProducerBatchDeliveryDiagnostic CreateDeliveryDiagnostic(
+        int expectedGeneration,
+        TopicPartition capturedTopicPartition)
+    {
+        if (!TryAcquireResourcePin(expectedGeneration))
+            return CreateStaleDeliveryDiagnostic(capturedTopicPartition, expectedGeneration);
+
+        try
+        {
+            var recordBatch = _recordBatch;
+            var arena = _arena;
+            var trace = DiagTrace;
+            var pipelineGeneration = PipelineGeneration;
+            var isPreSerialized = IsPreSerialized;
+            var isSendCompleted = IsSendCompleted;
+            var isDoneTaskCompleted = Volatile.Read(ref _completed) != 0;
+            var isMemoryReleased = MemoryReleased;
+            var isReturnedToPool = IsReturnedToPool;
+            var inFlightLinked = InFlightLinked;
+
+            var diagnostic = new ProducerBatchDeliveryDiagnostic
+            {
+                Topic = _topicPartition.Topic ?? string.Empty,
+                Partition = _topicPartition.Partition,
+                RecordCount = recordBatch?.Records.Count ?? _completionSourcesCount,
+                DataSize = DataSize,
+                EncodedSize = EncodedSize,
+                ReadyBatchId = RuntimeHelpers.GetHashCode(this),
+                RecordBatchId = recordBatch is null ? null : RuntimeHelpers.GetHashCode(recordBatch),
+                ArenaId = arena is null ? null : RuntimeHelpers.GetHashCode(arena),
+                PipelineGeneration = pipelineGeneration,
+                CurrentGeneration = Generation,
+                LifecycleState = GetLifecycleState(
+                    isReturnedToPool,
+                    isSendCompleted,
+                    isMemoryReleased,
+                    inFlightLinked,
+                    isPreSerialized),
+                Trace = trace,
+                LastTouchedBy = DescribeLastTouchedBy(trace),
+                IsStale = false,
+                IsPreSerialized = isPreSerialized,
+                IsSendCompleted = isSendCompleted,
+                IsDoneTaskCompleted = isDoneTaskCompleted,
+                IsMemoryReleased = isMemoryReleased,
+                IsReturnedToPool = isReturnedToPool,
+                InFlightLinked = inFlightLinked
+            };
+
+            return IsCurrentIncarnation(expectedGeneration)
+                ? diagnostic
+                : CreateStaleDeliveryDiagnostic(capturedTopicPartition, expectedGeneration);
+        }
+        finally
+        {
+            ReleaseResourcePin();
+        }
+    }
+
+    private ProducerBatchDeliveryDiagnostic CreateStaleDeliveryDiagnostic(
+        TopicPartition capturedTopicPartition,
+        int expectedGeneration)
+        => new()
+        {
+            Topic = capturedTopicPartition.Topic ?? string.Empty,
+            Partition = capturedTopicPartition.Partition,
+            RecordCount = 0,
+            DataSize = 0,
+            EncodedSize = 0,
+            ReadyBatchId = RuntimeHelpers.GetHashCode(this),
+            RecordBatchId = null,
+            ArenaId = null,
+            PipelineGeneration = expectedGeneration,
+            CurrentGeneration = Generation,
+            LifecycleState = "stale",
+            Trace = "",
+            LastTouchedBy = "stale",
+            IsStale = true,
+            IsPreSerialized = false,
+            IsSendCompleted = false,
+            IsDoneTaskCompleted = false,
+            IsMemoryReleased = false,
+            IsReturnedToPool = false,
+            InFlightLinked = false
+        };
+
+    private static string GetLifecycleState(
+        bool isReturnedToPool,
+        bool isSendCompleted,
+        bool isMemoryReleased,
+        bool inFlightLinked,
+        bool isPreSerialized)
+    {
+        if (isReturnedToPool)
+            return "recycled";
+        if (isSendCompleted)
+            return "completed-send";
+        if (isMemoryReleased)
+            return "awaiting-response";
+        if (inFlightLinked)
+            return isPreSerialized ? "in-flight" : "appended";
+        return isPreSerialized ? "serialized" : "appended";
+    }
+
+    private static string DescribeLastTouchedBy(string trace)
+    {
+        if (trace.Length == 0)
+            return "none";
+
+        return trace[^1] switch
+        {
+            'E' => "RecordAccumulator.OnBatchEntersPipeline",
+            'D' => "RecordAccumulator.Drain",
+            'Q' => "KafkaProducer.SenderLoop.EnqueueBrokerSender",
+            'C' => "BrokerSender.CoalesceBatch",
+            'O' => "BrokerSender.CarryOver",
+            'S' => "BrokerSender.SendLoop",
+            'G' => "BrokerSender.GetConnection",
+            'W' => "BrokerSender.PendingResponse",
+            'P' => "BrokerSender.ProcessFaultedResponse",
+            'R' => "BrokerSender.ProcessResponse",
+            'H' => "BrokerSender.HandleRetriableBatch",
+            'T' => "BrokerSender.HandleTimedOutRequest",
+            'Z' => "BrokerSender.SendFailed",
+            'F' => "BrokerSender.FailAndCleanupBatch",
+            'X' => "RecordAccumulator.OnBatchExitsPipeline",
+            _ => "unknown"
+        };
     }
 
     /// <summary>

@@ -21,4 +21,5 @@ internal sealed class StressTestOptions
     public string Compression { get; init; } = "none";
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;
+    public bool EnableProducerDeliveryDiagnostics { get; init; }
 }
