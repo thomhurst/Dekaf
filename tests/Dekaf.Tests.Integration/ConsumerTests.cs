@@ -886,8 +886,9 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             catch (OperationCanceledException) { }
         });
 
-        // Wait for consumer to get partition assignment before producing new message
-        // This ensures ListOffsets (which determines "latest") is called before our produce
+        // Wait for consumer to get partition assignment before producing new message.
+        // Assignment is published before position initialization, so also wait until
+        // the latest reset position reaches the current high watermark.
         var assignmentTimeout = TimeSpan.FromSeconds(15);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (consumer.Assignment.Count == 0 && sw.Elapsed < assignmentTimeout)
@@ -900,8 +901,40 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             throw new InvalidOperationException("Consumer did not receive assignment within timeout");
         }
 
-        // Small additional delay to ensure positions are initialized after assignment
-        await Task.Delay(500);
+        var assignedPartitions = consumer.Assignment.ToArray();
+        var positionTimeout = TimeSpan.FromSeconds(15);
+        sw.Restart();
+
+        while (true)
+        {
+            TopicPartition? pendingPartition = null;
+            long? pendingPosition = null;
+            long pendingHigh = 0;
+
+            foreach (var partition in assignedPartitions)
+            {
+                var position = consumer.GetPosition(partition);
+                var watermarks = await consumer.QueryWatermarkOffsetsAsync(partition, cts.Token);
+                if (position == watermarks.High)
+                    continue;
+
+                pendingPartition = partition;
+                pendingPosition = position;
+                pendingHigh = watermarks.High;
+                break;
+            }
+
+            if (pendingPartition is null)
+                break;
+
+            if (sw.Elapsed >= positionTimeout)
+            {
+                throw new InvalidOperationException(
+                    $"Consumer did not initialize latest position for {pendingPartition} within timeout (position={pendingPosition}, high={pendingHigh})");
+            }
+
+            await Task.Delay(100, cts.Token);
+        }
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
