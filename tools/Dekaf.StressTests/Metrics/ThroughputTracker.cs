@@ -8,12 +8,16 @@ namespace Dekaf.StressTests.Metrics;
 /// </summary>
 internal sealed class ThroughputTracker
 {
+    private const int MaxErrorSamples = 5;
+
     private long _messageCount;
     private long _byteCount;
     private long _errorCount;
     private readonly Stopwatch _stopwatch = new();
     private readonly List<double> _messagesPerSecondSamples = [];
     private readonly object _samplesLock = new();
+    private readonly List<ThroughputErrorSample> _errorSamples = [];
+    private readonly object _errorsLock = new();
     private long _lastSampleMessageCount;
     private DateTime _lastSampleTime;
     private TimeSpan _cpuTimeStart;
@@ -59,7 +63,57 @@ internal sealed class ThroughputTracker
 
     public void RecordError()
     {
-        Interlocked.Increment(ref _errorCount);
+        RecordErrorCore(errorType: null, message: null, details: null, operation: null, messageIndex: null);
+    }
+
+    public void RecordError(Exception exception, string? operation = null, long? messageIndex = null)
+    {
+        RecordErrorCore(
+            exception.GetType().FullName ?? exception.GetType().Name,
+            exception.Message,
+            exception.ToString(),
+            operation,
+            messageIndex);
+    }
+
+    public void RecordError(string errorType, string? message, string? operation = null, long? messageIndex = null)
+    {
+        RecordErrorCore(errorType, message, details: null, operation, messageIndex);
+    }
+
+    private void RecordErrorCore(
+        string? errorType,
+        string? message,
+        string? details,
+        string? operation,
+        long? messageIndex)
+    {
+        var errorNumber = Interlocked.Increment(ref _errorCount);
+        if (string.IsNullOrWhiteSpace(errorType) && string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(details))
+        {
+            return;
+        }
+
+        lock (_errorsLock)
+        {
+            if (_errorSamples.Count >= MaxErrorSamples)
+            {
+                return;
+            }
+
+            _errorSamples.Add(new ThroughputErrorSample
+            {
+                ErrorNumber = errorNumber,
+                OccurredAtUtc = DateTime.UtcNow,
+                ElapsedSeconds = _stopwatch.Elapsed.TotalSeconds,
+                AcceptedMessagesAtError = MessageCount,
+                MessageIndex = messageIndex,
+                Operation = string.IsNullOrWhiteSpace(operation) ? null : operation,
+                ExceptionType = string.IsNullOrWhiteSpace(errorType) ? "Unknown" : errorType,
+                Message = string.IsNullOrWhiteSpace(message) ? null : message,
+                Details = string.IsNullOrWhiteSpace(details) ? null : details
+            });
+        }
     }
 
     public void TakeSample()
@@ -116,6 +170,12 @@ internal sealed class ThroughputTracker
             samplesCopy = [.. _messagesPerSecondSamples];
         }
 
+        List<ThroughputErrorSample> errorSamplesCopy;
+        lock (_errorsLock)
+        {
+            errorSamplesCopy = [.. _errorSamples];
+        }
+
         return new ThroughputSnapshot
         {
             TotalMessages = MessageCount,
@@ -124,7 +184,8 @@ internal sealed class ThroughputTracker
             ElapsedSeconds = _stopwatch.Elapsed.TotalSeconds,
             AverageMessagesPerSecond = GetAverageMessagesPerSecond(),
             AverageMegabytesPerSecond = GetAverageMegabytesPerSecond(),
-            MessagesPerSecondSamples = samplesCopy
+            MessagesPerSecondSamples = samplesCopy,
+            ErrorSamples = errorSamplesCopy
         };
     }
 }
@@ -138,4 +199,18 @@ internal sealed class ThroughputSnapshot
     public required double AverageMessagesPerSecond { get; init; }
     public required double AverageMegabytesPerSecond { get; init; }
     public required List<double> MessagesPerSecondSamples { get; init; }
+    public List<ThroughputErrorSample> ErrorSamples { get; init; } = [];
+}
+
+internal sealed class ThroughputErrorSample
+{
+    public required long ErrorNumber { get; init; }
+    public required DateTime OccurredAtUtc { get; init; }
+    public required double ElapsedSeconds { get; init; }
+    public required long AcceptedMessagesAtError { get; init; }
+    public long? MessageIndex { get; init; }
+    public string? Operation { get; init; }
+    public required string ExceptionType { get; init; }
+    public string? Message { get; init; }
+    public string? Details { get; init; }
 }

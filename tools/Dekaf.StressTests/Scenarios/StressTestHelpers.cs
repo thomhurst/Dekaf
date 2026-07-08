@@ -147,7 +147,8 @@ internal static class StressTestHelpers
         string key,
         string value,
         LatencyTracker latency,
-        ThroughputTracker throughput)
+        ThroughputTracker throughput,
+        long? messageIndex = null)
     {
         _ = SampleAsync();
 
@@ -159,9 +160,9 @@ internal static class StressTestHelpers
                 await producer.ProduceAsync(topic, key, value).ConfigureAwait(false);
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
             }
-            catch
+            catch (Exception ex)
             {
-                throughput.RecordError();
+                throughput.RecordError(ex, "SampleDeliveryLatency", messageIndex);
             }
         }
     }

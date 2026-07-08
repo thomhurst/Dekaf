@@ -32,6 +32,12 @@ internal static class MarkdownReporter
                 GenerateLatencyTable(sb, resultsWithLatency, $"Latency - {label}");
 
             GenerateGcTable(sb, groupResults, $"GC Statistics - {label}");
+
+            var resultsWithErrorSamples = groupResults
+                .Where(r => r.Throughput.ErrorSamples.Count > 0)
+                .ToList();
+            if (resultsWithErrorSamples.Count > 0)
+                GenerateErrorSamplesTable(sb, resultsWithErrorSamples, $"Error Samples - {label}");
         }
 
         if (results.Results.Any(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase)))
@@ -160,6 +166,35 @@ internal static class MarkdownReporter
         sb.AppendLine();
     }
 
+    private static void GenerateErrorSamplesTable(StringBuilder sb, List<StressTestResult> results, string title)
+    {
+        var clientWidth = GetClientColumnWidth(results);
+
+        sb.AppendLine($"## {title}");
+        sb.AppendLine();
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Error # | At | Message Index | Operation | Type | Message |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|---------|----|---------------|-----------|------|---------|");
+
+        foreach (var result in results.OrderBy(r => r.Client))
+        {
+            foreach (var sample in result.Throughput.ErrorSamples)
+            {
+                var messageIndex = sample.MessageIndex is { } index ? index.ToString("N0") : "-";
+                var operation = EscapeTableCell(sample.Operation ?? "-");
+                var type = EscapeTableCell(sample.ExceptionType);
+                var message = EscapeTableCell(Truncate(sample.Message ?? "-", 180));
+
+                sb.AppendLine(
+                    $"| {result.Client.PadRight(clientWidth)} | {sample.ErrorNumber:N0} | " +
+                    $"+{sample.ElapsedSeconds:F3}s | {messageIndex} | {operation} | {type} | {message} |");
+            }
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("*Full exception details are serialized in the JSON results and printed in the failing CI log.*");
+        sb.AppendLine();
+    }
+
     private static string FormatScenarioTitle(string scenario) => scenario switch
     {
         "producer" => "Producer (Fire-and-Forget) Throughput",
@@ -193,6 +228,17 @@ internal static class MarkdownReporter
         < 1024 * 1024 * 1024 => $"{numBytes / (1024.0 * 1024):F2} MB",
         _ => $"{numBytes / (1024.0 * 1024 * 1024):F2} GB"
     };
+
+    private static string EscapeTableCell(string value) =>
+        value
+            .Replace("\\", "\\\\")
+            .Replace("|", "\\|")
+            .Replace("\r\n", "<br>")
+            .Replace("\n", "<br>")
+            .Replace("\r", "<br>");
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : $"{value[..Math.Max(0, maxLength - 3)]}...";
 
     private static string FormatLatencyUs(double us)
     {

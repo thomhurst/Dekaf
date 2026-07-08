@@ -1,5 +1,6 @@
 using Dekaf.Producer;
 using Dekaf.StressTests.Infrastructure;
+using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 using Dekaf.StressTests.Scenarios;
 
@@ -209,23 +210,21 @@ public static class Program
     /// </summary>
     private static bool CheckForMessageLoss(List<StressTestResult> results)
     {
-        var failures = new List<string>();
+        var failures = new List<(StressTestResult Result, long Errors, long? Delivered, long Lost)>();
 
         foreach (var result in results)
         {
             var errors = result.Throughput.TotalErrors;
-            if (errors > 0)
-            {
-                failures.Add($"{result.Client} {result.Scenario}: {errors:N0} errors");
-            }
+            var lost = 0L;
 
             if (result.DeliveredMessages is { } delivered)
             {
-                var lost = result.Throughput.TotalMessages - delivered - errors;
-                if (lost > 0)
-                {
-                    failures.Add($"{result.Client} {result.Scenario}: {lost:N0} messages accepted but never delivered");
-                }
+                lost = Math.Max(0, result.Throughput.TotalMessages - delivered - errors);
+            }
+
+            if (errors > 0 || lost > 0)
+            {
+                failures.Add((result, errors, result.DeliveredMessages, lost));
             }
         }
 
@@ -235,13 +234,62 @@ public static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine("MESSAGE LOSS DETECTED — failing the run:");
+        Console.WriteLine("MESSAGE LOSS DETECTED - failing the run:");
         foreach (var failure in failures)
         {
-            Console.WriteLine($"  {failure}");
+            var result = failure.Result;
+            var delivered = failure.Delivered is { } deliveredMessages
+                ? deliveredMessages.ToString("N0")
+                : "unknown";
+
+            Console.WriteLine(
+                $"  {result.Client} {result.Scenario}: " +
+                $"accepted={result.Throughput.TotalMessages:N0}, " +
+                $"delivered={delivered}, " +
+                $"errors={failure.Errors:N0}, " +
+                $"undelivered={failure.Lost:N0}");
+
+            if (result.Throughput.ErrorSamples.Count > 0)
+            {
+                PrintErrorSamples(result.Throughput.ErrorSamples);
+            }
+            else if (failure.Errors > 0)
+            {
+                Console.WriteLine("    No exception samples captured for these errors.");
+            }
         }
 
         return true;
+    }
+
+    private static void PrintErrorSamples(List<ThroughputErrorSample> samples)
+    {
+        Console.WriteLine($"    Error samples (first {samples.Count:N0}):");
+        foreach (var sample in samples)
+        {
+            var messageIndex = sample.MessageIndex is { } index ? index.ToString("N0") : "unknown";
+            var operation = string.IsNullOrWhiteSpace(sample.Operation) ? "unknown" : sample.Operation;
+
+            Console.WriteLine(
+                $"    - error #{sample.ErrorNumber:N0} at +{sample.ElapsedSeconds:F3}s " +
+                $"accepted={sample.AcceptedMessagesAtError:N0} " +
+                $"messageIndex={messageIndex} operation={operation}");
+            Console.WriteLine($"      {sample.ExceptionType}: {sample.Message}");
+
+            if (!string.IsNullOrWhiteSpace(sample.Details))
+            {
+                Console.WriteLine("      Details:");
+                WriteIndentedBlock(sample.Details, "        ");
+            }
+        }
+    }
+
+    private static void WriteIndentedBlock(string text, string indent)
+    {
+        foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            Console.WriteLine($"{indent}{line}");
+        }
     }
 
     private static async Task SeedConsumerTopicAsync(string bootstrapServers, string topic, CliOptions options)

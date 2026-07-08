@@ -132,14 +132,19 @@ internal static class ConfluentStressTestHelpers
         ConfluentKafka.Message<string, string> message,
         LatencyTracker latency,
         ThroughputTracker throughput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long? messageIndex = null)
     {
         var start = Stopwatch.GetTimestamp();
         ProduceWithBackpressure(producer, topic, message, report =>
         {
             if (report.Error.IsError)
             {
-                throughput.RecordError();
+                throughput.RecordError(
+                    "Confluent.Kafka.Error",
+                    report.Error.ToString(),
+                    "SampleDeliveryLatency delivery report",
+                    messageIndex);
             }
             else
             {

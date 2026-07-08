@@ -84,7 +84,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         catch (Exception ex)
         {
             Console.WriteLine($"  Consumer error: {ex}");
-            throughput.RecordError();
+            throughput.RecordError(ex, "ConsumeRaw loop");
         }
 
         throughput.Stop();
