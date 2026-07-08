@@ -40,7 +40,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var broker in _brokers.Reverse())
+        foreach (var broker in _brokers.AsEnumerable().Reverse())
         {
             if (broker is not null)
                 await broker.DisposeAsync().ConfigureAwait(false);

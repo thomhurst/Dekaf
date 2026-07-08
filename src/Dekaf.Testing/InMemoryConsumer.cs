@@ -123,9 +123,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     public IConsumerOffsets Offsets => this;
 
+#if !NET10_0_OR_GREATER
+    IReadOnlyCollection<string> IKafkaConsumer<TKey, TValue>.Subscription => Subscription;
+
+    IReadOnlyCollection<TopicPartition> IKafkaConsumer<TKey, TValue>.Assignment => Assignment;
+
+    IReadOnlyCollection<TopicPartition> IKafkaConsumer<TKey, TValue>.Paused => Paused;
+#endif
+
+#if NET10_0_OR_GREATER
     IReadOnlySet<TopicPartition> IConsumerPartitions.Assignment => Assignment;
 
     IReadOnlySet<TopicPartition> IConsumerPartitions.Paused => Paused;
+#else
+    IReadOnlyCollection<TopicPartition> IConsumerPartitions.Assignment => Assignment;
+
+    IReadOnlyCollection<TopicPartition> IConsumerPartitions.Paused => Paused;
+#endif
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {

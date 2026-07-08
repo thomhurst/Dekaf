@@ -192,6 +192,7 @@ public class GssapiConfigTests
         await Assert.That(config.BuildSpn("broker.example.com")).IsEqualTo("kafka/broker.example.com@EXAMPLE.COM");
     }
 
+#if NET10_0_OR_GREATER
     [Test]
     public async Task CreateClientOptions_DefaultsToKafkaAuthOnly()
     {
@@ -232,6 +233,7 @@ public class GssapiConfigTests
         await Assert.That(options.Credential.Domain).IsEqualTo("REALM.COM");
         await Assert.That(options.TargetName).IsEqualTo("kafka/broker.example.com@REALM.COM");
     }
+#endif
 
     [Test]
     public async Task ValidateForBuild_GssapiWithoutConfig_Throws()

@@ -187,7 +187,10 @@ public class ProducerAsyncPreparerTests
             => prepare(cancellationToken);
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
-            where TWriter : IBufferWriter<byte>, allows ref struct
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
             => Serializers.String.Serialize(value, ref destination, context);
     }
 }

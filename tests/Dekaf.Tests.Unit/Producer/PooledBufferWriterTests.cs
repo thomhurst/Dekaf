@@ -384,14 +384,28 @@ public class PooledBufferWriterTests
     {
         var writer = new PooledBufferWriter(initialCapacity: 64);
 
+#if NET10_0_OR_GREATER
         // Test via generic method that accepts IBufferWriter constraint
         var writtenCount = WriteViaInterface(ref writer);
+#else
+        var span = writer.GetSpan(10);
+        span[0] = 42;
+        writer.Advance(1);
+
+        var memory = writer.GetMemory(10);
+        memory.Span[0] = 43;
+        writer.Advance(1);
+
+        var writtenCount = 2;
+#endif
         writer.Dispose();
 
         await Assert.That(writtenCount).IsEqualTo(2);
     }
 
-    private static int WriteViaInterface<T>(ref T writer) where T : IBufferWriter<byte>, allows ref struct
+#if NET10_0_OR_GREATER
+    private static int WriteViaInterface<T>(ref T writer)
+        where T : IBufferWriter<byte>, allows ref struct
     {
         var span = writer.GetSpan(10);
         span[0] = 42;
@@ -405,6 +419,7 @@ public class PooledBufferWriterTests
         // Since we advanced twice by 1, return 2
         return 2;
     }
+#endif
 
     [Test]
     public async Task WrittenCount_ReflectsAllAdvances()

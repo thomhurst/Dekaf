@@ -390,10 +390,15 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
             }
         });
 
-        // Wait for either to signal completion or timeout
-        await Task.WhenAny(
-            Task.WhenAll(consumer1Task, consumer2Task),
-            Task.Delay(TimeSpan.FromSeconds(45)));
+        // Wait for consumers to signal completion or timeout.
+        try
+        {
+            await Task.WhenAll(consumer1Task, consumer2Task).WaitAsync(TimeSpan.FromSeconds(45));
+        }
+        catch (TimeoutException)
+        {
+            // The count assertion below gives the test-specific failure.
+        }
 
         cts.Cancel();
 

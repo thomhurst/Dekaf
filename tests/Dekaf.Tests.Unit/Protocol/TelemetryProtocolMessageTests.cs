@@ -158,13 +158,13 @@ public sealed class TelemetryProtocolMessageTests
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        return TRequest.GetRequestHeaderVersion(version);
+        return KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(version);
     }
 
     private static short GetResponseHeaderVersion<TRequest, TResponse>(short version)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        return TRequest.GetResponseHeaderVersion(version);
+        return KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(version);
     }
 }

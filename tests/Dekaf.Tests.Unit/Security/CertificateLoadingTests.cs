@@ -163,8 +163,8 @@ public class CertificateLoadingTests : IDisposable
         using var cert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test");
         var pfxPath = WriteCertificateToPfx(cert, "test.pfx", "mypassword");
 
-        // Verify the PFX can be loaded with the correct password using modern API
-        using var loadedCert = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, "mypassword");
+        // Verify the PFX can be loaded with the correct password.
+        using var loadedCert = TestCertificateHelper.LoadPkcs12FromFile(pfxPath, "mypassword");
 
         await Assert.That(loadedCert.Subject).IsEqualTo("CN=Test");
         await Assert.That(loadedCert.HasPrivateKey).IsTrue();
@@ -177,7 +177,7 @@ public class CertificateLoadingTests : IDisposable
         var pfxPath = WriteCertificateToPfx(cert, "test.pfx", "correctpassword");
 
         // Verify that wrong password throws
-        await Assert.That(() => X509CertificateLoader.LoadPkcs12FromFile(pfxPath, "wrongpassword"))
+        await Assert.That(() => TestCertificateHelper.LoadPkcs12FromFile(pfxPath, "wrongpassword"))
             .Throws<CryptographicException>();
     }
 

@@ -1,6 +1,11 @@
 <Project>
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
+  <PropertyGroup Condition="'$(MSBuildProjectName)' != 'Dekaf'">
+    <TargetFramework Condition="'$(TargetFramework)' == 'net10.0' and '$(TargetFrameworks)' == ''"></TargetFramework>
+    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net8.0;net10.0</TargetFrameworks>
+  </PropertyGroup>
+
   <!--
     Enable trim / Native AOT / single-file analyzers for every shipping library.
     Scoped to .NET 6.0+ target frameworks; IsTrimmable is unsupported on

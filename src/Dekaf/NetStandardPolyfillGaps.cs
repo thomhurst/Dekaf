@@ -1,6 +1,7 @@
 #if NETSTANDARD2_0
 namespace System.Buffers
 {
+[global::Microsoft.CodeAnalysis.EmbeddedAttribute]
 internal sealed class ArrayBufferWriter<T> : IBufferWriter<T>
 {
     private const int DefaultInitialBufferSize = 256;
@@ -74,6 +75,7 @@ internal sealed class ArrayBufferWriter<T> : IBufferWriter<T>
     }
 }
 
+[global::Microsoft.CodeAnalysis.EmbeddedAttribute]
 internal ref struct SequenceReader<T>
 {
     private readonly ReadOnlySequence<T> _sequence;

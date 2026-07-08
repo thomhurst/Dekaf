@@ -76,7 +76,15 @@ public class CancellationTokenSourcePoolTests
         cts.CancelAfter(TimeSpan.FromMilliseconds(100));
 
         // Wait for cancellation event with generous timeout
-        var completed = await Task.WhenAny(cancelledTcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == cancelledTcs.Task;
+        var completed = true;
+        try
+        {
+            await cancelledTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        catch (TimeoutException)
+        {
+            completed = false;
+        }
 
         await Assert.That(completed).IsTrue();
         await Assert.That(cts.IsCancellationRequested).IsTrue();

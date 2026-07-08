@@ -1097,12 +1097,13 @@ public sealed class PartitionedConsumerRuntimeTests
         private readonly Queue<ConsumeResult<string, string>> _records = [];
         private readonly HashSet<TopicPartition> _assignment = [];
         private readonly HashSet<TopicPartition> _paused = [];
+        private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
         private readonly List<IRebalanceListener> _rebalanceListeners = [];
         private readonly SemaphoreSlim _changed = new(0);
         private int _consumeOneCalls;
         private int _consumeBatchCalls;
 
-        public IReadOnlySet<string> Subscription => new HashSet<string>(StringComparer.Ordinal);
+        public IReadOnlySet<string> Subscription => _subscription;
 
         public string? SubscriptionPattern => null;
 
@@ -1155,9 +1156,23 @@ public sealed class PartitionedConsumerRuntimeTests
 
         public ILoggerFactory? LoggerFactory { get; init; }
 
+#if !NET10_0_OR_GREATER
+        IReadOnlyCollection<string> IKafkaConsumer<string, string>.Subscription => Subscription;
+
+        IReadOnlyCollection<TopicPartition> IKafkaConsumer<string, string>.Assignment => Assignment;
+
+        IReadOnlyCollection<TopicPartition> IKafkaConsumer<string, string>.Paused => Paused;
+#endif
+
+#if NET10_0_OR_GREATER
         IReadOnlySet<TopicPartition> IConsumerPartitions.Assignment => Assignment;
 
         IReadOnlySet<TopicPartition> IConsumerPartitions.Paused => Paused;
+#else
+        IReadOnlyCollection<TopicPartition> IConsumerPartitions.Assignment => Assignment;
+
+        IReadOnlyCollection<TopicPartition> IConsumerPartitions.Paused => Paused;
+#endif
 
         IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
         {

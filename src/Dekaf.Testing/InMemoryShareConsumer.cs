@@ -84,6 +84,12 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     public string? MemberId => _memberId;
 
+#if !NET10_0_OR_GREATER
+    IReadOnlyCollection<string> IKafkaShareConsumer<TKey, TValue>.Subscription => Subscription;
+
+    IReadOnlyCollection<TopicPartition> IKafkaShareConsumer<TKey, TValue>.Assignment => Assignment;
+#endif
+
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
