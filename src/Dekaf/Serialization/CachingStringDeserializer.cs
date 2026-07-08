@@ -5,8 +5,7 @@ using System.Runtime.CompilerServices;
 namespace Dekaf.Serialization;
 
 /// <summary>
-/// String deserializer that caches small key strings to avoid per-message allocation.
-/// Only used for key deserialization (not values). Bounded to prevent unbounded growth.
+/// String deserializer that caches bounded repeated strings to avoid per-message allocation.
 /// </summary>
 /// <remarks>
 /// <para><b>Hash collision behavior:</b> On a 64-bit hash collision, the first key to claim a
@@ -15,18 +14,22 @@ namespace Dekaf.Serialization;
 /// benefit. This is an acceptable tradeoff given the ~2^64 hash space makes collisions
 /// astronomically unlikely in practice.</para>
 /// </remarks>
-internal sealed class CachingStringKeyDeserializer : ISerde<string>
+internal sealed class CachingStringDeserializer : ISerde<string>
 {
-    private const int MaxCachedKeyBytes = 128;
-    private const int MaxCachedEntries = 16_384;
-
     private readonly ISerde<string> _inner;
+    private readonly int _maxCachedBytes;
+    private readonly int _maxCachedEntries;
     private readonly ConcurrentDictionary<ulong, CacheEntry> _cache = new();
     private int _cacheCount;
 
-    internal CachingStringKeyDeserializer(ISerde<string> inner)
+    internal CachingStringDeserializer(
+        ISerde<string> inner,
+        int maxCachedBytes,
+        int maxCachedEntries)
     {
         _inner = inner;
+        _maxCachedBytes = maxCachedBytes;
+        _maxCachedEntries = maxCachedEntries;
     }
 
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
@@ -41,9 +44,7 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        // This class is only constructed for key deserializers (in Builders.cs),
-        // so no need to check context.Component here on the hot path.
-        if (data.Length == 0 || data.Length > MaxCachedKeyBytes)
+        if (data.Length == 0 || data.Length > _maxCachedBytes)
             return _inner.Deserialize(data, context);
 
         return DeserializeWithCache(data, context);
@@ -65,7 +66,7 @@ internal sealed class CachingStringKeyDeserializer : ISerde<string>
 
         // Soft cap: concurrent threads may each read count < max and add simultaneously,
         // transiently overshooting by the number of racing threads. Bounded and acceptable.
-        if (Volatile.Read(ref _cacheCount) < MaxCachedEntries)
+        if (Volatile.Read(ref _cacheCount) < _maxCachedEntries)
         {
             var newEntry = new CacheEntry(span.ToArray(), result);
             if (_cache.TryAdd(hash, newEntry))

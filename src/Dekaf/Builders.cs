@@ -1296,6 +1296,9 @@ public sealed class ProducerBuilder<TKey, TValue>
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class ConsumerBuilder<TKey, TValue>
 {
+    private const int DefaultMaxCachedStringValueBytes = 4 * 1024;
+    private const int DefaultMaxCachedStringValueEntries = 128;
+
     private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
@@ -1332,6 +1335,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private AwsMskIamConfig? _awsMskIamConfig;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
+    private bool _cacheStringValues;
+    private int _maxCachedStringValueBytes = DefaultMaxCachedStringValueBytes;
+    private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
@@ -1910,6 +1916,30 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables bounded caching for repeated built-in string values.
+    /// </summary>
+    /// <remarks>
+    /// This only wraps the built-in string value deserializer. Custom value deserializers are not wrapped.
+    /// Use this for workloads that intentionally replay a small set of string payloads, such as stress or telemetry topics.
+    /// </remarks>
+    /// <param name="maxCachedBytes">Maximum UTF-8 payload size eligible for caching.</param>
+    /// <param name="maxCachedEntries">Maximum number of distinct payloads retained by the cache.</param>
+    public ConsumerBuilder<TKey, TValue> WithCachedStringValues(
+        int maxCachedBytes = DefaultMaxCachedStringValueBytes,
+        int maxCachedEntries = DefaultMaxCachedStringValueEntries)
+    {
+        if (maxCachedBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxCachedBytes), maxCachedBytes, "Value must be positive.");
+        if (maxCachedEntries <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxCachedEntries), maxCachedEntries, "Value must be positive.");
+
+        _cacheStringValues = true;
+        _maxCachedStringValueBytes = maxCachedBytes;
+        _maxCachedStringValueEntries = maxCachedEntries;
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithRebalanceListener(IRebalanceListener listener)
     {
         _rebalanceListener = listener;
@@ -2423,7 +2453,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
         // intentionally return different strings for the same bytes.
         if (keyDeserializer is StringSerde stringSerde)
         {
-            keyDeserializer = (IDeserializer<TKey>)(object)new CachingStringKeyDeserializer(stringSerde);
+            keyDeserializer = (IDeserializer<TKey>)(object)new CachingStringDeserializer(
+                stringSerde,
+                maxCachedBytes: 128,
+                maxCachedEntries: 16_384);
+        }
+
+        if (_cacheStringValues && valueDeserializer is StringSerde valueStringSerde)
+        {
+            valueDeserializer = (IDeserializer<TValue>)(object)new CachingStringDeserializer(
+                valueStringSerde,
+                _maxCachedStringValueBytes,
+                _maxCachedStringValueEntries);
         }
 
         if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)

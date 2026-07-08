@@ -19,7 +19,11 @@ public class ConsumerHotPathBenchmarks
     private const int MessageCount = 1_000;
 
     private readonly SingleRecordBatchList _batchList = new();
+    private readonly IDeserializer<string> _cachedRepeatedStringValueDeserializer =
+        new CachingStringDeserializer(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
+    private CachingStringDeserializer _saturatedCachedStringValueDeserializer = null!;
     private Record[] _records = null!;
+    private Record[] _repeated1KbValueRecords = null!;
     private string _topic = null!;
     private long _timestampMs;
 
@@ -41,6 +45,34 @@ public class ConsumerHotPathBenchmarks
                 TimestampDelta = i,
                 Key = key,
                 Value = value,
+                IsKeyNull = false,
+                IsValueNull = false,
+                Headers = null,
+                HeaderCount = 0,
+            };
+        }
+
+        _saturatedCachedStringValueDeserializer =
+            new CachingStringDeserializer(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
+        var context = new SerializationContext { Topic = _topic, Component = SerializationComponent.Value };
+        for (var i = 0; i < 128; i++)
+        {
+            _saturatedCachedStringValueDeserializer.Deserialize(
+                Encoding.UTF8.GetBytes($"prefill-{i}"),
+                context);
+        }
+
+        var repeatedValue = Encoding.UTF8.GetBytes(new string('x', 1000));
+        _repeated1KbValueRecords = new Record[MessageCount];
+        for (var i = 0; i < MessageCount; i++)
+        {
+            var key = Encoding.UTF8.GetBytes($"key-{i}");
+            _repeated1KbValueRecords[i] = new Record
+            {
+                OffsetDelta = i,
+                TimestampDelta = i,
+                Key = key,
+                Value = repeatedValue,
                 IsKeyNull = false,
                 IsValueNull = false,
                 Headers = null,
@@ -106,7 +138,61 @@ public class ConsumerHotPathBenchmarks
         return chars;
     }
 
-    private PendingFetchData CreatePendingFetchData()
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch string cached deserialize (saturated)")]
+    public int ConsumeBatch_String_CachedDeserializeSaturated()
+    {
+        using var pending = CreatePendingFetchData();
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            _saturatedCachedStringValueDeserializer);
+        var chars = 0;
+
+        foreach (var result in batch)
+        {
+            chars += result.Value.Length;
+        }
+
+        return chars;
+    }
+
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch repeated 1KB string deserialize")]
+    public int ConsumeBatch_Repeated1KbString_Deserialize()
+    {
+        using var pending = CreatePendingFetchData(_repeated1KbValueRecords);
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String);
+        var chars = 0;
+
+        foreach (var result in batch)
+        {
+            chars += result.Value.Length;
+        }
+
+        return chars;
+    }
+
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch repeated 1KB string cached deserialize")]
+    public int ConsumeBatch_Repeated1KbString_CachedDeserialize()
+    {
+        using var pending = CreatePendingFetchData(_repeated1KbValueRecords);
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            _cachedRepeatedStringValueDeserializer);
+        var chars = 0;
+
+        foreach (var result in batch)
+        {
+            chars += result.Value.Length;
+        }
+
+        return chars;
+    }
+
+    private PendingFetchData CreatePendingFetchData(Record[]? records = null)
     {
         var recordBatch = RecordBatch.RentFromPool();
         recordBatch.BaseOffset = 0;
@@ -114,7 +200,7 @@ public class ConsumerHotPathBenchmarks
         recordBatch.MaxTimestamp = _timestampMs + MessageCount - 1;
         recordBatch.LastOffsetDelta = MessageCount - 1;
         recordBatch.Attributes = RecordBatchAttributes.None;
-        recordBatch.Records = _records;
+        recordBatch.Records = records ?? _records;
 
         _batchList.Batch = recordBatch;
         var pending = PendingFetchData.Create(_topic, partitionIndex: 0, _batchList);
