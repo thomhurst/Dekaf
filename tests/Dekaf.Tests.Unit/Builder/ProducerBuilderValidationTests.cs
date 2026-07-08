@@ -450,6 +450,27 @@ public class ProducerBuilderValidationTests
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
+    [Test]
+    public async Task WithDeliveryDiagnostics_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithDeliveryDiagnostics();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task Build_WithDeliveryDiagnostics_EnablesDiagnosticsOption()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithDeliveryDiagnostics()
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.EnableDeliveryDiagnostics).IsTrue();
+    }
+
     #endregion
 
     #region ConnectionsPerBroker Validation

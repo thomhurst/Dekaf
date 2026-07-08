@@ -519,6 +519,12 @@ public sealed class ProducerOptions
     public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
 
     /// <summary>
+    /// Enables troubleshooting-only delivery diagnostics for live producer batches.
+    /// Disabled by default to avoid diagnostic bookkeeping in normal producer runs.
+    /// </summary>
+    internal bool EnableDeliveryDiagnostics { get; init; }
+
+    /// <summary>
     /// Enable adaptive connection scaling based on buffer pressure.
     /// When enabled, the producer will automatically increase connections per broker
     /// when sustained buffer backpressure is detected, improving drain throughput.

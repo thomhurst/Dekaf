@@ -22,7 +22,7 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerFastPath<TKey, TValue>, IBudgetedInstance
+public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerDiagnostics, IProducerFastPath<TKey, TValue>, IBudgetedInstance
 {
     /// <summary>
     /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
@@ -2520,6 +2520,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return new TopicProducer<TKey, TValue>(this, topic, ownsProducer: false);
     }
 
+    ProducerDeliveryDiagnosticsSnapshot IProducerDiagnostics.GetDeliveryDiagnosticsSnapshot()
+        => _accumulator.GetDeliveryDiagnosticsSnapshot();
+
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
         // PER-BROKER SENDER ARCHITECTURE: Each broker gets a dedicated BrokerSender with its own
@@ -2577,7 +2580,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             for (var i = 0; i < batchList.Count; i++)
                             {
                                 batchList[i].CompleteDelivery();
-                                batchList[i].AppendDiag('Q');
+                                if (_options.EnableDeliveryDiagnostics)
+                                    batchList[i].AppendDiag('Q');
                             }
 
                             try

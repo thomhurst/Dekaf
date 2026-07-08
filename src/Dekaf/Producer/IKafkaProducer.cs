@@ -230,6 +230,55 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 }
 
 /// <summary>
+/// Exposes live producer delivery diagnostics for test and stress harness troubleshooting.
+/// </summary>
+internal interface IProducerDiagnostics
+{
+    /// <summary>
+    /// Captures batches still tracked inside the producer pipeline.
+    /// </summary>
+    ProducerDeliveryDiagnosticsSnapshot GetDeliveryDiagnosticsSnapshot();
+}
+
+/// <summary>
+/// Snapshot of live batches still tracked by the producer delivery pipeline.
+/// </summary>
+internal sealed class ProducerDeliveryDiagnosticsSnapshot
+{
+    public bool DiagnosticsEnabled { get; init; }
+    public DateTimeOffset CapturedAtUtc { get; init; }
+    public long InFlightBatchCount { get; init; }
+    public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
+}
+
+/// <summary>
+/// Diagnostic state for a single producer batch.
+/// </summary>
+internal sealed class ProducerBatchDeliveryDiagnostic
+{
+    public required string Topic { get; init; }
+    public required int Partition { get; init; }
+    public required int RecordCount { get; init; }
+    public required int DataSize { get; init; }
+    public required int EncodedSize { get; init; }
+    public required int ReadyBatchId { get; init; }
+    public int? RecordBatchId { get; init; }
+    public int? ArenaId { get; init; }
+    public required int PipelineGeneration { get; init; }
+    public required int CurrentGeneration { get; init; }
+    public required string LifecycleState { get; init; }
+    public required string Trace { get; init; }
+    public required string LastTouchedBy { get; init; }
+    public required bool IsStale { get; init; }
+    public required bool IsPreSerialized { get; init; }
+    public required bool IsSendCompleted { get; init; }
+    public required bool IsDoneTaskCompleted { get; init; }
+    public required bool IsMemoryReleased { get; init; }
+    public required bool IsReturnedToPool { get; init; }
+    public required bool InFlightLinked { get; init; }
+}
+
+/// <summary>
 /// Flags controlling which producer messages are purged.
 /// </summary>
 [Flags]

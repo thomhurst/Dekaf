@@ -40,6 +40,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             _ => builder
         };
 
+        StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
         var producer = await builder.BuildAsync(cancellationToken);
 
         Console.WriteLine($"  Warming up Dekaf async producer...");
@@ -112,6 +113,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
         LogResourceUsage("Final");
+        var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
 
         Console.WriteLine($"  Disposing producer...");
         try
@@ -135,7 +137,8 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             Latency = latency.GetSnapshot(),
-            GcStats = gcStats.ToSnapshot()
+            GcStats = gcStats.ToSnapshot(),
+            ProducerDeliveryDiagnostics = producerDiagnostics
         };
     }
 

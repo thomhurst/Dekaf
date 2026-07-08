@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -132,6 +133,34 @@ internal static class StressTestHelpers
         Console.WriteLine($"  Delivered (broker-confirmed): {delivered:N0} messages, {rate:N0} msg/sec " +
             $"({(accepted > 0 ? delivered * 100.0 / accepted : 0):F1}% of {accepted:N0} accepted)");
         return delivered;
+    }
+
+    internal static void ConfigureProducerDeliveryDiagnostics(
+        ProducerBuilder<string, string> builder,
+        StressTestOptions options)
+    {
+        if (options.EnableProducerDeliveryDiagnostics)
+            builder.WithDeliveryDiagnostics();
+    }
+
+    internal static ProducerDeliveryDiagnosticsSnapshot? CaptureProducerDeliveryDiagnostics(
+        IKafkaProducer<string, string> producer,
+        StressTestOptions options)
+    {
+        if (!options.EnableProducerDeliveryDiagnostics)
+            return null;
+
+        if (producer is not IProducerDiagnostics diagnostics)
+            return null;
+
+        var snapshot = diagnostics.GetDeliveryDiagnosticsSnapshot();
+        if (snapshot.Batches.Count > 0)
+        {
+            Console.WriteLine($"  Captured producer delivery diagnostics: " +
+                $"inFlight={snapshot.InFlightBatchCount:N0}, batches={snapshot.Batches.Count:N0}");
+        }
+
+        return snapshot;
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 
 namespace Dekaf.StressTests.Reporting;
@@ -16,6 +17,7 @@ internal sealed class StressTestResult
     public LatencySnapshot? Latency { get; init; }
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
+    public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
 
     /// <summary>
     /// Broker-confirmed message count, measured as the end-offset (high watermark)

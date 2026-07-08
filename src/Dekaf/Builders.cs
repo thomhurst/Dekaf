@@ -86,6 +86,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
+    private bool _enableDeliveryDiagnostics;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
     public ProducerBuilder()
@@ -850,6 +851,17 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Enables or disables live producer delivery diagnostics.
+    /// Disabled by default to avoid diagnostic bookkeeping in normal producer runs.
+    /// </summary>
+    /// <param name="enable">Whether to enable delivery diagnostics.</param>
+    internal ProducerBuilder<TKey, TValue> WithDeliveryDiagnostics(bool enable = true)
+    {
+        _enableDeliveryDiagnostics = enable;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the request timeout for individual broker requests.
     /// Equivalent to Kafka's <c>request.timeout.ms</c>.
     /// Default is 30 seconds.
@@ -1198,6 +1210,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             RetryPolicy = _retryPolicy,
             EnableAdaptiveConnections = _enableAdaptiveConnections,
             MaxConnectionsPerBroker = _maxConnectionsPerBroker,
+            EnableDeliveryDiagnostics = _enableDeliveryDiagnostics,
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 

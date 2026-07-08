@@ -19,6 +19,7 @@ namespace Dekaf.StressTests;
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
+///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message-loss failures
 ///   report --input &lt;path&gt;   Generate report from existing results
 ///
 /// Environment Variables:
@@ -77,6 +78,7 @@ public static class Program
         Console.WriteLine($"Client: {options.Client}");
         Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine($"Brokers: {options.Brokers}");
+        Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
         if (options.ConnectionsPerBroker > 1)
             Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
         Console.WriteLine(new string('-', 50));
@@ -117,7 +119,8 @@ public static class Program
             BatchSize = options.BatchSize,
             Compression = options.Compression,
             BrokerCount = options.Brokers,
-            ConnectionsPerBroker = connectionsPerBroker
+            ConnectionsPerBroker = connectionsPerBroker,
+            EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics
         };
 
         if (options.ConnectionsPerBroker == 1)
@@ -257,10 +260,60 @@ public static class Program
             {
                 Console.WriteLine("    No exception samples captured for these errors.");
             }
+
+            if (failure.Lost > 0)
+            {
+                PrintProducerDeliveryDiagnostics(result.ProducerDeliveryDiagnostics);
+            }
         }
 
         return true;
     }
+
+    private static void PrintProducerDeliveryDiagnostics(ProducerDeliveryDiagnosticsSnapshot? snapshot)
+    {
+        Console.WriteLine("    Producer delivery diagnostics:");
+        if (snapshot is null)
+        {
+            Console.WriteLine("      Not captured. Pass --producer-delivery-diagnostics to enable.");
+            return;
+        }
+
+        if (!snapshot.DiagnosticsEnabled)
+        {
+            Console.WriteLine("      Disabled.");
+            return;
+        }
+
+        Console.WriteLine(
+            $"      capturedAtUtc={snapshot.CapturedAtUtc:O} " +
+            $"inFlight={snapshot.InFlightBatchCount:N0} batches={snapshot.Batches.Count:N0}");
+
+        if (snapshot.Batches.Count == 0)
+        {
+            Console.WriteLine("      No live in-flight batches remained when diagnostics were captured.");
+            return;
+        }
+
+        foreach (var batch in snapshot.Batches)
+        {
+            Console.WriteLine(
+                $"      - {batch.Topic}-{batch.Partition} " +
+                $"records={batch.RecordCount:N0} " +
+                $"dataSize={batch.DataSize:N0} encodedSize={batch.EncodedSize:N0} " +
+                $"state={batch.LifecycleState} trace={batch.Trace} last={batch.LastTouchedBy}");
+            Console.WriteLine(
+                $"        readyBatchId={batch.ReadyBatchId} recordBatchId={FormatNullableInt(batch.RecordBatchId)} " +
+                $"arenaId={FormatNullableInt(batch.ArenaId)} " +
+                $"generation={batch.PipelineGeneration}/{batch.CurrentGeneration} " +
+                $"stale={batch.IsStale} " +
+                $"preSerialized={batch.IsPreSerialized} sendCompleted={batch.IsSendCompleted} " +
+                $"doneTaskCompleted={batch.IsDoneTaskCompleted} memoryReleased={batch.IsMemoryReleased} " +
+                $"returnedToPool={batch.IsReturnedToPool} inFlightLinked={batch.InFlightLinked}");
+        }
+    }
+
+    private static string FormatNullableInt(int? value) => value?.ToString() ?? "null";
 
     private static void PrintErrorSamples(List<ThroughputErrorSample> samples)
     {
@@ -454,6 +507,9 @@ public static class Program
                         throw new ArgumentException("--seed-messages must be at least 1");
                     }
                     break;
+                case "--producer-delivery-diagnostics":
+                    options.EnableProducerDeliveryDiagnostics = true;
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -486,6 +542,7 @@ public static class Program
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
+              --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message-loss failures
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -516,5 +573,6 @@ public static class Program
         public int Brokers { get; set; } = 1;
         public int ConnectionsPerBroker { get; set; } = 1;
         public int SeedMessages { get; set; } = 2_000_000;
+        public bool EnableProducerDeliveryDiagnostics { get; set; }
     }
 }
