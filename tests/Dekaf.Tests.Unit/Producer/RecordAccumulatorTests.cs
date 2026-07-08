@@ -3341,7 +3341,7 @@ public class RecordAccumulatorTests
     {
         var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
         var lockField = partitionDeque.GetType().GetField("Lock");
-        lockField!.SetValue(partitionDeque, new SpinLock(enableThreadOwnerTracking: true));
+        lockField!.SetValue(partitionDeque, Activator.CreateInstance(lockField.FieldType, [true]));
     }
 
     private static PendingAppend CreatePendingAppend(RecordAccumulator accumulator, PendingAppendPool pool)
@@ -3437,12 +3437,21 @@ public class RecordAccumulatorTests
 
         public override Span<byte> GetSpan()
         {
-            var partitionLock = (SpinLock)_lockField.GetValue(partitionDeque)!;
-            if (partitionLock.IsHeldByCurrentThread)
+            var partitionLock = _lockField.GetValue(partitionDeque)!;
+            if (IsHeldByCurrentThread(partitionLock))
                 throw new InvalidOperationException("Record encode touched header value while holding the partition lock.");
 
             GetSpanCalls++;
             return buffer;
+        }
+
+        private static bool IsHeldByCurrentThread(object partitionLock)
+        {
+            if (partitionLock is SpinLock spinLock)
+                return spinLock.IsHeldByCurrentThread;
+
+            var property = partitionLock.GetType().GetProperty("IsHeldByCurrentThread");
+            return property is not null && (bool)property.GetValue(partitionLock)!;
         }
 
         public override MemoryHandle Pin(int elementIndex = 0) =>

@@ -248,7 +248,7 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
         {
             return ValueTask.FromResult(UnwrapKey(kek, encryptedKeyMaterial.Span));
         }
-        catch (CryptographicException ex)
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
         {
             throw new SchemaRegistryKmsException(
                 "Local KMS unwrap failed. The encrypted key material is invalid for the configured KEK.",
@@ -296,7 +296,7 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
     }
 
 #if !NET10_0_OR_GREATER
-    private static class AesKeyWrapWithPadding
+    internal static class AesKeyWrapWithPadding
     {
         private const uint AlternativeInitialValuePrefix = 0xA65959A6;
         private const int BlockSize = 8;

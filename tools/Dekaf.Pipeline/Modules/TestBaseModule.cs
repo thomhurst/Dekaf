@@ -21,7 +21,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
         }
     }
 
-    protected static string GetTargetFramework()
+    internal static string GetTargetFramework()
     {
         var framework = Environment.GetEnvironmentVariable("NET_VERSION");
         return string.IsNullOrWhiteSpace(framework) ? "net10.0" : framework;

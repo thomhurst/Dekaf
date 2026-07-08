@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Security.Sasl;
 
@@ -49,6 +50,13 @@ public class GssapiAuthenticatorTests
         var config = new GssapiConfig();
         using var authenticator = new GssapiAuthenticator(config, "broker.example.com");
 
+        if (UsesNetStandardGssapiShim())
+        {
+            await Assert.That(() => authenticator.GetInitialResponse())
+                .Throws<PlatformNotSupportedException>();
+            return;
+        }
+
         // First call may succeed or fail depending on Kerberos availability,
         // but we need to handle both cases
         try
@@ -73,6 +81,13 @@ public class GssapiAuthenticatorTests
     {
         var config = new GssapiConfig();
         using var authenticator = new GssapiAuthenticator(config, "broker.example.com");
+
+        if (UsesNetStandardGssapiShim())
+        {
+            await Assert.That(() => authenticator.EvaluateChallenge([]))
+                .Throws<PlatformNotSupportedException>();
+            return;
+        }
 
         var exception = await Assert.That(() => authenticator.EvaluateChallenge([]))
             .Throws<InvalidOperationException>();
@@ -109,6 +124,10 @@ public class GssapiAuthenticatorTests
         {
             // Expected on systems without Kerberos configured
         }
+        catch (PlatformNotSupportedException) when (UsesNetStandardGssapiShim())
+        {
+            // Expected for the netstandard2.0 asset.
+        }
 
         // Dispose should not throw even after authentication attempt
         authenticator.Dispose();
@@ -116,6 +135,9 @@ public class GssapiAuthenticatorTests
         // Test passes if no exception thrown
         return Task.CompletedTask;
     }
+
+    private static bool UsesNetStandardGssapiShim() =>
+        typeof(GssapiAuthenticator).GetField("_auth", BindingFlags.NonPublic | BindingFlags.Instance) is null;
 }
 
 public class GssapiConfigTests

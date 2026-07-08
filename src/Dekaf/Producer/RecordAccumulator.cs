@@ -24,20 +24,31 @@ namespace Dekaf.Producer;
 internal sealed class CompatibilitySpinLock
 {
     private readonly object _gate = new();
+    private readonly bool _enableThreadOwnerTracking;
+    private int _ownerThreadId;
 
     public CompatibilitySpinLock(bool enableThreadOwnerTracking = false)
     {
-        _ = enableThreadOwnerTracking;
+        _enableThreadOwnerTracking = enableThreadOwnerTracking;
     }
+
+    public bool IsHeldByCurrentThread =>
+        _enableThreadOwnerTracking && _ownerThreadId == Environment.CurrentManagedThreadId;
 
     public void Enter(ref bool lockTaken)
     {
         Monitor.Enter(_gate);
+        if (_enableThreadOwnerTracking)
+            _ownerThreadId = Environment.CurrentManagedThreadId;
+
         lockTaken = true;
     }
 
     public void Exit()
     {
+        if (_enableThreadOwnerTracking)
+            _ownerThreadId = 0;
+
         Monitor.Exit(_gate);
     }
 }
