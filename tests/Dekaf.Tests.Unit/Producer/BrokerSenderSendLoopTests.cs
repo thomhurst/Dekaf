@@ -39,18 +39,16 @@ public sealed class BrokerSenderSendLoopTests
 
     /// <summary>
     /// Creates a mock connection pool that returns a controllable mock connection.
-    /// The mock connection queues response tasks so each SendPipelinedAsync call
+    /// The mock connection queues response tasks so each SendPipelinedAfterWriteAsync call
     /// returns the next TaskCompletionSource's task from the queue.
-    /// The optional onSend callback fires each time SendPipelinedAsync is called,
+    /// The optional onSend callback fires each time SendPipelinedAfterWriteAsync is called,
     /// enabling deterministic synchronization without Task.Delay.
     /// </summary>
-    private static (IConnectionPool pool, IKafkaConnection connection) CreateMockConnection(
+    private static (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
         Action? onSend = null)
     {
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.IsConnected.Returns(true);
-        connection.BrokerId.Returns(1);
+        var connection = new TestKafkaConnection();
 
         Task<ProduceResponse> DequeueResponse()
         {
@@ -59,12 +57,7 @@ public sealed class BrokerSenderSendLoopTests
             return task;
         }
 
-        connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ => DequeueResponse());
-        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ => DequeueResponse());
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(DequeueResponse());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -79,7 +72,8 @@ public sealed class BrokerSenderSendLoopTests
     /// </summary>
     private static ReadyBatch CreateTestBatch(
         ValueTaskSourcePool<RecordMetadata> pool,
-        string topic, int partition, int messageCount = 1)
+        string topic, int partition, int messageCount = 1,
+        bool markMemoryReleased = true, int dataSize = 100)
     {
         var batch = new ReadyBatch();
         var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
@@ -91,10 +85,13 @@ public sealed class BrokerSenderSendLoopTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
-            dataSize: 100);
+            dataSize: dataSize);
 
-        // Skip accumulator memory tracking in tests
-        batch.TrySetMemoryReleased();
+        if (markMemoryReleased)
+        {
+            // Skip accumulator memory tracking in tests
+            batch.TrySetMemoryReleased();
+        }
 
         return batch;
     }
@@ -149,6 +146,15 @@ public sealed class BrokerSenderSendLoopTests
             onAcknowledgement: onAcknowledgement,
             logger: null);
 
+    private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
+    {
+        while (!predicate())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task SendLoop_PipelinedProduce_UsesConnectionOwnedTimeoutsForConcurrentSends(CancellationToken cancellationToken)
@@ -187,14 +193,75 @@ public sealed class BrokerSenderSendLoopTests
             sender.Enqueue(CreateTestBatch(vtPool, "test-topic", 1));
             await sendSignals[1].Task.WaitAsync(cancellationToken);
 
-            await connection.Received(2).SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
-            await connection.DidNotReceive().SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(2);
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedWithCallerTimeoutCalls)).IsEqualTo(0);
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedWithCallerTimeoutAfterWriteCalls)).IsEqualTo(0);
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedCalls)).IsEqualTo(0);
 
             tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
             tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 43));
             await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_PipelinedProduce_ReleasesBufferMemoryOnlyAfterWriteCompletes(CancellationToken cancellationToken)
+    {
+        var responseTcs = new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writeCanComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var connection = new TestKafkaConnection();
+
+        async ValueTask<Task<ProduceResponse>> CompleteAfterWriteGate()
+        {
+            writeStarted.TrySetResult();
+            await writeCanComplete.Task.ConfigureAwait(false);
+            return responseTcs.Task;
+        }
+
+        connection.SendProducePipelinedAfterWrite = CompleteAfterWriteGate;
+
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var acknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
+        {
+            if (ex is null)
+                acknowledged.TrySetResult();
+        });
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, "test-topic", 0, markMemoryReleased: false, dataSize: 0);
+            await Assert.That(batch.MemoryReleased).IsFalse();
+
+            sender.Enqueue(batch);
+            await writeStarted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(batch.MemoryReleased).IsFalse();
+            await Assert.That(acknowledged.Task.IsCompleted).IsFalse();
+
+            writeCanComplete.SetResult();
+            await WaitUntilAsync(() => batch.MemoryReleased, cancellationToken);
+
+            await Assert.That(acknowledged.Task.IsCompleted).IsFalse();
+
+            responseTcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+            await acknowledged.Task.WaitAsync(cancellationToken);
         }
         finally
         {
@@ -823,13 +890,10 @@ public sealed class BrokerSenderSendLoopTests
 
         var successResponse = CreateSuccessResponse("test-topic", 0, baseOffset: 77);
 
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.IsConnected.Returns(true);
-        connection.BrokerId.Returns(1);
-
-        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(successResponse));
+        var connection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(Task.FromResult(successResponse))
+        };
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
