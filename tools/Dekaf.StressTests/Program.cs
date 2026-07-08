@@ -15,7 +15,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -76,6 +76,12 @@ public static class Program
         Console.WriteLine($"Message Size: {options.MessageSizeBytes} bytes");
         Console.WriteLine($"Scenario: {options.Scenario}");
         Console.WriteLine($"Client: {options.Client}");
+        if (options.Client.Equals("all", StringComparison.OrdinalIgnoreCase) &&
+            Environment.GetEnvironmentVariable("STRESS_CLIENT_ORDER") is { Length: > 0 } clientOrder)
+        {
+            Console.WriteLine($"Client Order: {clientOrder}");
+        }
+
         Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine($"Brokers: {options.Brokers}");
         Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
@@ -409,10 +415,48 @@ public static class Program
             new ConfluentConsumerStressTest()
         };
 
-        return allScenarios
+        var scenarios = allScenarios
             .Where(s => options.Scenario == "all" || s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
             .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
             .ToList();
+
+        return ApplyClientOrder(scenarios, options.Client);
+    }
+
+    private static List<IStressTestScenario> ApplyClientOrder(List<IStressTestScenario> scenarios, string requestedClient)
+    {
+        if (!requestedClient.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            return scenarios;
+        }
+
+        var clientOrder = Environment.GetEnvironmentVariable("STRESS_CLIENT_ORDER");
+        if (!string.Equals(clientOrder, "confluent-first", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(clientOrder, "dekaf-first", StringComparison.OrdinalIgnoreCase))
+        {
+            return scenarios;
+        }
+
+        var confluentFirst = string.Equals(clientOrder, "confluent-first", StringComparison.OrdinalIgnoreCase);
+        return scenarios
+            .GroupBy(s => s.Name)
+            .SelectMany(group => group.OrderBy(s => ClientOrderIndex(s.Client, confluentFirst)))
+            .ToList();
+    }
+
+    private static int ClientOrderIndex(string client, bool confluentFirst)
+    {
+        if (client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
+        {
+            return confluentFirst ? 0 : 1;
+        }
+
+        if (client.Equals("Dekaf", StringComparison.OrdinalIgnoreCase))
+        {
+            return confluentFirst ? 1 : 0;
+        }
+
+        return 2;
     }
 
     private static async Task<int> RunReportAsync(CliOptions options)
@@ -533,7 +577,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -548,6 +592,7 @@ public static class Program
 
             Environment Variables:
               KAFKA_BOOTSTRAP_SERVERS - Use external Kafka instead of Testcontainers
+              STRESS_CLIENT_ORDER      - For --client all, run paired clients as dekaf-first or confluent-first
               STRESS_BROKER_CPUSET    - Pin Testcontainers brokers to CPU cores (e.g. "0-5") so the client keeps dedicated cores
               STRESS_BROKER_TMPFS     - Mount broker log dirs on tmpfs of this size (e.g. "6g") so disk I/O never caps ingestion
 

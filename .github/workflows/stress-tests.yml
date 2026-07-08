@@ -23,111 +23,90 @@ env:
   Deterministic: true
 
 jobs:
-  # Run each test scenario in parallel
+  # Run each scenario in parallel. Comparable clients run sequentially inside the
+  # same job/VM so published ratios share hardware and noisy-neighbor conditions.
   stress-test:
     strategy:
       fail-fast: false
       matrix:
         include:
           - scenario: producer
-            client: dekaf
+            client: all
             brokers: 1
-            name: Dekaf Producer
+            run_3conn: true
+            artifact_suffix: -with-3conn
+            timeout_minutes: 105
+            name: Producer (Paired)
           - scenario: producer
-            client: confluent
-            brokers: 1
-            name: Confluent Producer
+            client: all
+            brokers: 3
+            run_3conn: true
+            artifact_suffix: -with-3conn
+            timeout_minutes: 150
+            name: Producer (Paired, 3 Brokers)
           - scenario: producer-idempotent
-            client: dekaf
+            client: all
             brokers: 1
-            name: Dekaf Producer (Idempotent)
+            run_3conn: true
+            artifact_suffix: -with-3conn
+            timeout_minutes: 105
+            name: Producer Idempotent (Paired)
           - scenario: producer-idempotent
-            client: confluent
-            brokers: 1
-            name: Confluent Producer (Idempotent)
+            client: all
+            brokers: 3
+            run_3conn: true
+            artifact_suffix: -with-3conn
+            timeout_minutes: 150
+            name: Producer Idempotent (Paired, 3 Brokers)
           - scenario: producer-acks-all
-            client: dekaf
+            client: all
             brokers: 1
-            name: Dekaf Producer (Acks All)
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 80
+            name: Producer Acks All (Paired)
           - scenario: producer-acks-all
-            client: confluent
-            brokers: 1
-            name: Confluent Producer (Acks All)
+            client: all
+            brokers: 3
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 120
+            name: Producer Acks All (Paired, 3 Brokers)
           - scenario: consumer
-            client: dekaf
+            client: all
             brokers: 1
-            name: Dekaf Consumer
-          - scenario: consumer
-            client: confluent
-            brokers: 1
-            name: Confluent Consumer
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 90
+            name: Consumer (Paired)
           - scenario: consumer-batch
             client: dekaf
             brokers: 1
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 60
             name: Dekaf Consumer Batch
           - scenario: consumer-raw
             client: dekaf
             brokers: 1
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 60
             name: Dekaf Consumer Raw
           - scenario: consumer-raw-batch
             client: dekaf
             brokers: 1
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 60
             name: Dekaf Consumer Raw Batch
-          # Multi-broker: producer scenarios only — consumer throughput is unaffected by
-          # replication factor since Acks only applies to producers.
-          - scenario: producer
-            client: dekaf
-            brokers: 3
-            name: Dekaf Producer (3 Brokers)
-          - scenario: producer
-            client: confluent
-            brokers: 3
-            name: Confluent Producer (3 Brokers)
-          - scenario: producer-acks-all
-            client: dekaf
-            brokers: 3
-            name: Dekaf Producer Acks All (3 Brokers)
-          - scenario: producer-acks-all
-            client: confluent
-            brokers: 3
-            name: Confluent Producer Acks All (3 Brokers)
-          - scenario: producer-idempotent
-            client: dekaf
-            brokers: 3
-            name: Dekaf Producer Idempotent (3 Brokers)
-          - scenario: producer-idempotent
-            client: confluent
-            brokers: 3
-            name: Confluent Producer Idempotent (3 Brokers)
-          # Multi-connection variants: Dekaf-only with explicit 3 connections per broker.
-          # Tests whether explicit multi-connection config outperforms adaptive scaling.
-          - scenario: producer
-            client: dekaf
-            brokers: 1
-            connections_per_broker: 3
-            name: Dekaf Producer (3conn)
-          - scenario: producer
-            client: dekaf
-            brokers: 3
-            connections_per_broker: 3
-            name: Dekaf Producer (3conn, 3 Brokers)
-          - scenario: producer-idempotent
-            client: dekaf
-            brokers: 1
-            connections_per_broker: 3
-            name: Dekaf Producer Idempotent (3conn)
-          - scenario: producer-idempotent
-            client: dekaf
-            brokers: 3
-            connections_per_broker: 3
-            name: Dekaf Producer Idempotent (3conn, 3 Brokers)
 
     name: ${{ matrix.name }}
     # 8 vCPUs, split so the client under test is the measured bottleneck:
     # brokers are pinned to BROKER_CPUS, the client to CLIENT_CPUS. On a shared-core
     # runner both clients just saturate the broker and report identical numbers.
     runs-on: ubicloud-standard-8
-    timeout-minutes: ${{ matrix.brokers > 1 && 75 || 60 }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       BROKER_CPUS: 0-5
       CLIENT_CPUS: 6,7
@@ -233,20 +212,38 @@ jobs:
             done
           ' > "$GITHUB_WORKSPACE/broker-disk.log" 2>&1 &
           DISK_MONITOR_PID=$!
+          trap 'kill $DISK_MONITOR_PID 2>/dev/null || true' EXIT
 
           cd tools/Dekaf.StressTests
           # Client pinned to its own cores: whichever client pushes more through the
           # same cores is genuinely faster, instead of both saturating the broker.
+          if (( ${{ github.run_number }} % 2 == 0 )); then
+            export STRESS_CLIENT_ORDER=confluent-first
+          else
+            export STRESS_CLIENT_ORDER=dekaf-first
+          fi
+          echo "Client order: ${STRESS_CLIENT_ORDER}"
+
           taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
             --duration ${{ github.event.inputs.duration_minutes || '15' }} \
             --message-size ${{ github.event.inputs.message_size || '1000' }} \
             --scenario ${{ matrix.scenario }} \
             --client ${{ matrix.client }} \
             --brokers ${{ matrix.brokers }} \
-            --connections-per-broker ${{ matrix.connections_per_broker || '1' }} \
+            --connections-per-broker 1 \
             --output ./results
 
-          kill $DISK_MONITOR_PID 2>/dev/null || true
+          if [ "${{ matrix.run_3conn }}" = "true" ]; then
+            echo "Running Dekaf 3-connection variant on the same VM"
+            taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
+              --duration ${{ github.event.inputs.duration_minutes || '15' }} \
+              --message-size ${{ github.event.inputs.message_size || '1000' }} \
+              --scenario ${{ matrix.scenario }} \
+              --client dekaf \
+              --brokers ${{ matrix.brokers }} \
+              --connections-per-broker 3 \
+              --output ./results
+          fi
 
       - name: Broker Diagnostics
         if: always()
@@ -284,7 +281,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: results-${{ matrix.client }}-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.connections_per_broker && format('-{0}conn', matrix.connections_per_broker) || '' }}
+          name: results-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.artifact_suffix }}
           path: |
             tools/Dekaf.StressTests/results/
             broker-disk.log
@@ -514,12 +511,13 @@ jobs:
           output.append("- **CPU Isolation**: Brokers are pinned to dedicated cores and the client under test to its own cores, so the client — not the broker — is the measured bottleneck")
           output.append("- **RAM-backed Broker Logs**: Kafka log dirs are mounted on tmpfs so disk I/O never caps broker ingestion")
           output.append("- **Delivered Throughput**: producer tables report broker-confirmed throughput, measured as the end-offset delta across all partitions — not the client-side append rate, which can run far ahead of what the broker ever accepts")
-          output.append("- **Median Interval Throughput**: tables also show median sampled client-side msg/s, which is less sensitive to short late-run stalls than the whole-run mean")
+          output.append("- **Median Interval Throughput**: table order and comparison ratios use median sampled client-side msg/s when available, which is less sensitive to short late-run stalls than the whole-run mean")
+          output.append("- **Same-VM Pairing**: comparable Dekaf and Confluent scenarios run sequentially inside one job/VM, with client order alternating by workflow run number to reduce order bias")
           output.append("- **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM")
           output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured")
           output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
           output.append("- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput")
-          output.append("- **Parallel Execution**: Each test runs in its own isolated environment")
+          output.append("- **Parallel Execution**: Each scenario runs in its own isolated environment")
           output.append("- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka")
           output.append("- **Memory Monitoring**: Tracks GC behavior and memory usage over time")
           output.append("- **Error Rates**: Ensures stability under load")
