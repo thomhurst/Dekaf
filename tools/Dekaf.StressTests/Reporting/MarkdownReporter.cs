@@ -73,8 +73,8 @@ internal static class MarkdownReporter
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
             sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
             sb.AppendLine();
-            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used | Ratio |");
-            sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------------|--------|----------------|--------|------------|------------|-------|");
+            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Thru Ratio |");
+            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|--------------|--------------|--------|----------------|--------|------------|------------|");
 
             var baseline = sizeResults
                 .Where(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
@@ -86,17 +86,24 @@ internal static class MarkdownReporter
                 baseline = sizeResults.Min(r => r.EffectiveMessagesPerSecond);
             }
 
-            foreach (var result in sizeResults.OrderByDescending(r => r.EffectiveMessagesPerSecond))
+            foreach (var result in OrderThroughputResults(sizeResults))
             {
                 var rate = result.EffectiveMessagesPerSecond;
                 var ratio = baseline > 0 ? rate / baseline : 1.0;
+                var median = result.MedianIntervalMessagesPerSecond is { } medianRate ? medianRate.ToString("N0") : "-";
                 var accepted = result.AcceptedMessagesPerSecond is { } acceptedRate ? acceptedRate.ToString("N0") : "-";
                 var cpuPerMessage = result.CpuMicrosPerMessage is { } cpu ? $"{cpu:F2}" : "-";
                 var coresUsed = result.AverageCoresUsed is { } cores ? $"{cores:F2}" : "-";
-                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {rate,12:N0} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {result.Throughput.TotalErrors,6} | {cpuPerMessage,10} | {coresUsed,10} | {ratio:F2}x |");
+                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {rate,12:N0} | {median,12} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {result.Throughput.TotalErrors,6} | {coresUsed,10} | {ratio:F2}x |");
             }
 
             sb.AppendLine();
+
+            if (sizeResults.Any(r => r.MedianIntervalMessagesPerSecond is not null))
+            {
+                sb.AppendLine("*Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*");
+                sb.AppendLine();
+            }
 
             if (sizeResults.Any(r => r.DeliveredMessages is not null))
             {
@@ -107,6 +114,13 @@ internal static class MarkdownReporter
             }
         }
     }
+
+    private static IOrderedEnumerable<StressTestResult> OrderThroughputResults(List<StressTestResult> results) =>
+        results.Any(r => r.CpuMicrosPerMessage is not null)
+            ? results
+                .OrderBy(r => r.CpuMicrosPerMessage ?? double.MaxValue)
+                .ThenByDescending(r => r.EffectiveMessagesPerSecond)
+            : results.OrderByDescending(r => r.EffectiveMessagesPerSecond);
 
     private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
     {

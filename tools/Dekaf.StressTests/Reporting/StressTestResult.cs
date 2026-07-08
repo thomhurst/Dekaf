@@ -52,6 +52,14 @@ internal sealed class StressTestResult
         DeliveredMegabytesPerSecond ?? Throughput.AverageMegabytesPerSecond;
 
     /// <summary>
+    /// Median of sampled client-side throughput intervals. This is less sensitive than
+    /// the whole-run mean to a brief late-run stall, and lets reports show the steady
+    /// state beside the end-to-end average.
+    /// </summary>
+    public double? MedianIntervalMessagesPerSecond =>
+        GetMedian(Throughput.MessagesPerSecondSamples);
+
+    /// <summary>
     /// Client-side append rate, reported only when it is distinct from the headline
     /// number (i.e. when delivered throughput was measured). Null means the headline
     /// already is the client-side rate.
@@ -81,6 +89,21 @@ internal sealed class StressTestResult
         GcStats.AllocatedBytes is { } allocated && Throughput.TotalMessages > 0
             ? (double)allocated / Throughput.TotalMessages
             : null;
+
+    private static double? GetMedian(List<double> samples)
+    {
+        var sorted = samples
+            .Where(double.IsFinite)
+            .Order()
+            .ToArray();
+
+        return sorted.Length switch
+        {
+            0 => null,
+            var count when count % 2 == 1 => sorted[count / 2],
+            var count => (sorted[(count / 2) - 1] + sorted[count / 2]) / 2.0
+        };
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

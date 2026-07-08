@@ -1,6 +1,8 @@
 """Shared utilities for stress test result reporting."""
 
 from collections import defaultdict
+from math import isfinite
+from statistics import median
 
 SCENARIO_TITLES = {
     'producer': 'Producer (Fire-and-Forget)',
@@ -50,10 +52,36 @@ def format_bytes(num_bytes):
         return f"{num_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
-def format_cpu_columns(result):
-    """Format the serialized CPU-per-message / cores-used values, or '-' when not recorded."""
+def cpu_micros_per_message(result):
+    """CPU microseconds per message, derived when older result files omit it."""
     cpu_us_per_msg = result.get('cpuMicrosPerMessage')
+    if cpu_us_per_msg is not None:
+        return cpu_us_per_msg
+
+    cpu_time_seconds = result.get('cpuTimeSeconds')
+    total_messages = result.get('throughput', {}).get('totalMessages', 0)
+    if cpu_time_seconds is None or not total_messages:
+        return None
+    return cpu_time_seconds * 1_000_000 / total_messages
+
+
+def average_cores_used(result):
+    """Average cores used, derived when older result files omit it."""
     cores_used = result.get('averageCoresUsed')
+    if cores_used is not None:
+        return cores_used
+
+    cpu_time_seconds = result.get('cpuTimeSeconds')
+    elapsed_seconds = result.get('throughput', {}).get('elapsedSeconds', 0)
+    if cpu_time_seconds is None or not elapsed_seconds:
+        return None
+    return cpu_time_seconds / elapsed_seconds
+
+
+def format_cpu_columns(result):
+    """Format CPU-per-message / cores-used values, or '-' when not recorded."""
+    cpu_us_per_msg = cpu_micros_per_message(result)
+    cores_used = average_cores_used(result)
     return (
         f"{cpu_us_per_msg:.2f}" if cpu_us_per_msg is not None else '-',
         f"{cores_used:.2f}" if cores_used is not None else '-',
@@ -76,6 +104,32 @@ def effective_mb_rate(result):
     if rate is not None:
         return rate
     return result.get('throughput', {}).get('averageMegabytesPerSecond', 0)
+
+
+def accepted_messages_per_second(result):
+    """Client-side mean rate for producer results with delivered throughput."""
+    accepted = result.get('acceptedMessagesPerSecond')
+    if accepted is not None:
+        return accepted
+    if result.get('deliveredMessages') is not None:
+        return result.get('throughput', {}).get('averageMessagesPerSecond')
+    return None
+
+
+def median_interval_rate(result):
+    """Median sampled client-side interval throughput, or None for old result files."""
+    rate = result.get('medianIntervalMessagesPerSecond')
+    if rate is not None:
+        return rate
+
+    samples = result.get('throughput', {}).get('messagesPerSecondSamples') or []
+    finite_samples = [
+        sample for sample in samples
+        if isinstance(sample, (int, float)) and isfinite(sample)
+    ]
+    if not finite_samples:
+        return None
+    return median(finite_samples)
 
 
 def allocated_per_message(result):
@@ -102,6 +156,14 @@ def find_confluent_baseline(results):
     return min((effective_rate(r) or 1 for r in results), default=1)
 
 
+def throughput_sort_key(result):
+    """CPU efficiency leads current reports; old results without CPU keep throughput order."""
+    cpu_us_per_msg = cpu_micros_per_message(result)
+    if cpu_us_per_msg is not None:
+        return 0, cpu_us_per_msg, -effective_rate(result)
+    return 1, 0, -effective_rate(result)
+
+
 def format_throughput_table(results, title, include_ratio=False):
     """Generate a markdown throughput table for a single scenario group."""
     if not results:
@@ -115,32 +177,38 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append("")
 
     if include_ratio:
-        lines.append("| Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used | Ratio |")
-        lines.append("|--------|--------------|--------|----------------|--------|------------|------------|-------|")
+        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Thru Ratio |")
+        lines.append("|--------|------------|--------------|--------------|--------|----------------|--------|------------|------------|")
     else:
-        lines.append("| Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |")
-        lines.append("|--------|--------------|--------|----------------|--------|------------|------------|")
+        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |")
+        lines.append("|--------|------------|--------------|--------------|--------|----------------|--------|------------|")
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
-    sorted_results = sorted(results, key=effective_rate, reverse=True)
+    sorted_results = sorted(results, key=throughput_sort_key)
 
     for r in sorted_results:
         client = r.get('client', 'Unknown')
         throughput = r.get('throughput', {})
         msg_sec = effective_rate(r)
         mb_sec = effective_mb_rate(r)
-        accepted_rate = r.get('acceptedMessagesPerSecond')
+        median_rate = median_interval_rate(r)
+        median_msg_sec = f"{median_rate:,.0f}" if median_rate is not None else '-'
+        accepted_rate = accepted_messages_per_second(r)
         accepted = f"{accepted_rate:,.0f}" if accepted_rate is not None else '-'
         errors = throughput.get('totalErrors', 0)
         cpu_us_per_msg, cores_used = format_cpu_columns(r)
 
         if include_ratio:
             ratio = msg_sec / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {accepted} | {errors} | {cpu_us_per_msg} | {cores_used} | {ratio:.2f}x |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
         else:
-            lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {accepted} | {errors} | {cpu_us_per_msg} | {cores_used} |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
 
     lines.append("")
+
+    if any(median_interval_rate(r) is not None for r in results):
+        lines.append("*Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*")
+        lines.append("")
 
     if any(r.get('deliveredMessages') is not None for r in results):
         lines.append("*Messages/sec counts broker-confirmed deliveries (end-offset delta). "
@@ -165,16 +233,32 @@ def format_comparison_callout(results, title):
         return []
 
     lines = []
-    ratio = dekaf_rate / confluent_rate
+    throughput_ratio = dekaf_rate / confluent_rate
+    dekaf_cpu = cpu_micros_per_message(dekaf)
+    confluent_cpu = cpu_micros_per_message(confluent)
     label = title.lower()
 
-    if ratio > 1.05:
+    if dekaf_cpu is not None and confluent_cpu is not None and dekaf_cpu > 0 and confluent_cpu > 0:
+        cpu_ratio = confluent_cpu / dekaf_cpu
+        if cpu_ratio > 1.05:
+            lines.append(":::tip")
+            lines.append(f"**Dekaf uses {cpu_ratio:.2f}x less CPU per message** than Confluent.Kafka for {label}; throughput is {throughput_ratio:.2f}x.")
+            lines.append(":::")
+        elif cpu_ratio < 0.95:
+            lines.append(":::note")
+            lines.append(f"Confluent.Kafka uses {1/cpu_ratio:.2f}x less CPU per message for {label}; throughput is {throughput_ratio:.2f}x.")
+            lines.append(":::")
+        else:
+            lines.append(":::note")
+            lines.append(f"Dekaf and Confluent.Kafka have similar CPU efficiency for {label}; throughput is {throughput_ratio:.2f}x.")
+            lines.append(":::")
+    elif throughput_ratio > 1.05:
         lines.append(":::tip")
-        lines.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for {label} throughput!")
+        lines.append(f"**Dekaf is {throughput_ratio:.2f}x faster** than Confluent.Kafka for {label} throughput!")
         lines.append(":::")
-    elif ratio < 0.95:
+    elif throughput_ratio < 0.95:
         lines.append(":::note")
-        lines.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for {label} throughput.")
+        lines.append(f"Confluent.Kafka is {1/throughput_ratio:.2f}x faster for {label} throughput.")
         lines.append(":::")
     else:
         lines.append(":::note")
