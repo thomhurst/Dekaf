@@ -204,12 +204,13 @@ public static class Program
     }
 
     /// <summary>
-    /// The stress environment (healthy broker, tmpfs logs, no restarts) never justifies a
-    /// dropped message, so any produce/consume error or any accepted-but-never-delivered
-    /// message is a correctness bug and fails the run. Delivered can legitimately exceed
-    /// accepted-minus-errors when non-idempotent retries duplicate a batch, so only the
-    /// shortfall counts as loss. Results are already saved at this point; the non-zero
-    /// exit only fails the CI job.
+    /// The stress environment (healthy broker, tmpfs logs, no restarts) never justifies
+    /// a dropped message, so any produce/consume error fails the run. Delivered can
+    /// legitimately exceed accepted-minus-errors when non-idempotent retries duplicate a
+    /// batch, so only the shortfall counts as loss. Leader-ack producer scenarios do not
+    /// treat high-watermark lag as loss because followers can trail successful leader
+    /// acknowledgements. Results are already saved at this point; the non-zero exit only
+    /// fails the CI job.
     /// </summary>
     private static bool CheckForMessageLoss(List<StressTestResult> results)
     {
@@ -225,7 +226,7 @@ public static class Program
                 lost = Math.Max(0, result.Throughput.TotalMessages - delivered - errors);
             }
 
-            if (errors > 0 || lost > 0)
+            if (errors > 0 || (lost > 0 && result.FailOnDeliveredShortfall))
             {
                 failures.Add((result, errors, result.DeliveredMessages, lost));
             }

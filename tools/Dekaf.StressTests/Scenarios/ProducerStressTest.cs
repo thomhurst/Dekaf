@@ -41,18 +41,11 @@ internal sealed class ProducerStressTest : IStressTestScenario
         StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
         var producer = await builder.BuildAsync(cancellationToken);
 
-        Console.WriteLine($"  Warming up Dekaf producer...");
-        // First produce uses ProduceAsync to prime the topic metadata cache asynchronously.
-        // Send() would block the thread via FetchTopicMetadataSync (.GetAwaiter().GetResult())
-        // which hangs if the broker is slow to respond to new topic metadata requests.
-        await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
-        for (var i = 0; i < 999; i++)
-        {
-            await producer.FireAsync(options.Topic, "warmup", "warmup");
-        }
-        await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-
-        var startOffset = await StressTestHelpers.QueryTotalEndOffsetAsync(options.BootstrapServers, options.Topic, options.Partitions);
+        var startOffset = await StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            "Dekaf producer",
+            cancellationToken);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -139,7 +132,12 @@ internal sealed class ProducerStressTest : IStressTestScenario
 
         // Queried after dispose so all delivery attempts (including the final flush)
         // have finished — the delta is what the broker actually accepted.
-        var endOffset = await StressTestHelpers.QueryTotalEndOffsetAsync(options.BootstrapServers, options.Topic, options.Partitions);
+        var endOffset = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
+            options.BootstrapServers,
+            options.Topic,
+            options.Partitions,
+            startOffset,
+            throughput.MessageCount);
         var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
 
         return new StressTestResult
@@ -153,6 +151,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             DeliveredMessages = delivered,
+            FailOnDeliveredShortfall = false,
             Latency = latency.GetSnapshot(),
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,

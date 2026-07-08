@@ -117,6 +117,13 @@ internal static class MarkdownReporter
                     "Accepted msg/s is the client-side append rate — a large gap means messages were " +
                     "buffered or dropped without ever reaching the broker.*");
                 sb.AppendLine();
+
+                if (sizeResults.Any(r => !r.FailOnDeliveredShortfall))
+                {
+                    sb.AppendLine("*Leader-ack producer runs report end-offset lag but do not fail on that " +
+                        "shortfall; acks-all/idempotent runs enforce it as a correctness failure.*");
+                    sb.AppendLine();
+                }
             }
         }
     }

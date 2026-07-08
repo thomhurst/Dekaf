@@ -28,7 +28,10 @@ internal static class StressTestHelpers
     /// </summary>
     internal const ulong ProducerBufferMemoryBytes = 512UL * 1024 * 1024;
 
+    private const int ProducerWarmupMessageCount = 1000;
     private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
+    private static readonly TimeSpan ProducerEndOffsetCatchUpTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ProducerEndOffsetCatchUpDelay = TimeSpan.FromMilliseconds(500);
 
     private static string[] CreatePreAllocatedKeys(int count)
     {
@@ -99,12 +102,104 @@ internal static class StressTestHelpers
                 });
 
             var offsets = await adminClient.ListOffsetsAsync(specs, cancellationToken: cts.Token).ConfigureAwait(false);
+            if (offsets.Count != partitionCount)
+            {
+                throw new InvalidOperationException(
+                    $"end offset query returned {offsets.Count:N0} of {partitionCount:N0} partitions");
+            }
+
             return offsets.Values.Sum(static info => info.Offset);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"  Warning: end offset query failed: {ex.Message}");
             return null;
+        }
+    }
+
+    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
+        IKafkaProducer<string, string> producer,
+        StressTestOptions options,
+        string producerName,
+        CancellationToken cancellationToken)
+    {
+        var warmupStartOffset = await QueryTotalEndOffsetAsync(
+            options.BootstrapServers,
+            options.Topic,
+            options.Partitions).ConfigureAwait(false);
+
+        Console.WriteLine($"  Warming up {producerName}...");
+        // First produce uses ProduceAsync to prime the topic metadata cache asynchronously.
+        // Send() would block the thread via FetchTopicMetadataSync (.GetAwaiter().GetResult())
+        // which hangs if the broker is slow to respond to new topic metadata requests.
+        await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
+        for (var i = 1; i < ProducerWarmupMessageCount; i++)
+        {
+            await producer.FireAsync(options.Topic, "warmup", "warmup").ConfigureAwait(false);
+        }
+
+        await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        return await QueryTotalEndOffsetAfterProducerDrainAsync(
+            options.BootstrapServers,
+            options.Topic,
+            options.Partitions,
+            warmupStartOffset,
+            ProducerWarmupMessageCount).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Producer flush waits for broker responses, but replicated topic watermarks can
+    /// trail leader-ack writes briefly. Wait for the post-run watermark snapshot to
+    /// reach the accepted-message target before returning the final snapshot.
+    /// </summary>
+    internal static async Task<long?> QueryTotalEndOffsetAfterProducerDrainAsync(
+        string bootstrapServers,
+        string topic,
+        int partitionCount,
+        long? startOffset,
+        long acceptedMessages)
+    {
+        if (startOffset is not { } start || acceptedMessages <= 0)
+        {
+            return await QueryTotalEndOffsetAsync(bootstrapServers, topic, partitionCount).ConfigureAwait(false);
+        }
+
+        var expectedEndOffset = start + acceptedMessages;
+        var deadline = DateTime.UtcNow + ProducerEndOffsetCatchUpTimeout;
+        var loggedWait = false;
+
+        while (true)
+        {
+            var endOffset = await QueryTotalEndOffsetAsync(bootstrapServers, topic, partitionCount).ConfigureAwait(false);
+            if (endOffset is null || endOffset >= expectedEndOffset)
+            {
+                if (loggedWait && endOffset is not null)
+                {
+                    Console.WriteLine($"  End offsets caught up: observed {endOffset:N0}, target {expectedEndOffset:N0}");
+                }
+
+                return endOffset;
+            }
+
+            var lag = expectedEndOffset - endOffset.Value;
+            if (DateTime.UtcNow >= deadline)
+            {
+                Console.WriteLine(
+                    $"  Warning: end offsets still lag accepted messages after " +
+                    $"{ProducerEndOffsetCatchUpTimeout.TotalSeconds:N0}s: observed {endOffset:N0}, " +
+                    $"target {expectedEndOffset:N0}, lag {lag:N0}");
+                return endOffset;
+            }
+
+            if (!loggedWait)
+            {
+                Console.WriteLine(
+                    $"  Waiting for broker end offsets to catch up: observed {endOffset:N0}, " +
+                    $"target {expectedEndOffset:N0}, lag {lag:N0}");
+                loggedWait = true;
+            }
+
+            await Task.Delay(ProducerEndOffsetCatchUpDelay, CancellationToken.None).ConfigureAwait(false);
         }
     }
 

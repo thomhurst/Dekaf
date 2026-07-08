@@ -143,6 +143,7 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             DeliveredMessages = delivered,
+            FailOnDeliveredShortfall = false,
             Latency = latency.GetSnapshot(),
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds

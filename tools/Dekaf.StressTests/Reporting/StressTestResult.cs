@@ -18,6 +18,7 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
+    public bool FailOnDeliveredShortfall { get; init; } = true;
 
     /// <summary>
     /// Broker-confirmed message count, measured as the end-offset (high watermark)
@@ -25,6 +26,9 @@ internal sealed class StressTestResult
     /// scenarios count client-side appends in <see cref="Throughput"/>; when the client
     /// buffers faster than the broker accepts (or the broker degrades mid-run), accepted
     /// and delivered diverge — this is the honest throughput number.
+    /// Leader-ack producer scenarios can report a shortfall while followers are still
+    /// advancing the high watermark; they set <see cref="FailOnDeliveredShortfall"/> to
+    /// false so this remains a visibility metric instead of a correctness failure.
     /// Null when the scenario doesn't measure it or the watermark query failed.
     /// </summary>
     public long? DeliveredMessages { get; init; }
