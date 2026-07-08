@@ -12,6 +12,7 @@ public sealed class KafkaProducerMetricsTests
     [NotInParallel("MeterListener")]
     public async Task AwaitWithMetrics_MeterOnlyListener_RecordsSuccessMetrics()
     {
+        var topic = $"orders-{Guid.NewGuid():N}";
         long messagesSent = 0;
         long bytesSent = 0;
         double operationDuration = -1;
@@ -22,28 +23,39 @@ public sealed class KafkaProducerMetricsTests
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (instrument.Meter.Name == DekafDiagnostics.MeterName)
+            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
+                IsProducerSuccessMetric(instrument.Name))
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
+            var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+            if (metricTopic != topic)
+                return;
+
             if (instrument.Name == "messaging.client.sent.messages")
             {
                 messagesSent += measurement;
-                messagesTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+                messagesTopic = metricTopic;
             }
             else if (instrument.Name == "messaging.client.sent.bytes")
             {
                 bytesSent += measurement;
-                bytesTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+                bytesTopic = metricTopic;
             }
         });
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
         {
+            var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+            if (metricTopic != topic)
+                return;
+
             if (instrument.Name == "messaging.client.operation.duration")
             {
                 operationDuration = measurement;
-                durationTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+                durationTopic = metricTopic;
             }
         });
         listener.Start();
@@ -62,7 +74,7 @@ public sealed class KafkaProducerMetricsTests
         var completion = pool.Rent();
         completion.TrySetResult(new RecordMetadata
         {
-            Topic = "orders",
+            Topic = topic,
             Partition = 1,
             Offset = 42,
             Timestamp = DateTimeOffset.UtcNow,
@@ -70,15 +82,15 @@ public sealed class KafkaProducerMetricsTests
             ValueSize = 5
         });
 
-        var metadata = await InvokeAwaitWithMetrics(producer, completion, "orders");
+        var metadata = await InvokeAwaitWithMetrics(producer, completion, topic);
 
-        await Assert.That(metadata.Topic).IsEqualTo("orders");
+        await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(messagesSent).IsEqualTo(1);
         await Assert.That(bytesSent).IsEqualTo(8);
         await Assert.That(operationDuration).IsGreaterThanOrEqualTo(0);
-        await Assert.That(messagesTopic).IsEqualTo("orders");
-        await Assert.That(bytesTopic).IsEqualTo("orders");
-        await Assert.That(durationTopic).IsEqualTo("orders");
+        await Assert.That(messagesTopic).IsEqualTo(topic);
+        await Assert.That(bytesTopic).IsEqualTo(topic);
+        await Assert.That(durationTopic).IsEqualTo(topic);
     }
 
     [Test]
@@ -137,4 +149,9 @@ public sealed class KafkaProducerMetricsTests
 
         return null;
     }
+
+    private static bool IsProducerSuccessMetric(string name) =>
+        name is "messaging.client.sent.messages"
+            or "messaging.client.sent.bytes"
+            or "messaging.client.operation.duration";
 }
