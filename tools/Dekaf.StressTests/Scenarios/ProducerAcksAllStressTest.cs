@@ -41,15 +41,11 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
         StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
         var producer = await builder.BuildAsync(cancellationToken);
 
-        Console.WriteLine($"  Warming up Dekaf acks-all producer...");
-        await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
-        for (var i = 0; i < 999; i++)
-        {
-            await producer.FireAsync(options.Topic, "warmup", "warmup");
-        }
-        await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-
-        var startOffset = await StressTestHelpers.QueryTotalEndOffsetAsync(options.BootstrapServers, options.Topic, options.Partitions);
+        var startOffset = await StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            "Dekaf acks-all producer",
+            cancellationToken);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -136,7 +132,12 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
 
         // Queried after dispose so all delivery attempts (including the final flush)
         // have finished — the delta is what the broker actually accepted.
-        var endOffset = await StressTestHelpers.QueryTotalEndOffsetAsync(options.BootstrapServers, options.Topic, options.Partitions);
+        var endOffset = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
+            options.BootstrapServers,
+            options.Topic,
+            options.Partitions,
+            startOffset,
+            throughput.MessageCount);
         var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
 
         return new StressTestResult
