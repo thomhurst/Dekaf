@@ -706,7 +706,13 @@ public sealed class RecordBatch : IDisposable
     /// to provide that full span. A streaming writer path would need incremental CRC32C
     /// calculation while emitting fields and records in smaller segments.
     /// </remarks>
-    public void Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None, CompressionCodecRegistry? codecs = null)
+    /// <returns>
+    /// The exact number of bytes written to <paramref name="output"/>. Callers that
+    /// pre-compute an encoded size (e.g. the PRODUCE records length prefix) must verify it
+    /// against this value: a mismatch means the batch changed between sizing and writing,
+    /// and emitting the frame would desync the connection's outgoing byte stream.
+    /// </returns>
+    public int Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None, CompressionCodecRegistry? codecs = null)
     {
         var writer = new KafkaProtocolWriter(output);
         var records = Records;
@@ -823,6 +829,8 @@ public sealed class RecordBatch : IDisposable
             // Must happen before ReturnSerializationCache in the finally block,
             // because compressedRecords may reference the cache's buffer writer.
             output.Advance(4 + crcContentSize);
+
+            return TotalBatchHeaderSize + compressedRecords.Length;
         }
         finally
         {

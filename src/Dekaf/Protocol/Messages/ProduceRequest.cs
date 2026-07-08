@@ -1,5 +1,6 @@
 using System.Buffers;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Protocol.Messages;
@@ -192,10 +193,25 @@ public sealed class ProduceRequestPartitionData
             // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null).
             writer.WriteUnsignedVarInt(checked(recordsLength + 1));
             var output = writer.BufferWriter;
+            var actualRecordsLength = 0;
             for (var i = 0; i < Records.Count; i++)
             {
-                Records[i].Write(output, Compression, CompressionCodecs);
+                actualRecordsLength += Records[i].Write(output, Compression, CompressionCodecs);
             }
+
+            if (actualRecordsLength != recordsLength)
+            {
+                // A batch changed between the size pass and the write pass (concurrent
+                // mutation or pooled-object recycling). The declared records length no longer
+                // matches the emitted bytes; sending this frame would desync the connection's
+                // outgoing byte stream and the broker would misparse every subsequent request
+                // (InvalidRequestException + socket close). Fail before it reaches the wire.
+                throw new KafkaException(
+                    ErrorCode.CorruptMessage,
+                    $"PRODUCE framing mismatch for partition {Index}: declared records length {recordsLength} but serialized {actualRecordsLength} bytes across {Records.Count} batch(es); request discarded before reaching the wire.",
+                    isRetriable: true);
+            }
+
             writer.AddBytesWritten(recordsLength);
         }
         finally
