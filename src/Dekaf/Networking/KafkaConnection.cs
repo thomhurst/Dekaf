@@ -975,119 +975,165 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     {
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
         var clearSerializedArray = KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.SaslAuthenticate;
-        byte[]? arrayToReturn = serializedArray;
         try
         {
             await SemaphoreHelper.AcquireOrThrowDisposedAsync(_writeLock, nameof(KafkaConnection), cancellationToken)
                 .ConfigureAwait(false);
-            try
-            {
-                await WritePreSerializedToStreamAsync(
-                        serializedArray,
-                        serializedLength,
-                        correlationId,
-                        cancellationToken,
-                        callerOwnsTimeout)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                SemaphoreHelper.ReleaseSafely(_writeLock);
-            }
+        }
+        catch
+        {
+            // Lock never acquired: no bytes written, so the buffer can be returned here.
+            DekafPools.SerializationBuffers.Return(serializedArray, clearArray: clearSerializedArray);
+            throw;
+        }
+
+        // From here the frame write owns both the lock and the buffer; WriteFrameHoldingLockAsync
+        // releases them itself so a timed-out caller can abandon the wait without cancelling the
+        // socket write mid-frame (see AwaitFrameWriteAsync).
+        var writeTask = WriteFrameHoldingLockAsync(serializedArray, serializedLength, clearSerializedArray);
+        await AwaitFrameWriteAsync(writeTask, correlationId, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes one complete frame while holding the write lock, then releases the lock and
+    /// returns the serialization buffer. The socket write is deliberately not cancellable:
+    /// cancelling <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    /// mid-frame can leave a partial frame on the wire, desyncing the outgoing stream so the
+    /// broker misparses it (broker-side InvalidRequestException on PRODUCE followed by a socket
+    /// close). Callers that time out abandon the await instead (<see cref="AwaitFrameWriteAsync"/>);
+    /// the frame finishes in the background and the connection stays frame-aligned and usable.
+    /// </summary>
+    private async Task WriteFrameHoldingLockAsync(byte[] serializedData, int length, bool clearArray)
+    {
+        try
+        {
+            if (_stream is null)
+                throw new InvalidOperationException("Not connected");
+
+            // A previous write on this connection may have faulted mid-frame, leaving the
+            // outgoing stream misaligned. Writers already queued on _writeLock must not append
+            // another frame to a poisoned stream.
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+
+            await _stream.WriteAsync(serializedData.AsMemory(0, length), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            // The write faulted (or the connection was already unusable): part of the frame may
+            // have been transmitted, so the outgoing stream can no longer be trusted.
+            AbortAfterWriteFailure();
+            throw;
         }
         finally
         {
-            if (arrayToReturn is not null)
-                DekafPools.SerializationBuffers.Return(arrayToReturn, clearArray: clearSerializedArray);
+            DekafPools.SerializationBuffers.Return(serializedData, clearArray: clearArray);
+            SemaphoreHelper.ReleaseSafely(_writeLock);
         }
     }
 
-    private async ValueTask WritePreSerializedToStreamAsync(
-        byte[] serializedData,
-        int length,
+    /// <summary>
+    /// Awaits a frame write with timeout/cancellation semantics. On timeout or caller
+    /// cancellation the wait is abandoned — never cancelled — so the frame either completes in
+    /// the background (connection stays usable; a transient broker stall no longer tears the
+    /// connection down) or faults (connection aborts). A background observer gives an abandoned
+    /// write one further request timeout to finish before forcibly aborting the connection to
+    /// unblock a socket write stuck on a dead broker.
+    /// </summary>
+    private async ValueTask AwaitFrameWriteAsync(
+        Task writeTask,
         int correlationId,
-        CancellationToken cancellationToken,
-        bool callerOwnsTimeout = false)
+        bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
     {
-        if (_stream is null)
-            throw new InvalidOperationException("Not connected");
-
-        // A previous write on this connection may have been aborted mid-frame, leaving the
-        // outgoing stream misaligned. Writers already queued on _writeLock must not append
-        // another frame to a poisoned stream.
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-
 #if DEBUG
         System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
             "callerOwnsTimeout path requires a timeout-bearing token");
 #endif
 
-        var memory = serializedData.AsMemory(0, length);
-
-        // Apply timeout to the write operation.
         // When callerOwnsTimeout is true, the caller's cancellationToken already carries
-        // a timeout (e.g. BrokerSender's sendTimeoutCts), so we skip the per-write CTS
-        // rent and CancellationTokenRegistration allocation — a hot-path optimization.
+        // a timeout (e.g. BrokerSender's sendTimeoutCts), so we skip the WaitAsync timer
+        // allocation — a hot-path optimization.
         if (callerOwnsTimeout)
         {
             try
             {
-                await _stream.WriteAsync(memory, cancellationToken).ConfigureAwait(false);
+                await writeTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
             // callerOwnsTimeout contract: token fires only on timeout, never explicit user cancellation.
             // Any OperationCanceledException here means the caller's timeout elapsed.
             catch (OperationCanceledException)
             {
-                AbortAfterWriteFailure();
+                AbandonFrameWrite(writeTask, correlationId);
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
-            }
-            catch (Exception)
-            {
-                AbortAfterWriteFailure();
-                throw;
             }
         }
         else
         {
-            using var timeoutCts = _timeoutCtsPool.Rent();
-            timeoutCts.CancelAfter(_options.RequestTimeout);
-            using var reg = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                : default;
-
             try
             {
-                await _stream.WriteAsync(memory, timeoutCts.Token).ConfigureAwait(false);
+                await writeTask.WaitAsync(_options.RequestTimeout, cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                AbortAfterWriteFailure();
+                AbandonFrameWrite(writeTask, correlationId);
                 throw new OperationCanceledException(cancellationToken);
             }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            catch (TimeoutException)
             {
-                AbortAfterWriteFailure();
+                AbandonFrameWrite(writeTask, correlationId);
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
             }
-            catch (Exception)
+        }
+    }
+
+    private void AbandonFrameWrite(Task writeTask, int correlationId)
+        => _ = ObserveAbandonedFrameWriteAsync(writeTask, correlationId);
+
+    private async Task ObserveAbandonedFrameWriteAsync(Task writeTask, int correlationId)
+    {
+        try
+        {
+            await writeTask.WaitAsync(_options.RequestTimeout).ConfigureAwait(false);
+
+            // Completed after the caller gave up: the frame is intact, the outgoing stream is
+            // still frame-aligned, and the connection remains usable. Any late response is
+            // dropped by DispatchResponse as an unknown correlation id.
+            LogAbandonedWriteCompleted(correlationId, BrokerId);
+        }
+        catch (TimeoutException)
+        {
+            // Stuck for a full further request timeout: the broker is not draining the socket.
+            // Abort the connection; disposing the socket unblocks the pending write, which then
+            // faults and is observed below.
+            LogAbandonedWriteStuck(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+            AbortAfterWriteFailure();
+            try
             {
-                AbortAfterWriteFailure();
-                throw;
+                await writeTask.ConfigureAwait(false);
             }
+            catch
+            {
+                // Exception observed; the connection is already aborted.
+            }
+        }
+        catch
+        {
+            // The write faulted after the caller abandoned it; WriteFrameHoldingLockAsync
+            // already aborted the connection. Nothing to do beyond observing the exception.
         }
     }
 
     /// <summary>
-    /// Marks the connection unusable after a frame write failed or was cancelled. A cancelled
-    /// or faulted <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/> can
-    /// have transmitted part of the frame, so the outgoing stream is no longer frame-aligned:
+    /// Marks the connection unusable after a frame write faulted or stayed stuck past its grace
+    /// period. A faulted <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    /// can have transmitted part of the frame, so the outgoing stream is no longer frame-aligned:
     /// any further request written to it is misparsed by the broker (surfacing as broker-side
     /// InvalidRequestException on PRODUCE, after which the broker closes the socket while the
     /// producer keeps retrying into 30s timeouts). Marking the connection disposed makes the
@@ -2847,6 +2893,12 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose connection to broker {BrokerId} after a write failure")]
     private partial void LogWriteAbortDisposeFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Abandoned frame write for request {CorrelationId} to broker {BrokerId} completed; connection remains usable")]
+    private partial void LogAbandonedWriteCompleted(int correlationId, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Abandoned frame write for request {CorrelationId} to broker {BrokerId} still incomplete after a further {Timeout}ms; aborting connection")]
+    private partial void LogAbandonedWriteStuck(double timeout, int correlationId, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop started for {Host}:{Port}")]
     private partial void LogReceiveLoopStarted(string host, int port);
