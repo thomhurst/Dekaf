@@ -98,9 +98,9 @@ internal sealed class ConfluentProducerAsyncIdempotentStressTest : IStressTestSc
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                throughput.RecordError();
+                throughput.RecordError(ex, "ProduceAsync loop", messageIndex);
             }
         }
 

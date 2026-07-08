@@ -79,7 +79,7 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
 
                 if (messageIndex % StressTestHelpers.LatencySampleInterval == 0)
                 {
-                    ConfluentStressTestHelpers.SampleDeliveryLatency(producer, options.Topic, message, latency, throughput, cts.Token);
+                    ConfluentStressTestHelpers.SampleDeliveryLatency(producer, options.Topic, message, latency, throughput, cts.Token, messageIndex);
                 }
                 else
                 {
@@ -108,9 +108,9 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                throughput.RecordError();
+                throughput.RecordError(ex, "Produce loop", messageIndex);
             }
         }
 

@@ -92,9 +92,9 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
                         }
                     }
                 }
-                catch (ConfluentKafka.ConsumeException)
+                catch (ConfluentKafka.ConsumeException ex)
                 {
-                    throughput.RecordError();
+                    throughput.RecordError(ex, "Confluent consume loop");
                 }
             }
         }

@@ -97,9 +97,9 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                throughput.RecordError();
+                throughput.RecordError(ex, "ProduceAsync loop", messageIndex);
             }
         }
 
