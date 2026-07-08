@@ -444,15 +444,83 @@ public sealed class KafkaConnectionTests
         var stream = new ThrowingWriteStream();
         SetPrivateField(connection, "_stream", stream);
 
-        await Assert.That(async () =>
-                await InvokeWritePreSerializedToStreamAsync(connection, [0, 0, 0, 0], CancellationToken.None)
-                    .ConfigureAwait(false))
+        var (writeTask, writeLock) = await StartFrameWriteAsync(connection);
+
+        await Assert.That(async () => await writeTask)
             .Throws<IOException>()
             .WithMessageContaining("write failed");
+
+        // A faulted frame write may have left partial bytes on the wire: the connection
+        // must abort itself and release the write lock.
+        await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsNotEqualTo(0);
+        await Assert.That(writeLock.CurrentCount).IsEqualTo(1);
 
         await connection.DisposeAsync();
 
         await Assert.That(stream.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task WriteTimeout_AbandonedWriteCompletes_ConnectionStaysUsable()
+    {
+        await using var connection = new KafkaConnection("localhost", 9092);
+        var stream = new PendingWriteStream();
+        SetPrivateField(connection, "_stream", stream);
+
+        var (writeTask, writeLock) = await StartFrameWriteAsync(connection);
+        await Assert.That(writeTask.IsCompleted).IsFalse();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // The caller's timeout fires while the frame is in flight: the wait is abandoned,
+        // but the socket write itself must never be cancelled mid-frame.
+        await Assert.That(async () =>
+                await InvokeAwaitFrameWriteAsync(connection, writeTask, callerOwnsTimeout: true, cts.Token))
+            .Throws<KafkaException>()
+            .WithMessageContaining("Flush timeout");
+
+        await Assert.That(writeTask.IsCompleted).IsFalse();
+        await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsEqualTo(0);
+
+        // The stalled write drains after the caller gave up: the frame is intact, so the
+        // connection stays frame-aligned and usable instead of being torn down.
+        stream.CompletePendingWrite();
+        await writeTask;
+
+        await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsEqualTo(0);
+        await Assert.That(writeLock.CurrentCount).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task WriteTimeout_AbandonedWriteStuckPastGracePeriod_AbortsConnectionAndReleasesWriteLock(
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new KafkaConnection(
+            "localhost",
+            9092,
+            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
+        var stream = new PendingWriteStream();
+        SetPrivateField(connection, "_stream", stream);
+
+        var (writeTask, writeLock) = await StartFrameWriteAsync(connection);
+        await Assert.That(writeTask.IsCompleted).IsFalse();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.That(async () =>
+                await InvokeAwaitFrameWriteAsync(connection, writeTask, callerOwnsTimeout: true, cts.Token))
+            .Throws<KafkaException>()
+            .WithMessageContaining("Flush timeout");
+
+        await TestWait.UntilAsync(() => writeTask.IsCompleted, TimeSpan.FromSeconds(2));
+
+        await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsNotEqualTo(0);
+        await Assert.That(stream.DisposeCount).IsEqualTo(1);
+        await Assert.That(writeTask.IsFaulted).IsTrue();
+        await Assert.That(writeLock.CurrentCount).IsEqualTo(1);
     }
 
     [Test]
@@ -592,26 +660,37 @@ public sealed class KafkaConnectionTests
         await ((ValueTask<SaslHandshakeResponse>)result!).ConfigureAwait(false);
     }
 
-    private static async ValueTask InvokeWritePreSerializedToStreamAsync(
+    private static async Task<(Task WriteTask, SemaphoreSlim WriteLock)> StartFrameWriteAsync(KafkaConnection connection)
+    {
+        // WriteFrameHoldingLockAsync expects the caller to have acquired the write lock;
+        // it releases the lock and returns the pooled buffer itself.
+        var writeLock = GetPrivateField<SemaphoreSlim>(connection, "_writeLock");
+        await writeLock.WaitAsync();
+
+        var buffer = DekafPools.SerializationBuffers.Rent(16);
+        var method = typeof(KafkaConnection).GetMethod(
+            "WriteFrameHoldingLockAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("WriteFrameHoldingLockAsync was not found.");
+
+        var writeTask = (Task)method.Invoke(connection, [buffer, 4, false])!;
+        return (writeTask, writeLock);
+    }
+
+    private static async ValueTask InvokeAwaitFrameWriteAsync(
         KafkaConnection connection,
-        byte[] serializedData,
+        Task writeTask,
+        bool callerOwnsTimeout,
         CancellationToken cancellationToken)
     {
         var method = typeof(KafkaConnection).GetMethod(
-            "WritePreSerializedToStreamAsync",
+            "AwaitFrameWriteAsync",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
-            throw new InvalidOperationException("WritePreSerializedToStreamAsync was not found.");
+            throw new InvalidOperationException("AwaitFrameWriteAsync was not found.");
 
-        var result = method.Invoke(connection,
-        [
-            serializedData,
-            serializedData.Length,
-            1,
-            cancellationToken,
-            false
-        ]);
-
+        var result = method.Invoke(connection, [writeTask, 1, callerOwnsTimeout, cancellationToken]);
         await ((ValueTask)result!).ConfigureAwait(false);
     }
 
@@ -708,6 +787,65 @@ public sealed class KafkaConnectionTests
             var buffer = new byte[4];
             BinaryPrimitives.WriteInt32BigEndian(buffer, responseSize);
             return new MemoryStream(buffer);
+        }
+    }
+
+    private sealed class PendingWriteStream : Stream
+    {
+        private readonly TaskCompletionSource _pendingWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int DisposeCount { get; private set; }
+
+        public void CompletePendingWrite() => _pendingWrite.TrySetResult();
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override Task WriteAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+            => _pendingWrite.Task;
+
+        // Deliberately ignores cancellationToken: models an in-flight socket send stalled
+        // on a full TCP window, which the connection must never cancel mid-frame.
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            => new(_pendingWrite.Task);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DisposeCount++;
+                _pendingWrite.TrySetException(new IOException("write aborted"));
+            }
+
+            base.Dispose(disposing);
         }
     }
 
