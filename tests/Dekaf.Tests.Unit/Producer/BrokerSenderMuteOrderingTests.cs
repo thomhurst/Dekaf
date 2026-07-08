@@ -30,6 +30,10 @@ public sealed class BrokerSenderMuteOrderingTests
         "PartitionCarryOver",
         BindingFlags.NonPublic)!;
 
+    private static readonly Type BatchReferenceType = typeof(BrokerSender).GetNestedType(
+        "BatchReference",
+        BindingFlags.NonPublic)!;
+
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
@@ -230,25 +234,45 @@ public sealed class BrokerSenderMuteOrderingTests
         return (int)PartitionCarryOverType.GetProperty("Count")!.GetValue(carryOver)!;
     }
 
+    private static object CreateBatchReference(ReadyBatch batch, int generation)
+    {
+        return Activator.CreateInstance(BatchReferenceType, batch, generation)!;
+    }
+
     private static void InvokeCoalesceBatch(
         BrokerSender sender,
         ReadyBatch batch,
         ReadyBatch[] coalescedBatches,
+        int[] coalescedGenerations,
         ref int coalescedCount,
         HashSet<TopicPartition> coalescedPartitions,
-        object carryOver)
+        object carryOver,
+        int? capturedGeneration = null)
     {
         var args = new object?[]
         {
-            batch,
+            CreateBatchReference(batch, capturedGeneration ?? batch.Generation),
             coalescedBatches,
+            coalescedGenerations,
             coalescedCount,
             coalescedPartitions,
             carryOver
         };
 
         CoalesceBatchMethod.Invoke(sender, args);
-        coalescedCount = (int)args[2]!;
+        coalescedCount = (int)args[3]!;
+    }
+
+    private static ReadyBatch CreateMinimalBatch(string topic, int partition)
+    {
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition(topic, partition),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            completionSourcesArray: null,
+            completionSourcesCount: 0,
+            dataSize: 100);
+        return batch;
     }
 
     [Test]
@@ -266,6 +290,7 @@ public sealed class BrokerSenderMuteOrderingTests
             var firstBatch = CreateTestBatch(vtPool, "test-topic", 0);
             var overflowBatch = CreateTestBatch(vtPool, "test-topic", 1);
             var coalescedBatches = new[] { firstBatch };
+            var coalescedGenerations = new[] { firstBatch.Generation };
             var coalescedCount = 1;
             var coalescedPartitions = new HashSet<TopicPartition> { firstBatch.TopicPartition };
             var carryOver = CreateCarryOver();
@@ -274,6 +299,7 @@ public sealed class BrokerSenderMuteOrderingTests
                 sender,
                 overflowBatch,
                 coalescedBatches,
+                coalescedGenerations,
                 ref coalescedCount,
                 coalescedPartitions,
                 carryOver);
@@ -288,6 +314,54 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CoalesceBatch_StaleGenerationSkipsReRentedBatch()
+    {
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var batch = CreateMinimalBatch("old-topic", 0);
+            var staleGeneration = batch.Generation;
+            Interlocked.Exchange(ref batch._returnedToPool, 1);
+            batch.Initialize(
+                new TopicPartition("new-topic", 1),
+                new RecordBatch { Records = Array.Empty<Record>() },
+                completionSourcesArray: null,
+                completionSourcesCount: 0,
+                dataSize: 100);
+
+            var coalescedBatches = new ReadyBatch[4];
+            var coalescedGenerations = new int[4];
+            var coalescedCount = 0;
+            var coalescedPartitions = new HashSet<TopicPartition>();
+            var carryOver = CreateCarryOver();
+
+            InvokeCoalesceBatch(
+                sender,
+                batch,
+                coalescedBatches,
+                coalescedGenerations,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver,
+                staleGeneration);
+
+            await Assert.That(coalescedCount).IsEqualTo(0);
+            await Assert.That(GetCarryOverCount(carryOver)).IsEqualTo(0);
+            await Assert.That(coalescedPartitions.Contains(batch.TopicPartition)).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
         }
     }
 
@@ -308,6 +382,7 @@ public sealed class BrokerSenderMuteOrderingTests
             overflowBatch.IsRetry = true;
 
             var coalescedBatches = new[] { firstBatch };
+            var coalescedGenerations = new[] { firstBatch.Generation };
             var coalescedCount = 1;
             var coalescedPartitions = new HashSet<TopicPartition> { firstBatch.TopicPartition };
             var carryOver = CreateCarryOver();
@@ -316,6 +391,7 @@ public sealed class BrokerSenderMuteOrderingTests
                 sender,
                 overflowBatch,
                 coalescedBatches,
+                coalescedGenerations,
                 ref coalescedCount,
                 coalescedPartitions,
                 carryOver);
