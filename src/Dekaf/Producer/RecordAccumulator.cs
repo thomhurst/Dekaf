@@ -5858,6 +5858,23 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal int Generation => Volatile.Read(ref _generation);
 
     /// <summary>
+    /// Returns true if this batch is still the live incarnation the caller captured
+    /// <paramref name="expectedGeneration"/> from. Unlike <see cref="IsReturnedToPool"/>
+    /// alone — whose flag is reset when the object is re-rented, making a recycled batch
+    /// indistinguishable from a live one — this also compares the generation stamp, which
+    /// only ever moves forward.
+    /// </summary>
+    /// <remarks>
+    /// Read order matters and must not be changed: <see cref="IsReturnedToPool"/> is read
+    /// before <see cref="Generation"/>. Initialize() increments the generation before it
+    /// clears <c>_returnedToPool</c>, so a reader that observes the cleared flag is
+    /// guaranteed to observe the new generation and fail the comparison. Reading in the
+    /// opposite order reintroduces the window where both checks pass on a recycled batch.
+    /// </remarks>
+    internal bool IsCurrentIncarnation(int expectedGeneration)
+        => !IsReturnedToPool && Generation == expectedGeneration;
+
+    /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
     /// </summary>
     public ReadyBatch()
@@ -5879,6 +5896,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         int callbackCount = 0,
         BatchArrayReuseQueue? arrayReuseQueue = null)
     {
+        // The generation increment must happen BEFORE the lifecycle flags are cleared.
+        // Stale-reference holders validate liveness by reading _returnedToPool first and
+        // _generation second (see IsCurrentIncarnation). With the increment ordered first,
+        // a stale holder that observes _returnedToPool == 0 (this re-initialization already
+        // cleared it) is guaranteed to also observe the new generation and bail on the
+        // mismatch. With the old order (flags first), a holder could see _returnedToPool == 0
+        // while still reading its own stale generation — passing both checks and acting on
+        // a batch now owned by someone else.
+        Interlocked.Increment(ref _generation);
+
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
         // This ensures stale references from a previous lifecycle see _cleanedUp=1
         // and return early from CompleteSend/Fail, preventing pool corruption.
@@ -5891,7 +5918,6 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _memoryReleased, 0);
         Volatile.Write(ref _preSerialized, 0);
         Volatile.Write(ref _preSerializationTask, null);
-        Interlocked.Increment(ref _generation);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;

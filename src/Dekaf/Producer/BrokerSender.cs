@@ -146,18 +146,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         long RequestStartTime)
     {
         /// <summary>
-        /// Snapshots batch generations at creation time. Must be called immediately after
-        /// populating the Batches array — the generations detect batch object recycling
-        /// between send and response processing.
+        /// Wraps a pipelined response with the batch-generation snapshot the send captured
+        /// at send start (before its first await) — the generations detect batch object
+        /// recycling between send and response processing. Ownership of the rented
+        /// <paramref name="generations"/> array transfers to this PendingResponse;
+        /// it is returned by <see cref="ReturnBatchesArray"/>.
         /// </summary>
         public static PendingResponse Create(
-            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int count, long requestStartTime)
-        {
-            var generations = ArrayPool<int>.Shared.Rent(count);
-            for (var i = 0; i < count; i++)
-                generations[i] = batches[i].Generation;
-            return new PendingResponse(responseTask, batches, generations, count, requestStartTime);
-        }
+            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations, int count, long requestStartTime)
+            => new(responseTask, batches, generations, count, requestStartTime);
 
         /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
@@ -329,7 +326,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // can Enqueue simultaneously from different thread-pool threads. ConcurrentQueue provides
     // FIFO ordering (matching the old List iteration order) and is optimized for the
     // cross-thread producer-consumer pattern used here.
-    private readonly ConcurrentQueue<ReadyBatch> _sendFailedRetries = new();
+    //
+    // Each entry carries the batch's generation captured at send start. ReadyBatch objects
+    // are pooled, so a reference sitting in this queue can be completed and recycled by
+    // another owner before the send loop dequeues it. IsReturnedToPool alone cannot detect
+    // that (the flag is reset on re-rent); the generation comparison can. Dequeuers must
+    // validate with IsCurrentIncarnation before acting on the batch — acting on a recycled
+    // entry re-sends or fails a batch now owned by a different partition, which is the
+    // root cause of the PRODUCE framing-guard failures in issue #1570.
+    private readonly ConcurrentQueue<(ReadyBatch Batch, int Generation)> _sendFailedRetries = new();
 
     // Non-blocking in-flight request limiter. The send loop uses _totalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
@@ -718,8 +723,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // FIFO dequeue + AddFirst reverses the enqueue order, but this is intentional:
                 // each retry batch goes before all existing carry-over for its partition,
                 // matching Java's Deque.addFirst semantics for retry priority.
-                while (_sendFailedRetries.TryDequeue(out var retryBatch))
-                    carryOver.AddFirst(retryBatch);
+                while (_sendFailedRetries.TryDequeue(out var retry))
+                {
+                    if (retry.Batch.IsCurrentIncarnation(retry.Generation))
+                        carryOver.AddFirst(retry.Batch);
+                    else
+                        LogStaleRetryBatchSkipped(_instanceId, _brokerId);
+                }
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
                 HandleTimedOutRequests(carryOver, cancellationToken);
@@ -1223,9 +1233,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
 
-            while (_sendFailedRetries.TryDequeue(out var retryBatch))
+            while (_sendFailedRetries.TryDequeue(out var retry))
             {
-                try { FailAndCleanupBatch(retryBatch, disposedException); }
+                if (!retry.Batch.IsCurrentIncarnation(retry.Generation))
+                    continue;
+
+                try { FailAndCleanupBatch(retry.Batch, disposedException); }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
 
@@ -2048,10 +2061,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int connectionIndex,
         CancellationToken cancellationToken)
     {
+        // Snapshot batch generations before the first await, while this send still has
+        // exclusive ownership handed over by the send loop's coalesce step. Every later
+        // touch of a batch (completion, cleanup, retry enqueue, pending-response matching)
+        // validates against this snapshot via IsCurrentIncarnation — a mismatch means the
+        // pooled ReadyBatch was recycled by another owner and must not be acted on.
+        var generations = ArrayPool<int>.Shared.Rent(count);
+        for (var i = 0; i < count; i++)
+            generations[i] = batches[i].Generation;
+
         // Tracks whether PendingResponse was added to _pendingResponsesByConnection.
-        // Once added, ProcessCompletedResponses owns the batches array — catch blocks
-        // must NOT return it to ArrayPool, or the array will be recycled while
-        // PendingResponse still references it (causing cross-request batch contamination).
+        // Once added, ProcessCompletedResponses owns the batches array AND the generations
+        // array — catch blocks must NOT return them to ArrayPool, or they will be recycled
+        // while PendingResponse still references them (causing cross-request batch contamination).
         var pendingResponseAdded = false;
         try
         {
@@ -2168,6 +2190,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
+                    if (!batch.IsCurrentIncarnation(generations[i]))
+                    {
+                        LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                        batches[i] = null!;
+                        continue;
+                    }
+
                     CompleteInflightEntry(batch);
                     batch.CompleteSend(-1, fireAndForgetTimestamp);
                     try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
@@ -2178,7 +2207,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // doesn't add to _pendingResponsesByConnection, so no in-flight slot to release)
                 for (var i = 0; i < count; i++)
                 {
-                    CleanupBatch(batches[i]);
+                    if (batches[i] is not null)
+                        CleanupBatch(batches[i]);
                 }
 
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
@@ -2214,7 +2244,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var pendingResponse = PendingResponse.Create(responseTask, batches, count, requestStartTime);
+            var pendingResponse = PendingResponse.Create(responseTask, batches, generations, count, requestStartTime);
             _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
             pendingResponseAdded = true; // Array ownership transferred to PendingResponse
             Interlocked.Increment(ref _totalPendingResponseCount);
@@ -2277,7 +2307,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // the parameter may be a linked timeout CTS. On timeout, we want retry (Z path),
             // not permanent failure — only true shutdown should permanently fail batches.
             for (var i = 0; i < count; i++)
-                FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
+            {
+                var batch = batches[i];
+
+                // Skip batches recycled by a racing owner (e.g. ForceFailAllInFlightBatches
+                // during disposal) — failing a re-rented batch would fail its new owner's data.
+                if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                    continue;
+
+                FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(BrokerSender)));
+            }
 
             scratch.ClearReferences();
 
@@ -2297,8 +2336,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batch = batches[i];
 
-                // Batch may have been returned to pool by a racing disposal — skip, already failed.
-                if (batch is null || batch.IsReturnedToPool)
+                // Batch may have been recycled by a racing owner (disposal ForceFail, or a
+                // completion that outran this handler). IsReturnedToPool alone is insufficient —
+                // the flag resets when the pooled object is re-rented — so compare against the
+                // generation snapshot taken at send start (#1570).
+                if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
                     continue;
 
                 batch.AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
@@ -2331,7 +2373,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.IsRetry = true;
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
-                        _sendFailedRetries.Enqueue(batch);
+                        _sendFailedRetries.Enqueue((batch, generations[i]));
                     }
                 }
                 catch (Exception batchEx)
@@ -2348,6 +2390,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
+        finally
+        {
+            // The generations snapshot transfers to PendingResponse along with the batches
+            // array; ReturnBatchesArray returns both. On every other path it is owned here.
+            if (!pendingResponseAdded)
+                ArrayPool<int>.Shared.Return(generations);
         }
     }
 
@@ -3368,6 +3417,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} response task={ResponseTaskId}: batch already returned to pool (count={Count}, trace={DiagTrace}), skipping")]
     private partial void LogBatchAlreadyReturnedToPool(int instanceId, int responseTaskId, int count, string diagTrace);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} broker {BrokerId}: send-failed retry batch was recycled while queued (generation mismatch), skipping")]
+    private partial void LogStaleRetryBatchSkipped(int instanceId, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId} broker {BrokerId}: batch recycled during send (generation mismatch), skipping completion")]
+    private partial void LogStaleBatchInSendSkipped(int instanceId, int brokerId);
 
     #endregion
 }
