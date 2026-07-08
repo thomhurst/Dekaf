@@ -199,6 +199,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     private long _receiveTimeoutDeadlineTimestamp;
     private int _receiveTimeoutExpired;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
+    private readonly object _disposeGate = new();
+    private Task? _disposeTask;
     private int _disposed;
     private int _connected;
     private long _lastUsedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
@@ -1014,7 +1016,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         // outgoing stream misaligned. Writers already queued on _writeLock must not append
         // another frame to a poisoned stream.
         if (Volatile.Read(ref _disposed) != 0)
-            throw new KafkaException($"Connection to broker {BrokerId} is closed");
+            throw new ObjectDisposedException(nameof(KafkaConnection));
 
 #if DEBUG
         System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
@@ -1089,21 +1091,25 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     /// any further request written to it is misparsed by the broker (surfacing as broker-side
     /// InvalidRequestException on PRODUCE, after which the broker closes the socket while the
     /// producer keeps retrying into 30s timeouts). Marking the connection disposed makes the
-    /// ConnectionPool replace it, and disposing the socket unblocks the read pump so the
-    /// receive loop fails all in-flight requests promptly instead of each waiting out its
-    /// request timeout.
+    /// ConnectionPool replace it. Starting full disposal releases the pipe/stream owners and
+    /// unblocks the receive loop so in-flight requests fail promptly instead of each waiting
+    /// out its request timeout.
     /// </summary>
     private void AbortAfterWriteFailure()
     {
-        MarkDisposed();
-        Volatile.Write(ref _connected, 0);
+        var disposeTask = EnsureDisposeStarted();
+        _ = ObserveWriteAbortDisposeAsync(disposeTask);
+    }
+
+    private async Task ObserveWriteAbortDisposeAsync(Task disposeTask)
+    {
         try
         {
-            _socket?.Dispose();
+            await disposeTask.ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            LogWriteAbortSocketDisposeFailed(ex, BrokerId);
+            LogWriteAbortDisposeFailed(ex, BrokerId);
         }
     }
 
@@ -2609,11 +2615,20 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         }
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return;
+    public ValueTask DisposeAsync()
+        => new(EnsureDisposeStarted());
 
+    private Task EnsureDisposeStarted()
+    {
+        lock (_disposeGate)
+        {
+            return _disposeTask ??= DisposeCoreAsync();
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        MarkDisposed();
         Volatile.Write(ref _connected, 0);
         var pendingRequestSlotOperationsDrained = ClosePendingRequestSlotsAsync();
         CancelPendingRequestSlotWaiters();
@@ -2763,8 +2778,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
     [LoggerMessage(Level = LogLevel.Error, Message = "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}")]
     private partial void LogFlushTimeout(double timeout, int correlationId, int brokerId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose socket while aborting connection to broker {BrokerId} after a write failure")]
-    private partial void LogWriteAbortSocketDisposeFailed(Exception ex, int brokerId);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose connection to broker {BrokerId} after a write failure")]
+    private partial void LogWriteAbortDisposeFailed(Exception ex, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop started for {Host}:{Port}")]
     private partial void LogReceiveLoopStarted(string host, int port);
