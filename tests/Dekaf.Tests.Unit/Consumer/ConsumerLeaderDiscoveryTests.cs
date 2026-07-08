@@ -173,6 +173,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
         await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
 
         var partitionResponse = new FetchResponsePartition
         {
@@ -372,7 +373,17 @@ public sealed class ConsumerLeaderDiscoveryTests
             .GetMethod("ResetToDivergingEpoch", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ResetToDivergingEpoch method not found");
 
-        method.Invoke(consumer, [Topic, partitionResponse]);
+        method.Invoke(consumer, [Topic, partitionResponse, GetFetchBufferEpoch(consumer)]);
+    }
+
+    private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_fetchBufferEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fetchBufferEpoch field not found.");
+
+        return (int)field.GetValue(consumer)!;
     }
 
     private static Exception? DrainPendingFetchException(KafkaConsumer<string, string> consumer)
