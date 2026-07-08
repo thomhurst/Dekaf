@@ -493,6 +493,37 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task WriteTimeout_AbandonedWriteStuckPastGracePeriod_AbortsConnectionAndReleasesWriteLock(
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new KafkaConnection(
+            "localhost",
+            9092,
+            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
+        var stream = new PendingWriteStream();
+        SetPrivateField(connection, "_stream", stream);
+
+        var (writeTask, writeLock) = await StartFrameWriteAsync(connection);
+        await Assert.That(writeTask.IsCompleted).IsFalse();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.That(async () =>
+                await InvokeAwaitFrameWriteAsync(connection, writeTask, callerOwnsTimeout: true, cts.Token))
+            .Throws<KafkaException>()
+            .WithMessageContaining("Flush timeout");
+
+        await TestWait.UntilAsync(() => writeTask.IsCompleted, TimeSpan.FromSeconds(2));
+
+        await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsNotEqualTo(0);
+        await Assert.That(stream.DisposeCount).IsEqualTo(1);
+        await Assert.That(writeTask.IsFaulted).IsTrue();
+        await Assert.That(writeLock.CurrentCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationDisabled_IgnoresNameMismatchOnly()
     {
         await using var connection = new KafkaConnection(
@@ -763,6 +794,8 @@ public sealed class KafkaConnectionTests
     {
         private readonly TaskCompletionSource _pendingWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public int DisposeCount { get; private set; }
+
         public void CompletePendingWrite() => _pendingWrite.TrySetResult();
 
         public override bool CanRead => false;
@@ -792,10 +825,28 @@ public sealed class KafkaConnectionTests
         public override void Write(byte[] buffer, int offset, int count)
             => throw new NotSupportedException();
 
+        public override Task WriteAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+            => _pendingWrite.Task;
+
         // Deliberately ignores cancellationToken: models an in-flight socket send stalled
         // on a full TCP window, which the connection must never cancel mid-frame.
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
             => new(_pendingWrite.Task);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DisposeCount++;
+                _pendingWrite.TrySetException(new IOException("write aborted"));
+            }
+
+            base.Dispose(disposing);
+        }
     }
 
     private sealed class ThrowingWriteStream : Stream

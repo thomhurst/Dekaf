@@ -2830,7 +2830,8 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
         _connectLock.Dispose();
-        _writeLock.Dispose();
+        // Do not dispose _writeLock here. A frame write may still be unwinding after
+        // stream/socket disposal unblocks it; its finally block must release the lock.
         _timeoutCtsPool.Clear();
         _ownedTokenProvider?.Dispose();
 
