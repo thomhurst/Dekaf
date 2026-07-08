@@ -3034,7 +3034,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (preSerialize)
                 {
                     if (_options.CompressionType == CompressionType.None)
-                        PrepareBatchForPublish(readyBatch);
+                        PrepareBatchForPublish(readyBatch, readyBatch.Generation);
                     else
                         readyBatch.SetPreSerializationTask(CreatePreSerializationTask(readyBatch));
                 }
@@ -3207,30 +3207,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private Task CreatePreSerializationTask(ReadyBatch readyBatch)
     {
+        var generation = readyBatch.Generation;
         return new Task(
             static state =>
             {
                 var workItem = (PreSerializationWorkItem)state!;
-                workItem.Accumulator.PreSerializeAndPublishBatch(workItem.Batch);
+                workItem.Accumulator.PreSerializeAndPublishBatch(workItem.Batch, workItem.Generation);
             },
-            new PreSerializationWorkItem(this, readyBatch),
+            new PreSerializationWorkItem(this, readyBatch, generation),
             CancellationToken.None,
             TaskCreationOptions.DenyChildAttach);
     }
 
-    private void PreSerializeAndPublishBatch(ReadyBatch readyBatch)
+    private void PreSerializeAndPublishBatch(ReadyBatch readyBatch, int generation)
     {
-        if (PrepareBatchForPublish(readyBatch) && !readyBatch.IsReturnedToPool)
+        if (PrepareBatchForPublish(readyBatch, generation) && readyBatch.IsCurrentIncarnation(generation))
             PublishSealedBatch(readyBatch);
     }
 
     private sealed class PreSerializationWorkItem(
         RecordAccumulator accumulator,
-        ReadyBatch batch)
+        ReadyBatch batch,
+        int generation)
     {
         public RecordAccumulator Accumulator { get; } = accumulator;
 
         public ReadyBatch Batch { get; } = batch;
+
+        public int Generation { get; } = generation;
     }
 
     /// <summary>
@@ -3244,8 +3248,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// batches where <see cref="ReadyBatch.IsPreSerialized"/> is false, so the sender only
     /// picks up wire-ready batches.
     /// </summary>
-    private bool PrepareBatchForPublish(ReadyBatch readyBatch)
+    private bool PrepareBatchForPublish(ReadyBatch readyBatch, int generation)
     {
+        if (!readyBatch.IsCurrentIncarnation(generation))
+            return false;
+
         Exception? failure = null;
         try
         {
@@ -3257,12 +3264,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             failure = ex;
         }
 
+        if (!readyBatch.IsCurrentIncarnation(generation))
+            return false;
+
         // Mark pre-serialization complete so the drain loop can pick up this batch.
         readyBatch.MarkPreSerialized();
         if (failure is null)
-            return !readyBatch.IsSendCompleted;
+            return !readyBatch.IsSendCompleted && readyBatch.IsCurrentIncarnation(generation);
 
-        return readyBatch.FailFromPreSerialization(failure);
+        return readyBatch.IsCurrentIncarnation(generation) && readyBatch.FailFromPreSerialization(failure);
     }
 
     /// <summary>

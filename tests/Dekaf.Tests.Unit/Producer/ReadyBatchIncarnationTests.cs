@@ -1,5 +1,9 @@
+using System.Diagnostics;
+using System.Reflection;
+using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -14,6 +18,14 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class ReadyBatchIncarnationTests
 {
+    private static readonly Type PendingResponseType = typeof(BrokerSender).GetNestedType(
+        "PendingResponse",
+        BindingFlags.NonPublic)!;
+
+    private static readonly Type ProduceRequestScratchType = typeof(BrokerSender).GetNestedType(
+        "ProduceRequestScratch",
+        BindingFlags.NonPublic)!;
+
     private static ReadyBatch CreateInitializedBatch(string topic = "t", int partition = 0)
     {
         var batch = new ReadyBatch();
@@ -98,5 +110,47 @@ public sealed class ReadyBatchIncarnationTests
 
         await Assert.That(batch.IsReturnedToPool).IsFalse();
         await Assert.That(batch.Generation).IsNotEqualTo(staleGeneration);
+    }
+
+    [Test]
+    public async Task PendingResponse_IsSameIncarnation_ReturnedToPool_ReturnsFalse()
+    {
+        var batch = CreateInitializedBatch();
+        var capturedGeneration = batch.Generation;
+        var batches = new[] { batch };
+        var generations = new[] { capturedGeneration };
+        var responseTask = Task.FromResult(new ProduceResponse());
+        var create = PendingResponseType.GetMethod("Create", BindingFlags.Public | BindingFlags.Static)!;
+        var pending = create.Invoke(null, [responseTask, batches, generations, 1, Stopwatch.GetTimestamp()])!;
+        var isSameIncarnation = PendingResponseType.GetMethod("IsSameIncarnation")!;
+
+        Interlocked.Exchange(ref batch._returnedToPool, 1);
+
+        var result = (bool)isSameIncarnation.Invoke(pending, [0])!;
+
+        await Assert.That(result).IsFalse();
+    }
+
+    [Test]
+    public async Task ProduceRequestScratch_Build_WhenSortingBatches_PermutesGenerations()
+    {
+        var laterTopicBatch = CreateInitializedBatch("z-topic", 0);
+        InitializeBatch(laterTopicBatch, "z-topic", 0);
+        var earlierTopicBatch = CreateInitializedBatch("a-topic", 1);
+        var batches = new[] { laterTopicBatch, earlierTopicBatch };
+        var generations = new[] { laterTopicBatch.Generation, earlierTopicBatch.Generation };
+        var scratch = Activator.CreateInstance(
+            ProduceRequestScratchType,
+            new ProducerOptions { BootstrapServers = ["localhost:9092"] },
+            new CompressionCodecRegistry(),
+            4)!;
+        var build = ProduceRequestScratchType.GetMethod("Build")!;
+
+        build.Invoke(scratch, [batches, generations, 2]);
+
+        await Assert.That(batches[0]).IsSameReferenceAs(earlierTopicBatch);
+        await Assert.That(generations[0]).IsEqualTo(earlierTopicBatch.Generation);
+        await Assert.That(batches[1]).IsSameReferenceAs(laterTopicBatch);
+        await Assert.That(generations[1]).IsEqualTo(laterTopicBatch.Generation);
     }
 }
