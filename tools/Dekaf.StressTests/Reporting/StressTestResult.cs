@@ -59,11 +59,6 @@ internal sealed class StressTestResult
     public double? MedianIntervalMessagesPerSecond =>
         GetMedian(Throughput.MessagesPerSecondSamples);
 
-    public double? MedianIntervalMegabytesPerSecond =>
-        MedianIntervalMessagesPerSecond is { } rate
-            ? rate * MessageSizeBytes / (1024.0 * 1024.0)
-            : null;
-
     /// <summary>
     /// Client-side append rate, reported only when it is distinct from the headline
     /// number (i.e. when delivered throughput was measured). Null means the headline
