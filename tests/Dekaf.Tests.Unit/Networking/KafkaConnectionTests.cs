@@ -438,6 +438,24 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task WriteFailure_DisposeAsyncRunsFullStreamCleanup()
+    {
+        await using var connection = new KafkaConnection("localhost", 9092);
+        var stream = new ThrowingWriteStream();
+        SetPrivateField(connection, "_stream", stream);
+
+        await Assert.That(async () =>
+                await InvokeWritePreSerializedToStreamAsync(connection, [0, 0, 0, 0], CancellationToken.None)
+                    .ConfigureAwait(false))
+            .Throws<IOException>()
+            .WithMessageContaining("write failed");
+
+        await connection.DisposeAsync();
+
+        await Assert.That(stream.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationDisabled_IgnoresNameMismatchOnly()
     {
         await using var connection = new KafkaConnection(
@@ -574,6 +592,29 @@ public sealed class KafkaConnectionTests
         await ((ValueTask<SaslHandshakeResponse>)result!).ConfigureAwait(false);
     }
 
+    private static async ValueTask InvokeWritePreSerializedToStreamAsync(
+        KafkaConnection connection,
+        byte[] serializedData,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "WritePreSerializedToStreamAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("WritePreSerializedToStreamAsync was not found.");
+
+        var result = method.Invoke(connection,
+        [
+            serializedData,
+            serializedData.Length,
+            1,
+            cancellationToken,
+            false
+        ]);
+
+        await ((ValueTask)result!).ConfigureAwait(false);
+    }
+
     private static RemoteCertificateValidationCallback? InvokeBuildRemoteCertificateValidationCallback(
         KafkaConnection connection)
     {
@@ -667,6 +708,49 @@ public sealed class KafkaConnectionTests
             var buffer = new byte[4];
             BinaryPrimitives.WriteInt32BigEndian(buffer, responseSize);
             return new MemoryStream(buffer);
+        }
+    }
+
+    private sealed class ThrowingWriteStream : Stream
+    {
+        public int DisposeCount { get; private set; }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new IOException("write failed");
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValueTask.FromException(new IOException("write failed"));
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                DisposeCount++;
+
+            base.Dispose(disposing);
         }
     }
 }
