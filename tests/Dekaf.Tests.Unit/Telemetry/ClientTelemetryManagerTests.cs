@@ -9,6 +9,7 @@ using Dekaf.Telemetry;
 
 namespace Dekaf.Tests.Unit.Telemetry;
 
+[NotInParallel]
 public sealed class ClientTelemetryManagerTests
 {
     [Test]

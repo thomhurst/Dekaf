@@ -9,6 +9,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
+[NotInParallel]
 public sealed class QueryWatermarkOffsetsTests
 {
     private const string Topic = "watermark-topic";

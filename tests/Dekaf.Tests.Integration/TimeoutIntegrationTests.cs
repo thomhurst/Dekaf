@@ -108,7 +108,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
 
             // Dispose with timeout to ensure it doesn't hang
             var disposeTask = producer.DisposeAsync().AsTask();
-            var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(35))).ConfigureAwait(false) == disposeTask;
+            var completedInTime = await WaitForCompletionAsync(disposeTask, TimeSpan.FromSeconds(35)).ConfigureAwait(false);
 
             // Assert - Disposal completed within timeout (30s default + 5s buffer)
             await Assert.That(completedInTime).IsTrue();
@@ -392,7 +392,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
 
             // Act - Dispose after failed connection
             var disposeTask = producer.DisposeAsync().AsTask();
-            var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false) == disposeTask;
+            var completedInTime = await WaitForCompletionAsync(disposeTask, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
 
             // Assert - Should complete within timeout
             await Assert.That(completedInTime).IsTrue();
@@ -911,8 +911,21 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         await producer.DisposeAsync().ConfigureAwait(false);
 
         // Assert - Should complete without hanging
-        var completed = await Task.WhenAny(produceTask, Task.Delay(5000)).ConfigureAwait(false) == produceTask;
+        var completed = await WaitForCompletionAsync(produceTask, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await Assert.That(completed).IsTrue();
+    }
+
+    private static async Task<bool> WaitForCompletionAsync(Task task, TimeSpan timeout)
+    {
+        try
+        {
+            await task.WaitAsync(timeout).ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
     }
 
     #endregion

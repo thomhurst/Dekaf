@@ -17,8 +17,14 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
     {
         get
         {
-            yield return "net10.0";
+            yield return GetTargetFramework();
         }
+    }
+
+    internal static string GetTargetFramework()
+    {
+        var framework = Environment.GetEnvironmentVariable("NET_VERSION");
+        return string.IsNullOrWhiteSpace(framework) ? "net10.0" : framework;
     }
 
     protected override ModuleConfiguration Configure()

@@ -1,5 +1,7 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Dekaf.Networking;
 using Dekaf.Security;
 
 namespace Dekaf.Tests.Unit.Security;
@@ -136,6 +138,48 @@ public class CertificateLoadingTests : IDisposable
     }
 
     [Test]
+    public async Task KafkaConnection_LoadCertificatesFromPemFile_LoadsMultipleCerts()
+    {
+        using var ca1 = TestCertificateHelper.CreateSelfSignedCertificate("CN=CA1");
+        using var ca2 = TestCertificateHelper.CreateSelfSignedCertificate("CN=CA2");
+
+        var pemPath = WriteMultipleCertificatesToPem([ca1, ca2], "connection-ca-bundle.pem");
+        var collection = InvokeLoadCertificatesFromFile(pemPath);
+
+        try
+        {
+            await Assert.That(collection.Count).IsEqualTo(2);
+        }
+        finally
+        {
+            foreach (var cert in collection)
+            {
+                cert.Dispose();
+            }
+        }
+    }
+
+    [Test]
+    public async Task KafkaConnection_LoadClientCertificateWithPemFiles_LoadsPrivateKey()
+    {
+        using var clientCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test Client");
+        var (certPath, keyPath) = WriteCertificateAndKeyToPem(clientCert, "connection-client.pem", "connection-client.key");
+
+        await using var connection = new KafkaConnection("localhost", 9092);
+        var loaded = InvokeLoadClientCertificateWithOwnership(
+            connection,
+            new TlsConfig
+            {
+                ClientCertificatePath = certPath,
+                ClientKeyPath = keyPath
+            });
+
+        await Assert.That(loaded).IsNotNull();
+        await Assert.That(loaded!.Subject).IsEqualTo(clientCert.Subject);
+        await Assert.That(loaded.HasPrivateKey).IsTrue();
+    }
+
+    [Test]
     public async Task CreateMutualTls_WithFilePaths_SetsAllPaths()
     {
         // Create test certificates
@@ -163,8 +207,8 @@ public class CertificateLoadingTests : IDisposable
         using var cert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test");
         var pfxPath = WriteCertificateToPfx(cert, "test.pfx", "mypassword");
 
-        // Verify the PFX can be loaded with the correct password using modern API
-        using var loadedCert = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, "mypassword");
+        // Verify the PFX can be loaded with the correct password.
+        using var loadedCert = TestCertificateHelper.LoadPkcs12FromFile(pfxPath, "mypassword");
 
         await Assert.That(loadedCert.Subject).IsEqualTo("CN=Test");
         await Assert.That(loadedCert.HasPrivateKey).IsTrue();
@@ -177,7 +221,7 @@ public class CertificateLoadingTests : IDisposable
         var pfxPath = WriteCertificateToPfx(cert, "test.pfx", "correctpassword");
 
         // Verify that wrong password throws
-        await Assert.That(() => X509CertificateLoader.LoadPkcs12FromFile(pfxPath, "wrongpassword"))
+        await Assert.That(() => TestCertificateHelper.LoadPkcs12FromFile(pfxPath, "wrongpassword"))
             .Throws<CryptographicException>();
     }
 
@@ -226,5 +270,27 @@ public class CertificateLoadingTests : IDisposable
         }
 
         return (certPath, keyPath);
+    }
+
+    private static X509Certificate2Collection InvokeLoadCertificatesFromFile(string path)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "LoadCertificatesFromFile",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("LoadCertificatesFromFile was not found.");
+
+        return (X509Certificate2Collection)method.Invoke(obj: null, parameters: [path])!;
+    }
+
+    private static X509Certificate2? InvokeLoadClientCertificateWithOwnership(
+        KafkaConnection connection,
+        TlsConfig tlsConfig)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "LoadClientCertificateWithOwnership",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("LoadClientCertificateWithOwnership was not found.");
+
+        return (X509Certificate2?)method.Invoke(connection, [tlsConfig]);
     }
 }

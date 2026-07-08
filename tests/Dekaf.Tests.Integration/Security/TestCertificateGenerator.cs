@@ -121,7 +121,7 @@ internal sealed class TestCertificateGenerator : IDisposable
             DateTimeOffset.UtcNow.AddYears(5));
 
         // Re-import to ensure private key is exportable
-        return X509CertificateLoader.LoadPkcs12(
+        return LoadPkcs12(
             cert.Export(X509ContentType.Pfx, StorePassword),
             StorePassword,
             X509KeyStorageFlags.Exportable);
@@ -199,7 +199,7 @@ internal sealed class TestCertificateGenerator : IDisposable
         using var certWithKey = cert.CopyWithPrivateKey(rsa);
 
         // Re-import to ensure private key is exportable
-        return X509CertificateLoader.LoadPkcs12(
+        return LoadPkcs12(
             certWithKey.Export(X509ContentType.Pfx, StorePassword),
             StorePassword,
             X509KeyStorageFlags.Exportable);
@@ -216,7 +216,7 @@ internal sealed class TestCertificateGenerator : IDisposable
         File.WriteAllBytes(ServerKeystorePath, serverP12);
 
         // Export truststore as PKCS12 (contains CA cert only, no private key)
-        using var caCertOnly = X509CertificateLoader.LoadCertificate(CaCertificate.RawData);
+        using var caCertOnly = LoadCertificate(CaCertificate.RawData);
         var truststoreP12 = caCertOnly.Export(X509ContentType.Pfx, StorePassword);
         File.WriteAllBytes(ServerTruststorePath, truststoreP12);
 
@@ -274,10 +274,28 @@ internal sealed class TestCertificateGenerator : IDisposable
             DateTimeOffset.UtcNow.AddMinutes(-5),
             DateTimeOffset.UtcNow.AddYears(1));
 
-        return X509CertificateLoader.LoadPkcs12(
+        return LoadPkcs12(
             cert.Export(X509ContentType.Pfx, "untrusted"),
             "untrusted",
             X509KeyStorageFlags.Exportable);
+    }
+
+    private static X509Certificate2 LoadCertificate(byte[] rawData)
+    {
+#if NET10_0_OR_GREATER
+        return X509CertificateLoader.LoadCertificate(rawData);
+#else
+        return new X509Certificate2(rawData);
+#endif
+    }
+
+    private static X509Certificate2 LoadPkcs12(byte[] rawData, string? password, X509KeyStorageFlags keyStorageFlags)
+    {
+#if NET10_0_OR_GREATER
+        return X509CertificateLoader.LoadPkcs12(rawData, password, keyStorageFlags);
+#else
+        return new X509Certificate2(rawData, password, keyStorageFlags);
+#endif
     }
 
     public void Dispose()

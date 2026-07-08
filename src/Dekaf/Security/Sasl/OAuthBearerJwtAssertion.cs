@@ -289,13 +289,90 @@ internal static class OAuthBearerJwtAssertion
         byte[] signingInput,
         HashAlgorithmName hashAlgorithm)
     {
-#if NETSTANDARD2_0
-        throw new PlatformNotSupportedException("ECDSA JWT-bearer assertions require .NET APIs that are not available on netstandard2.0.");
-#else
         if (key is not ECDsa ecdsa)
             throw new InvalidOperationException("Selected JWT-bearer signing algorithm requires an ECDSA private key");
 
+#if NETSTANDARD2_0
+        var derSignature = ecdsa.SignData(signingInput, hashAlgorithm);
+        return DerEcdsaSignatureToIeeeP1363(derSignature, checked((ecdsa.KeySize + 7) / 8));
+#else
         return ecdsa.SignData(signingInput, hashAlgorithm, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
 #endif
     }
+
+#if NETSTANDARD2_0
+    private static byte[] DerEcdsaSignatureToIeeeP1363(ReadOnlySpan<byte> signature, int componentLength)
+    {
+        if (signature.Length == componentLength * 2)
+            return signature.ToArray();
+
+        var offset = 0;
+        if (ReadDerByte(signature, ref offset) != 0x30)
+            throw new CryptographicException("Invalid ECDSA signature sequence.");
+
+        var sequenceLength = ReadDerLength(signature, ref offset);
+        if (sequenceLength != signature.Length - offset)
+            throw new CryptographicException("Invalid ECDSA signature sequence length.");
+
+        var r = ReadDerInteger(signature, ref offset);
+        var s = ReadDerInteger(signature, ref offset);
+        if (offset != signature.Length)
+            throw new CryptographicException("Invalid trailing ECDSA signature data.");
+
+        var result = new byte[checked(componentLength * 2)];
+        CopyDerIntegerToFixedWidth(r, result.AsSpan(0, componentLength));
+        CopyDerIntegerToFixedWidth(s, result.AsSpan(componentLength, componentLength));
+        return result;
+    }
+
+    private static ReadOnlySpan<byte> ReadDerInteger(ReadOnlySpan<byte> source, ref int offset)
+    {
+        if (ReadDerByte(source, ref offset) != 0x02)
+            throw new CryptographicException("Invalid ECDSA signature integer.");
+
+        var length = ReadDerLength(source, ref offset);
+        if (length <= 0 || source.Length - offset < length)
+            throw new CryptographicException("Invalid ECDSA signature integer length.");
+
+        var value = source.Slice(offset, length);
+        offset += length;
+        return value;
+    }
+
+    private static int ReadDerLength(ReadOnlySpan<byte> source, ref int offset)
+    {
+        var first = ReadDerByte(source, ref offset);
+        if ((first & 0x80) == 0)
+            return first;
+
+        var byteCount = first & 0x7F;
+        if (byteCount is 0 or > 2 || source.Length - offset < byteCount)
+            throw new CryptographicException("Invalid ECDSA signature length.");
+
+        var length = 0;
+        for (var index = 0; index < byteCount; index++)
+            length = (length << 8) | ReadDerByte(source, ref offset);
+
+        return length;
+    }
+
+    private static int ReadDerByte(ReadOnlySpan<byte> source, ref int offset)
+    {
+        if (offset >= source.Length)
+            throw new CryptographicException("Truncated ECDSA signature.");
+
+        return source[offset++];
+    }
+
+    private static void CopyDerIntegerToFixedWidth(ReadOnlySpan<byte> source, Span<byte> destination)
+    {
+        while (source.Length > 0 && source[0] == 0)
+            source = source[1..];
+
+        if (source.Length > destination.Length)
+            throw new CryptographicException("ECDSA signature integer is too large.");
+
+        source.CopyTo(destination[^source.Length..]);
+    }
+#endif
 }

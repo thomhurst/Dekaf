@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using Dekaf.SchemaRegistry;
 
@@ -12,6 +13,9 @@ public sealed class SchemaRegistryKmsTests
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
         0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F
     ];
+
+    private static readonly byte[] Rfc5649Kek =
+        Convert.FromHexString("5840DF6E29B02AF1AB493B705BF16EA1AE8338F4DCC176A8");
 
     [Test]
     public async Task LocalKmsProvider_WrapIsDeterministicAndUnwrapRestoresPlaintext()
@@ -28,6 +32,99 @@ public sealed class SchemaRegistryKmsTests
         await Assert.That(wrapped1).IsNotEquivalentTo(plaintext);
         await Assert.That(unwrapped).IsEquivalentTo(plaintext);
     }
+
+    [Test]
+    public async Task LocalKmsProvider_WrapUnwrap_ShortPlaintextRestoresPlaintext()
+    {
+        var provider = CreateLocalProvider();
+        var keyReference = CreateKeyReference();
+        var plaintext = "short"u8.ToArray();
+
+        var wrapped = await provider.WrapKeyAsync(plaintext, keyReference);
+        var unwrapped = await provider.UnwrapKeyAsync(wrapped, keyReference);
+
+        await Assert.That(wrapped.Length).IsEqualTo(16);
+        await Assert.That(unwrapped).IsEquivalentTo(plaintext);
+    }
+
+    [Test]
+    public async Task LocalKmsProvider_UnwrapRejectsTamperedCiphertext()
+    {
+        var provider = CreateLocalProvider();
+        var keyReference = CreateKeyReference();
+        var plaintext = "schema-registry-dek"u8.ToArray();
+        var wrapped = await provider.WrapKeyAsync(plaintext, keyReference);
+        wrapped[0] ^= 0x80;
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+            async () => await provider.UnwrapKeyAsync(wrapped, keyReference));
+
+        await Assert.That(exception!.InnerException).IsTypeOf<CryptographicException>();
+    }
+
+    [Test]
+    public async Task LocalKmsProvider_UnwrapRejectsTruncatedCiphertext()
+    {
+        var provider = CreateLocalProvider();
+        var keyReference = CreateKeyReference();
+        var plaintext = "schema-registry-dek"u8.ToArray();
+        var wrapped = await provider.WrapKeyAsync(plaintext, keyReference);
+        var truncated = wrapped[..^1];
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+            async () => await provider.UnwrapKeyAsync(truncated, keyReference));
+
+        await Assert.That(exception!.Message).Contains("invalid");
+    }
+
+#if !NET10_0_OR_GREATER
+    [Test]
+    public async Task AesKeyWrapWithPadding_EncryptDecrypt_MatchesRfc5649TwentyOctetVector()
+    {
+        using var aes = Aes.Create();
+        aes.Key = Rfc5649Kek;
+        var plaintext = Convert.FromHexString("C37B7E6492584340BED12207808941155068F738");
+        var expectedCiphertext = Convert.FromHexString(
+            "138BDEAA9B8FA7FC61F97742E72248EE5AE6AE5360D1AE6A5F54F373FA543B6A");
+
+        var wrapped = LocalKmsProvider.AesKeyWrapWithPadding.Encrypt(aes, plaintext);
+        var unwrapped = LocalKmsProvider.AesKeyWrapWithPadding.Decrypt(aes, wrapped);
+
+        await Assert.That(wrapped).IsEquivalentTo(expectedCiphertext);
+        await Assert.That(unwrapped).IsEquivalentTo(plaintext);
+    }
+
+    [Test]
+    public async Task AesKeyWrapWithPadding_EncryptDecrypt_MatchesRfc5649SevenOctetVector()
+    {
+        using var aes = Aes.Create();
+        aes.Key = Rfc5649Kek;
+        var plaintext = Convert.FromHexString("466F7250617369");
+        var expectedCiphertext = Convert.FromHexString("AFBEB0F07DFBF5419200F2CCB50BB24F");
+
+        var wrapped = LocalKmsProvider.AesKeyWrapWithPadding.Encrypt(aes, plaintext);
+        var unwrapped = LocalKmsProvider.AesKeyWrapWithPadding.Decrypt(aes, wrapped);
+
+        await Assert.That(wrapped).IsEquivalentTo(expectedCiphertext);
+        await Assert.That(unwrapped).IsEquivalentTo(plaintext);
+    }
+
+    [Test]
+    public async Task AesKeyWrapWithPadding_DecryptRejectsInvalidCiphertext()
+    {
+        using var aes = Aes.Create();
+        aes.Key = Rfc5649Kek;
+        var wrapped = Convert.FromHexString("AFBEB0F07DFBF5419200F2CCB50BB24F");
+        var tampered = wrapped.ToArray();
+        tampered[0] ^= 0x80;
+        var truncated = wrapped[..^1];
+
+        await Assert.That(() => LocalKmsProvider.AesKeyWrapWithPadding.Decrypt(aes, tampered))
+            .Throws<CryptographicException>();
+        await Assert.That(() => LocalKmsProvider.AesKeyWrapWithPadding.Decrypt(aes, truncated))
+            .Throws<CryptographicException>();
+    }
+#endif
 
     [Test]
     public async Task ProviderRegistry_WrapUnwrap_RoutesByKmsType()

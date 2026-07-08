@@ -1,6 +1,7 @@
 #if NETSTANDARD2_0
 namespace System.Buffers
 {
+[global::Microsoft.CodeAnalysis.EmbeddedAttribute]
 internal sealed class ArrayBufferWriter<T> : IBufferWriter<T>
 {
     private const int DefaultInitialBufferSize = 256;
@@ -74,6 +75,7 @@ internal sealed class ArrayBufferWriter<T> : IBufferWriter<T>
     }
 }
 
+[global::Microsoft.CodeAnalysis.EmbeddedAttribute]
 internal ref struct SequenceReader<T>
 {
     private readonly ReadOnlySequence<T> _sequence;
@@ -375,10 +377,35 @@ internal static class DnsCompat
 
 internal static class GCCompat
 {
+    private static readonly Func<long>? GetRuntimeTotalAvailableMemoryBytes = CreateRuntimeMemoryInfoAccessor();
+
     public static T[] AllocateUninitializedArray<T>(int length, bool pinned = false) => new T[length];
 
     public static GCMemoryInfoCompat GetGCMemoryInfo()
-        => new(0);
+        => new(GetRuntimeTotalAvailableMemoryBytes?.Invoke() ?? 0);
+
+    private static Func<long>? CreateRuntimeMemoryInfoAccessor()
+    {
+        var method = typeof(global::System.GC).GetMethod(
+            "GetGCMemoryInfo",
+            global::System.Reflection.BindingFlags.Public | global::System.Reflection.BindingFlags.Static,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null);
+
+        var property = method?.ReturnType.GetProperty(
+            "TotalAvailableMemoryBytes",
+            global::System.Reflection.BindingFlags.Public | global::System.Reflection.BindingFlags.Instance);
+
+        if (method is null || property?.PropertyType != typeof(long))
+            return null;
+
+        return () =>
+        {
+            var value = method.Invoke(obj: null, parameters: null);
+            return value is null ? 0 : (long)property.GetValue(value)!;
+        };
+    }
 }
 
 internal readonly struct GCMemoryInfoCompat

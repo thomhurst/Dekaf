@@ -73,6 +73,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         // Process-level timeout as safety fallback (matches TestBaseModule pattern)
         using var timeoutCts = new CancellationTokenSource(ProcessTimeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var framework = TestBaseModule.GetTargetFramework();
 
         try
         {
@@ -81,7 +82,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
                 {
                     NoBuild = true,
                     Configuration = "Release",
-                    Framework = "net10.0",
+                    Framework = framework,
                     Arguments = arguments
                 },
                 new CommandExecutionOptions
@@ -89,7 +90,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
                     WorkingDirectory = project.Folder!.Path,
                     EnvironmentVariables = new Dictionary<string, string?>
                     {
-                        ["NET_VERSION"] = "net10.0",
+                        ["NET_VERSION"] = framework,
                         ["DOTNET_GCConserveMemory"] = "9", // Aggressive GC to reduce memory pressure on CI
                     }
                 },

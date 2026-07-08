@@ -158,7 +158,10 @@ public class KafkaProtocolWriterTests
         foreach (var method in methods)
         {
             await Assert.That(method).IsNotNull();
-            await Assert.That(method!.IsDefined(typeof(SkipLocalsInitAttribute), inherit: false)).IsTrue();
+            var hasSkipLocalsInitAttribute = method!.GetCustomAttributes(inherit: false)
+                .Any(attribute => attribute.GetType().FullName == typeof(SkipLocalsInitAttribute).FullName);
+
+            await Assert.That(hasSkipLocalsInitAttribute).IsTrue();
         }
     }
 

@@ -129,7 +129,10 @@ public sealed class AvroSchemaRegistrySerializer<
     /// For best performance, use <see cref="WarmupAsync"/> before starting production.
     /// </remarks>
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
     {
         ArgumentNullException.ThrowIfNull(value);
 
@@ -151,7 +154,10 @@ public sealed class AvroSchemaRegistrySerializer<
         ref TWriter destination,
         int schemaId,
         AvroSerializationThreadState codecState)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
     {
         var payloadSizeHint = codecState.PayloadSizeHint;
 
@@ -198,7 +204,10 @@ public sealed class AvroSchemaRegistrySerializer<
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
         int schemaId,
         AvroSerializationThreadState codecState)
-        where TWriter : IBufferWriter<byte>, allows ref struct
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
     {
         var memoryStream = codecState.BufferedStream;
         memoryStream.ResetForWriting(InitialAvroPayloadBufferSize);

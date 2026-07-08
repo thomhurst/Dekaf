@@ -29,8 +29,12 @@ concurrency:
 
 jobs:
   build-and-unit-test:
-    name: Build & Unit Test
+    name: Build & Unit Test (${{ matrix.framework }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net8.0, net10.0]
     # Declaring permissions drops all other scopes to none; contents:write is the only scope any
     # step here needs (release/tag creation). NuGet push authenticates with an API-key secret, and
     # artifact upload uses the exposed Actions runtime token — neither relies on GITHUB_TOKEN scopes.
@@ -48,6 +52,12 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
+
+      - name: Setup .NET 8 runtime
+        if: matrix.framework == 'net8.0'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
 
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v4
@@ -68,9 +78,10 @@ jobs:
 
       - name: Run Pipeline
         env:
+          NET_VERSION: ${{ matrix.framework }}
           SKIP_INTEGRATION_TESTS: 'true'
           SKIP_AOT_SMOKE_TESTS: 'true'
-          NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
+          NuGet__ShouldPublish: ${{ matrix.framework == 'net10.0' && inputs.publish_nuget == true && 'true' || 'false' }}
           NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Used by CreateReleaseModule when a publish ships packages
         run: dotnet run --project tools/Dekaf.Pipeline
@@ -79,7 +90,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-unit
+          name: test-results-unit-${{ matrix.framework }}
           path: |
             **/TestResults/**
             **/test-results/**
@@ -87,6 +98,7 @@ jobs:
 
       - name: Upload Packages
         uses: actions/upload-artifact@v7
+        if: matrix.framework == 'net10.0'
         with:
           name: nuget-packages
           path: |
@@ -99,58 +111,11 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hangdump-artifacts-${{ matrix.category }}
+          name: hangdump-artifacts-unit-${{ matrix.framework }}
           path: |
             **/*.dmp
           if-no-files-found: ignore
           retention-days: 7
-
-  netstandard-package-smoke:
-    name: netstandard2.0 Package Smoke (${{ matrix.framework }})
-    needs: build-and-unit-test
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        framework: [net8.0, net10.0]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
-
-      - name: Setup .NET 8 runtime
-        if: matrix.framework == 'net8.0'
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Download Packages
-        uses: actions/download-artifact@v8
-        with:
-          name: nuget-packages
-          path: artifacts/downloaded-packages
-
-      - name: Prepare package source
-        shell: pwsh
-        run: |
-          $packageSource = "artifacts/package-source"
-          New-Item -ItemType Directory -Force $packageSource | Out-Null
-          $packages = @(Get-ChildItem "artifacts/downloaded-packages" -Recurse -Filter "*.nupkg")
-          if ($packages.Count -eq 0) {
-              throw "No NuGet packages were downloaded from the build artifact."
-          }
-
-          $packages | Copy-Item -Destination $packageSource -Force
-
-      - name: Run netstandard2.0 package smoke
-        shell: pwsh
-        run: ./scripts/RunNetStandardPackageSmoke.ps1 -PackageSource artifacts/package-source -RunnerFramework ${{ matrix.framework }}
 
   native-aot-smoke:
     name: NativeAOT Smoke (${{ matrix.name }})
@@ -237,11 +202,12 @@ jobs:
           retention-days: 7
 
   integration-tests:
-    name: Integration Tests (${{ matrix.category }})
+    name: Integration Tests (${{ matrix.category }}, ${{ matrix.framework }})
     needs: build-and-unit-test
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        framework: [net8.0, net10.0]
         category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
       fail-fast: false
 
@@ -265,6 +231,12 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
+      - name: Setup .NET 8 runtime
+        if: matrix.framework == 'net8.0'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
       - name: Expose GitHub Actions Runtime
         uses: actions/github-script@v9
         with:
@@ -274,6 +246,7 @@ jobs:
 
       - name: Run Pipeline
         env:
+          NET_VERSION: ${{ matrix.framework }}
           INTEGRATION_TEST_CATEGORY: ${{ matrix.category }}
           SKIP_UNIT_TESTS: 'true'
         run: dotnet run --project tools/Dekaf.Pipeline
@@ -282,7 +255,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-integration-${{ matrix.category }}
+          name: test-results-integration-${{ matrix.category }}-${{ matrix.framework }}
           path: |
             **/TestResults/**
             **/test-results/**
@@ -292,7 +265,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hangdump-artifacts-${{ matrix.category }}
+          name: hangdump-artifacts-${{ matrix.category }}-${{ matrix.framework }}
           path: |
             **/*.dmp
           if-no-files-found: ignore

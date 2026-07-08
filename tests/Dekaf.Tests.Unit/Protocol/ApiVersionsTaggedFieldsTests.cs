@@ -9,10 +9,12 @@ namespace Dekaf.Tests.Unit.Protocol;
 /// </summary>
 public sealed class ApiVersionsTaggedFieldsTests
 {
+    private delegate void TaggedFieldsWriter(ref KafkaProtocolWriter writer);
+
     /// <summary>
     /// Builds a minimal ApiVersions v3 response with the given tagged fields appended.
     /// </summary>
-    private static byte[] BuildApiVersionsV3Response(Action<KafkaProtocolWriter>? writeTaggedFields = null)
+    private static byte[] BuildApiVersionsV3Response(TaggedFieldsWriter? writeTaggedFields = null)
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
@@ -34,7 +36,7 @@ public sealed class ApiVersionsTaggedFieldsTests
         // Response-level tagged fields
         if (writeTaggedFields is not null)
         {
-            writeTaggedFields(writer);
+            writeTaggedFields(ref writer);
         }
         else
         {
@@ -62,7 +64,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_SupportedFeatures_Tag0_ParsedCorrectly()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             // 1 tagged field
             writer.WriteUnsignedVarInt(1);
@@ -97,7 +99,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_FinalizedFeaturesEpoch_Tag1_ParsedCorrectly()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             writer.WriteUnsignedVarInt(1); // 1 tagged field
             writer.WriteUnsignedVarInt(1); // Tag 1 = FinalizedFeaturesEpoch
@@ -114,7 +116,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_ZkMigrationReady_Tag3_ParsedCorrectly()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             writer.WriteUnsignedVarInt(1); // 1 tagged field
             writer.WriteUnsignedVarInt(3); // Tag 3 = ZkMigrationReady
@@ -131,7 +133,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_ZkMigrationReady_False()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             writer.WriteUnsignedVarInt(1); // 1 tagged field
             writer.WriteUnsignedVarInt(3); // Tag 3 = ZkMigrationReady
@@ -148,7 +150,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_UnknownTag_SkippedCorrectly()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             writer.WriteUnsignedVarInt(1); // 1 tagged field
             writer.WriteUnsignedVarInt(99); // Unknown tag
@@ -167,7 +169,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_AllTags_ParsedCorrectly()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             // 4 tagged fields
             writer.WriteUnsignedVarInt(4);
@@ -213,7 +215,7 @@ public sealed class ApiVersionsTaggedFieldsTests
     [Test]
     public async Task V3_PartialTags_OnlySomePresent()
     {
-        var data = BuildApiVersionsV3Response(writer =>
+        var data = BuildApiVersionsV3Response((ref KafkaProtocolWriter writer) =>
         {
             // Only tag 1 and tag 3
             writer.WriteUnsignedVarInt(2);

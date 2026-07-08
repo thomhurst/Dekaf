@@ -1,4 +1,3 @@
-using System.Buffers.Text;
 using System.Text;
 using Dekaf.Admin;
 using Dekaf.Security.Sasl;
@@ -113,7 +112,10 @@ public class OAuthBearerKafkaContainer : KafkaTestContainer
     }
 
     private static string Base64UrlEncode(string value) =>
-        Base64Url.EncodeToString(Encoding.UTF8.GetBytes(value));
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(value))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 
     /// <summary>
     /// After the broker is TCP-ready, poll until an OAUTHBEARER-authenticated admin client

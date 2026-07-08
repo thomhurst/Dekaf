@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 
@@ -222,9 +223,7 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
 
         try
         {
-            using var aes = Aes.Create();
-            aes.Key = kek;
-            return ValueTask.FromResult(aes.EncryptKeyWrapPadded(keyMaterial.Span));
+            return ValueTask.FromResult(WrapKey(kek, keyMaterial.Span));
         }
         catch (CryptographicException ex)
         {
@@ -247,11 +246,9 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
 
         try
         {
-            using var aes = Aes.Create();
-            aes.Key = kek;
-            return ValueTask.FromResult(aes.DecryptKeyWrapPadded(encryptedKeyMaterial.Span));
+            return ValueTask.FromResult(UnwrapKey(kek, encryptedKeyMaterial.Span));
         }
-        catch (CryptographicException ex)
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
         {
             throw new SchemaRegistryKmsException(
                 "Local KMS unwrap failed. The encrypted key material is invalid for the configured KEK.",
@@ -275,6 +272,154 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
     }
 
     private static bool IsValidAesKeyLength(int length) => length is 16 or 24 or 32;
+
+    private static byte[] WrapKey(byte[] kek, ReadOnlySpan<byte> keyMaterial)
+    {
+        using var aes = Aes.Create();
+        aes.Key = kek;
+#if NET10_0_OR_GREATER
+        return aes.EncryptKeyWrapPadded(keyMaterial);
+#else
+        return AesKeyWrapWithPadding.Encrypt(aes, keyMaterial);
+#endif
+    }
+
+    private static byte[] UnwrapKey(byte[] kek, ReadOnlySpan<byte> encryptedKeyMaterial)
+    {
+        using var aes = Aes.Create();
+        aes.Key = kek;
+#if NET10_0_OR_GREATER
+        return aes.DecryptKeyWrapPadded(encryptedKeyMaterial);
+#else
+        return AesKeyWrapWithPadding.Decrypt(aes, encryptedKeyMaterial);
+#endif
+    }
+
+#if !NET10_0_OR_GREATER
+    internal static class AesKeyWrapWithPadding
+    {
+        private const uint AlternativeInitialValuePrefix = 0xA65959A6;
+        private const int BlockSize = 8;
+        private const int AesBlockSize = 16;
+
+        internal static byte[] Encrypt(Aes aes, ReadOnlySpan<byte> plaintext)
+        {
+            var blockCount = checked((plaintext.Length + BlockSize - 1) / BlockSize);
+            var padded = new byte[checked(blockCount * BlockSize)];
+            plaintext.CopyTo(padded);
+
+            Span<byte> register = stackalloc byte[BlockSize];
+            WriteAlternativeInitialValue(register, plaintext.Length);
+
+            if (blockCount == 1)
+            {
+                Span<byte> block = stackalloc byte[AesBlockSize];
+                register.CopyTo(block);
+                padded.AsSpan().CopyTo(block[BlockSize..]);
+                return aes.EncryptEcb(block, PaddingMode.None);
+            }
+
+            Span<byte> input = stackalloc byte[AesBlockSize];
+            for (var round = 0; round < 6; round++)
+            {
+                for (var blockIndex = 1; blockIndex <= blockCount; blockIndex++)
+                {
+                    register.CopyTo(input);
+                    var currentBlock = padded.AsSpan((blockIndex - 1) * BlockSize, BlockSize);
+                    currentBlock.CopyTo(input[BlockSize..]);
+
+                    var output = aes.EncryptEcb(input, PaddingMode.None);
+                    output.AsSpan(0, BlockSize).CopyTo(register);
+                    XorWrapCounter(register, checked((ulong)(round * blockCount + blockIndex)));
+                    output.AsSpan(BlockSize, BlockSize).CopyTo(currentBlock);
+                }
+            }
+
+            var result = new byte[checked((blockCount + 1) * BlockSize)];
+            register.CopyTo(result);
+            padded.CopyTo(result.AsSpan(BlockSize));
+            return result;
+        }
+
+        internal static byte[] Decrypt(Aes aes, ReadOnlySpan<byte> ciphertext)
+        {
+            if (ciphertext.Length < AesBlockSize || ciphertext.Length % BlockSize != 0)
+                throw new CryptographicException("Invalid AES-KWP ciphertext length.");
+
+            var blockCount = (ciphertext.Length / BlockSize) - 1;
+            Span<byte> register = stackalloc byte[BlockSize];
+            byte[] padded;
+
+            if (blockCount == 1)
+            {
+                var decrypted = aes.DecryptEcb(ciphertext, PaddingMode.None);
+                decrypted.AsSpan(0, BlockSize).CopyTo(register);
+                padded = decrypted.AsSpan(BlockSize, BlockSize).ToArray();
+            }
+            else
+            {
+                ciphertext[..BlockSize].CopyTo(register);
+                padded = ciphertext[BlockSize..].ToArray();
+
+                Span<byte> input = stackalloc byte[AesBlockSize];
+                for (var round = 5; round >= 0; round--)
+                {
+                    for (var blockIndex = blockCount; blockIndex >= 1; blockIndex--)
+                    {
+                        register.CopyTo(input);
+                        XorWrapCounter(input[..BlockSize], checked((ulong)(round * blockCount + blockIndex)));
+
+                        var currentBlock = padded.AsSpan((blockIndex - 1) * BlockSize, BlockSize);
+                        currentBlock.CopyTo(input[BlockSize..]);
+
+                        var output = aes.DecryptEcb(input, PaddingMode.None);
+                        output.AsSpan(0, BlockSize).CopyTo(register);
+                        output.AsSpan(BlockSize, BlockSize).CopyTo(currentBlock);
+                    }
+                }
+            }
+
+            return RemovePadding(register, padded);
+        }
+
+        private static void WriteAlternativeInitialValue(Span<byte> destination, int messageLength)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(destination, AlternativeInitialValuePrefix);
+            BinaryPrimitives.WriteUInt32BigEndian(destination[4..], checked((uint)messageLength));
+        }
+
+        private static byte[] RemovePadding(ReadOnlySpan<byte> register, ReadOnlySpan<byte> padded)
+        {
+            if (BinaryPrimitives.ReadUInt32BigEndian(register) != AlternativeInitialValuePrefix)
+                throw new CryptographicException("Invalid AES-KWP alternative initial value.");
+
+            var messageLength = BinaryPrimitives.ReadUInt32BigEndian(register[4..]);
+            if (messageLength > padded.Length)
+                throw new CryptographicException("Invalid AES-KWP padding.");
+
+            var paddingLength = padded.Length - (int)messageLength;
+            if (paddingLength > 7)
+                throw new CryptographicException("Invalid AES-KWP padding.");
+
+            foreach (var paddingByte in padded[(int)messageLength..])
+            {
+                if (paddingByte != 0)
+                    throw new CryptographicException("Invalid AES-KWP padding.");
+            }
+
+            return padded[..(int)messageLength].ToArray();
+        }
+
+        private static void XorWrapCounter(Span<byte> register, ulong counter)
+        {
+            for (var index = BlockSize - 1; counter != 0; index--)
+            {
+                register[index] ^= (byte)counter;
+                counter >>= 8;
+            }
+        }
+    }
+#endif
 }
 
 /// <summary>

@@ -1991,7 +1991,7 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
         else
         {
 #if NETSTANDARD2_0
-            throw new PlatformNotSupportedException("PEM CA certificate files require net10.0 or later. Use a PFX/P12 CA file for netstandard2.0.");
+            ImportCertificatesFromPemFile(collection, path);
 #else
             // Assume PEM format - can contain multiple certificates
             collection.ImportFromPemFile(path);
@@ -2039,7 +2039,19 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
             else
             {
 #if NETSTANDARD2_0
-                throw new PlatformNotSupportedException("PEM client certificates require net10.0 or later. Use a PFX/P12 client certificate for netstandard2.0.");
+                if (!string.IsNullOrEmpty(tlsConfig.ClientKeyPassword))
+                {
+                    throw new PlatformNotSupportedException(
+                        "Encrypted PEM client certificates require net10.0 or later. Use a PFX/P12 client certificate for netstandard2.0.");
+                }
+
+                if (tlsConfig.ClientKeyPath is null)
+                {
+                    throw new InvalidOperationException(
+                        "Client key path is required when using PEM certificate format");
+                }
+
+                cert = CreateCertificateFromPemFile(certPath, tlsConfig.ClientKeyPath);
 #else
                 // PEM format - need separate key file
                 if (tlsConfig.ClientKeyPath is null)
@@ -2060,6 +2072,61 @@ public sealed partial class KafkaConnection : IKafkaConnection, IIdleTrackedKafk
 
         return null;
     }
+
+#if NETSTANDARD2_0
+    private static void ImportCertificatesFromPemFile(X509Certificate2Collection collection, string path)
+    {
+        var method = typeof(X509Certificate2Collection).GetMethod(
+            "ImportFromPemFile",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+            binder: null,
+            types: [typeof(string)],
+            modifiers: null);
+
+        if (method is null)
+        {
+            throw new PlatformNotSupportedException(
+                "PEM CA certificate files require a runtime with X509Certificate2Collection.ImportFromPemFile support. Use a PFX/P12 CA file instead.");
+        }
+
+        InvokeCertificateApi(() =>
+        {
+            method.Invoke(collection, [path]);
+            return null;
+        });
+    }
+
+    private static X509Certificate2 CreateCertificateFromPemFile(string certPath, string keyPath)
+    {
+        var method = typeof(X509Certificate2).GetMethod(
+            "CreateFromPemFile",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+            binder: null,
+            types: [typeof(string), typeof(string)],
+            modifiers: null);
+
+        if (method is null)
+        {
+            throw new PlatformNotSupportedException(
+                "PEM client certificates require a runtime with X509Certificate2.CreateFromPemFile support. Use a PFX/P12 client certificate instead.");
+        }
+
+        return (X509Certificate2)InvokeCertificateApi(() => method.Invoke(obj: null, parameters: [certPath, keyPath]))!;
+    }
+
+    private static object? InvokeCertificateApi(Func<object?> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+            throw;
+        }
+    }
+#endif
 
     private static bool ValidateServerCertificate(
         X509Certificate? certificate,
