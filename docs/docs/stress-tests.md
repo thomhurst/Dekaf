@@ -41,7 +41,7 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 **Dekaf is 1.26x faster** than Confluent.Kafka for producer (fire-and-forget), 3 brokers throughput!
 :::
 
-## Producer (producer-acks-all) Throughput (15 minutes, 1000B messages)
+## Producer (Acks All) Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
@@ -51,10 +51,10 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf is 1.30x faster** than Confluent.Kafka for producer (producer-acks-all) throughput!
+**Dekaf is 1.30x faster** than Confluent.Kafka for producer (acks all) throughput!
 :::
 
-## Producer (producer-acks-all), 3 Brokers Throughput (15 minutes, 1000B messages)
+## Producer (Acks All), 3 Brokers Throughput (15 minutes, 1000B messages)
 
 | Client | Messages/sec | MB/sec | Accepted msg/s | Errors | CPU μs/msg | Cores Used |
 |--------|--------------|--------|----------------|--------|------------|------------|
@@ -64,7 +64,7 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf is 1.15x faster** than Confluent.Kafka for producer (producer-acks-all), 3 brokers throughput!
+**Dekaf is 1.15x faster** than Confluent.Kafka for producer (acks all), 3 brokers throughput!
 :::
 
 ## Producer (Fire-and-Forget, Idempotent) Throughput (15 minutes, 1000B messages)
@@ -131,8 +131,8 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 | Confluent | Consumer | 474970 | 1 | 1 | 2240.16 GB | 2.38 KB |
 | Confluent | Producer (Fire-and-Forget) | 240595 | 1 | 1 | 1152.90 GB | 1.26 KB |
 | Confluent | Producer (Fire-and-Forget), 3 Brokers | 208960 | 0 | 0 | 976.92 GB | 1.26 KB |
-| Confluent | producer-acks-all | 225454 | 1 | 1 | 1169.49 GB | 1.26 KB |
-| Confluent | producer-acks-all, 3 Brokers | 183809 | 0 | 0 | 858.79 GB | 1.26 KB |
+| Confluent | Producer (Acks All) | 225454 | 1 | 1 | 1169.49 GB | 1.26 KB |
+| Confluent | Producer (Acks All), 3 Brokers | 183809 | 0 | 0 | 858.79 GB | 1.26 KB |
 | Confluent | Producer (Fire-and-Forget, Idempotent) | 300189 | 1 | 1 | 1415.86 GB | 1.26 KB |
 | Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 199336 | 1 | 0 | 930.92 GB | 1.26 KB |
 | Dekaf | Consumer | 56245 | 32897 | 1556 | 2500.18 GB | 2.31 KB |
@@ -141,8 +141,8 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 | Dekaf | Consumer (Raw Batch) | 5879 | 5067 | 140 | 163.84 GB | 76 B |
 | Dekaf | Producer (Fire-and-Forget) | 516 | 137 | 67 | 34.13 GB | 30 B |
 | Dekaf | Producer (Fire-and-Forget), 3 Brokers | 236 | 15 | 14 | 1.73 GB | 2 B |
-| Dekaf | producer-acks-all | 527 | 113 | 57 | 26.45 GB | 22 B |
-| Dekaf | producer-acks-all, 3 Brokers | 449 | 336 | 20 | 7.56 GB | 10 B |
+| Dekaf | Producer (Acks All) | 527 | 113 | 57 | 26.45 GB | 22 B |
+| Dekaf | Producer (Acks All), 3 Brokers | 449 | 336 | 20 | 7.56 GB | 10 B |
 | Dekaf | Producer (Fire-and-Forget, Idempotent) | 299 | 19 | 17 | 1.89 GB | 1 B |
 | Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 444 | 24 | 22 | 2.86 GB | 4 B |
 | Dekaf (3conn) | Producer (Fire-and-Forget) | 377 | 6 | 5 | 1003.88 MB | 1 B |
@@ -162,11 +162,13 @@ Stress tests measure sustained performance over extended periods:
 - **CPU Isolation**: Brokers are pinned to dedicated cores and the client under test to its own cores, so the client — not the broker — is the measured bottleneck
 - **RAM-backed Broker Logs**: Kafka log dirs are mounted on tmpfs so disk I/O never caps broker ingestion
 - **Delivered Throughput**: producer tables report broker-confirmed throughput, measured as the end-offset delta across all partitions — not the client-side append rate, which can run far ahead of what the broker ever accepts
+- **Median Interval Throughput**: table order and comparison ratios use median sampled client-side msg/s when available, which is less sensitive to short late-run stalls than the whole-run mean
+- **Same-VM Pairing**: comparable Dekaf and Confluent scenarios run sequentially inside one job/VM, with client order alternating by workflow run number to reduce order bias
 - **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM
 - **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured
 - **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency
 - **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput
-- **Parallel Execution**: Each test runs in its own isolated environment
+- **Parallel Execution**: Each scenario runs in its own isolated environment
 - **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka
 - **Memory Monitoring**: Tracks GC behavior and memory usage over time
 - **Error Rates**: Ensures stability under load

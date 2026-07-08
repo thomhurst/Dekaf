@@ -79,23 +79,24 @@ internal static class MarkdownReporter
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
             sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
             sb.AppendLine();
-            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Thru Ratio |");
-            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|--------------|--------------|--------|----------------|--------|------------|------------|");
+            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |");
+            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|--------------|--------------|--------|----------------|--------|------------|------------------|");
 
             var baseline = sizeResults
                 .Where(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
-                .Select(r => r.EffectiveMessagesPerSecond)
+                .Select(ComparisonMessagesPerSecond)
                 .FirstOrDefault();
 
             if (baseline == 0)
             {
-                baseline = sizeResults.Min(r => r.EffectiveMessagesPerSecond);
+                baseline = sizeResults.Min(ComparisonMessagesPerSecond);
             }
 
             foreach (var result in OrderThroughputResults(sizeResults))
             {
                 var rate = result.EffectiveMessagesPerSecond;
-                var ratio = baseline > 0 ? rate / baseline : 1.0;
+                var comparisonRate = ComparisonMessagesPerSecond(result);
+                var ratio = baseline > 0 ? comparisonRate / baseline : 1.0;
                 var median = result.MedianIntervalMessagesPerSecond is { } medianRate ? medianRate.ToString("N0") : "-";
                 var accepted = result.AcceptedMessagesPerSecond is { } acceptedRate ? acceptedRate.ToString("N0") : "-";
                 var cpuPerMessage = result.CpuMicrosPerMessage is { } cpu ? $"{cpu:F2}" : "-";
@@ -108,6 +109,8 @@ internal static class MarkdownReporter
             if (sizeResults.Any(r => r.MedianIntervalMessagesPerSecond is not null))
             {
                 sb.AppendLine("*Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*");
+                sb.AppendLine();
+                sb.AppendLine("*Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*");
                 sb.AppendLine();
             }
 
@@ -129,11 +132,12 @@ internal static class MarkdownReporter
     }
 
     private static IOrderedEnumerable<StressTestResult> OrderThroughputResults(List<StressTestResult> results) =>
-        results.Any(r => r.CpuMicrosPerMessage is not null)
-            ? results
-                .OrderBy(r => r.CpuMicrosPerMessage ?? double.MaxValue)
-                .ThenByDescending(r => r.EffectiveMessagesPerSecond)
-            : results.OrderByDescending(r => r.EffectiveMessagesPerSecond);
+        results
+            .OrderByDescending(ComparisonMessagesPerSecond)
+            .ThenBy(r => r.CpuMicrosPerMessage ?? double.MaxValue);
+
+    private static double ComparisonMessagesPerSecond(StressTestResult result) =>
+        result.MedianIntervalMessagesPerSecond ?? result.EffectiveMessagesPerSecond;
 
     private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
     {
@@ -206,6 +210,7 @@ internal static class MarkdownReporter
     {
         "producer" => "Producer (Fire-and-Forget) Throughput",
         "producer-idempotent" => "Producer (Fire-and-Forget, Idempotent) Throughput",
+        "producer-acks-all" => "Producer (Acks All) Throughput",
         "producer-async" => "Producer (Async) Throughput",
         "producer-async-idempotent" => "Producer (Async, Idempotent) Throughput",
         "consumer" => "Consumer Throughput",
@@ -219,6 +224,7 @@ internal static class MarkdownReporter
     {
         "producer" => "Fire-and-Forget",
         "producer-idempotent" => "Fire-and-Forget (Idempotent)",
+        "producer-acks-all" => "Acks All",
         "producer-async" => "Async",
         "producer-async-idempotent" => "Async (Idempotent)",
         "consumer" => "Consumer",
