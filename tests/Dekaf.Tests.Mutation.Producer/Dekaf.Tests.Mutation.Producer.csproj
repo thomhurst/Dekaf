@@ -13,6 +13,7 @@
     <!-- MTP cannot yet select covering tests per mutant, so link only direct core-producer suites. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\ThreadPoolConfiguration.cs" Link="ThreadPoolConfiguration.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\AdaptiveScalingTests.cs" Link="Producer\AdaptiveScalingTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\AppendWorkerAffinityTests.cs" Link="Producer\AppendWorkerAffinityTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\BrokerSenderMuteOrderingTests.cs" Link="Producer\BrokerSenderMuteOrderingTests.cs" />

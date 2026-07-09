@@ -112,6 +112,27 @@ class MutationReportTests(unittest.TestCase):
 
         self.assertIn("dotnet-version: |\n            8.0.x\n            10.0.x", workflow)
 
+    def test_producer_mutation_host_presizes_thread_pool(self):
+        project_path = (
+            Path(__file__).parents[2]
+            / "tests"
+            / "Dekaf.Tests.Mutation.Producer"
+            / "Dekaf.Tests.Mutation.Producer.csproj"
+        )
+
+        self.assertIn(
+            "ThreadPoolConfiguration.cs",
+            project_path.read_text(encoding="utf-8"),
+        )
+
+    def test_workflow_finds_baseline_per_campaign_artifact(self):
+        workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        self.assertIn("ARTIFACT_NAME: mutation-results-${{ matrix.campaign }}", workflow)
+        self.assertIn("actions/artifacts?name=${ARTIFACT_NAME}", workflow)
+        self.assertNotIn("--status success", workflow)
+
     def test_cli_writes_summary_and_returns_failure_for_large_drop(self):
         current = report_with(mutant("Killed", 1), mutant("Survived", 2))
         previous = report_with(mutant("Killed", 1), mutant("Killed", 2))

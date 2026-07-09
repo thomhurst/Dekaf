@@ -53,18 +53,17 @@ jobs:
       - name: Restore local tools
         run: dotnet tool restore
 
-      - name: Find previous successful main run
+      - name: Find previous retained campaign result
         id: previous-run
         env:
           GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: mutation-results-${{ matrix.campaign }}
         run: |
-          run_id=$(gh run list \
-            --workflow mutation-tests.yml \
-            --branch main \
-            --status success \
-            --limit 1 \
-            --json databaseId \
-            --jq '.[0].databaseId // empty')
+          # Select this campaign's latest retained main-branch artifact. A failed
+          # sibling matrix leg must not erase the passing campaign's baseline.
+          run_id=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
       - name: Download previous mutation result
