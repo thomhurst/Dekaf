@@ -581,6 +581,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --delete-branch --auto
 
+      - name: Wait for History Merge
+        if: steps.create-pr.outputs.pull-request-number
+        timeout-minutes: 60
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          while true; do
+            state=$(gh pr view "$PR_NUMBER" --json state --jq '.state')
+            case "$state" in
+              MERGED)
+                exit 0
+                ;;
+              OPEN)
+                sleep 30
+                ;;
+              *)
+                echo "::error::Stress history PR ended in state $state"
+                exit 1
+                ;;
+            esac
+          done
+
   regression-gate:
     name: Fail on Repeated Stress Regressions
     needs: [stress-test, generate-summary, publish-to-docs]
@@ -591,6 +614,7 @@ jobs:
       always() &&
       needs.stress-test.result == 'success' &&
       needs.generate-summary.result == 'success' &&
+      needs.publish-to-docs.result == 'success' &&
       needs.generate-summary.outputs.repeated_regression == 'true'
     steps:
       - name: Report Repeated Regression
