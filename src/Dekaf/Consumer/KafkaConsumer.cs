@@ -3632,9 +3632,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (!_pendingDivergingEpochResets.TryRemove(partition, out var reset))
                 continue;
 
-            var resumeOffset = Math.Max(
-                reset.EndOffset,
-                _positions.GetValueOrDefault(partition, reset.EndOffset));
+            // Refetch unread common-prefix records that were buffered before the divergence
+            // response. Only offsets already yielded to the application are safe to skip.
+            var resumeOffset = _positions.GetValueOrDefault(partition, reset.EndOffset);
 
             foreach (var pending in _pendingFetches)
             {

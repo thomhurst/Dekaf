@@ -167,7 +167,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task ResetToDivergingEpoch_RepositionsAndSchedulesStaleFetchClearWithoutException()
+    public async Task ResetToDivergingEpoch_RefetchesFromCurrentPosition()
     {
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
@@ -179,9 +179,27 @@ public sealed class ConsumerLeaderDiscoveryTests
         InvokeResetToDivergingEpoch(consumer, partitionResponse);
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
-        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(42);
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
         await Assert.That(DrainPendingFetchException(consumer)).IsNull();
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_ResumesAfterLastYieldedBufferedRecord()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var pending = PendingFetchData.Create(Topic, 0, []);
+        pending.TrackConsumed(9, messageBytes: 0);
+        GetPendingFetches(consumer).Enqueue(pending);
+
+        InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(10);
     }
 
     [Test]
@@ -457,6 +475,16 @@ public sealed class ConsumerLeaderDiscoveryTests
             ?? throw new InvalidOperationException("_fetchBufferEpoch field not found.");
 
         return (int)field.GetValue(consumer)!;
+    }
+
+    private static Queue<PendingFetchData> GetPendingFetches(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_pendingFetches",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pendingFetches field not found.");
+
+        return (Queue<PendingFetchData>)field.GetValue(consumer)!;
     }
 
     private static int GetLastConsumedLeaderEpoch(KafkaConsumer<string, string> consumer)
