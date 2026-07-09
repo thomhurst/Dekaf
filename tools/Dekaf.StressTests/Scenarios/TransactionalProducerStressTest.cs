@@ -66,6 +66,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(runCts.Token);
         var committedMessages = 0L;
         var abortedMessages = 0L;
+        var failedCommitMessages = 0L;
         var transactionIndex = 0L;
 
         while (!runCts.IsCancellationRequested)
@@ -117,7 +118,10 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
                 try
                 {
                     await transaction.AbortAsync(CancellationToken.None).ConfigureAwait(false);
-                    abortedMessages += transactionAccepted;
+                    if (shouldCommit)
+                        failedCommitMessages += transactionAccepted;
+                    else
+                        abortedMessages += transactionAccepted;
                 }
                 catch (Exception abortException)
                 {
@@ -136,7 +140,8 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
 
         Console.WriteLine(
             $"  Workload complete: accepted={throughput.MessageCount:N0}, committed={committedMessages:N0}, " +
-            $"aborted={abortedMessages:N0}, transactions={transactionIndex:N0}");
+            $"aborted={abortedMessages + failedCommitMessages:N0}, " +
+            $"failedCommitAborts={failedCommitMessages:N0}, transactions={transactionIndex:N0}");
         StressTestHelpers.LogResourceUsage("Final");
 
         var sentinelsCommitted = await CommitPartitionSentinelsAsync(
@@ -154,6 +159,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             throughput.MessageCount,
             committedMessages,
             abortedMessages,
+            failedCommitMessages,
             sentinelsCommitted,
             cancellationToken).ConfigureAwait(false);
 
@@ -252,6 +258,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         long acceptedMessages,
         long committedMessages,
         long abortedMessages,
+        long failedCommitMessages,
         bool sentinelsCommitted,
         CancellationToken cancellationToken)
     {
@@ -259,7 +266,8 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             runId,
             committedMessages,
             abortedMessages,
-            options.Partitions);
+            options.Partitions,
+            failedCommitMessages);
         if (!sentinelsCommitted)
             return oracle.CreateSnapshot(acceptedMessages);
 

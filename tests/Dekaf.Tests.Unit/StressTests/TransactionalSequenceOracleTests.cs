@@ -58,6 +58,32 @@ public sealed class TransactionalSequenceOracleTests
     }
 
     [Test]
+    public async Task Observe_FailedCommitIntentLeak_IsReportedAsAbortedLeak()
+    {
+        var oracle = new TransactionalSequenceOracle(
+            runId: "run-failed-commit",
+            committedMessages: 2,
+            abortedMessages: 1,
+            partitionCount: 1,
+            failedCommitMessages: 2);
+
+        oracle.Observe(TransactionalSequenceOracle.CommittedKey("run-failed-commit", 0));
+        oracle.Observe(TransactionalSequenceOracle.CommittedKey("run-failed-commit", 1));
+        oracle.Observe(TransactionalSequenceOracle.CommittedKey("run-failed-commit", 2));
+        oracle.Observe(TransactionalSequenceOracle.CommittedKey("run-failed-commit", 3));
+        oracle.Observe(TransactionalSequenceOracle.SentinelKey("run-failed-commit", 0));
+
+        var snapshot = oracle.CreateSnapshot(acceptedMessages: 5);
+
+        await Assert.That(snapshot.AbortedMessages).IsEqualTo(3);
+        await Assert.That(snapshot.DeliveredMessages).IsEqualTo(2);
+        await Assert.That(snapshot.LeakedAbortedMessages).IsEqualTo(2);
+        await Assert.That(snapshot.UnexpectedMessages).IsEqualTo(0);
+        await Assert.That(snapshot.FailureSamples)
+            .Contains(sample => sample.Contains("Failed commit index 2"));
+    }
+
+    [Test]
     public async Task CreateSnapshot_MissingSentinel_IsActionableFailure()
     {
         var oracle = new TransactionalSequenceOracle(

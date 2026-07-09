@@ -16,6 +16,7 @@ internal sealed class TransactionalSequenceOracle
     private readonly string _keyPrefix;
     private readonly long _committedMessages;
     private readonly long _abortedMessages;
+    private readonly long _failedCommitMessages;
     private readonly BitArray _seenCommitted;
     private readonly BitArray _seenSentinels;
     private readonly List<string> _failureSamples = [];
@@ -29,17 +30,20 @@ internal sealed class TransactionalSequenceOracle
         string runId,
         long committedMessages,
         long abortedMessages,
-        int partitionCount)
+        int partitionCount,
+        long failedCommitMessages = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         ArgumentOutOfRangeException.ThrowIfNegative(committedMessages);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(committedMessages, int.MaxValue);
         ArgumentOutOfRangeException.ThrowIfNegative(abortedMessages);
+        ArgumentOutOfRangeException.ThrowIfNegative(failedCommitMessages);
         ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
 
         _keyPrefix = $"{runId}:";
         _committedMessages = committedMessages;
         _abortedMessages = abortedMessages;
+        _failedCommitMessages = failedCommitMessages;
         _seenCommitted = new BitArray((int)committedMessages);
         _seenSentinels = new BitArray(partitionCount);
     }
@@ -105,7 +109,7 @@ internal sealed class TransactionalSequenceOracle
         {
             AcceptedMessages = acceptedMessages,
             CommittedMessages = _committedMessages,
-            AbortedMessages = _abortedMessages,
+            AbortedMessages = _abortedMessages + _failedCommitMessages,
             DeliveredMessages = _deliveredMessages,
             DuplicateMessages = _duplicateMessages,
             ShortfallMessages = _committedMessages - _deliveredMessages,
@@ -118,9 +122,21 @@ internal sealed class TransactionalSequenceOracle
 
     private void ObserveCommitted(string key, ReadOnlySpan<char> indexText)
     {
-        if (!long.TryParse(indexText, NumberStyles.None, CultureInfo.InvariantCulture, out var index) ||
-            index < 0 || index >= _committedMessages)
+        if (!long.TryParse(indexText, NumberStyles.None, CultureInfo.InvariantCulture, out var index) || index < 0)
         {
+            RecordUnexpected(key);
+            return;
+        }
+
+        if (index >= _committedMessages)
+        {
+            // A successfully aborted failed commit retains its c: keys in this contiguous suffix.
+            if (index - _committedMessages < _failedCommitMessages)
+            {
+                RecordAbortedLeak($"Failed commit index {index:N0} leaked into read_committed output.");
+                return;
+            }
+
             RecordUnexpected(key);
             return;
         }
@@ -145,8 +161,7 @@ internal sealed class TransactionalSequenceOracle
             return;
         }
 
-        _leakedAbortedMessages++;
-        AddFailure($"Aborted index {index:N0} leaked into read_committed output.");
+        RecordAbortedLeak($"Aborted index {index:N0} leaked into read_committed output.");
     }
 
     private void ObserveSentinel(string key, ReadOnlySpan<char> partitionText)
@@ -173,6 +188,12 @@ internal sealed class TransactionalSequenceOracle
     {
         _unexpectedMessages++;
         AddFailure($"Unexpected transactional key '{key}'.");
+    }
+
+    private void RecordAbortedLeak(string sample)
+    {
+        _leakedAbortedMessages++;
+        AddFailure(sample);
     }
 
     private void AddFailure(string sample)
