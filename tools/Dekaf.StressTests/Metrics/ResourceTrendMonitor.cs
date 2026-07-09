@@ -34,10 +34,20 @@ internal sealed class ResourceTrendMonitor(
         }
         finally
         {
-            CaptureSample();
+            var elapsedSinceLastSample = TimeSpan.FromSeconds(
+                _elapsed.Elapsed.TotalSeconds - _lastSampleElapsedSeconds);
+            if (ShouldCaptureFinalSample(elapsedSinceLastSample, sampleInterval))
+            {
+                CaptureSample();
+            }
             _elapsed.Stop();
         }
     }
+
+    // Cancellation can race an exact timer tick. Treat a shorter tail as the same interval so it
+    // cannot add a near-zero-rate point, while retaining a substantial partial interval.
+    internal static bool ShouldCaptureFinalSample(TimeSpan elapsedSinceLastSample, TimeSpan sampleInterval)
+        => elapsedSinceLastSample >= TimeSpan.FromTicks(sampleInterval.Ticks / 2);
 
     internal ResourceTrendSnapshot GetSnapshot(ResourceTrendThresholds thresholds)
     {
