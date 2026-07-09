@@ -92,7 +92,9 @@ jobs:
           python3 .github/scripts/mutation_report.py "${args[@]}"
           gate_exit=$?
           set -e
-          cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f artifacts/mutation-summary.md ]; then
+            cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit "$gate_exit"
 
       - name: Upload mutation results

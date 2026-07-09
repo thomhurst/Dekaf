@@ -80,6 +80,32 @@ class MutationReportTests(unittest.TestCase):
         _, small_drop_failed = mutation_report.render_markdown(previous, previous, max_drop=5.0)
         self.assertFalse(small_drop_failed)
 
+    def test_render_without_baseline_passes_and_explains_first_run(self):
+        current = mutation_report.summarize(report_with(mutant("Killed", 1)))
+
+        markdown, failed = mutation_report.render_markdown(current, None, max_drop=5.0)
+
+        self.assertFalse(failed)
+        self.assertIn("Previous score: unavailable (first retained run)", markdown)
+        self.assertIn("Large-drop gate: passed (no baseline)", markdown)
+
+    def test_report_without_files_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "no 'files' object"):
+            mutation_report.summarize({})
+
+    def test_non_positive_max_drop_is_rejected(self):
+        current = mutation_report.summarize(report_with(mutant("Killed", 1)))
+
+        with self.assertRaisesRegex(ValueError, "greater than zero"):
+            mutation_report.render_markdown(current, None, max_drop=0)
+
+    def test_workflow_only_appends_summary_when_reporter_created_it(self):
+        workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        self.assertIn('if [ -f artifacts/mutation-summary.md ]; then', workflow)
+        self.assertIn('cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"', workflow)
+
     def test_cli_writes_summary_and_returns_failure_for_large_drop(self):
         current = report_with(mutant("Killed", 1), mutant("Survived", 2))
         previous = report_with(mutant("Killed", 1), mutant("Killed", 2))
