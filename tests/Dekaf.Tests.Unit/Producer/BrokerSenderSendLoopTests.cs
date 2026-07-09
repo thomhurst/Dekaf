@@ -751,6 +751,58 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_ParallelSendFailure_MutesPartitionBeforeSiblingWriteCompletes(
+        CancellationToken cancellationToken)
+    {
+        const string topic = "test-topic";
+        var failedConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+                ValueTask.FromException<Task<ProduceResponse>>(new IOException("Leader connection closed"))
+        };
+        var siblingWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSiblingWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = async () =>
+            {
+                siblingWriteStarted.TrySetResult();
+                await releaseSiblingWrite.Task;
+                return Task.FromResult(CreateSuccessResponse(topic, partition: 1, baseOffset: 0));
+            }
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(failedConnection));
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(siblingConnection));
+
+        var options = CreateOptions(maxInFlight: 2, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var failedBatch = CreateTestBatch(vtPool, topic, partition: 0);
+            var siblingBatch = CreateTestBatch(vtPool, topic, partition: 1);
+            sender.EnqueueBulk([failedBatch, siblingBatch]);
+
+            await siblingWriteStarted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(accumulator.IsMuted(failedBatch.TopicPartition)).IsTrue();
+        }
+        finally
+        {
+            releaseSiblingWrite.TrySetResult();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_MultipleInFlight_AllResponsesProcessed(CancellationToken cancellationToken)
     {

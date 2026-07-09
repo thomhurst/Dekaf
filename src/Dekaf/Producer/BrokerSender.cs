@@ -3029,8 +3029,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
-                        // Queue for the single-threaded send loop to apply the common
-                        // retriable-error path, including metadata refresh and partition muting.
+                        // Parallel connection buckets may still be sending, so mute before
+                        // deferring to prevent newer batches from being drained in the gap.
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                        _accumulator.MutePartition(batch.TopicPartition);
                         _sendFailedRetries.Enqueue((batch, generations[i]));
                     }
                 }
