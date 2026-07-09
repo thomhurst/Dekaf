@@ -15,16 +15,32 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 {
+    // Testcontainers.Kafka starts the container before its startup callback copies this script.
+    // Wait until the copy size stabilizes, then read it through sh instead of directly executing
+    // a file that Docker may still hold open for writing (which fails with ETXTBSY on Linux).
+    internal const string StartupCommand =
+        "while [ ! -s /testcontainers.sh ]; do sleep 0.1; done; " +
+        "size=$(wc -c < /testcontainers.sh); sleep 0.1; " +
+        "while [ \"$(wc -c < /testcontainers.sh)\" != \"$size\" ]; do " +
+        "size=$(wc -c < /testcontainers.sh); sleep 0.1; done; " +
+        "exec /bin/sh /testcontainers.sh";
+
     private KafkaContainer? _container;
     protected KafkaContainer? ContainerInstance => _container;
-    private KafkaContainer Container => _container ??= ConfigureBuilder(
-        new KafkaBuilder(ContainerName)
+
+    private KafkaContainer CreateContainer()
+    {
+        var builder = ConfigureBuilder(new KafkaBuilder(ContainerName)
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")     // Limit JVM heap for CI runners
             .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")           // Delete segments after 30s
             .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000") // Check every 10s
             .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")        // 1MB segments for faster rotation
-            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete"))
-        .Build();
+            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete"));
+
+        return builder
+            .WithCommand(StartupCommand)
+            .Build();
+    }
 
     private string _bootstrapServers = string.Empty;
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
@@ -66,9 +82,16 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     {
         Console.WriteLine("[KafkaTestContainer] Starting Kafka container via Testcontainers...");
 
-        await Container.StartAsync().ConfigureAwait(false);
+        await ContainerStartupRetry.RunAsync(
+            async () =>
+            {
+                _container = CreateContainer();
+                await _container.StartAsync().ConfigureAwait(false);
+            },
+            ResetContainerAsync,
+            ContainerStartupRetry.IsKafkaStartupScriptBusy).ConfigureAwait(false);
 
-        var rawAddress = Container.GetBootstrapAddress();
+        var rawAddress = _container!.GetBootstrapAddress();
         // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
         _bootstrapServers = ExtractHostPort(rawAddress);
 
@@ -300,11 +323,17 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     public virtual async ValueTask DisposeAsync()
     {
-        if (_container is not null)
-        {
-            await _container.DisposeAsync().ConfigureAwait(false);
-        }
+        await ResetContainerAsync().ConfigureAwait(false);
 
         GC.SuppressFinalize(this);
+    }
+
+    private async ValueTask ResetContainerAsync()
+    {
+        var container = _container;
+        _container = null;
+
+        if (container is not null)
+            await container.DisposeAsync().ConfigureAwait(false);
     }
 }
