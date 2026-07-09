@@ -236,7 +236,6 @@ jobs:
             --client ${{ matrix.client }} \
             --brokers ${{ matrix.brokers }} \
             --connections-per-broker 1 \
-            --producer-delivery-diagnostics \
             --output ./results
 
           if [ "${{ matrix.run_3conn }}" = "true" ]; then
@@ -248,7 +247,6 @@ jobs:
               --client dekaf \
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 3 \
-              --producer-delivery-diagnostics \
               --output ./results
           fi
 
