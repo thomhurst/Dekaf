@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for producer transactions.
 /// </summary>
 [Category("Transaction")]
-public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task InitTransactions_SetsProducerIdAndEpoch()

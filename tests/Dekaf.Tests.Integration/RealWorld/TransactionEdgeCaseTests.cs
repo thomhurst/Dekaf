@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// sequential transaction ordering, and consume-transform-produce failure scenarios.
 /// </summary>
 [Category("Transaction")]
-public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task MultiPartition_Commit_AllPartitionsVisible()
