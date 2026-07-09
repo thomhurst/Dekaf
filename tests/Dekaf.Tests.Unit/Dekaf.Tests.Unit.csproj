@@ -41,8 +41,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Protocol\ResponseFixtures\*.bin" />
-    <Compile Include="..\..\tools\Dekaf.StressTests\Scenarios\RoundTripMessageCodec.cs" Link="Stress\RoundTripMessageCodec.cs" />
-    <Compile Include="..\..\tools\Dekaf.StressTests\StressRunCompletionPolicy.cs" Link="Stress\StressRunCompletionPolicy.cs" />
   </ItemGroup>
 
 </Project>
