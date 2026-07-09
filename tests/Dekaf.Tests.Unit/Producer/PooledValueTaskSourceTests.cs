@@ -824,6 +824,56 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
+    public async Task ReadyBatchDoneTask_RegistrationIntentRace_CapturesStartedLifecycle()
+    {
+        var batch = new ReadyBatch();
+        InitializeBatch(batch);
+
+        using var observerIntentPublished = new ManualResetEventSlim();
+        using var continueGetter = new ManualResetEventSlim();
+        using var lifecycleStarted = new ManualResetEventSlim();
+        batch.AfterDoneTaskObserverIntentPublishedForTest = () =>
+        {
+            observerIntentPublished.Set();
+            continueGetter.Wait();
+        };
+
+        var getterTask = Task.Run(() => batch.DoneTask);
+        try
+        {
+            await Assert.That(observerIntentPublished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            var lifecycleTask = Task.Run(() =>
+            {
+                lifecycleStarted.Set();
+                batch.Fail(new InvalidOperationException("expected"));
+                batch.Reset();
+                InitializeBatch(batch);
+                batch.CompleteDelivery();
+                batch.Reset();
+                InitializeBatch(batch);
+            });
+
+            await Assert.That(lifecycleStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await Task.WhenAny(lifecycleTask, Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
+
+            continueGetter.Set();
+            await lifecycleTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var capturedTask = await getterTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var result = await capturedTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+
+            await Assert.That(result).IsFalse();
+        }
+        finally
+        {
+            batch.AfterDoneTaskObserverIntentPublishedForTest = null;
+            continueGetter.Set();
+            batch.CompleteDelivery();
+            batch.Reset();
+        }
+    }
+
+    [Test]
     public async Task ReadyBatchDoneTask_SourcePublicationRacesWithMultipleReuses_CompletesCapturedLifecycle()
     {
         var batch = new ReadyBatch();

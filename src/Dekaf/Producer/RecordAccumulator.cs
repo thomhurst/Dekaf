@@ -5920,12 +5920,9 @@ internal sealed class ReadyBatch
     {
         get
         {
-            var state = RegisterDoneTaskObserver();
-            if (TryGetDoneTaskCompletion(state.Generation, out var succeeded))
-            {
-                RemoveDoneTaskObserver(state);
+            var state = RegisterDoneTaskObserver(out var completedResult);
+            if (completedResult is { } succeeded)
                 return new ValueTask<bool>(succeeded);
-            }
 
             AfterDoneTaskObserverRegisteredForTest?.Invoke();
             return new ValueTask<bool>(state.Source.Task);
@@ -6320,6 +6317,7 @@ internal sealed class ReadyBatch
     private List<DoneTaskState>? _doneTaskObservers;
     private int _doneTaskObserverCount;
     private long _lastDoneTaskCompletion;
+    internal Action? AfterDoneTaskObserverIntentPublishedForTest;
     internal Action? AfterDoneTaskObserverRegisteredForTest;
 
     private const int CompletionSucceeded = 1;
@@ -6779,28 +6777,56 @@ internal sealed class ReadyBatch
         if (Interlocked.CompareExchange(ref _completed, completion, 0) != 0)
             return;
 
-        Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
-        if (Volatile.Read(ref _doneTaskObserverCount) != 0)
-            CompleteDoneTaskObservers(generation, succeeded);
+        if (Volatile.Read(ref _doneTaskObserverCount) == 0)
+        {
+            Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
+
+            // Close the race with a registration that published its intent after the first
+            // count read. It will either consume the packed result under the observer lock,
+            // or this thread will acquire that lock and deliver the result directly.
+            if (Volatile.Read(ref _doneTaskObserverCount) == 0)
+                return;
+        }
+
+        CompleteDoneTaskObservers(generation, completion, succeeded);
     }
 
-    private DoneTaskState RegisterDoneTaskObserver()
+    private DoneTaskState RegisterDoneTaskObserver(out bool? completedResult)
     {
-        // Publish registration intent before taking the lock. A racing completion either
-        // waits for this observer to be added or leaves its packed result for the immediate
-        // catch-up check in DoneTask.
-        Interlocked.Increment(ref _doneTaskObserverCount);
+        completedResult = null;
         var lockTaken = false;
+        var observerCountIncremented = false;
         try
         {
             _doneTaskObserverLock.Enter(ref lockTaken);
+
+            // Publish intent while holding the same lock used by observed completions. Once
+            // the count is visible, the current lifecycle cannot complete and recycle before
+            // its generation is captured and registered below.
+            Interlocked.Increment(ref _doneTaskObserverCount);
+            observerCountIncremented = true;
+            AfterDoneTaskObserverIntentPublishedForTest?.Invoke();
+
             var state = new DoneTaskState(Generation);
             (_doneTaskObservers ??= new List<DoneTaskState>(1)).Add(state);
+
+            // A completion that observed zero registrations publishes its result before
+            // checking the count again. Consume that hand-off before releasing the lock so a
+            // later lifecycle cannot overwrite it first.
+            if (TryGetDoneTaskCompletion(state.Generation, out var succeeded))
+            {
+                _doneTaskObservers.Remove(state);
+                Interlocked.Decrement(ref _doneTaskObserverCount);
+                observerCountIncremented = false;
+                completedResult = succeeded;
+            }
+
             return state;
         }
         catch
         {
-            Interlocked.Decrement(ref _doneTaskObserverCount);
+            if (observerCountIncremented)
+                Interlocked.Decrement(ref _doneTaskObserverCount);
             throw;
         }
         finally
@@ -6810,31 +6836,14 @@ internal sealed class ReadyBatch
         }
     }
 
-    private void RemoveDoneTaskObserver(DoneTaskState state)
-    {
-        var removed = false;
-        var lockTaken = false;
-        try
-        {
-            _doneTaskObserverLock.Enter(ref lockTaken);
-            removed = _doneTaskObservers?.Remove(state) == true;
-        }
-        finally
-        {
-            if (lockTaken)
-                _doneTaskObserverLock.Exit();
-        }
-
-        if (removed)
-            Interlocked.Decrement(ref _doneTaskObserverCount);
-    }
-
-    private void CompleteDoneTaskObservers(int generation, bool succeeded)
+    private void CompleteDoneTaskObservers(int generation, int completion, bool succeeded)
     {
         var lockTaken = false;
         try
         {
             _doneTaskObserverLock.Enter(ref lockTaken);
+            Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
+
             if (_doneTaskObservers is null)
                 return;
 
