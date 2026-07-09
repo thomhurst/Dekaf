@@ -3513,6 +3513,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             }
 
+            // Invalidate broker fetches that started before the revocation immediately.
+            // Waiting for the consume loop to drain the queued clear lets an ABA reassignment
+            // make a stale response look current and advance the reinitialized fetch position.
+            Interlocked.Increment(ref _fetchBufferEpoch);
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
         }
     }
@@ -4025,6 +4029,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (removedPartitions is { Count: > 0 })
                     LogPartitionsRemoved(removedPartitions.Count);
 
+                // Invalidate in-flight fetches before publishing an ABA reassignment or
+                // reinitializing its position. The consume loop owns the actual buffer drain.
+                if (removedPartitions is not null)
+                    QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
+
                 // Update assignment from coordinator
                 _assignment.Clear();
                 foreach (var partition in coordinatorAssignment)
@@ -4041,7 +4050,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
-                    QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
                     if (RemovePartitionState(removedPartitions))
                         PublishPausedSnapshot();
                 }

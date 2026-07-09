@@ -179,7 +179,7 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
-    public async Task EnsureAssignmentAsync_RevokeAndReassignBetweenPolls_ReinitializesCommittedPosition()
+    public async Task EnsureAssignmentAsync_RevokeAndReassignBetweenPolls_InvalidatesPrefetchAndReinitializesPosition()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -195,8 +195,10 @@ public sealed class ConsumerAssignmentFastPathTests
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         var reassignedPartition = new TopicPartition("test-topic", 1);
-        var staleFetch = CreateFetch(partition: 1, baseOffset: 0, value: "stale");
-        GetPendingFetches(consumer).Enqueue(staleFetch);
+        var stalePendingFetch = CreateFetch(partition: 1, baseOffset: 0, value: "stale-pending");
+        var stalePrefetch = CreateFetch(partition: 1, baseOffset: 1_999_999, value: "stale-prefetch");
+        var staleFetchBufferEpoch = GetFetchBufferEpoch(consumer);
+        GetPendingFetches(consumer).Enqueue(stalePendingFetch);
         GetFetchPositions(consumer)[reassignedPartition] = 0;
 
         var coordinator = GetCoordinator(consumer);
@@ -209,9 +211,12 @@ public sealed class ConsumerAssignmentFastPathTests
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        await WritePrefetchedItemsAsync(consumer, [stalePrefetch], staleFetchBufferEpoch);
 
         await Assert.That(consumer.Assignment).Contains(reassignedPartition);
         await Assert.That(GetFetchPositions(consumer)[reassignedPartition]).IsEqualTo(20L);
+        await Assert.That(GetPrefetchBuffer(consumer).TryRead(out _)).IsFalse();
+        await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer))
             .ContainsKey(reassignedPartition);
 
