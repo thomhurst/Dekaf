@@ -208,11 +208,11 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
     private async Task WaitForKafkaAsync()
     {
         Exception? lastError = null;
+        await using var admin = CreateAdminClient();
         for (var attempt = 0; attempt < 30; attempt++)
         {
             try
             {
-                await using var admin = CreateAdminClient();
                 _ = await admin.ListTopicsAsync().ConfigureAwait(false);
                 return;
             }
