@@ -1394,12 +1394,31 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             remainingBuckets -= completedSends;
 
                             // Wait for capacity on blocked connections
+                            var bucketsRequeuedForThrottle = false;
                             while (remainingBuckets > 0)
                             {
                                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                                 // Handle timed-out requests to free zombie entries from stale connections.
                                 HandleTimedOutRequests(carryOver, cancellationToken);
+
+                                // A response processed above may start a broker-wide throttle.
+                                // Requeue every unsent bucket so the outer send gate observes it
+                                // before another connection can send during the quota pause.
+                                if (GetRemainingBrokerThrottleMs() > 0)
+                                {
+                                    for (var c = 0; c < _connectionCount; c++)
+                                    {
+                                        ref var bucket = ref connectionBuckets[c];
+                                        if (!bucket.HasBatches) continue;
+
+                                        MoveCoalescedToCarryOver(
+                                            bucket.Batches, bucket.Generations, ref bucket.Count, carryOver);
+                                    }
+
+                                    bucketsRequeuedForThrottle = true;
+                                    break;
+                                }
 
                                 // Try sending on connections that now have capacity (parallel)
                                 var sent = false;
@@ -1426,6 +1445,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (remainingBuckets > 0 && !sent)
                                     await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                             }
+
+                            if (bucketsRequeuedForThrottle)
+                                continue;
                         }
                     }
                     else
