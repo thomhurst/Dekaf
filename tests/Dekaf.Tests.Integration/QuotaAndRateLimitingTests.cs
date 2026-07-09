@@ -22,6 +22,37 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             .Build();
     }
 
+    private static async Task WaitForProducerQuotaAsync(
+        IAdminClient admin,
+        ClientQuotaEntity quotaEntity,
+        string clientId,
+        string quotaKey,
+        double expectedValue)
+    {
+        var filter = new ClientQuotaFilter
+        {
+            Components =
+            [
+                ClientQuotaFilterComponent.Exact(ClientQuotaEntityType.ClientId, clientId)
+            ],
+            Strict = true
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            var quotas = await admin.DescribeClientQuotasAsync(filter, cancellationToken: cts.Token);
+            if (quotas.TryGetValue(quotaEntity, out var values)
+                && values.TryGetValue(quotaKey, out var value)
+                && value == expectedValue)
+            {
+                return;
+            }
+
+            await Task.Delay(100, cts.Token);
+        }
+    }
+
     /// <summary>
     /// Helper to set a broker-level default producer byte rate quota.
     /// Uses the deprecated but widely supported <c>quota.producer.default</c> broker config.
@@ -86,6 +117,107 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         };
 
         await admin.IncrementalAlterConfigsAsync(alterations);
+    }
+
+    [Test]
+    public async Task ProducerThrottle_NonZeroBrokerDelay_PreservesEveryRecordExactlyOnce()
+    {
+        const string quotaKey = "producer_byte_rate";
+        const double bytesPerSecond = 16_384;
+        const int maxMessages = 24;
+        const int messagesAfterThrottle = 2;
+
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var clientId = $"test-producer-throttle-{Guid.NewGuid():N}";
+        var quotaEntity = ClientQuotaEntity.For(ClientQuotaEntityComponent.ClientId(clientId));
+        var payload = new string('x', 16_384);
+
+        await using var admin = CreateAdminClient();
+        try
+        {
+            await admin.AlterClientQuotasAsync(
+            [
+                ClientQuotaAlteration.Set(quotaEntity, quotaKey, bytesPerSecond)
+            ]);
+
+            await WaitForProducerQuotaAsync(
+                admin, quotaEntity, clientId, quotaKey, bytesPerSecond);
+
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId(clientId)
+                .WithBatchSize(32 * 1024)
+                .WithLinger(TimeSpan.Zero)
+                .WithIdempotence(true)
+                .WithDeliveryDiagnostics()
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
+            var diagnostics = (IProducerDiagnostics)producer;
+            var produced = new List<RecordMetadata>();
+            var expectedKeys = new List<string>();
+            var firstThrottledMessage = -1;
+
+            for (var i = 0; i < maxMessages; i++)
+            {
+                var key = $"quota-boundary-{i}";
+                expectedKeys.Add(key);
+                produced.Add(await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = key,
+                    Value = payload
+                }));
+
+                if (diagnostics.MaxObservedBrokerThrottleTimeMs > 0 && firstThrottledMessage < 0)
+                    firstThrottledMessage = i;
+
+                if (firstThrottledMessage >= 0 && i >= firstThrottledMessage + messagesAfterThrottle)
+                    break;
+            }
+
+            await producer.FlushAsync();
+
+            await Assert.That(diagnostics.MaxObservedBrokerThrottleTimeMs).IsGreaterThan(0);
+            await Assert.That(firstThrottledMessage).IsGreaterThanOrEqualTo(0);
+            await Assert.That(produced.Count - firstThrottledMessage - 1)
+                .IsEqualTo(messagesAfterThrottle);
+            await Assert.That(produced.Select(result => result.Offset).Distinct().Count())
+                .IsEqualTo(produced.Count);
+
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId($"quota-verifier-{Guid.NewGuid():N}")
+                .WithGroupId($"quota-verifier-{Guid.NewGuid():N}")
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+
+            consumer.Subscribe(topic);
+            var consumed = await ConsumeMessagesAsync(consumer, expectedKeys.Count);
+
+            await Assert.That(consumed.Select(result => result.Key!).ToArray())
+                .IsEquivalentTo(expectedKeys);
+            await Assert.That(consumed.Select(result => result.Offset).Distinct().Count())
+                .IsEqualTo(expectedKeys.Count);
+
+            var duplicate = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+            await Assert.That(duplicate).IsNull();
+        }
+        finally
+        {
+            try
+            {
+                await admin.AlterClientQuotasAsync(
+                [
+                    ClientQuotaAlteration.Remove(quotaEntity, quotaKey)
+                ]);
+            }
+            catch (Errors.KafkaException)
+            {
+                // Cleanup best-effort; unique client ID prevents leakage into other tests.
+            }
+        }
     }
 
     [Test]

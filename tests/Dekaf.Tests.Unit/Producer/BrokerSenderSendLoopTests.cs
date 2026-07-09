@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -99,9 +100,11 @@ public sealed class BrokerSenderSendLoopTests
     /// <summary>
     /// Creates a ProduceResponse with success for the given topic/partition.
     /// </summary>
-    private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
+    private static ProduceResponse CreateSuccessResponse(
+        string topic, int partition, long baseOffset, int throttleTimeMs = 0) =>
         new()
         {
+            ThrottleTimeMs = throttleTimeMs,
             TopicCount = 1,
             Responses =
             [
@@ -150,7 +153,10 @@ public sealed class BrokerSenderSendLoopTests
         IConnectionPool pool,
         ProducerOptions options,
         RecordAccumulator accumulator,
-        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement) =>
+        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
+        Action<int>? onBrokerThrottle = null,
+        Func<long>? getTimestamp = null,
+        Func<int, CancellationToken, ValueTask>? delayForThrottle = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -165,7 +171,10 @@ public sealed class BrokerSenderSendLoopTests
             getCurrentEpoch: null,
             rerouteBatch: null,
             onAcknowledgement: onAcknowledgement,
-            logger: null);
+            logger: null,
+            onBrokerThrottle: onBrokerThrottle,
+            getTimestamp: getTimestamp,
+            delayForThrottle: delayForThrottle);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -1168,6 +1177,146 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_PositiveBrokerThrottle_DelaysNextRequestWithoutDeliveryErrors(
+        CancellationToken cancellationToken)
+    {
+        const int throttleTimeMs = 250;
+
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var throttleWaitStarted = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseThrottleWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedThrottleTimes = new List<int>();
+        var timestamp = 0L;
+        var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) =>
+            {
+                if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                    acknowledgements.TrySetResult();
+            },
+            observedThrottleTimes.Add,
+            () => Volatile.Read(ref timestamp),
+            (delayMs, token) =>
+            {
+                throttleWaitStarted.TrySetResult(delayMs);
+                return new ValueTask(releaseThrottleWait.Task.WaitAsync(token));
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            firstResponse.SetResult(CreateSuccessResponse(
+                "test-topic", 0, baseOffset: 10, throttleTimeMs));
+
+            var requestedDelayMs = await throttleWaitStarted.Task.WaitAsync(cancellationToken);
+            await Assert.That(requestedDelayMs).IsEqualTo(throttleTimeMs);
+            await Assert.That(sendSignals[1].Task.IsCompleted).IsFalse();
+
+            Volatile.Write(ref timestamp, Stopwatch.Frequency);
+            releaseThrottleWait.SetResult();
+
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 11));
+            await acknowledgements.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(observedThrottleTimes).IsEquivalentTo([throttleTimeMs, 0]);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_ZeroBrokerThrottle_DoesNotDelayNextRequest(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var throttleDelayCalled = false;
+        var observedThrottleTimes = new List<int>();
+        var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) =>
+            {
+                if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                    acknowledgements.TrySetResult();
+            },
+            observedThrottleTimes.Add,
+            delayForThrottle: (_, _) =>
+            {
+                throttleDelayCalled = true;
+                return ValueTask.CompletedTask;
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            firstResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 20));
+
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 21));
+            await acknowledgements.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(throttleDelayCalled).IsFalse();
+            await Assert.That(observedThrottleTimes).IsEquivalentTo([0, 0]);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 }

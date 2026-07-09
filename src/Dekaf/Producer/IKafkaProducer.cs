@@ -235,6 +235,11 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 internal interface IProducerDiagnostics
 {
     /// <summary>
+    /// Largest throttle delay reported by a broker in a produce response while delivery diagnostics are enabled.
+    /// </summary>
+    int MaxObservedBrokerThrottleTimeMs { get; }
+
+    /// <summary>
     /// Captures batches still tracked inside the producer pipeline.
     /// </summary>
     ProducerDeliveryDiagnosticsSnapshot GetDeliveryDiagnosticsSnapshot();
