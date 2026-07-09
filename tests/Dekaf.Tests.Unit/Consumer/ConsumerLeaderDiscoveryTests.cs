@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
-using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -168,7 +167,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task ResetToDivergingEpoch_RepositionsAndQueuesConsumeException()
+    public async Task ResetToDivergingEpoch_RepositionsAndSchedulesStaleFetchClearWithoutException()
     {
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
@@ -187,12 +186,36 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         InvokeResetToDivergingEpoch(consumer, partitionResponse);
 
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(42);
-        var exception = DrainPendingFetchException(consumer);
-        await Assert.That(exception).IsTypeOf<ConsumeException>();
-        var consumeException = (ConsumeException)exception!;
-        await Assert.That(consumeException.ErrorCode).IsEqualTo(ErrorCode.OffsetOutOfRange);
-        await Assert.That(consumeException.IsRetriable).IsTrue();
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
+        await Assert.That(DrainPendingFetchException(consumer)).IsNull();
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_DoesNotRewindDeliveredPosition()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 43)]);
+
+        var partitionResponse = new FetchResponsePartition
+        {
+            PartitionIndex = 0,
+            DivergingEpoch = new EpochEndOffset
+            {
+                Epoch = 7,
+                EndOffset = 42
+            }
+        };
+
+        InvokeResetToDivergingEpoch(consumer, partitionResponse);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(43);
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
+        await Assert.That(DrainPendingFetchException(consumer)).IsNull();
     }
 
     [Test]
@@ -386,6 +409,16 @@ public sealed class ConsumerLeaderDiscoveryTests
         return (int)field.GetValue(consumer)!;
     }
 
+    private static int GetLastConsumedLeaderEpoch(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "GetLastConsumedLeaderEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("GetLastConsumedLeaderEpoch method not found");
+
+        return (int)method.Invoke(consumer, [new TopicPartition(Topic, 0)])!;
+    }
+
     private static Exception? DrainPendingFetchException(KafkaConsumer<string, string> consumer)
     {
         var method = typeof(KafkaConsumer<string, string>)
@@ -401,5 +434,17 @@ public sealed class ConsumerLeaderDiscoveryTests
         {
             return ex.InnerException;
         }
+    }
+
+    private static bool ClearFetchBufferForPendingCoordinatorRevocations(
+        KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "ClearFetchBufferForPendingCoordinatorRevocations",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException(
+                "ClearFetchBufferForPendingCoordinatorRevocations method not found");
+
+        return (bool)method.Invoke(consumer, [])!;
     }
 }
