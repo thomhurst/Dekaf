@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -12,6 +13,7 @@ namespace Dekaf.Tests.Unit.Producer;
 public class KafkaProducerFastPathTests
 {
     private const string Topic = "test-topic";
+    private const int BufferMemoryLimit = 1024;
 
     [Test]
     public async Task TryProduceSyncCore_CustomPartitionerReentry_PreservesOuterKeyAndValue()
@@ -158,6 +160,132 @@ public class KafkaProducerFastPathTests
             partitionCount);
 
         await Assert.That(partitionAfterKeyedAppends).IsEqualTo(stickyPartition);
+    }
+
+    [Test]
+    public async Task FireAsync_BufferMemoryExactlyFull_WaitsUntilSpaceIsReleased()
+    {
+        await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
+        var accumulator = producer.RecordAccumulator;
+        const string key = "key";
+        const string value = "value";
+        var recordSize = PartitionBatch.EstimateRecordSize(
+            Encoding.UTF8.GetByteCount(key),
+            Encoding.UTF8.GetByteCount(value),
+            null,
+            0);
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
+        var syntheticReservationRemaining = BufferMemoryLimit;
+
+        try
+        {
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(BufferMemoryLimit);
+            await Assert.That(accumulator.TryReserveMemoryForTest(1)).IsFalse();
+
+            var pressureBefore = accumulator.BufferPressureEvents;
+            var fireTask = producer.FireAsync(Topic, key, value).AsTask();
+
+            await TestWait.UntilAsync(
+                () => accumulator.BufferPressureEvents > pressureBefore,
+                TimeSpan.FromSeconds(5));
+            await Assert.That(fireTask.IsCompleted).IsFalse();
+
+            accumulator.ReleaseMemory(recordSize);
+            syntheticReservationRemaining -= recordSize;
+
+            await fireTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            if (syntheticReservationRemaining > 0)
+                accumulator.ReleaseMemory(syntheticReservationRemaining);
+        }
+    }
+
+    [Test]
+    public async Task FireAsync_BufferMemoryFull_MaxBlockExpiryThrowsKafkaTimeoutException()
+    {
+        const int maxBlockMs = 100;
+        await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs);
+        var accumulator = producer.RecordAccumulator;
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
+        try
+        {
+            var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+                await producer.FireAsync(Topic, "key", "value")
+                    .AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(30)));
+
+            await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+            await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(maxBlockMs));
+        }
+        finally
+        {
+            accumulator.ReleaseMemory(BufferMemoryLimit);
+        }
+    }
+
+    [Test]
+    public async Task FireAsync_WithCallback_BufferMemoryFull_DeliversMaxBlockTimeoutToCallback()
+    {
+        const int maxBlockMs = 100;
+        await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs);
+        var accumulator = producer.RecordAccumulator;
+        var callbackResult = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
+        try
+        {
+            var fireTask = producer.FireAsync(
+                new ProducerMessage<string, string>
+                {
+                    Topic = Topic,
+                    Key = "key",
+                    Value = "value"
+                },
+                (_, exception) => callbackResult.TrySetResult(exception)).AsTask();
+
+            await fireTask.WaitAsync(TimeSpan.FromSeconds(30));
+            var exception = await callbackResult.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await Assert.That(exception).IsTypeOf<KafkaTimeoutException>();
+            var timeout = (KafkaTimeoutException)exception!;
+            await Assert.That(timeout.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+            await Assert.That(timeout.Configured).IsEqualTo(TimeSpan.FromMilliseconds(maxBlockMs));
+        }
+        finally
+        {
+            accumulator.ReleaseMemory(BufferMemoryLimit);
+        }
+    }
+
+    private static async Task<KafkaProducer<string, string>> CreateBufferBoundaryProducerAsync(int maxBlockMs)
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "buffer-boundary-test",
+            BufferMemory = BufferMemoryLimit,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = maxBlockMs,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        return producer;
     }
 
     private static TopicInfo CreateTopicInfo(int partitionCount = 1) => new()
