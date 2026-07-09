@@ -5920,18 +5920,43 @@ internal sealed class ReadyBatch
     {
         get
         {
-            var source = Volatile.Read(ref _doneTaskSource);
-            if (source is null)
+            while (true)
             {
-                var created = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                source = Interlocked.CompareExchange(ref _doneTaskSource, created, null) ?? created;
+                var generation = Generation;
+                if (TryGetDoneTaskCompletion(generation, out var succeeded))
+                    return new ValueTask<bool>(succeeded);
+
+                var state = Volatile.Read(ref _doneTaskState);
+                if (state?.Generation != generation)
+                {
+                    var created = new DoneTaskState(generation);
+                    BeforeDoneTaskSourcePublishedForTest?.Invoke();
+
+                    // Completion and pool reuse may both happen while the source is being
+                    // allocated. Prefer the captured lifecycle's result when it is still the
+                    // most recent completion; otherwise retry against the current generation.
+                    if (TryGetDoneTaskCompletion(generation, out succeeded))
+                        return new ValueTask<bool>(succeeded);
+
+                    if (Generation != generation)
+                        continue;
+
+                    var observed = Interlocked.CompareExchange(ref _doneTaskState, created, state);
+                    if (!ReferenceEquals(observed, state))
+                        continue;
+
+                    state = created;
+                }
+
+                if (TryGetDoneTaskCompletion(generation, out succeeded))
+                    state.Source.TrySetResult(succeeded);
+
+                // A published source is safe to return while its generation is current:
+                // completion observes it before the batch can be recycled. If recycling won
+                // the race, retry unless that source was already completed.
+                if (state.Source.Task.IsCompleted || Generation == generation)
+                    return new ValueTask<bool>(state.Source.Task);
             }
-
-            var completed = Volatile.Read(ref _completed);
-            if (completed != 0)
-                source.TrySetResult(completed == CompletionSucceeded);
-
-            return new ValueTask<bool>(source.Task);
         }
     }
 
@@ -6312,7 +6337,16 @@ internal sealed class ReadyBatch
     // in-flight counter. Allocate its source lazily so the hot path remains allocation-free.
     // A Task is deliberately used instead of a resettable IValueTaskSource: ReadyBatch can be
     // returned to its pool before an asynchronous continuation consumes the prior result.
-    private TaskCompletionSource<bool>? _doneTaskSource;
+    private sealed class DoneTaskState(int generation)
+    {
+        public int Generation { get; } = generation;
+        public TaskCompletionSource<bool> Source { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private DoneTaskState? _doneTaskState;
+    private long _lastDoneTaskCompletion;
+    internal Action? BeforeDoneTaskSourcePublishedForTest;
 
     private const int CompletionSucceeded = 1;
     private const int CompletionFailed = 2;
@@ -6432,6 +6466,9 @@ internal sealed class ReadyBatch
         // mismatch. With the old order (flags first), a holder could see _returnedToPool == 0
         // while still reading its own stale generation — passing both checks and acting on
         // a batch now owned by someone else.
+        // Clear the old lazy source before publishing the next generation. A stale getter may
+        // still race this write, but its generation tag prevents it from capturing new work.
+        Volatile.Write(ref _doneTaskState, null);
         Interlocked.Increment(ref _generation);
 
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
@@ -6442,7 +6479,6 @@ internal sealed class ReadyBatch
         Interlocked.Exchange(ref _cleanedUp, 0);
         Interlocked.Exchange(ref _resourcesCleanedUp, ResourceCleanupPending);
         Interlocked.Exchange(ref _activeResourcePins, 0);
-        Volatile.Write(ref _doneTaskSource, null);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
         Volatile.Write(ref _terminalBookkeepingCompleted, 1);
@@ -6533,7 +6569,7 @@ internal sealed class ReadyBatch
         // previous lifecycle calling CompleteSend/Fail will hit the guard and return early.
         // These flags are reset in Initialize() when the batch starts a new lifecycle.
         // Captured DoneTask instances retain their own TaskCompletionSource after pool return.
-        Volatile.Write(ref _doneTaskSource, null);
+        Volatile.Write(ref _doneTaskState, null);
     }
 
     /// <summary>
@@ -6768,12 +6804,34 @@ internal sealed class ReadyBatch
 
     private void CompleteDoneTask(bool succeeded)
     {
+        var generation = Generation;
         var completion = succeeded ? CompletionSucceeded : CompletionFailed;
         if (Interlocked.CompareExchange(ref _completed, completion, 0) != 0)
             return;
 
-        Volatile.Read(ref _doneTaskSource)?.TrySetResult(succeeded);
+        Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
+
+        var state = Volatile.Read(ref _doneTaskState);
+        if (state?.Generation == generation)
+            state.Source.TrySetResult(succeeded);
     }
+
+    private bool TryGetDoneTaskCompletion(int generation, out bool succeeded)
+    {
+        var packedCompletion = Volatile.Read(ref _lastDoneTaskCompletion);
+        var result = unchecked((int)packedCompletion);
+        if (result != 0 && unchecked((int)(packedCompletion >> 32)) == generation)
+        {
+            succeeded = result == CompletionSucceeded;
+            return true;
+        }
+
+        succeeded = false;
+        return false;
+    }
+
+    private static long PackDoneTaskCompletion(int generation, int completion)
+        => ((long)generation << 32) | (uint)completion;
 
     /// <summary>
     /// If CompleteSend/Fail has been called but Cleanup hasn't finished yet, spin-waits

@@ -823,6 +823,45 @@ public class PooledValueTaskSourceTests
         }
     }
 
+    [Test]
+    public async Task ReadyBatchDoneTask_SourcePublicationRacesWithReuse_CompletesCapturedLifecycle()
+    {
+        var batch = new ReadyBatch();
+        InitializeBatch(batch);
+
+        using var sourceCreated = new ManualResetEventSlim();
+        using var continuePublication = new ManualResetEventSlim();
+        batch.BeforeDoneTaskSourcePublishedForTest = () =>
+        {
+            sourceCreated.Set();
+            continuePublication.Wait();
+        };
+
+        var getterTask = Task.Run(() => batch.DoneTask);
+        try
+        {
+            await Assert.That(sourceCreated.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            batch.CompleteDelivery();
+            batch.Reset();
+            InitializeBatch(batch);
+            batch.BeforeDoneTaskSourcePublishedForTest = null;
+
+            continuePublication.Set();
+            var capturedTask = await getterTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var result = await capturedTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+
+            await Assert.That(result).IsTrue();
+        }
+        finally
+        {
+            batch.BeforeDoneTaskSourcePublishedForTest = null;
+            continuePublication.Set();
+            batch.CompleteDelivery();
+            batch.Reset();
+        }
+    }
+
     private static async Task<T> CompleteWithoutRunningContinuationInlineAsync<T>(
         ValueTask<T> valueTask,
         Action complete)
