@@ -106,6 +106,12 @@ class MutationReportTests(unittest.TestCase):
         self.assertIn('if [ -f artifacts/mutation-summary.md ]; then', workflow)
         self.assertIn('cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"', workflow)
 
+    def test_workflow_installs_stryker_target_runtime(self):
+        workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        self.assertIn("dotnet-version: |\n            8.0.x\n            10.0.x", workflow)
+
     def test_cli_writes_summary_and_returns_failure_for_large_drop(self):
         current = report_with(mutant("Killed", 1), mutant("Survived", 2))
         previous = report_with(mutant("Killed", 1), mutant("Killed", 2))
