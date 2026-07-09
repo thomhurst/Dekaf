@@ -233,6 +233,9 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
         using (var producer = new ConfluentKafka.ProducerBuilder<string, byte[]>(producerConfig).Build())
         {
+            using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
+
             Action<ConfluentKafka.DeliveryReport<string, byte[]>> deliveryHandler = report =>
             {
                 if (report.Error.IsError)
@@ -250,6 +253,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 var message = factory.Create(ordinal % options.Partitions);
                 try
                 {
+                    produceTimeout.Token.ThrowIfCancellationRequested();
                     ConfluentStressTestHelpers.ProduceWithBackpressure(
                         producer,
                         options.Topic,
@@ -259,8 +263,17 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                             Value = message.Value
                         },
                         deliveryHandler,
-                        cancellationToken);
+                        produceTimeout.Token);
                     throughput.RecordMessage(message.Value.Length);
+                }
+                catch (OperationCanceledException) when (produceTimeout.IsCancellationRequested)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    throughput.RecordError(
+                        new TimeoutException("Confluent round-trip produce phase exceeded its timeout."),
+                        "Round-trip produce",
+                        ordinal);
+                    break;
                 }
                 catch (Exception ex)
                 {
