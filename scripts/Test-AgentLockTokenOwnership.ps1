@@ -14,13 +14,15 @@ $prWorktree = Join-Path $testRoot 'pr-worktree'
 $ownershipLock = "pr-agentlocks-ownership-$suffix"
 $issueLock = "issue-$issueNumber"
 $prWorktreeLock = "pr-agentlocks-worktree-$suffix"
+$crossVersionLock = "pr-agentlocks-cross-version-$suffix"
 $missingIdentityLock = "pr-agentlocks-missing-owner-$suffix"
-$allLocks = @($ownershipLock, $issueLock, $prWorktreeLock, $missingIdentityLock)
+$allLocks = @($ownershipLock, $issueLock, $prWorktreeLock, $crossVersionLock, $missingIdentityLock)
 
 $ownerA = 'agent-lock-test-owner-a'
 $ownerB = 'agent-lock-test-owner-b'
 $issueOwner = 'agent-lock-test-issue-owner'
 $parameterOwner = 'agent-lock-test-parameter-owner'
+$crossVersionOwner = 'agent-lock-test-cross-version-owner'
 $completed = $false
 
 function Invoke-AgentLocks {
@@ -142,6 +144,20 @@ try {
     Invoke-Git -C $repo worktree add -b "issue-$issueNumber-token-owner-test" $issueWorktree HEAD
     Invoke-Git -C $repo worktree add -b token-owner-pr-test $prWorktree HEAD
 
+    # A checked-out PR may carry a stale lock script. Every verb must invoke the
+    # canonical shared-checkout script captured before entering the worktree.
+    $staleAgentLocks = Join-Path $prWorktree 'scripts/AgentLocks.ps1'
+    New-Item -ItemType Directory -Force (Split-Path $staleAgentLocks -Parent) | Out-Null
+    Set-Content -LiteralPath $staleAgentLocks -Value @(
+        '[Console]::Error.WriteLine(''stale worktree AgentLocks.ps1 was invoked'')'
+        'exit 99'
+    )
+
+    Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 'cross-version acquire'
+    Assert-Result (Invoke-AgentLocks $prWorktree @('status', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 0 'HELD-BY-ME' 'cross-version status from stale worktree'
+    Assert-Result (Invoke-AgentLocks $prWorktree @('release', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 0 '' 'cross-version release from stale worktree'
+    Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 0 'FREE' 'cross-version status after release'
+
     # Owner A's token cache must remain private after Redis expiry and owner B reacquisition.
     Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 'owner A acquire'
     Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 0 'HELD-BY-ME' 'owner A status before expiry'
@@ -187,6 +203,7 @@ finally {
         Invoke-AgentLocks $repo @('release', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA | Out-Null
         Invoke-AgentLocks $repo @('release', '-LockName', $issueLock) -CodexThreadId $issueOwner | Out-Null
         Invoke-AgentLocks $repo @('release', '-LockName', $prWorktreeLock, '-OwnerId', $parameterOwner) | Out-Null
+        Invoke-AgentLocks $repo @('release', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner | Out-Null
     }
 
     Remove-TestLocks $allLocks
