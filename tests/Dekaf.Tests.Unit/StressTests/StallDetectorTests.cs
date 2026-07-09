@@ -50,7 +50,7 @@ public sealed class StallDetectorTests
     }
 
     [Test]
-    public async Task Watchdog_Stall_CapturesProducerDiagnosticsBeforeThreadStacks()
+    public async Task Watchdog_Stall_CapturesThreadStacksBeforeProducerDiagnostics()
     {
         var outputDirectory = CreateOutputDirectory();
         try
@@ -90,8 +90,8 @@ public sealed class StallDetectorTests
 
             var order = captureOrder.ToArray();
             await Assert.That(order.Length).IsEqualTo(2);
-            await Assert.That(order[0]).IsEqualTo("producer");
-            await Assert.That(order[1]).IsEqualTo("stacks");
+            await Assert.That(order[0]).IsEqualTo("stacks");
+            await Assert.That(order[1]).IsEqualTo("producer");
             await Assert.That(File.ReadAllText(Directory.GetFiles(outputDirectory, "*-stacks.txt").Single()))
                 .Contains("test managed stack");
             await Assert.That(File.ReadAllText(Directory.GetFiles(outputDirectory, "*-producer.json").Single()))

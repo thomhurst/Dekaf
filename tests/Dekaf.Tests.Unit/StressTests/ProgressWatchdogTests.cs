@@ -80,6 +80,53 @@ public sealed class ProgressWatchdogTests
         }
     }
 
+    [Test]
+    public async Task Track_FatalStall_ExitsWhenProducerDiagnosticsBlocks()
+    {
+        var outputDirectory = CreateOutputDirectory();
+        using var releaseCapture = new ManualResetEventSlim(initialState: false);
+        using var capturesCompleted = new CountdownEvent(initialCount: 2);
+        try
+        {
+            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var throughput = new ThroughputTracker();
+            throughput.Start();
+
+            using var watchdog = new ProgressWatchdog(
+                outputDirectory,
+                captureAfter: TimeSpan.FromMilliseconds(20),
+                exitAfter: TimeSpan.FromMilliseconds(100),
+                pollInterval: TimeSpan.FromMilliseconds(10),
+                exitProcess: code => exited.TrySetResult(code),
+                captureManagedStackReport: () => "fake managed stack",
+                producerDiagnosticsTimeout: TimeSpan.FromMilliseconds(30));
+            using var registration = watchdog.Track(
+                throughput,
+                "Dekaf",
+                "producer",
+                () =>
+                {
+                    releaseCapture.Wait();
+                    capturesCompleted.Signal();
+                    return null;
+                });
+
+            var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(exitCode).IsEqualTo(1);
+            var fatalStackArtifact = Directory.GetFiles(outputDirectory, "*-fatal-stacks.txt").Single();
+            var fatalProducerArtifact = Directory.GetFiles(outputDirectory, "*-fatal-producer.json").Single();
+            await Assert.That(await File.ReadAllTextAsync(fatalStackArtifact)).Contains("fake managed stack");
+            await Assert.That(await File.ReadAllTextAsync(fatalProducerArtifact)).Contains("timed out");
+        }
+        finally
+        {
+            releaseCapture.Set();
+            capturesCompleted.Wait(TimeSpan.FromSeconds(5));
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
     private static string CreateOutputDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), $"dekaf-watchdog-tests-{Guid.NewGuid():N}");

@@ -79,6 +79,7 @@ internal sealed class ProgressWatchdog : IDisposable
 
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan StackCaptureTimeout = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan DefaultProducerDiagnosticsTimeout = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private readonly string _outputDirectory;
@@ -87,6 +88,7 @@ internal sealed class ProgressWatchdog : IDisposable
     private readonly TimeSpan _pollInterval;
     private readonly Action<int> _exitProcess;
     private readonly Func<string> _captureManagedStackReport;
+    private readonly TimeSpan _producerDiagnosticsTimeout;
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly AutoResetEvent _wakeUp = new(initialState: false);
     private readonly object _sync = new();
@@ -102,7 +104,8 @@ internal sealed class ProgressWatchdog : IDisposable
         TimeSpan? exitAfter = null,
         TimeSpan? pollInterval = null,
         Action<int>? exitProcess = null,
-        Func<string>? captureManagedStackReport = null)
+        Func<string>? captureManagedStackReport = null,
+        TimeSpan? producerDiagnosticsTimeout = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
 
@@ -112,10 +115,12 @@ internal sealed class ProgressWatchdog : IDisposable
         _pollInterval = pollInterval ?? DefaultPollInterval;
         _exitProcess = exitProcess ?? Environment.Exit;
         _captureManagedStackReport = captureManagedStackReport ?? CaptureManagedStackReport;
+        _producerDiagnosticsTimeout = producerDiagnosticsTimeout ?? DefaultProducerDiagnosticsTimeout;
 
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_captureAfter, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_exitAfter, _captureAfter);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_pollInterval, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_producerDiagnosticsTimeout, TimeSpan.Zero);
 
         Directory.CreateDirectory(_outputDirectory);
         _thread = new Thread(Run)
@@ -169,7 +174,7 @@ internal sealed class ProgressWatchdog : IDisposable
             _wakeUp.Set();
         }
 
-        if (_thread.Join(StackCaptureTimeout + TimeSpan.FromSeconds(5)))
+        if (_thread.Join(StackCaptureTimeout + _producerDiagnosticsTimeout + TimeSpan.FromSeconds(5)))
             _wakeUp.Dispose();
     }
 
@@ -241,15 +246,16 @@ internal sealed class ProgressWatchdog : IDisposable
             $"PROGRESS WATCHDOG: {activeRun.Client} {activeRun.Scenario} made no message progress " +
             $"for {stalledFor.TotalSeconds:F0}s; capturing {kind} diagnostics in {_outputDirectory}");
 
-        // Snapshot in-process state first: dotnet-stack may take up to a minute,
-        // during which the stall can resolve and erase the evidence we need.
-        CaptureProducerDiagnostics($"{prefix}-producer.json", activeRun, capturedAt, stalledFor);
+        // Capture stacks first because the producer snapshot can contend on the lock
+        // responsible for the stall. Its bounded capture runs afterwards so the fatal
+        // exit path remains reachable even when that lock never becomes available.
         CaptureManagedStacks(
             $"{prefix}-stacks.txt",
             activeRun,
             capturedAt,
             stalledFor,
             _captureManagedStackReport);
+        CaptureProducerDiagnostics($"{prefix}-producer.json", activeRun, capturedAt, stalledFor);
 
         if (action == StallAction.CaptureAndExit)
         {
@@ -324,7 +330,7 @@ internal sealed class ProgressWatchdog : IDisposable
         return body.ToString();
     }
 
-    private static void CaptureProducerDiagnostics(
+    private void CaptureProducerDiagnostics(
         string path,
         ActiveRun activeRun,
         DateTimeOffset capturedAt,
@@ -333,32 +339,65 @@ internal sealed class ProgressWatchdog : IDisposable
         if (activeRun.CaptureProducerDiagnostics is null)
             return;
 
-        try
+        ProducerDeliveryDiagnosticsSnapshot? snapshot = null;
+        Exception? captureException = null;
+        var captureThread = new Thread(() =>
         {
-            var snapshot = activeRun.CaptureProducerDiagnostics();
-            var artifact = new
+            try
             {
-                CapturedAtUtc = capturedAt,
-                activeRun.Client,
-                activeRun.Scenario,
-                MessageCount = activeRun.Throughput.MessageCount,
-                StalledFor = stalledFor,
-                ProducerDeliveryDiagnostics = snapshot
-            };
-            WriteArtifact(path, JsonSerializer.Serialize(artifact, JsonOptions));
-        }
-        catch (Exception exception)
+                snapshot = activeRun.CaptureProducerDiagnostics();
+            }
+            catch (Exception exception)
+            {
+                captureException = exception;
+            }
+        })
         {
-            WriteArtifact(path, JsonSerializer.Serialize(new
-            {
-                CapturedAtUtc = capturedAt,
-                activeRun.Client,
-                activeRun.Scenario,
-                Error = exception.ToString()
-            }, JsonOptions));
-            Console.Error.WriteLine($"PROGRESS WATCHDOG: producer diagnostics capture failed: {exception.Message}");
+            IsBackground = true,
+            Name = "Dekaf producer diagnostics capture"
+        };
+        captureThread.Start();
+
+        if (!captureThread.Join(_producerDiagnosticsTimeout))
+        {
+            var error = $"Producer diagnostics capture timed out after {_producerDiagnosticsTimeout}.";
+            WriteProducerDiagnosticsError(path, activeRun, capturedAt, error);
+            Console.Error.WriteLine($"PROGRESS WATCHDOG: {error}");
+            return;
         }
+
+        if (captureException is not null)
+        {
+            WriteProducerDiagnosticsError(path, activeRun, capturedAt, captureException.ToString());
+            Console.Error.WriteLine(
+                $"PROGRESS WATCHDOG: producer diagnostics capture failed: {captureException.Message}");
+            return;
+        }
+
+        var artifact = new
+        {
+            CapturedAtUtc = capturedAt,
+            activeRun.Client,
+            activeRun.Scenario,
+            MessageCount = activeRun.Throughput.MessageCount,
+            StalledFor = stalledFor,
+            ProducerDeliveryDiagnostics = snapshot
+        };
+        WriteArtifact(path, JsonSerializer.Serialize(artifact, JsonOptions));
     }
+
+    private static void WriteProducerDiagnosticsError(
+        string path,
+        ActiveRun activeRun,
+        DateTimeOffset capturedAt,
+        string error) =>
+        WriteArtifact(path, JsonSerializer.Serialize(new
+        {
+            CapturedAtUtc = capturedAt,
+            activeRun.Client,
+            activeRun.Scenario,
+            Error = error
+        }, JsonOptions));
 
     private static void WriteArtifact(string path, string contents)
     {
