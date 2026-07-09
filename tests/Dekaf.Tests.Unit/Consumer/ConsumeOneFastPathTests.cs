@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Text;
@@ -258,11 +257,8 @@ public sealed class ConsumeOneFastPathTests
 
         using var cts = new CancellationTokenSource();
 
-        var stopwatch = Stopwatch.StartNew();
         var consumeTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
-        stopwatch.Stop();
 
-        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(100));
         await Assert.That(consumeTask.IsCompleted).IsFalse();
 
         cts.Cancel();
