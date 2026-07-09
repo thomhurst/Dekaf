@@ -63,6 +63,31 @@ def _matching_observations(runs, result):
     return matches
 
 
+def _limit_observations_per_identity(runs):
+    """Keep the newest observations for every stress configuration."""
+    retained_counts = {}
+    retained_runs = []
+
+    for run in reversed(runs):
+        retained_results = []
+        for observation in reversed(run.get("results", [])):
+            key = _identity(observation)
+            retained_count = retained_counts.get(key, 0)
+            if retained_count >= HISTORY_LIMIT:
+                continue
+
+            retained_counts[key] = retained_count + 1
+            retained_results.append(observation)
+
+        if retained_results:
+            retained_runs.append({
+                **run,
+                "results": list(reversed(retained_results)),
+            })
+
+    return list(reversed(retained_runs))
+
+
 def _scenario_label(result):
     brokers = result.get("brokerCount", 1)
     return (
@@ -171,7 +196,7 @@ def evaluate_and_update(history, current_results, run_started_at):
     }]
     updated = {
         "version": HISTORY_VERSION,
-        "runs": updated_runs[-HISTORY_LIMIT:],
+        "runs": _limit_observations_per_identity(updated_runs),
     }
     return evaluations, updated, should_fail
 

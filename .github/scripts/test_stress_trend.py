@@ -140,6 +140,32 @@ class StressTrendTests(unittest.TestCase):
         self.assertEqual(1, sum(run["runStartedAtUtc"] == duplicate_timestamp for run in updated["runs"]))
         self.assertEqual(1100.0, updated["runs"][-1]["results"][0]["messagesPerSecond"])
 
+    def test_history_limit_is_applied_per_configuration(self):
+        scheduled_runs = [history_run(i) for i in range(1, HISTORY_LIMIT + 1)]
+        ad_hoc_runs = [
+            history_run(i, durationMinutes=60)
+            for i in range(HISTORY_LIMIT + 1, (HISTORY_LIMIT * 2) + 1)
+        ]
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": scheduled_runs + ad_hoc_runs},
+            [result(messages_per_second=1000.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(HISTORY_LIMIT, throughput["baselineCount"])
+
+        retained_durations = [
+            observation["durationMinutes"]
+            for run in updated["runs"]
+            for observation in run["results"]
+        ]
+        self.assertEqual(HISTORY_LIMIT, retained_durations.count(15))
+        self.assertEqual(HISTORY_LIMIT, retained_durations.count(60))
+
 
 if __name__ == "__main__":
     unittest.main()
