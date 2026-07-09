@@ -559,6 +559,19 @@ public sealed class ProducerOptions
     private readonly int _maxConnectionsPerBroker = 10;
 
     /// <summary>
+    /// Test-only override for the adaptive-scaling cooldown window (milliseconds).
+    /// Null uses the production constant. Internal so unit tests can drive scale
+    /// cycles without waiting minutes; not part of the public API.
+    /// </summary>
+    internal long? ScaleCooldownMsOverride { get; init; }
+
+    /// <summary>
+    /// Test-only override for the sustained-low-utilization window (milliseconds)
+    /// required before a scale-down. Null uses the production constant.
+    /// </summary>
+    internal long? ScaleDownSustainedMsOverride { get; init; }
+
+    /// <summary>
     /// Producer interceptors, called in order during the produce pipeline.
     /// Interceptors are called on the hot path (OnSend) and on acknowledgement (OnAcknowledgement).
     /// Interceptor exceptions are caught and logged, not propagated.

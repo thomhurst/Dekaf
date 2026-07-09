@@ -421,12 +421,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
     private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
 
-    // Per-partition migration fencing for idempotent producers: during a scale event,
+    // A connection removed from the pool by scale-down, parked until its pending-response
+    // list (slot _connectionCount — frozen while parked, because a parked connection blocks
+    // all new scale events) is confirmed empty, then promoted to _drainingConnection for
+    // disposal. The list is expected to already be empty when parked; a non-empty list
+    // means a request slipped in against the width-reduction invariant and is logged.
+    private IKafkaConnection? _retiringConnection;
+
+    // Set at send-loop finally entry so IsAlive turns false before surviving batches are
+    // reroute-redelivered — GetOrCreateBrokerSender must build a replacement, not return
+    // this instance whose event channel is already completed.
+    private volatile bool _loopExited;
+
+    // Per-partition migration fencing for idempotent producers: during a scale-UP,
     // partitions whose connection assignment changes (partition % oldCount != partition % newCount)
     // are fenced here if they have in-flight batches on the old connection. The partition
     // continues routing to the old connection until its in-flight clears, then is removed
     // from this dictionary and routes via the new partition % _connectionCount.
-    // Send-loop owned (single-threaded) — no synchronization needed.
+    // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
+    // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
     private readonly Dictionary<int, int> _migratingPartitions = new();
 
     // Scaling thresholds
@@ -441,6 +454,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Scale-down thresholds
     private const double ScaleDownUtilizationThreshold = 0.3; // Buffer utilization below which scale-down is considered
     private const long ScaleDownSustainedMs = 120_000; // 2 minutes of sustained low utilization required
+
+    // Effective scaling timings: the constants above unless overridden via the internal
+    // ProducerOptions test knobs (so tests can drive scale cycles without waiting minutes).
+    // Readonly — set once in the constructor before the send loop starts.
+    private readonly long _scaleCooldownMs;
+    private readonly long _scaleDownSustainedMs;
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
     // when a PendingResponse is added, decremented in ProcessCompletedResponses and
@@ -534,7 +553,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // locality. Idempotent producers additionally need affinity for sequence ordering.
         _connectionCount = options.ConnectionsPerBroker;
         _isIdempotent = options.EnableIdempotence;
-        _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
         // Adaptive scaling: available for all non-transactional producers.
@@ -544,9 +562,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _adaptiveScalingEnabled = options.EnableAdaptiveConnections && options.TransactionalId is null;
         _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
+        _scaleCooldownMs = options.ScaleCooldownMsOverride ?? ScaleCooldownMs;
+        _scaleDownSustainedMs = options.ScaleDownSustainedMsOverride ?? ScaleDownSustainedMs;
 
-        _pendingResponsesByConnection = new List<PendingResponse>[_connectionCount];
-        for (var i = 0; i < _connectionCount; i++)
+        // Per-connection arrays are allocated once at the adaptive-scaling ceiling and never
+        // resized: scale events change only _connectionCount, and slots beyond it sit unused.
+        // Response/timeout scans iterate the full array, so a slot that leaves the routing
+        // width during a scale-down keeps having its in-flight requests polled to completion
+        // instead of being dropped by an array truncation.
+        var connectionCapacity = _adaptiveScalingEnabled
+            ? Math.Max(_connectionCount, _maxConnectionsPerBroker)
+            : _connectionCount;
+        _pinnedConnections = new IKafkaConnection?[connectionCapacity];
+        _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
+        for (var i = 0; i < connectionCapacity; i++)
             _pendingResponsesByConnection[i] = new List<PendingResponse>();
 
         _responseCompletionCallback = () =>
@@ -566,7 +595,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Returns true if the send loop is still running. When false, this BrokerSender
     /// should be replaced — its send loop has exited and it can no longer process batches.
     /// </summary>
-    internal bool IsAlive => !_sendLoopTask.IsCompleted;
+    internal bool IsAlive => !_loopExited && !_sendLoopTask.IsCompleted;
 
     /// <summary>
     /// Requests cancellation of this BrokerSender's send loop without waiting for it to exit.
@@ -675,13 +704,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             : Array.Empty<ProduceRequestScratch>();
 
         // Per-connection scratch and buckets for partition-affined multi-send.
-        // When _connectionCount == 1, single scratch and bucket — no grouping overhead.
-        var scratches = new ProduceRequestScratch[_connectionCount];
+        // Arrays are sized at the adaptive-scaling ceiling (matching the per-connection
+        // field arrays) so scale events never resize them — entries beyond the current
+        // connection count are created lazily on scale-up. When _connectionCount == 1,
+        // only slot 0 is populated — no grouping overhead.
+        var connectionCapacity = _pendingResponsesByConnection.Length;
+        var scratches = new ProduceRequestScratch[connectionCapacity];
         scratches[0] = requestScratch; // Reuse the existing one for index 0
         for (var c = 1; c < _connectionCount; c++)
             scratches[c] = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
 
-        var connectionBuckets = new ConnectionBucket[_connectionCount];
+        var connectionBuckets = new ConnectionBucket[connectionCapacity];
         for (var c = 0; c < _connectionCount; c++)
         {
             connectionBuckets[c].Batches = new ReadyBatch[maxCoalesce];
@@ -703,20 +736,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Pre-allocated array for parallel multi-connection sends. Each entry holds
         // a pending SendConnectionBucketAsync ValueTask so connections can flush concurrently
         // instead of sequentially (overlaps TCP FlushAsync waits across connections).
-        var parallelSends = _connectionCount > 1
-            ? new ValueTask[_connectionCount]
+        var parallelSends = connectionCapacity > 1
+            ? new ValueTask[connectionCapacity]
             : Array.Empty<ValueTask>();
 
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
         // to avoid per-send CTS allocation (same pattern as sendTimeoutCts for single-connection).
-        var bucketTimeoutCts = _connectionCount > 1
-            ? new CancellationTokenSource[_connectionCount]
+        // Entries beyond the current connection count are created lazily on scale-up.
+        var bucketTimeoutCts = connectionCapacity > 1
+            ? new CancellationTokenSource[connectionCapacity]
             : Array.Empty<CancellationTokenSource>();
-        if (_connectionCount > 1)
-        {
-            for (var c = 0; c < _connectionCount; c++)
-                bucketTimeoutCts[c] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        }
+        for (var c = 0; c < _connectionCount && c < bucketTimeoutCts.Length; c++)
+            bucketTimeoutCts[c] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Register shutdown token once — persists for the lifetime of the send loop.
         // Zero per-wait allocation: the signal uses an internal reusable timer for the
@@ -732,6 +763,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             pendingSingleConnectionFireAndForgetSend = default;
             hasPendingSingleConnectionFireAndForgetSend = false;
         }
+
+        // Records an UNEXPECTED loop exit (escaped exception) as opposed to shutdown —
+        // set at the one catch site that knows, rather than derived in the finally from
+        // shared state that a concurrent RequestCancellation mutates in two steps.
+        var crashed = false;
 
         try
         {
@@ -799,35 +835,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     if (scaledToCount > 0)
                     {
-                        var newScratches = new ProduceRequestScratch[scaledToCount];
-                        Array.Copy(scratches, newScratches, Math.Min(scratches.Length, scaledToCount));
-                        for (var i = scratches.Length; i < scaledToCount; i++)
-                            newScratches[i] = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
-                        scratches = newScratches;
-
-                        var newBuckets = new ConnectionBucket[scaledToCount];
-                        Array.Copy(connectionBuckets, newBuckets, Math.Min(connectionBuckets.Length, scaledToCount));
-                        for (var i = connectionBuckets.Length; i < scaledToCount; i++)
+                        // Arrays are pre-sized at the scaling ceiling (scale targets are
+                        // clamped to it) — just fill in any slots that have never been
+                        // used. Entries persist across a scale-down for reuse on the next
+                        // scale-up; the CTS entries are disposed in the send loop's
+                        // finally block (scratches and buckets are plain managed objects).
+                        for (var i = 0; i < scaledToCount; i++)
                         {
-                            newBuckets[i].Batches = new ReadyBatch[maxCoalesce];
-                            newBuckets[i].Generations = new int[maxCoalesce];
+                            scratches[i] ??= new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
+                            if (connectionBuckets[i].Batches is null)
+                            {
+                                connectionBuckets[i].Batches = new ReadyBatch[maxCoalesce];
+                                connectionBuckets[i].Generations = new int[maxCoalesce];
+                            }
+                            bucketTimeoutCts[i] ??= CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                         }
-                        connectionBuckets = newBuckets;
-
-                        var newBucketCts = new CancellationTokenSource[scaledToCount];
-                        if (bucketTimeoutCts.Length > 0)
-                            Array.Copy(bucketTimeoutCts, newBucketCts, Math.Min(bucketTimeoutCts.Length, scaledToCount));
-                        // Dispose trailing CTS entries on scale-down to release linked token registrations
-                        for (var i = scaledToCount; i < bucketTimeoutCts.Length; i++)
-                            bucketTimeoutCts[i].Dispose();
-                        for (var i = bucketTimeoutCts.Length; i < scaledToCount; i++)
-                            newBucketCts[i] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                        bucketTimeoutCts = newBucketCts;
-
-                        // No Array.Copy needed: ValueTask is a struct and entries are overwritten
-                        // before each use. pendingSendCount bounds iteration so stale entries
-                        // beyond the new connection count are never accessed.
-                        parallelSends = new ValueTask[scaledToCount];
                     }
                 }
 
@@ -1300,9 +1322,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
         catch (ChannelClosedException) { }
-        catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
+        catch (Exception ex)
+        {
+            LogSendLoopFailed(ex, _brokerId);
+            crashed = true;
+        }
         finally
         {
+            // Mark this sender dead BEFORE disposing surviving batches: when the loop exited
+            // unexpectedly, batches are handed back through the reroute callback, which goes
+            // via GetOrCreateBrokerSender — IsAlive must already be false there so a fresh
+            // replacement is built instead of re-enqueueing into this completed channel.
+            _loopExited = true;
+
             try { await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false); }
             catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
 
@@ -1310,20 +1342,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var c = 0; c < singleConnectionFireAndForgetTimeoutCts.Length; c++)
                 singleConnectionFireAndForgetTimeoutCts[c].Dispose();
             for (var c = 0; c < bucketTimeoutCts.Length; c++)
-                bucketTimeoutCts[c].Dispose();
+                bucketTimeoutCts[c]?.Dispose();
             _eventChannel.Writer.TryComplete();
 
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
 
-            while (_sendFailedRetries.TryDequeue(out var retry))
-            {
-                if (!retry.Batch.IsCurrentIncarnation(retry.Generation))
-                    continue;
+            // Shutdown (close/disposal) permanently fails surviving batches — the producer
+            // is going away. An UNEXPECTED loop exit (escaped exception) must not drop them:
+            // the producer is still healthy and replaces this sender on the next drain, so
+            // every surviving batch is redelivered through the reroute callback instead.
+            // Idempotent sequencing keeps redelivery of already-written requests safe — the
+            // batch keeps its sequence and the broker dedupes.
+            var redeliver = crashed
+                && Volatile.Read(ref _disposed) == 0
+                && _rerouteBatch is not null;
+            if (redeliver)
+                LogSendLoopExitRedelivery(_brokerId);
 
-                try { FailAndCleanupBatch(retry.Batch, disposedException); }
-                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-            }
-
+            // Disposition order preserves per-partition FIFO for redelivery:
+            // in-flight pending responses hold the oldest batches, then send-failed retries,
+            // then carry-over, then this pass's coalesced batches, then the channel backlog.
             for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
             {
                 var pendingList = _pendingResponsesByConnection[connIdx];
@@ -1333,10 +1371,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     for (var j = 0; j < pr.Count; j++)
                     {
                         if (pr.IsSameIncarnation(j))
-                        {
-                            try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
-                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                        }
+                            RedeliverOrFailOnLoopExit(pr.Batches[j], redeliver, disposedException);
                     }
                     pr.ReturnBatchesArray();
                 }
@@ -1345,15 +1380,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // No TrimExcess — lists are unreachable after disposal
             }
 
-            FailCarryOverBatches(carryOver);
+            while (_sendFailedRetries.TryDequeue(out var retry))
+            {
+                if (retry.Batch.IsCurrentIncarnation(retry.Generation))
+                    RedeliverOrFailOnLoopExit(retry.Batch, redeliver, disposedException);
+            }
+
+            DisposeCarryOverBatchesOnLoopExit(carryOver, redeliver, disposedException);
 
             for (var i = 0; i < coalescedCount; i++)
             {
                 if (coalescedBatches[i].IsCurrentIncarnation(coalescedGenerations[i]))
-                {
-                    try { FailAndCleanupBatch(coalescedBatches[i], disposedException); }
-                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                }
+                    RedeliverOrFailOnLoopExit(coalescedBatches[i], redeliver, disposedException);
             }
             Array.Clear(coalescedBatches, 0, coalescedCount);
             Array.Clear(coalescedGenerations, 0, coalescedCount);
@@ -1366,10 +1404,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var batchRef = evt.GetBatchReference();
                     if (batchRef.IsCurrentIncarnation())
-                    {
-                        try { FailAndCleanupBatch(batchRef.Batch, disposedException); }
-                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                    }
+                        RedeliverOrFailOnLoopExit(batchRef.Batch, redeliver, disposedException);
                 }
             }
 
@@ -2985,13 +3020,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private bool HasInflightForPartition(int connectionIndex, int partitionIndex)
     {
+        if ((uint)connectionIndex >= (uint)_pendingResponsesByConnection.Length)
+            return false;
+
         var pendingList = _pendingResponsesByConnection[connectionIndex];
         for (var i = 0; i < pendingList.Count; i++)
         {
             var pr = pendingList[i];
             for (var j = 0; j < pr.Count; j++)
             {
-                if (pr.Batches[j].TopicPartition.Partition == partitionIndex)
+                // Entries within Count can legally be null: batches with stale generations
+                // are nulled out before PendingResponse.Create captures the array.
+                if (pr.Batches[j] is { } batch && batch.TopicPartition.Partition == partitionIndex)
                     return true;
             }
         }
@@ -3048,10 +3088,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Fences partitions whose connection assignment changes during a scale event.
+    /// Fences partitions whose connection assignment changes during a scale-up.
     /// For idempotent producers, partitions with in-flight batches on their old connection
     /// are added to <see cref="_migratingPartitions"/> so they continue routing to the old
     /// connection until in-flight clears, preventing OutOfOrderSequenceNumber errors.
+    /// Scale-down does not fence: its drain gates guarantee no in-flight batches whose
+    /// routing would change (all connections drained for idempotent producers).
     /// </summary>
     private void FenceAffectedPartitions(int oldConnCount, int newConnCount)
     {
@@ -3164,9 +3206,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
-    private void FailCarryOverBatches(PartitionCarryOver carryOver)
+    private void DisposeCarryOverBatchesOnLoopExit(PartitionCarryOver carryOver, bool redeliver, ObjectDisposedException disposedException)
     {
-        var disposedException = new ObjectDisposedException(nameof(BrokerSender));
         foreach (var kvp in carryOver.Partitions)
         {
             var queue = kvp.Value;
@@ -3174,8 +3215,46 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batchRef = queue[i];
                 if (batchRef.IsCurrentIncarnation())
-                    FailAndCleanupBatch(batchRef.Batch, disposedException);
+                    RedeliverOrFailOnLoopExit(batchRef.Batch, redeliver, disposedException);
             }
+        }
+    }
+
+    /// <summary>
+    /// Disposes a batch that survived the send loop's exit. During shutdown the batch is
+    /// permanently failed. After an unexpected loop crash the batch is handed back to the
+    /// producer via the reroute callback, which routes it to a fresh replacement sender —
+    /// unless its delivery deadline has already passed, in which case it fails with a
+    /// delivery timeout (the bound that prevents endless redelivery cycles).
+    /// Never throws — failures are logged so the finally block's sweep over the remaining
+    /// batches always completes. Internal for testing.
+    /// </summary>
+    internal void RedeliverOrFailOnLoopExit(ReadyBatch batch, bool redeliver, ObjectDisposedException disposedException)
+    {
+        try
+        {
+            if (!redeliver)
+            {
+                FailAndCleanupBatch(batch, disposedException);
+                return;
+            }
+
+            if (Stopwatch.GetTimestamp() >= batch.StopwatchCreatedTicks + _options.DeliveryTimeoutTicks)
+            {
+                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                    TimeoutKind.Delivery, elapsed, configured,
+                    $"Delivery timeout exceeded for {batch.TopicPartition} after send-loop exit"));
+                return;
+            }
+
+            batch.AppendDiag('X'); // Redelivered after send-loop exit
+            _rerouteBatch!(batch);
+        }
+        catch (Exception cleanupEx)
+        {
+            LogBatchCleanupStepFailed(cleanupEx, _brokerId);
         }
     }
 
@@ -3280,6 +3359,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _drainingConnection = null;
         }
 
+        if (_retiringConnection is not null)
+        {
+            try { await _retiringConnection.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            _retiringConnection = null;
+        }
+
         _migratingPartitions.Clear();
 
         var totalPending = _totalPendingResponseCount;
@@ -3380,10 +3466,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     return ApplyScaleDown(removedConnection);
                 }
+                // Nothing was removed (pool group already at or below target) —
+                // the reduced routing width stands on its own.
             }
             else if (task.Exception is not null)
             {
                 LogAdaptiveScaleDownFailed(task.Exception.InnerException ?? task.Exception, _brokerId, _connectionCount);
+
+                // The pool still owns the old connection count — restore the routing
+                // width so the extra connection isn't orphaned. _connectionCount cannot
+                // have changed since initiation: this Phase 1b poll runs before any
+                // other scale event can start.
+                _connectionCount++;
+                _totalMaxInFlight = _connectionCount * _maxInFlight;
             }
 
             return 0;
@@ -3392,7 +3487,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var now = Dekaf.MonotonicClock.GetMilliseconds();
 
         // Cooldown applies to both scale-up and scale-down
-        if (now - _lastScaleTimeTicks < ScaleCooldownMs)
+        if (now - _lastScaleTimeTicks < _scaleCooldownMs)
+            return 0;
+
+        // A previous scale-down is still retiring its removed connection — hold off on any
+        // new scale event until it drains, so slot indices stay unambiguous (a scale-up
+        // would re-activate the retiring slot while its old connection is still pinned).
+        if (_retiringConnection is not null)
             return 0;
 
         var utilization = _accumulator.BufferUtilization;
@@ -3412,6 +3513,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return 0; // At ceiling — cannot scale up, but scale-down remains active
 
             var targetCount = ComputeScaleTarget(scalePressureDelta, _connectionCount, _maxConnectionsPerBroker);
+
+            // Partition affinity (partition % N) means connections beyond the partition
+            // count can never receive traffic — they'd sit idle and immediately arm
+            // scale-down churn. Cap the target at the partitions this broker serves.
+            if (_knownPartitions.Count > 0 && targetCount > _knownPartitions.Count)
+                targetCount = Math.Max(_connectionCount, _knownPartitions.Count);
+
+            if (targetCount <= _connectionCount)
+                return 0; // Cap left nothing to add
 
             // Launch connection creation in the background — send loop continues immediately
             _lastScaleTimeTicks = now;
@@ -3443,7 +3553,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        if (now - _lowUtilizationStartTicks < ScaleDownSustainedMs)
+        if (now - _lowUtilizationStartTicks < _scaleDownSustainedMs)
             return 0; // Not sustained long enough
 
         // Idempotent producers require ALL connections to be drained before shrinking
@@ -3463,8 +3573,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return 0; // Still has in-flight requests on last connection — wait
         }
 
-        // Sustained low utilization with no in-flight on last connection — initiate scale-down
+        // Sustained low utilization with no in-flight on the connection being removed —
+        // initiate scale-down.
         var targetShrinkCount = _connectionCount - 1;
+
+        // Reduce the routing width IMMEDIATELY, before the pool shrink runs in the background.
+        // This closes the race where sends later in this same iteration (or in iterations
+        // while the shrink task runs) pipeline a request onto the connection being removed:
+        // previously those pending responses were silently dropped when the arrays were
+        // truncated at apply time, stranding their batches with never-completing delivery
+        // tasks (#1578). From this instant no new request can target the removed slot, and
+        // its pending list stays in place because per-connection arrays are never resized.
+        _connectionCount = targetShrinkCount;
+        _totalMaxInFlight = targetShrinkCount * _maxInFlight;
+
+        // The drain gates above guarantee no in-flight batches that require routing to the
+        // removed slot, so any leftover migration fences are stale — clear them so no
+        // partition keeps routing outside the reduced width.
+        _migratingPartitions.Clear();
 
         _lastScaleTimeTicks = now;
         _lowUtilizationStartTicks = 0; // Reset for the next scale-down cycle
@@ -3480,6 +3606,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private int ApplyScaleUp(int actualCount)
     {
+        // A shared pool's group can exceed this sender's ceiling (another producer with a
+        // higher MaxConnectionsPerBroker may have grown it) — clamp to our array capacity.
+        actualCount = Math.Min(actualCount, _pendingResponsesByConnection.Length);
+
         var oldCount = _connectionCount;
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
@@ -3489,15 +3619,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _lastPressureSnapshot = _accumulator.BufferPressureEvents;
         _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
 
-        var newPinned = new IKafkaConnection?[actualCount];
-        Array.Copy(_pinnedConnections, newPinned, oldCount);
-        _pinnedConnections = newPinned;
-
-        var newPending = new List<PendingResponse>[actualCount];
-        Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
-        for (var i = oldCount; i < actualCount; i++)
-            newPending[i] = new List<PendingResponse>();
-        _pendingResponsesByConnection = newPending;
+        // Per-connection arrays are pre-sized at the scaling ceiling — nothing to grow.
 
         // Reset low utilization tracking — we just scaled up
         _lowUtilizationStartTicks = 0;
@@ -3514,44 +3636,36 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Applies the scale-down by shrinking send-loop arrays and scheduling the removed
-    /// connection for draining. Returns the new connection count.
+    /// Finalizes a scale-down after the background pool shrink completes. The routing
+    /// width (<see cref="_connectionCount"/>) was already reduced when the shrink was
+    /// initiated, so no request has been able to target the removed slot since then and
+    /// its pending list is expected to be empty. The removed connection is parked as
+    /// retiring; <see cref="MaybeDrainAndDisposeConnection"/> (Phase 0 of every iteration)
+    /// promotes it to draining/disposal once the slot's pending list is confirmed empty —
+    /// immediately on the next iteration in the normal case. Should a request ever be
+    /// found on the removed slot (invariant breach), it is logged and the connection stays
+    /// alive until the response completes: the response/timeout scans iterate the full
+    /// array, so nothing is dropped. Returns the (already reduced) connection count.
     /// </summary>
     private int ApplyScaleDown(IKafkaConnection removedConnection)
     {
-        var oldCount = _connectionCount;
-        var newCount = oldCount - 1;
-
-        _connectionCount = newCount;
-        _totalMaxInFlight = newCount * _maxInFlight;
-
-        // Shrink _pinnedConnections — remove the last slot
-        var newPinned = new IKafkaConnection?[newCount];
-        Array.Copy(_pinnedConnections, newPinned, newCount);
-        _pinnedConnections = newPinned;
-
-        // Shrink _pendingResponsesByConnection — the last list should be empty
-        // (we checked in-flight count before initiating shrink)
-        var newPending = new List<PendingResponse>[newCount];
-        Array.Copy(_pendingResponsesByConnection, newPending, newCount);
-        _pendingResponsesByConnection = newPending;
+        var removedIdx = _connectionCount; // Width was reduced at initiation — removed slot is one past it.
 
         // Reset the sustained-low-utilization timer so the next scale-down cycle
-        // must observe 2 full minutes of low utilization from this point forward.
+        // must observe the full sustained window from this point forward.
         _lowUtilizationStartTicks = 0;
 
-        // Hand off to MaybeDrainAndDisposeConnection on the next send-loop iteration.
-        // Safe to set without checking the previous value: _pendingShrinkTask serializes
-        // scale-down attempts, so ApplyScaleDown is never called while a prior drain is
-        // in progress. The in-flight-count pre-check in the scale-down trigger (Phase 3)
-        // ensures no requests are assigned to the removed connection index, so
-        // MaybeDrainAndDisposeConnection can safely dispose it immediately.
-        _drainingConnection = removedConnection;
+        var pendingOnRemoved = _pendingResponsesByConnection[removedIdx].Count;
+        if (pendingOnRemoved > 0)
+            LogScaleDownSlotNotEmpty(_brokerId, removedIdx, pendingOnRemoved);
 
-        FenceAffectedPartitions(oldCount, newCount);
+        // Safe to set without checking the previous value: a parked retiring connection
+        // blocks all new scale events, so ApplyScaleDown is never called while a prior
+        // retirement is in progress.
+        _retiringConnection = removedConnection;
 
-        LogAdaptiveScaleDown(_brokerId, oldCount, newCount);
-        return newCount;
+        LogAdaptiveScaleDown(_brokerId, removedIdx + 1, _connectionCount);
+        return _connectionCount;
     }
 
     /// <summary>
@@ -3560,6 +3674,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void MaybeDrainAndDisposeConnection()
     {
+        // Promote the retiring connection (removed from the pool by scale-down) to
+        // draining once its slot's pending list is confirmed empty — its slot index is
+        // _connectionCount, frozen while it is parked because a parked connection blocks
+        // all new scale events. Deferred while another connection is draining — retried
+        // next iteration.
+        if (_retiringConnection is not null
+            && _drainingConnection is null
+            && _pendingResponsesByConnection[_connectionCount].Count == 0)
+        {
+            _pinnedConnections[_connectionCount] = null;
+            _drainingConnection = _retiringConnection;
+            _retiringConnection = null;
+        }
+
         if (_drainingConnection is null)
             return;
 
@@ -3567,7 +3695,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _drainingConnection = null;
 
         // Fire-and-forget disposal with exception observation to prevent UnobservedTaskException.
-        // The connection has no in-flight requests (verified before shrink was initiated).
+        // The connection has no in-flight requests (its pending list was empty when it was
+        // promoted to draining).
         _ = connection.DisposeAsync().AsTask().ContinueWith(
             static (t, _) => { /* Observe exception — best-effort disposal */ },
             null,
@@ -3609,6 +3738,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] send loop failed")]
     private partial void LogSendLoopFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] send loop exited unexpectedly — redelivering surviving batches to a replacement sender")]
+    private partial void LogSendLoopExitRedelivery(int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] scale-down found {PendingCount} pending responses on removed slot {SlotIndex} — width-reduction invariant breached; deferring disposal until drained")]
+    private partial void LogScaleDownSlotNotEmpty(int brokerId, int slotIndex, int pendingCount);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
     private partial void LogResponseFailed(Exception ex, int brokerId);

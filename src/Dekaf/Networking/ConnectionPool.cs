@@ -315,15 +315,21 @@ public sealed partial class ConnectionPool : IConnectionPool
             throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
         }
 
-        if (_connectionsPerBroker <= 1)
-        {
-            // Graceful degradation: when only one connection per broker is configured,
-            // fall back to the single-connection path, silently ignoring the requested index.
-            return await GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
-        }
-
+        // Adaptive scaling can grow a connection group beyond the configured
+        // ConnectionsPerBroker (ScaleConnectionGroupAsync creates the group on demand),
+        // so an existing group is authoritative for index routing regardless of the
+        // configured count. Without this, a producer configured with 1 connection that
+        // adaptively scaled up would have every index silently resolve to the same
+        // single connection — serializing all sends on one socket.
         if (!_connectionGroupsById.TryGetValue(brokerId, out var connections))
         {
+            if (_connectionsPerBroker <= 1)
+            {
+                // Graceful degradation: single-connection configuration with no scaled
+                // group yet — fall back to the single-connection path.
+                return await GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+            }
+
             // CreateConnectionGroupAsync populates _connectionGroupsById and returns
             // the first connection. If it throws (timeout, broker unreachable), the
             // exception propagates — no null-dereference risk below.
@@ -1234,7 +1240,9 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         if (_connectionGroupsById.TryRemove(brokerId, out var group))
         {
-            for (var i = 0; i < _connectionsPerBroker; i++)
+            // Iterate the group's actual size: adaptive scaling can grow a group beyond
+            // the configured ConnectionsPerBroker.
+            for (var i = 0; i < group.Length; i++)
             {
                 // Intentionally not disposed: a concurrent ReplaceConnectionInGroupAsync
                 // may be holding or waiting on it. Will be disposed during DisposeAsync.
@@ -1263,9 +1271,10 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             var tasks = new List<ValueTask>();
 
-            // Close single connections (used when _connectionsPerBroker == 1)
-            // Note: Single connections and connection groups are mutually exclusive -
-            // GetConnectionAsync uses one path or the other based on _connectionsPerBroker
+            // Close single connections (the GetConnectionAsync path when
+            // _connectionsPerBroker == 1). A pool configured for one connection can hold
+            // BOTH a single connection and a connection group for the same broker once
+            // adaptive scaling creates a group — both collections are disposed below.
             foreach (var connection in _connectionsByEndpoint.Values)
             {
                 tasks.Add(connection.DisposeAsync());
