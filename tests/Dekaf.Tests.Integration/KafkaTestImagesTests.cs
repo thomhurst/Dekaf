@@ -43,26 +43,12 @@ public sealed class KafkaTestImagesTests
     }
 
     [Test]
-    [NotInParallel("KafkaTestLaneEnvironment")]
-    public async Task Selected_UsesConfiguredLane()
+    public async Task Resolve_CurrentLane_UsesCurrentStableImage()
     {
-        var originalLane = Environment.GetEnvironmentVariable(KafkaTestImages.LaneEnvironmentVariable);
+        var resolved = KafkaTestImages.Resolve(KafkaTestImages.CurrentLane);
 
-        try
-        {
-            Environment.SetEnvironmentVariable(
-                KafkaTestImages.LaneEnvironmentVariable,
-                KafkaTestImages.FloorLane);
-            await Assert.That(KafkaTestImages.Selected.Image).IsEqualTo(KafkaTestImages.FloorImage);
-
-            Environment.SetEnvironmentVariable(
-                KafkaTestImages.LaneEnvironmentVariable,
-                KafkaTestImages.CurrentLane);
-            await Assert.That(KafkaTestImages.Selected.Image).IsEqualTo(KafkaTestImages.CurrentImage);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(KafkaTestImages.LaneEnvironmentVariable, originalLane);
-        }
+        await Assert.That(resolved.Release).IsEqualTo("4.3.1");
+        await Assert.That(resolved.VersionNumber).IsEqualTo(431);
+        await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.CurrentImage);
     }
 }
