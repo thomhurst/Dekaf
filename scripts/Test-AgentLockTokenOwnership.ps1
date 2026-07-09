@@ -37,7 +37,9 @@ function Invoke-AgentLocks {
         [string]$EnvironmentOwnerId = $null,
 
         [AllowNull()]
-        [string]$CodexThreadId = $null
+        [string]$CodexThreadId = $null,
+
+        [string]$ScriptPath = $agentLocks
     )
 
     $previousOwnerId = [Environment]::GetEnvironmentVariable('DEKAF_AGENT_LOCK_OWNER_ID', 'Process')
@@ -49,7 +51,7 @@ function Invoke-AgentLocks {
 
         Push-Location $WorkingDirectory
         try {
-            $output = @(& pwsh -NoProfile -File $agentLocks @Arguments 2>&1)
+            $output = @(& pwsh -NoProfile -File $ScriptPath @Arguments 2>&1)
             $exitCode = $LASTEXITCODE
         }
         finally {
@@ -152,6 +154,12 @@ try {
         '[Console]::Error.WriteLine(''stale worktree AgentLocks.ps1 was invoked'')'
         'exit 99'
     )
+
+    # Prove the worktree-local control would fail every verb if a caller regressed
+    # from the canonical absolute path to a relative script path.
+    $staleControl = Invoke-AgentLocks $prWorktree @('status', '-LockName', $crossVersionLock) `
+        -EnvironmentOwnerId $crossVersionOwner -ScriptPath './scripts/AgentLocks.ps1'
+    Assert-Result $staleControl 99 'stale worktree AgentLocks.ps1 was invoked' 'stale worktree control'
 
     Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 'cross-version acquire'
     Assert-Result (Invoke-AgentLocks $prWorktree @('status', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 0 'HELD-BY-ME' 'cross-version status from stale worktree'
