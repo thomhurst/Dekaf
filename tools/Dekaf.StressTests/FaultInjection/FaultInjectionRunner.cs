@@ -136,6 +136,12 @@ internal static class FaultInjectionRunner
         return acceptedMessages - deliveryErrorCount;
     }
 
+    internal static bool IsFaultWindowDeliveryError(
+        long messageId,
+        long firstFaultMessageId,
+        long firstPostHealMessageId) =>
+        messageId >= firstFaultMessageId && messageId < firstPostHealMessageId;
+
     private static async Task RunWindowAsync(
         FaultInjectionKafkaEnvironment environment,
         FaultWindowDefinition definition,
@@ -231,6 +237,26 @@ internal static class FaultInjectionRunner
                     $"Only {callbackCount:N0} of {producerOutcome.AcceptedMessages:N0} delivery callbacks completed.");
             }
 
+            var faultWindowDeliveryErrorIds = deliveryErrors.Keys
+                .Where(messageId => IsFaultWindowDeliveryError(
+                    messageId,
+                    producerOutcome.FirstFaultMessageId,
+                    producerOutcome.FirstPostHealMessageId))
+                .ToArray();
+            var healthyPhaseDeliveryErrorIds = deliveryErrors.Keys
+                .Where(messageId => !IsFaultWindowDeliveryError(
+                    messageId,
+                    producerOutcome.FirstFaultMessageId,
+                    producerOutcome.FirstPostHealMessageId))
+                .Order()
+                .ToArray();
+            if (healthyPhaseDeliveryErrorIds.Length > 0)
+            {
+                throw new InvalidOperationException(
+                    $"{healthyPhaseDeliveryErrorIds.Length:N0} delivery errors occurred outside the active " +
+                    $"fault window (message IDs: {string.Join(", ", healthyPhaseDeliveryErrorIds.Take(20))}).");
+            }
+
             await environment.WaitForTopicHealthyAsync(topic, windowCts.Token).ConfigureAwait(false);
             var liveConsumerRecoveryFailure = await WaitForLiveConsumerRecoveryAsync(
                 liveConsumerTask,
@@ -250,7 +276,7 @@ internal static class FaultInjectionRunner
 
             var expectedBrokerDeliveryCount = GetExpectedBrokerDeliveryCount(
                 producerOutcome.AcceptedMessages,
-                deliveryErrors.Count);
+                faultWindowDeliveryErrorIds.Length);
             var brokerDrain = new ThroughputTracker();
             var brokerDelivered = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
                 environment.BootstrapServers,
@@ -269,7 +295,7 @@ internal static class FaultInjectionRunner
             var verification = FaultWindowVerifier.Verify(
                 producerOutcome.AcceptedMessages,
                 brokerDelivered,
-                deliveryErrors.Keys,
+                faultWindowDeliveryErrorIds,
                 consumedIds,
                 requireZeroDuplicates: true);
 
@@ -354,6 +380,7 @@ internal static class FaultInjectionRunner
                 await ProduceOneAsync().ConfigureAwait(false);
             }
 
+            var firstFaultMessageId = accepted;
             readyForFault.TrySetResult();
             await faultActive.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -380,7 +407,7 @@ internal static class FaultInjectionRunner
                 .AsTask()
                 .WaitAsync(TimeSpan.FromMinutes(2), CancellationToken.None)
                 .ConfigureAwait(false);
-            return new ProducerOutcome(accepted, firstPostHealMessageId);
+            return new ProducerOutcome(accepted, firstFaultMessageId, firstPostHealMessageId);
         }
         catch (Exception ex)
         {
@@ -639,7 +666,10 @@ internal static class FaultInjectionRunner
         IReadOnlySet<string> allowedFailureWindows) =>
         window.LiveConsumerRecoveryFailed && allowedFailureWindows.Contains(window.Name);
 
-    private sealed record ProducerOutcome(long AcceptedMessages, long FirstPostHealMessageId);
+    private sealed record ProducerOutcome(
+        long AcceptedMessages,
+        long FirstFaultMessageId,
+        long FirstPostHealMessageId);
 
     private sealed class LiveConsumerState
     {

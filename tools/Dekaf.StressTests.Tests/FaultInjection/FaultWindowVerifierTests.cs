@@ -220,6 +220,21 @@ public class FaultWindowVerifierTests
     }
 
     [Test]
+    [Arguments(1, false)]
+    [Arguments(2, true)]
+    [Arguments(4, true)]
+    [Arguments(5, false)]
+    public async Task IsFaultWindowDeliveryError_OnlyMatchesActiveRange(long messageId, bool expected)
+    {
+        var actual = FaultInjectionRunner.IsFaultWindowDeliveryError(
+            messageId,
+            firstFaultMessageId: 2,
+            firstPostHealMessageId: 5);
+
+        await Assert.That(actual).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task Validate_RejectsAllowedFailureOutsideSelectedPlan()
     {
         var options = new FaultInjectionOptions
