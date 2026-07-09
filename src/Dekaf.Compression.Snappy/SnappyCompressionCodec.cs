@@ -104,13 +104,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         if (source.Length < HeaderSize)
             throw new InvalidDataException("Snappy data too short for xerial header.");
 
-        // Verify and skip xerial header (magic + version + compat version)
-        Span<byte> headerBuffer = stackalloc byte[HeaderSize];
-        source.Slice(0, HeaderSize).CopyTo(headerBuffer);
-
-        if (!headerBuffer.Slice(0, XerialMagic.Length).SequenceEqual(XerialMagic))
-            throw new InvalidDataException("Invalid xerial-snappy magic header.");
-
+        // Skip xerial header (magic + version + compat version).
         var position = source.GetPosition(HeaderSize);
         var remaining = source.Length - HeaderSize;
 

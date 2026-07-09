@@ -104,14 +104,16 @@ public class SnappyCompressionCodecTests
     }
 
     [Test]
-    public async Task Decompress_TruncatedHeader_Throws()
+    public async Task Decompress_TruncatedXerialHeader_Throws()
     {
         var codec = new SnappyCompressionCodec();
-        var truncatedData = new byte[] { 0x82, 0x53, 0x4e, 0x41 }; // Only 4 bytes
+        // Complete xerial magic, but no version or minimum-compatible-version fields.
+        var truncatedData = new byte[] { 0x82, 0x53, 0x4e, 0x41, 0x50, 0x50, 0x59, 0x00 };
         var decompressedBuffer = new ArrayBufferWriter<byte>();
 
         await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(truncatedData), decompressedBuffer))
-            .Throws<InvalidDataException>();
+            .Throws<InvalidDataException>()
+            .WithMessage("Snappy data too short for xerial header.");
     }
 
     [Test]
