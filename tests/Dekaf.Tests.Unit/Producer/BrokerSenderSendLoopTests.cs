@@ -1181,6 +1181,23 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [Arguments(5, 100, 5)]
+    [Arguments(20, 100, 20)]
+    [Arguments(250, 100, 100)]
+    [Arguments(20, 7, 7)]
+    public async Task ComputeThrottledResponseWaitMs_BoundsEveryDeadline(
+        int throttleDelayMs,
+        int batchDeadlineMs,
+        int expectedWaitMs)
+    {
+        var waitMs = BrokerSender.ComputeThrottledResponseWaitMs(
+            throttleDelayMs,
+            batchDeadlineMs);
+
+        await Assert.That(waitMs).IsEqualTo(expectedWaitMs);
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_PositiveBrokerThrottle_DelaysNextRequestWithoutDeliveryErrors(
         CancellationToken cancellationToken)

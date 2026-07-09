@@ -93,6 +93,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private const int SendCoalescedTimeoutMs = 1500;
 
+    private const int ResponsePollIntervalMs = 100;
+
     /// <summary>
     /// Micro-linger: when coalesced batch count is at or below this threshold,
     /// briefly spin-wait for more batches before sending. Reduces per-request
@@ -1238,15 +1240,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (carryOver.Count == 0)
                                 continue;
 
+                            var nextDeadlineMs = ComputeNextWakeupMs(carryOver);
+
                             // Keep polling already-sent requests while new sends are throttled.
                             // Their acknowledgements must not wait behind the broker delay.
                             if (Volatile.Read(ref _totalPendingResponseCount) > 0)
                             {
-                                await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                                var responseWaitMs = ComputeThrottledResponseWaitMs(
+                                    throttleDelayMs,
+                                    nextDeadlineMs);
+                                await WaitForAnyResponseAsync(cancellationToken, responseWaitMs)
+                                    .ConfigureAwait(false);
                                 continue;
                             }
 
-                            var nextDeadlineMs = ComputeNextWakeupMs(carryOver);
                             var delayMs = Math.Min(throttleDelayMs, nextDeadlineMs);
                             if (delayMs > 0)
                                 await _delayForThrottle(delayMs, cancellationToken).ConfigureAwait(false);
@@ -2603,21 +2610,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Waits for any pending response to complete using an <see cref="AsyncAutoResetSignal"/>,
-    /// with a 100ms periodic wake-up to re-sweep delivery timeouts for zombie entries.
+    /// with a bounded periodic wake-up to re-sweep delivery timeouts for zombie entries.
     /// Signal may be missed if multiple responses complete between iterations;
-    /// the 100ms fallback ensures we don't wait indefinitely.
+    /// the 100ms default fallback ensures we don't wait indefinitely.
     ///
     /// Zero-allocation in steady state: the signal uses a reusable internal timer for
-    /// the 100ms timeout and a one-time shutdown token registration for cancellation.
+    /// the timeout and a one-time shutdown token registration for cancellation.
     /// </summary>
-    private async ValueTask WaitForAnyResponseAsync(CancellationToken cancellationToken)
+    private async ValueTask WaitForAnyResponseAsync(
+        CancellationToken cancellationToken,
+        int timeoutMs = ResponsePollIntervalMs)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         // WaitAsync returns true if signaled, false on timeout.
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
-        await _anyResponseCompleted.WaitAsync(100).ConfigureAwait(false);
+        await _anyResponseCompleted.WaitAsync(timeoutMs).ConfigureAwait(false);
     }
+
+    internal static int ComputeThrottledResponseWaitMs(int throttleDelayMs, int batchDeadlineMs)
+        => Math.Min(ResponsePollIntervalMs, Math.Min(throttleDelayMs, batchDeadlineMs));
 
     /// <summary>
     /// Sends coalesced batches (one per partition) as a single ProduceRequest.
