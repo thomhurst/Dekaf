@@ -1,0 +1,13 @@
+﻿Request: Dekaf.Protocol.Messages.AddPartitionsToTxnRequest
+API key: AddPartitionsToTxn (24)
+Version: 3
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 74 bytes (70-byte payload)
+
+0000: 00 00 00 46 00 18 00 03  10 20 30 40 00 0E 64 65 |...F..... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 11 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 74 72 61 6E 73  61 63 74 69 6F 6E 00 00 |re-transaction..|
+0030: 00 00 49 96 02 D2 00 07  02 0A 77 69 72 65 2D 6E |..I.......wire-n|
+0040: 61 6D 65 02 00 00 00 02  00 00                   |ame.......|

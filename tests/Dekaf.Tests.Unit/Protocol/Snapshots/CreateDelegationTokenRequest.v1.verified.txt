@@ -1,0 +1,13 @@
+﻿Request: Dekaf.Protocol.Messages.CreateDelegationTokenRequest
+API key: CreateDelegationToken (38)
+Version: 1
+Header version: 1
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 80 bytes (76-byte payload)
+
+0000: 00 00 00 4C 00 26 00 01  10 20 30 40 00 0E 64 65 |...L.&... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 00 00 01 |kaf-snapshot....|
+0020: 00 12 77 69 72 65 2D 70  72 69 6E 63 69 70 61 6C |..wire-principal|
+0030: 74 79 70 65 00 12 77 69  72 65 2D 70 72 69 6E 63 |type..wire-princ|
+0040: 69 70 61 6C 6E 61 6D 65  00 00 00 00 49 96 02 D2 |ipalname....I...|

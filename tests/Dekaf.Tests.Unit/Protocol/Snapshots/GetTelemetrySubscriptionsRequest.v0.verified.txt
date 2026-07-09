@@ -1,0 +1,11 @@
+﻿Request: Dekaf.Protocol.Messages.GetTelemetrySubscriptionsRequest
+API key: GetTelemetrySubscriptions (71)
+Version: 0
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 46 bytes (42-byte payload)
+
+0000: 00 00 00 2A 00 47 00 00  10 20 30 40 00 0E 64 65 |...*.G... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 00 11 22 |kaf-snapshot..."|
+0020: 33 44 55 66 77 88 99 AA  BB CC DD EE FF 00       |3DUfw.........|

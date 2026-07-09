@@ -1,0 +1,11 @@
+﻿Request: Dekaf.Protocol.Messages.DescribeLogDirsRequest
+API key: DescribeLogDirs (35)
+Version: 5
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 48 bytes (44-byte payload)
+
+0000: 00 00 00 2C 00 23 00 05  10 20 30 40 00 0E 64 65 |...,.#... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 02 0B 77 |kaf-snapshot...w|
+0020: 69 72 65 2D 74 6F 70 69  63 02 00 00 00 02 00 00 |ire-topic.......|

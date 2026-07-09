@@ -1,0 +1,12 @@
+﻿Request: Dekaf.Protocol.Messages.InitProducerIdRequest
+API key: InitProducerId (22)
+Version: 3
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 61 bytes (57-byte payload)
+
+0000: 00 00 00 39 00 16 00 03  10 20 30 40 00 0E 64 65 |...9..... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 11 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 74 72 61 6E 73  61 63 74 69 6F 6E 00 00 |re-transaction..|
+0030: 75 30 00 00 00 00 49 96  02 D2 00 07 00          |u0....I......|

@@ -1,0 +1,15 @@
+﻿Request: Dekaf.Protocol.Messages.ShareAcknowledgeRequest
+API key: ShareAcknowledge (79)
+Version: 1
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 103 bytes (99-byte payload)
+
+0000: 00 00 00 63 00 4F 00 01  10 20 30 40 00 0E 64 65 |...c.O... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0B 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  0E 77 69 72 65 2D 6D 65 |re-group.wire-me|
+0030: 6D 62 65 72 69 64 00 00  00 03 02 00 11 22 33 44 |mberid......."3D|
+0040: 55 66 77 88 99 AA BB CC  DD EE FF 02 00 00 00 02 |Ufw.............|
+0050: 02 00 00 00 00 00 00 00  2A 00 00 00 00 00 00 00 |........*.......|
+0060: 2A 02 02 00 00 00 00                             |*......|

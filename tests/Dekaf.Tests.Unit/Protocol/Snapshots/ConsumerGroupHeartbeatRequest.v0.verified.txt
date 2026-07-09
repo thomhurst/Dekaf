@@ -1,0 +1,17 @@
+﻿Request: Dekaf.Protocol.Messages.ConsumerGroupHeartbeatRequest
+API key: ConsumerGroupHeartbeat (68)
+Version: 0
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 141 bytes (137-byte payload)
+
+0000: 00 00 00 89 00 44 00 00  10 20 30 40 00 0E 64 65 |.....D... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0B 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  0E 77 69 72 65 2D 6D 65 |re-group.wire-me|
+0030: 6D 62 65 72 69 64 00 00  00 03 10 77 69 72 65 2D |mberid.....wire-|
+0040: 69 6E 73 74 61 6E 63 65  69 64 07 72 61 63 6B 2D |instanceid.rack-|
+0050: 61 00 00 75 30 02 0B 77  69 72 65 2D 74 6F 70 69 |a..u0..wire-topi|
+0060: 63 14 77 69 72 65 2D 73  65 72 76 65 72 61 73 73 |c.wire-serverass|
+0070: 69 67 6E 6F 72 02 00 11  22 33 44 55 66 77 88 99 |ignor..."3DUfw..|
+0080: AA BB CC DD EE FF 02 00  00 00 02 00 00          |.............|
