@@ -317,8 +317,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             // Cycle through brokers on retries to avoid wasting all attempts on one slow broker.
             var broker = brokers[attempt % brokers.Count];
-            var connection = await _connectionPool.GetConnectionByIndexAsync(broker.NodeId, _getCoordinationConnectionIndex(), cancellationToken)
+            using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                broker.NodeId,
+                _getCoordinationConnectionIndex(),
+                cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             // Use negotiated API version
             var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -485,8 +489,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await RetryHelper.WithRetryAsync(async () =>
             {
-                var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                    _coordinatorId,
+                    _getCoordinationConnectionIndex(),
+                    cancellationToken)
                     .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 // Group offsets by topic using pooled dictionary to avoid allocations
                 // Clear existing Lists before clearing the dictionary to reuse List instances
@@ -587,8 +595,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             return await RetryHelper.WithRetryAsync(async () =>
             {
-                var connection = await _connectionPool.GetConnectionByIndexAsync(_coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                    _coordinatorId,
+                    _getCoordinationConnectionIndex(),
+                    cancellationToken)
                     .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 // Group partitions by topic using pooled dictionary to avoid allocations
                 // Clear existing Lists before clearing the dictionary to reuse List instances
@@ -814,9 +826,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         bool isInitial,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
             _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         var version = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ConsumerGroupHeartbeat,
@@ -1280,9 +1293,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(
+            using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                 _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new ConsumerGroupHeartbeatRequest
             {

@@ -266,11 +266,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
         try
         {
-            var connection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
-            if (connection is null)
+            var leasedConnection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
+            if (leasedConnection is null)
             {
                 return null;
             }
+
+            using var connectionLease = leasedConnection.Value;
+            var connection = connectionLease.Connection;
 
             var response = await connection.SendAsync<GetTelemetrySubscriptionsRequest, GetTelemetrySubscriptionsResponse>(
                 new GetTelemetrySubscriptionsRequest { ClientInstanceId = clientInstanceId },
@@ -342,11 +345,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
         try
         {
-            var connection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
-            if (connection is null)
+            var leasedConnection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
+            if (leasedConnection is null)
             {
                 return ErrorCode.BrokerNotAvailable;
             }
+
+            using var connectionLease = leasedConnection.Value;
+            var connection = connectionLease.Connection;
 
             var metricSnapshot = _metricCollector?.Collect(subscription) ??
                 ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality);
@@ -429,12 +435,12 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         errorCode == ErrorCode.InvalidRequest ||
         errorCode == ErrorCode.InvalidRecord;
 
-    private async ValueTask<IKafkaConnection?> GetTelemetryConnectionAsync(CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease?> GetTelemetryConnectionAsync(CancellationToken cancellationToken)
     {
         var brokerId = SelectBrokerId();
         return brokerId is null
             ? null
-            : await _connectionPool.GetConnectionAsync(brokerId.Value, cancellationToken).ConfigureAwait(false);
+            : await _connectionPool.LeaseConnectionAsync(brokerId.Value, cancellationToken).ConfigureAwait(false);
     }
 
     private int? SelectBrokerId()

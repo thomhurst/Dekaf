@@ -66,6 +66,48 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
+    public async Task StandaloneConsumer_ScaleDown_WaitsForLeasedHolderBeforeDisposal()
+    {
+        var pool = CreatePool();
+        var removedConnection = new TrackedConnection(
+            hasPendingRequest: false,
+            hasLease: true);
+        pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection?>(removedConnection));
+        await using var consumer = CreateStandaloneConsumer(pool, CreateMetadataManager(pool));
+
+        TriggerScaleDown(consumer);
+
+        await Assert.That(removedConnection.DisposeCount).IsEqualTo(0);
+
+        removedConnection.ReleaseLease();
+        await TestWait.UntilAsync(
+            () => removedConnection.DisposeCount == 1,
+            TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task StandaloneConsumer_ScaleDown_WaitsForActiveOperationBeforeDisposal()
+    {
+        var pool = CreatePool();
+        var removedConnection = new TrackedConnection(
+            hasPendingRequest: false,
+            activeOperationCount: 1);
+        pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection?>(removedConnection));
+        await using var consumer = CreateStandaloneConsumer(pool, CreateMetadataManager(pool));
+
+        TriggerScaleDown(consumer);
+
+        await Assert.That(removedConnection.DisposeCount).IsEqualTo(0);
+
+        removedConnection.CompleteOperation();
+        await TestWait.UntilAsync(
+            () => removedConnection.DisposeCount == 1,
+            TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
     public async Task StandaloneConsumer_Dispose_WaitsForLateShrinkAndDisposesReturnedConnection()
     {
         var pool = CreatePool();
@@ -194,13 +236,19 @@ public sealed class ConsumerConnectionOwnershipTests
         scaler.MaybeScale();
     }
 
-    private sealed class TrackedConnection(bool hasPendingRequest) :
+    private sealed class TrackedConnection(
+        bool hasPendingRequest,
+        bool hasLease = false,
+        int activeOperationCount = 0) :
         IKafkaConnection,
-        IIdleTrackedKafkaConnection
+        IIdleTrackedKafkaConnection,
+        IRetirableKafkaConnection
     {
         private readonly TaskCompletionSource _activeRequest = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private int _pendingRequestCount = hasPendingRequest ? 1 : 0;
+        private int _leaseCount = hasLease ? 1 : 0;
+        private int _activeOperationCount = activeOperationCount;
         private int _disposeCount;
 
         public int BrokerId => 1;
@@ -211,6 +259,8 @@ public sealed class ConsumerConnectionOwnershipTests
         public int DisposeCount => Volatile.Read(ref _disposeCount);
         public long LastUsedTimestampMs => 0;
         public int PendingRequestCount => Volatile.Read(ref _pendingRequestCount);
+        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int ActiveOperationCount => Volatile.Read(ref _activeOperationCount);
 
         public void CompleteRequest()
         {
@@ -218,7 +268,25 @@ public sealed class ConsumerConnectionOwnershipTests
             _activeRequest.TrySetResult();
         }
 
+        public void CompleteOperation() => Interlocked.Decrement(ref _activeOperationCount);
+
         public void Touch()
+        {
+        }
+
+        public bool TryAcquireLease()
+        {
+            Interlocked.Increment(ref _leaseCount);
+            return true;
+        }
+
+        public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
+
+        public void BeginRetirement()
+        {
+        }
+
+        public void CompleteRetirement()
         {
         }
 

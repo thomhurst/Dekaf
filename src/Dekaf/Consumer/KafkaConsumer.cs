@@ -1070,9 +1070,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         try
         {
-            // Shrink removed the connection from pool routing. Let requests that already
-            // hold its reference finish before transferring final disposal ownership.
-            while (connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 })
+            // Pool routing is already closed. Existing leases may still start more sends,
+            // so seal retirement only after every lease has been returned.
+            if (connection is IRetirableKafkaConnection retirableConnection)
+            {
+                while (retirableConnection.LeaseCount > 0)
+                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+
+                retirableConnection.CompleteRetirement();
+            }
+
+            // A send may have entered immediately before retirement was sealed.
+            while (HasRetiredConnectionWork(connection))
                 await Task.Delay(10, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -1080,6 +1089,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await connection.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    private static bool HasRetiredConnectionWork(IKafkaConnection connection)
+        => connection is IRetirableKafkaConnection { ActiveOperationCount: > 0 }
+            || connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 };
 
     public StringSet Subscription => _subscriptionSnapshot;
     public string? SubscriptionPattern => _topicPattern;
