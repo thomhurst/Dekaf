@@ -212,8 +212,8 @@ internal static class ConfluentStressTestHelpers
     /// timeout: a flush that cannot drain against a healthy broker means the client is
     /// stuck, and the leftover messages will surface as undelivered loss.
     /// </summary>
-    internal static void FlushWithTimeout(
-        ConfluentKafka.IProducer<string, string> producer,
+    internal static void FlushWithTimeout<TKey, TValue>(
+        ConfluentKafka.IProducer<TKey, TValue> producer,
         ThroughputTracker throughput)
     {
         var remaining = producer.Flush(StressTestHelpers.OperationTimeout);

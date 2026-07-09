@@ -287,14 +287,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 }
             }
 
-            var remaining = producer.Flush(TimeSpan.FromMinutes(2));
-            if (remaining > 0)
-            {
-                throughput.RecordError(
-                    "Confluent.Kafka.FlushTimeout",
-                    $"{remaining:N0} messages remained after flush",
-                    "Round-trip flush");
-            }
+            ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
         }
 
         var endOffsets = ConfluentStressTestHelpers.QueryEndOffsets(
