@@ -1,5 +1,8 @@
+using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Microsoft.Extensions.Logging;
 using TUnit.Logging.Microsoft;
@@ -8,12 +11,15 @@ namespace Dekaf.Tests.Integration;
 
 [ClassDataSource<TransactionFaultKafkaContainer>(Shared = SharedType.PerTestSession)]
 [Category("Transaction")]
+[NotInParallel("TransactionFaultKafkaContainer")]
 public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContainer kafka)
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromMinutes(2);
+
     [Test]
     public async Task Abort_CoordinatorResponseDelayed_RecoversWithoutVisibility()
     {
-        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
         var cancellationToken = testTimeout.Token;
         var topic = await kafka.CreateTestTopicAsync();
 
@@ -39,12 +45,13 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
         await Assert.That(seed).IsNotNull();
         await Assert.That(seed!.Value.Value).IsEqualTo("seed-value");
 
-        using var endTxnObserver = new EndTxnRequestObserver();
+        var endTxnObserver = new EndTxnRequestObserver();
+        using var capturedLogs = new CapturingLoggerProvider(endTxnObserver.Observe);
         using var producerLoggerFactory = LoggerFactory.Create(builder =>
         {
             builder.SetMinimumLevel(LogLevel.Debug);
             builder.AddTUnit(TestContext.Current!);
-            builder.AddProvider(endTxnObserver);
+            builder.AddProvider(capturedLogs);
         });
 
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -56,6 +63,10 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
         await producer.InitTransactionsAsync(cancellationToken);
 
         var transaction = producer.BeginTransaction();
+        using var backgroundCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task<ConsumeResult<string, string>?>? visibilityTask = null;
+        Task? abortTask = null;
+        Exception? testFailure = null;
         try
         {
             _ = await transaction.ProduceAsync(new ProducerMessage<string, string>
@@ -65,12 +76,12 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
                 Value = "aborted-value",
             }, cancellationToken);
 
-            var visibilityTask = consumer
-                .ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken)
+            visibilityTask = consumer
+                .ConsumeOneAsync(TimeSpan.FromSeconds(30), backgroundCancellation.Token)
                 .AsTask();
 
             await kafka.AddCoordinatorLatencyAsync(cancellationToken);
-            var abortTask = transaction.AbortAsync(cancellationToken).AsTask();
+            abortTask = transaction.AbortAsync(backgroundCancellation.Token).AsTask();
 
             var endTxnEndpoint = await endTxnObserver.WaitForEndTxnAsync(cancellationToken);
             await Assert.That(endTxnEndpoint).IsEqualTo(kafka.ProducerBootstrapServers);
@@ -97,14 +108,53 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
             await Assert.That(visible!.Value.Key).IsEqualTo("recovery-key");
             await Assert.That(visible.Value.Value).IsEqualTo("recovery-value");
         }
-        finally
+        catch (Exception ex)
         {
-            await kafka.HealCoordinatorAsync();
-            await transaction.DisposeAsync();
+            testFailure = ex;
+        }
+
+        var cleanup = new CleanupFailureCollector();
+        await cleanup.CaptureTaskAsync("coordinator healing", () => kafka.HealCoordinatorAsync());
+        cleanup.Capture("background task cancellation", backgroundCancellation.Cancel);
+
+        if (abortTask is not null)
+        {
+            await cleanup.CaptureTaskAsync(
+                "abort task observation",
+                () => ObserveBackgroundTaskAsync(abortTask, backgroundCancellation.Token));
+        }
+
+        if (visibilityTask is not null)
+        {
+            await cleanup.CaptureTaskAsync(
+                "visibility task observation",
+                () => ObserveBackgroundTaskAsync(visibilityTask, backgroundCancellation.Token));
+        }
+
+        await cleanup.CaptureValueTaskAsync("transaction disposal", transaction.DisposeAsync);
+
+        if (testFailure is not null)
+        {
+            cleanup.WriteFailuresToConsole();
+            ExceptionDispatchInfo.Capture(testFailure).Throw();
+        }
+
+        cleanup.ThrowIfAny();
+    }
+
+    private static async Task ObserveBackgroundTaskAsync(Task task, CancellationToken cleanupCancellation)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cleanupCancellation.IsCancellationRequested)
+        {
+            // Expected when cleanup cancels an incomplete background operation.
         }
     }
 
-    private sealed class EndTxnRequestObserver : ILoggerProvider
+    private sealed class EndTxnRequestObserver
     {
         private readonly TaskCompletionSource<string> _endTxnSeen =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -112,53 +162,26 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
         private int? _endTxnCorrelationId;
         private string? _endTxnEndpoint;
 
-        public ILogger CreateLogger(string categoryName) => new ObserverLogger(this);
-
         public Task<string> WaitForEndTxnAsync(CancellationToken cancellationToken) =>
             _endTxnSeen.Task.WaitAsync(cancellationToken);
 
-        public void Dispose()
+        public void Observe(CapturedLogEntry entry)
         {
-        }
-
-        private void Observe<TState>(
-            LogLevel logLevel,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter)
-        {
-            if (logLevel != LogLevel.Debug
-                || state is not IEnumerable<KeyValuePair<string, object?>> properties)
+            if (entry.CategoryName != typeof(KafkaConnection).FullName
+                || entry.LogLevel != LogLevel.Debug
+                || !entry.TryGetProperty<int>("CorrelationId", out var correlationId))
             {
                 return;
             }
 
-            int? correlationId = null;
-            string? apiKey = null;
-            string? host = null;
-            int? port = null;
-            foreach (var property in properties)
-            {
-                switch (property.Key)
-                {
-                    case "ApiKey":
-                        apiKey = property.Value?.ToString();
-                        break;
-                    case "CorrelationId" when property.Value is int correlationValue:
-                        correlationId = correlationValue;
-                        break;
-                    case "Host":
-                        host = property.Value as string;
-                        break;
-                    case "Port" when property.Value is int portValue:
-                        port = portValue;
-                        break;
-                }
-            }
-
             lock (_sync)
             {
-                if (apiKey == "EndTxn" && correlationId.HasValue && host is not null && port.HasValue)
+                if (entry.EventId.Id == KafkaConnection.SendingRequestEventId
+                    && entry.TryGetProperty<ApiKey>("ApiKey", out var apiKey)
+                    && apiKey == ApiKey.EndTxn
+                    && entry.TryGetProperty<string>("Host", out var host)
+                    && host is not null
+                    && entry.TryGetProperty<int>("Port", out var port))
                 {
                     _endTxnCorrelationId = correlationId;
                     _endTxnEndpoint = $"{host}:{port}";
@@ -166,27 +189,10 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
                 }
 
                 if (_endTxnCorrelationId == correlationId && _endTxnEndpoint is not null
-                    && formatter(state, exception).StartsWith("Request sent, waiting for response", StringComparison.Ordinal))
+                    && entry.EventId.Id == KafkaConnection.RequestSentWaitingForResponseEventId)
                 {
                     _endTxnSeen.TrySetResult(_endTxnEndpoint);
                 }
-            }
-        }
-
-        private sealed class ObserverLogger(EndTxnRequestObserver observer) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Debug;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                observer.Observe(logLevel, state, exception, formatter);
             }
         }
     }

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.Sockets;
 using Dekaf.Admin;
 using DotNet.Testcontainers.Configurations;
+using DotNet.Testcontainers.Containers;
 using Testcontainers.Kafka;
 using TUnit.Core.Interfaces;
 
@@ -46,7 +47,6 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
             .Build();
     }
 
-    private string _bootstrapServers = string.Empty;
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
 
     public abstract string ContainerName { get; }
@@ -55,7 +55,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// The Kafka bootstrap servers connection string.
     /// </summary>
-    public string BootstrapServers => _bootstrapServers;
+    public string BootstrapServers { get; protected set; } = string.Empty;
 
     /// <summary>
     /// Hook to customize the <see cref="KafkaBuilder"/> before the container is built.
@@ -82,7 +82,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
             .Build();
     }
 
-    public async Task InitializeAsync()
+    public virtual async Task InitializeAsync()
     {
         Console.WriteLine("[KafkaTestContainer] Starting Kafka container via Testcontainers...");
 
@@ -97,9 +97,9 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
         var rawAddress = _container!.GetBootstrapAddress();
         // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
-        _bootstrapServers = ExtractHostPort(rawAddress);
+        BootstrapServers = ExtractHostPort(rawAddress);
 
-        Console.WriteLine($"[KafkaTestContainer] Kafka started at {_bootstrapServers}");
+        Console.WriteLine($"[KafkaTestContainer] Kafka started at {BootstrapServers}");
 
         await WaitForKafkaAsync().ConfigureAwait(false);
         await OnAfterInitializeAsync().ConfigureAwait(false);
@@ -122,9 +122,9 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         const int maxAttempts = 30;
 
         // Parse host and port from host:port format
-        var colonIndex = _bootstrapServers.LastIndexOf(':');
-        var host = _bootstrapServers[..colonIndex];
-        var port = int.Parse(_bootstrapServers[(colonIndex + 1)..]);
+        var colonIndex = BootstrapServers.LastIndexOf(':');
+        var host = BootstrapServers[..colonIndex];
+        var port = int.Parse(BootstrapServers[(colonIndex + 1)..]);
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -304,16 +304,18 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         return builder.Build();
     }
 
-    private async Task<string> TryGetBrokerLogTailAsync()
+    protected virtual async Task<string> TryGetBrokerLogTailAsync()
     {
-        if (_container is null)
-        {
-            return string.Empty;
-        }
+        return _container is null
+            ? string.Empty
+            : await TryGetContainerLogTailAsync(_container).ConfigureAwait(false);
+    }
 
+    protected static async Task<string> TryGetContainerLogTailAsync(IContainer container)
+    {
         try
         {
-            var (stdout, stderr) = await _container.GetLogsAsync().ConfigureAwait(false);
+            var (stdout, stderr) = await container.GetLogsAsync().ConfigureAwait(false);
             return $"\nBroker stdout tail:\n{Tail(stdout, 4000)}\nBroker stderr tail:\n{Tail(stderr, 2000)}";
         }
         catch

@@ -6,7 +6,6 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Testcontainers.Toxiproxy;
-using TUnit.Core.Interfaces;
 
 namespace Dekaf.Tests.Integration;
 
@@ -15,7 +14,7 @@ namespace Dekaf.Tests.Integration;
 /// Producer and consumer traffic use separate proxy listeners so coordinator faults do not
 /// disrupt the read-committed verification lane or any shared integration-test container.
 /// </summary>
-public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDisposable
+public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
 {
     private const string KafkaNetworkAlias = "transaction-fault-kafka";
     private const string ProducerProxyName = "transaction-producer";
@@ -28,6 +27,10 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
     private const ushort KafkaConsumerPort = 19_093;
     private const ushort KafkaBrokerPort = 19_094;
     private const ushort KafkaControllerPort = 19_095;
+
+    public override string ContainerName => "apache/kafka:4.0.1";
+
+    public override int Version => 401;
 
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly ToxiproxyContainer _toxiproxy;
@@ -49,7 +52,7 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
 
     public string ConsumerBootstrapServers { get; private set; } = string.Empty;
 
-    public async Task InitializeAsync()
+    public override async Task InitializeAsync()
     {
         await _network.CreateAsync().ConfigureAwait(false);
         await _toxiproxy.StartAsync().ConfigureAwait(false);
@@ -59,6 +62,7 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
         var consumerPublicPort = _toxiproxy.GetMappedPublicPort(ConsumerProxyPort);
         ProducerBootstrapServers = $"{toxiproxyHost}:{producerPublicPort}";
         ConsumerBootstrapServers = $"{toxiproxyHost}:{consumerPublicPort}";
+        BootstrapServers = ProducerBootstrapServers;
 
         _toxiproxyClient.BaseAddress = new Uri(
             $"http://{toxiproxyHost}:{_toxiproxy.GetMappedPublicPort(ToxiproxyBuilder.ToxiproxyControlPort)}/");
@@ -74,23 +78,7 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
 
         _kafka = CreateKafkaContainer(toxiproxyHost, producerPublicPort, consumerPublicPort);
         await _kafka.StartAsync().ConfigureAwait(false);
-        await WaitForKafkaAsync().ConfigureAwait(false);
-    }
-
-    public async Task<string> CreateTestTopicAsync()
-    {
-        var topic = $"transaction-fault-{Guid.NewGuid():N}";
-        await using var admin = CreateAdminClient();
-        await admin.CreateTopicsAsync(
-        [
-            new NewTopic
-            {
-                Name = topic,
-                NumPartitions = 1,
-                ReplicationFactor = 1,
-            },
-        ]).ConfigureAwait(false);
-        return topic;
+        await WaitForAdminReadyAsync("transaction fault proxy").ConfigureAwait(false);
     }
 
     public async Task AddCoordinatorLatencyAsync(CancellationToken cancellationToken)
@@ -124,27 +112,25 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
         _faultActive = false;
     }
 
-    public async ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
-        try
-        {
-            await HealCoordinatorAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[TransactionFaultKafkaContainer] Fault cleanup failed: {ex.Message}");
-        }
-
-        _toxiproxyClient.Dispose();
+        var cleanup = new CleanupFailureCollector();
+        await cleanup.CaptureTaskAsync("coordinator fault cleanup", () => HealCoordinatorAsync())
+            .ConfigureAwait(false);
+        cleanup.Capture("Toxiproxy HTTP client disposal", _toxiproxyClient.Dispose);
 
         if (_kafka is not null)
         {
-            await _kafka.DisposeAsync().ConfigureAwait(false);
+            await cleanup.CaptureValueTaskAsync("Kafka container disposal", _kafka.DisposeAsync)
+                .ConfigureAwait(false);
         }
 
-        await _toxiproxy.DisposeAsync().ConfigureAwait(false);
-        await _network.DisposeAsync().ConfigureAwait(false);
-        GC.SuppressFinalize(this);
+        await cleanup.CaptureValueTaskAsync("Toxiproxy container disposal", _toxiproxy.DisposeAsync)
+            .ConfigureAwait(false);
+        await cleanup.CaptureValueTaskAsync("transaction network disposal", _network.DisposeAsync)
+            .ConfigureAwait(false);
+        await base.DisposeAsync().ConfigureAwait(false);
+        cleanup.ThrowIfAny();
     }
 
     private IContainer CreateKafkaContainer(
@@ -186,10 +172,17 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
             .Build();
     }
 
-    private IAdminClient CreateAdminClient() => Kafka.CreateAdminClient()
+    public override IAdminClient CreateAdminClient() => Kafka.CreateAdminClient()
         .WithBootstrapServers(ProducerBootstrapServers)
         .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
         .Build();
+
+    protected override async Task<string> TryGetBrokerLogTailAsync()
+    {
+        return _kafka is null
+            ? string.Empty
+            : await TryGetContainerLogTailAsync(_kafka).ConfigureAwait(false);
+    }
 
     private async Task AddProxyAsync(string name, ushort listenPort, ushort upstreamPort)
     {
@@ -205,27 +198,6 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
         response.EnsureSuccessStatusCode();
     }
 
-    private async Task WaitForKafkaAsync()
-    {
-        Exception? lastError = null;
-        await using var admin = CreateAdminClient();
-        for (var attempt = 0; attempt < 30; attempt++)
-        {
-            try
-            {
-                _ = await admin.ListTopicsAsync().ConfigureAwait(false);
-                return;
-            }
-            catch (Exception ex)
-            {
-                lastError = ex;
-            }
-
-            await Task.Delay(250).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException("Kafka did not become ready through Toxiproxy.", lastError);
-    }
 }
 
 internal sealed record ToxiproxyProxyConfiguration(

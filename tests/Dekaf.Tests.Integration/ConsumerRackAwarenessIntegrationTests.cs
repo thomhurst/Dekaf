@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Microsoft.Extensions.Logging;
@@ -75,8 +74,8 @@ public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContaine
     {
         for (var attempt = 0; attempt < 50; attempt++)
         {
-            if (logs.Messages.Any(message =>
-                message.Contains($"Fetching {topic}-0 from preferred read replica 2 instead of leader 1",
+            if (logs.Entries.Any(entry =>
+                entry.Message.Contains($"Fetching {topic}-0 from preferred read replica 2 instead of leader 1",
                     StringComparison.Ordinal)))
             {
                 return;
@@ -86,40 +85,5 @@ public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContaine
         }
 
         throw new InvalidOperationException("Consumer did not fetch from preferred read replica 2.");
-    }
-
-    private sealed class CapturingLoggerProvider : ILoggerProvider
-    {
-        private readonly ConcurrentQueue<string> _messages = new();
-
-        public IReadOnlyCollection<string> Messages => _messages;
-
-        public ILogger CreateLogger(string categoryName) => new CapturingLogger(_messages);
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class CapturingLogger(ConcurrentQueue<string> messages) : ILogger
-    {
-        public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull
-            => null;
-
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Debug;
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter)
-        {
-            if (!IsEnabled(logLevel))
-                return;
-
-            messages.Enqueue(formatter(state, exception));
-        }
     }
 }
