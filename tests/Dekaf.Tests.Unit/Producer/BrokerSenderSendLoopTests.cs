@@ -777,11 +777,51 @@ public sealed class BrokerSenderSendLoopTests
             .Returns(new ValueTask<IKafkaConnection>(failedConnection));
         pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
             .Returns(new ValueTask<IKafkaConnection>(siblingConnection));
+        var metadataConnection = Substitute.For<IKafkaConnection>();
+        var metadataRefreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
+        metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        metadataConnection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                metadataRefreshStarted.TrySetResult();
+                return new ValueTask<MetadataResponse>(CreateLeaderMetadataResponse(
+                    topic, leaderId: 2, leaderEpoch: 2));
+            });
 
-        var options = CreateOptions(maxInFlight: 2, connectionsPerBroker: 2);
+        var options = CreateOptions(
+            maxInFlight: 2,
+            retryBackoffMs: 10_000,
+            retryBackoffMaxMs: 10_000,
+            connectionsPerBroker: 2);
         var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(topic, leaderId: 1, leaderEpoch: 1));
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            metadataManager);
 
         try
         {
@@ -790,8 +830,10 @@ public sealed class BrokerSenderSendLoopTests
             sender.EnqueueBulk([failedBatch, siblingBatch]);
 
             await siblingWriteStarted.Task.WaitAsync(cancellationToken);
+            await metadataRefreshStarted.Task.WaitAsync(cancellationToken);
 
             await Assert.That(accumulator.IsMuted(failedBatch.TopicPartition)).IsTrue();
+            await Assert.That(failedBatch.RetryNotBefore).IsGreaterThan(0);
         }
         finally
         {
