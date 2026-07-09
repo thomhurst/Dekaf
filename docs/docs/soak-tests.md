@@ -15,6 +15,7 @@ The segments intentionally restart the process. A single continuous 24-hour proc
 Strict message checks remain active for the entire run:
 
 - producer errors or consumer errors fail the run;
+- client-accepted throughput must reach at least 95% of the requested pacing rate;
 - broker end-offset growth must equal client-accepted messages;
 - the consumer must catch up to every broker-delivered message after the producer drains.
 

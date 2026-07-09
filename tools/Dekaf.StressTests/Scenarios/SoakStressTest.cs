@@ -13,6 +13,7 @@ internal sealed class SoakStressTest : IStressTestScenario
     private static readonly TimeSpan FlushTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan ConsumerCatchUpTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan ProducerPacingInterval = TimeSpan.FromMilliseconds(100);
+    private const double MinimumPacingRateRatio = 0.95;
 
     public string Name => "soak";
     public string Client => "Dekaf";
@@ -116,6 +117,17 @@ internal sealed class SoakStressTest : IStressTestScenario
             throughput.Stop();
             gcStats.Capture();
 
+            var acceptedMessages = throughput.MessageCount;
+            var acceptedRate = throughput.GetAverageMessagesPerSecond();
+            if (!MeetsMinimumPacingRate(acceptedRate, options.SoakMessagesPerSecond))
+            {
+                var minimumRate = options.SoakMessagesPerSecond * MinimumPacingRateRatio;
+                throughput.RecordError(
+                    "SoakTargetRateMiss",
+                    $"Accepted rate {acceptedRate:N0} msg/s was below the required {minimumRate:N0} msg/s.",
+                    "Producer pacing");
+            }
+
             await samplerTask.ConfigureAwait(false);
             await monitorTask.ConfigureAwait(false);
 
@@ -129,8 +141,18 @@ internal sealed class SoakStressTest : IStressTestScenario
                 options.Topic,
                 options.Partitions,
                 startOffset,
-                throughput.MessageCount).ConfigureAwait(false);
+                acceptedMessages,
+                throughput,
+                "Post-run drain").ConfigureAwait(false);
             var deliveredMessages = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
+
+            if (!IsBrokerDeliveryExact(acceptedMessages, deliveredMessages))
+            {
+                throughput.RecordError(
+                    "BrokerDeliveryCountMismatch",
+                    $"Mixed soak accepted {acceptedMessages:N0} messages but broker end offsets advanced by {deliveredMessages:N0}.",
+                    "Broker delivery verification");
+            }
 
             await WaitForConsumerCatchUpAsync(
                 () => Interlocked.Read(ref consumedMessages),
@@ -165,7 +187,7 @@ internal sealed class SoakStressTest : IStressTestScenario
                 Throughput = throughput.GetSnapshot(),
                 DeliveredMessages = deliveredMessages,
                 ConsumedMessages = finalConsumedMessages,
-                FailOnDeliveredShortfall = true,
+                Idempotent = true,
                 Latency = null,
                 GcStats = gcStats.ToSnapshot(),
                 CpuTimeSeconds = throughput.CpuTimeSeconds,
@@ -185,6 +207,12 @@ internal sealed class SoakStressTest : IStressTestScenario
             }
         }
     }
+
+    internal static bool IsBrokerDeliveryExact(long acceptedMessages, long deliveredMessages) =>
+        acceptedMessages == deliveredMessages;
+
+    internal static bool MeetsMinimumPacingRate(double acceptedRate, int targetMessagesPerSecond) =>
+        acceptedRate >= targetMessagesPerSecond * MinimumPacingRateRatio;
 
     private static async Task ConsumeAsync(
         IKafkaConsumer<string, string> consumer,
