@@ -51,6 +51,7 @@ public sealed class TransactionFaultKafkaContainer : IAsyncInitializer, IAsyncDi
 
     public async Task InitializeAsync()
     {
+        await _network.CreateAsync().ConfigureAwait(false);
         await _toxiproxy.StartAsync().ConfigureAwait(false);
 
         var toxiproxyHost = _toxiproxy.Hostname;
