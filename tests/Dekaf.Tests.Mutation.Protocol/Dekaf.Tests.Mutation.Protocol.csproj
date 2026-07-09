@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <!-- Keep access to Dekaf internals while compiling the linked unit-test sources. -->
+    <AssemblyName>Dekaf.Tests.Unit</AssemblyName>
+    <RootNamespace>Dekaf.Tests.Unit</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MTP cannot yet select covering tests per mutant, so keep this campaign protocol-only. -->
+    <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\ArrayEncodingTests.cs" Link="Protocol\ArrayEncodingTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\KafkaProtocolReaderTests.cs" Link="Protocol\KafkaProtocolReaderTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\KafkaProtocolWriterTests.cs" Link="Protocol\KafkaProtocolWriterTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\PrimitiveEncodingTests.cs" Link="Protocol\PrimitiveEncodingTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\SequenceTestHelpers.cs" Link="Protocol\SequenceTestHelpers.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\StringBytesEncodingTests.cs" Link="Protocol\StringBytesEncodingTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\TaggedFieldsTests.cs" Link="Protocol\TaggedFieldsTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Protocol\VarIntEncodingTests.cs" Link="Protocol\VarIntEncodingTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="TUnit" Version="1.58.0" />
+  </ItemGroup>
+
+</Project>

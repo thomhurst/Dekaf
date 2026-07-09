@@ -2,11 +2,12 @@
   "stryker-config": {
     "project": "Dekaf.csproj",
     "test-projects": [
-      "../../tests/Dekaf.Tests.Mutation.Protocol/Dekaf.Tests.Mutation.Protocol.csproj"
+      "../../tests/Dekaf.Tests.Mutation.Producer/Dekaf.Tests.Mutation.Producer.csproj"
     ],
     "mutate": [
-      "Protocol/KafkaProtocolReader.cs",
-      "Protocol/KafkaProtocolWriter.cs"
+      "Producer/RecordAccumulator.cs",
+      "Producer/BrokerSender.cs",
+      "Producer/KafkaProducer.cs"
     ],
     "test-runner": "mtp",
     "target-framework": "net10.0",

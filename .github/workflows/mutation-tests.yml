@@ -24,8 +24,17 @@ env:
 
 jobs:
   mutation-test:
+    name: Mutation test (${{ matrix.campaign }})
     runs-on: ubicloud-standard-8
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - campaign: protocol
+            config: stryker-config.json
+          - campaign: producer
+            config: stryker-producer-config.json
 
     steps:
       - name: Checkout
@@ -60,7 +69,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          name: mutation-results
+          name: mutation-results-${{ matrix.campaign }}
           path: artifacts/previous
           github-token: ${{ github.token }}
           run-id: ${{ steps.previous-run.outputs.run_id }}
@@ -69,14 +78,14 @@ jobs:
         working-directory: src/Dekaf
         run: >-
           dotnet stryker
-          --config-file stryker-config.json
-          --output "${{ github.workspace }}/artifacts/mutation"
+          --config-file "${{ matrix.config }}"
+          --output "${{ github.workspace }}/artifacts/mutation/${{ matrix.campaign }}"
 
       - name: Report trend and enforce large-drop gate
         env:
           MAX_SCORE_DROP: ${{ github.event.inputs.max_score_drop || '5' }}
         run: |
-          current_report=$(find artifacts/mutation -type f -name mutation-report.json | sort | tail -n 1)
+          current_report=$(find "artifacts/mutation/${{ matrix.campaign }}" -type f -name mutation-report.json | sort | tail -n 1)
           if [ -z "$current_report" ]; then
             echo "::error::Stryker JSON report was not generated"
             exit 1
@@ -101,7 +110,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: mutation-results
+          name: mutation-results-${{ matrix.campaign }}
           path: |
             artifacts/mutation/
             artifacts/mutation-summary.md
