@@ -65,19 +65,35 @@ def _matching_observations(runs, result):
 
 
 def _limit_observations_per_identity(runs):
-    """Keep the newest observations for every stress configuration."""
-    retained_counts = {}
+    """Keep recent observations and clean metric baselines per configuration."""
+    seen_counts = {}
+    retained_baseline_counts = {}
     retained_runs = []
 
     for run in reversed(runs):
         retained_results = []
         for observation in reversed(run.get("results", [])):
             key = _identity(observation)
-            retained_count = retained_counts.get(key, 0)
-            if retained_count >= HISTORY_LIMIT:
+            seen_count = seen_counts.get(key, 0)
+            seen_counts[key] = seen_count + 1
+
+            baseline_keys = []
+            for metric in _METRICS:
+                baseline_key = (key, metric)
+                if (
+                    _finite_number(observation.get(metric))
+                    and observation.get(f"{metric}Trend") != "regression"
+                    and retained_baseline_counts.get(baseline_key, 0) < HISTORY_LIMIT
+                ):
+                    baseline_keys.append(baseline_key)
+
+            if seen_count >= HISTORY_LIMIT and not baseline_keys:
                 continue
 
-            retained_counts[key] = retained_count + 1
+            for baseline_key in baseline_keys:
+                retained_baseline_counts[baseline_key] = (
+                    retained_baseline_counts.get(baseline_key, 0) + 1
+                )
             retained_results.append(observation)
 
         if retained_results:

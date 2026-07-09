@@ -107,6 +107,40 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(throughput["repeatedRegression"])
         self.assertTrue(should_fail)
 
+    def test_regression_streak_does_not_evict_clean_baseline(self):
+        runs = [
+            history_run(1, messages_per_second=950.0),
+            history_run(2, messages_per_second=1000.0),
+            history_run(3, messages_per_second=1050.0),
+        ]
+        runs.extend(
+            history_run(
+                index,
+                messages_per_second=890.0,
+                messagesPerSecondTrend="regression",
+            )
+            for index in range(4, 12)
+        )
+
+        _, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=890.0)],
+            "2026-07-01T02:00:00Z",
+        )
+        evaluations, _, should_fail = evaluate_and_update(
+            updated,
+            [result(messages_per_second=890.0)],
+            "2026-07-08T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(3, throughput["baselineCount"])
+        self.assertEqual("regression", throughput["status"])
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertTrue(should_fail)
+
     def test_improvement_is_flagged_but_never_fails(self):
         history = {"version": 1, "runs": [history_run(i) for i in range(1, 4)]}
 
