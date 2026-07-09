@@ -1,0 +1,44 @@
+﻿[
+  {
+    Response: ApiVersionsResponse-v3,
+    Bytes: 000002001200030003000000000700,
+    Decoded: {
+      ApiKeys: [
+        {
+          ApiKey: ApiVersions,
+          MinVersion: 3,
+          MaxVersion: 3
+        }
+      ],
+      ThrottleTimeMs: 7,
+      FinalizedFeaturesEpoch: -1,
+      ZkMigrationReady: false
+    }
+  },
+  {
+    Response: ProduceResponse-v11,
+    Bytes: 020D676F6C64656E2D746F70696301000000000900,
+    Decoded: {
+      Responses: [
+        {
+          Name: golden-topic
+        }
+      ],
+      TopicCount: 1,
+      ThrottleTimeMs: 9
+    }
+  },
+  {
+    Response: FetchResponse-v12,
+    Bytes: 00000005000000000009020D676F6C64656E2D746F706963010000,
+    Decoded: {
+      ThrottleTimeMs: 5,
+      SessionId: 9,
+      Responses: [
+        {
+          Topic: golden-topic
+        }
+      ]
+    }
+  }
+]
