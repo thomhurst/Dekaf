@@ -711,6 +711,81 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(topicSnapshots[1][0].PartitionCount).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task FetchOffsetsAsync_Kip848Member_SendsMemberIdentity()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        SetupSuccessfulConsumerProtocolJoin(memberId: "member-42", memberEpoch: 7);
+
+        OffsetFetchRequest? capturedRequest = null;
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedRequest = callInfo.Arg<OffsetFetchRequest>();
+                return ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "test-group",
+                            Topics = [],
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 0)], CancellationToken.None);
+
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.Groups).IsNotNull();
+        await Assert.That(capturedRequest.Groups!).Count().IsEqualTo(1);
+        await Assert.That(capturedRequest.Groups![0].MemberId).IsEqualTo("member-42");
+        await Assert.That(capturedRequest.Groups[0].MemberEpoch).IsEqualTo(7);
+    }
+
+    [Test]
+    public async Task FetchOffsetsAsync_GroupError_ThrowsInsteadOfResettingPosition()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        SetupSuccessfulConsumerProtocolJoin();
+
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = "test-group",
+                        Topics = [],
+                        ErrorCode = ErrorCode.StaleMemberEpoch
+                    }
+                ]
+            }));
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        var exception = await Assert.That(async () =>
+                await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 0)], CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
+    }
+
     #endregion
 
     #region Error Handling Tests

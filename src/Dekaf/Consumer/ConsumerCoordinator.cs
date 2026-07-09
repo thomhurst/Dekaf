@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -27,6 +28,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
+    // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
+    // Preserve both the immediate stale-fetch signal and the revocation history needed
+    // to defeat assignment ABA (A -> B -> A with the same final set).
+    private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
+    private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     private IRebalanceListener? _runtimeRebalanceListener;
     private readonly ILogger _logger;
 
@@ -71,12 +77,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         ILogger<ConsumerCoordinator>? logger = null,
-        Func<int>? getConnectionCount = null)
+        Func<int>? getConnectionCount = null,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked = null)
     {
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
         _rebalanceListener = options.RebalanceListener;
+        _onPartitionsRevoked = onPartitionsRevoked;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -89,6 +97,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
+
+    internal HashSet<TopicPartition>? DrainRevokedPartitionsSinceLastSync()
+    {
+        HashSet<TopicPartition>? revoked = null;
+        while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+        {
+            (revoked ??= []).Add(partition);
+        }
+
+        return revoked;
+    }
+
+    private void TrackRevokedPartitions(IReadOnlyList<TopicPartition> revoked)
+    {
+        foreach (var partition in revoked)
+            _revokedPartitionsSinceLastSync.Enqueue(partition);
+
+        _onPartitionsRevoked?.Invoke(revoked);
+    }
 
     internal IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {
@@ -582,7 +609,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 var request = new OffsetFetchRequest
                 {
                     GroupId = _options.GroupId!,
-                    Topics = topicPartitions
+                    Topics = topicPartitions,
+                    Groups =
+                    [
+                        new OffsetFetchRequestGroup
+                        {
+                            GroupId = _options.GroupId!,
+                            MemberId = _memberId,
+                            MemberEpoch = _generationId,
+                            Topics = topicPartitions
+                        }
+                    ]
                 };
 
                 // Use negotiated API version
@@ -617,15 +654,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         {
                             if (partition.ErrorCode != ErrorCode.None)
                             {
-                                if (partition.ErrorCode.IsRetriable())
+                                throw new GroupException(partition.ErrorCode,
+                                    $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
                                 {
-                                    throw new GroupException(partition.ErrorCode,
-                                        $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
-                                    {
-                                        GroupId = _options.GroupId
-                                    };
-                                }
-                                continue;
+                                    GroupId = _options.GroupId
+                                };
                             }
 
                             if (partition.CommittedOffset >= 0)
@@ -648,15 +681,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         if (group.ErrorCode != ErrorCode.None)
                         {
-                            if (group.ErrorCode.IsRetriable())
+                            throw new GroupException(group.ErrorCode,
+                                $"OffsetFetch failed for group: {group.ErrorCode}")
                             {
-                                throw new GroupException(group.ErrorCode,
-                                    $"OffsetFetch failed for group: {group.ErrorCode}")
-                                {
-                                    GroupId = _options.GroupId
-                                };
-                            }
-                            continue;
+                                GroupId = _options.GroupId
+                            };
                         }
 
                         foreach (var topic in group.Topics)
@@ -665,15 +694,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             {
                                 if (partition.ErrorCode != ErrorCode.None)
                                 {
-                                    if (partition.ErrorCode.IsRetriable())
+                                    throw new GroupException(partition.ErrorCode,
+                                        $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
                                     {
-                                        throw new GroupException(partition.ErrorCode,
-                                            $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
-                                        {
-                                            GroupId = _options.GroupId
-                                        };
-                                    }
-                                    continue;
+                                        GroupId = _options.GroupId
+                                    };
                                 }
 
                                 if (partition.CommittedOffset >= 0)
@@ -711,6 +736,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void ResetMemberState()
     {
         var hadAssignment = _assignedPartitions.Count != 0;
+        if (hadAssignment)
+        {
+            var revoked = _assignedPartitions.ToList();
+            TrackRevokedPartitions(revoked);
+        }
+
         _memberId = null;
         _generationId = -1;
         _assignedPartitions = [];
@@ -986,6 +1017,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
+            if (revoked is not null)
+                TrackRevokedPartitions(revoked);
+
             _assignedPartitions = newAssignment;
             Interlocked.Increment(ref _assignmentVersion);
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);

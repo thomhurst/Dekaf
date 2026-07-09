@@ -1028,7 +1028,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 loggerFactory?.CreateLogger<ConsumerCoordinator>(),
                 getConnectionCount: _connectionScaler is not null
                     ? () => _connectionScaler.CurrentConnectionCount
-                    : null);
+                    : null,
+                onPartitionsRevoked: QueueCoordinatorRevokedPartitionsForFetchClear);
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
@@ -1959,6 +1960,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+                    if (HasPendingCoordinatorRevocations())
+                    {
+                        // Only the user consume loop owns _pendingFetches. Let it discard
+                        // revoked data before prefetch can advance a reassigned position.
+                        await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
                     if (PrefetchLoopControl.ShouldResetConsecutiveErrors(drained))
                         consecutiveErrors = 0;
@@ -3506,23 +3515,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void CancelCoordinatorRevokedPartitionsFetchClear(IReadOnlyList<TopicPartition> partitions)
-    {
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            foreach (var partition in partitions)
-            {
-                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
-            }
-
-            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
-        }
-    }
-
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
-        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
+        if (!HasPendingCoordinatorRevocations())
             return false;
 
         HashSet<TopicPartition>? partitionsToRemove;
@@ -3550,6 +3545,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBufferForPartitions(partitionsToRemove);
         return true;
     }
+
+    private bool HasPendingCoordinatorRevocations() =>
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0;
 
     private bool IsCurrentlyAssigned(TopicPartition partition)
     {
@@ -3968,9 +3966,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
                 var coordinatorAssignment = coordinator.Assignment;
+                var coordinatorRevocations = coordinator.DrainRevokedPartitionsSinceLastSync();
 
-                // Fast path: skip all work if assignment hasn't changed (common case after stable join)
-                if (_assignment.SetEquals(coordinatorAssignment))
+                // Set equality alone is insufficient: the assignment can change away and back
+                // between polls. Unseen revocations require stale-fetch cleanup and position reset.
+                if (_assignment.SetEquals(coordinatorAssignment) && coordinatorRevocations is null)
                 {
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                     return;
@@ -3995,6 +3995,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         removedPartitions ??= new List<TopicPartition>();
                         removedPartitions.Add(partition);
+                    }
+                }
+
+                if (coordinatorRevocations is not null)
+                {
+                    foreach (var partition in coordinatorRevocations)
+                    {
+                        if (removedPartitions is null || !removedPartitions.Contains(partition))
+                            (removedPartitions ??= []).Add(partition);
+
+                        if (!coordinatorAssignment.Contains(partition))
+                            continue;
+
+                        if (newPartitions is null || !newPartitions.Contains(partition))
+                            (newPartitions ??= []).Add(partition);
                     }
                 }
 
@@ -4027,7 +4042,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Initialize positions for new partitions
                 if (newPartitions is { Count: > 0 })
                 {
-                    CancelCoordinatorRevokedPartitionsFetchClear(newPartitions);
                     await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
                 }
 
