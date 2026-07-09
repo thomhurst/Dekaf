@@ -1,6 +1,11 @@
+import json
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 
-from stress_trend import HISTORY_LIMIT, evaluate_and_update
+from stress_trend import HISTORY_LIMIT, evaluate_and_update, main
 
 
 def result(messages_per_second=1000.0, cpu_micros_per_message=2.0, **overrides):
@@ -183,6 +188,76 @@ class StressTrendTests(unittest.TestCase):
         ]
         self.assertEqual(HISTORY_LIMIT, retained_durations.count(15))
         self.assertEqual(HISTORY_LIMIT, retained_durations.count(60))
+
+    def test_cli_reports_repeated_regression_without_hiding_updated_history(self):
+        runs = [history_run(i) for i in range(1, 4)]
+        runs.append(history_run(
+            4,
+            messages_per_second=700.0,
+            messagesPerSecondTrend="regression",
+        ))
+        run_started_at = "2026-07-01T02:00:00Z"
+
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            results_path = directory / "results.json"
+            history_path = directory / "history.json"
+            output_path = directory / "updated-history.json"
+            github_output_path = directory / "github-output.txt"
+            results_path.write_text(json.dumps({
+                "runStartedAtUtc": run_started_at,
+                "results": [result(messages_per_second=650.0)],
+            }), encoding="utf-8")
+            history_path.write_text(json.dumps({
+                "version": 1,
+                "runs": runs,
+            }), encoding="utf-8")
+
+            with redirect_stdout(StringIO()):
+                exit_code = main([
+                    "--results", str(results_path),
+                    "--history", str(history_path),
+                    "--output", str(output_path),
+                    "--github-output", str(github_output_path),
+                ])
+
+            self.assertEqual(0, exit_code)
+            self.assertEqual(
+                "should_fail=true\n",
+                github_output_path.read_text(encoding="utf-8"),
+            )
+            updated = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(run_started_at, updated["runs"][-1]["runStartedAtUtc"])
+            self.assertEqual(
+                "regression",
+                updated["runs"][-1]["results"][0]["messagesPerSecondTrend"],
+            )
+
+    def test_cli_does_not_report_processing_error_as_regression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            results_path = directory / "results.json"
+            history_path = directory / "history.json"
+            output_path = directory / "updated-history.json"
+            github_output_path = directory / "github-output.txt"
+            results_path.write_text(json.dumps({
+                "runStartedAtUtc": "2026-07-01T02:00:00Z",
+                "results": [result()],
+            }), encoding="utf-8")
+            history_path.write_text(json.dumps({
+                "version": 999,
+                "runs": [],
+            }), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Unsupported stress history version"):
+                main([
+                    "--results", str(results_path),
+                    "--history", str(history_path),
+                    "--output", str(output_path),
+                    "--github-output", str(github_output_path),
+                ])
+
+            self.assertFalse(github_output_path.exists())
 
 
 if __name__ == "__main__":

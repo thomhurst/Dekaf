@@ -287,6 +287,10 @@ def main(argv=None):
     parser.add_argument("--history", required=True, help="Committed compact history JSON")
     parser.add_argument("--output", required=True, help="Updated history JSON")
     parser.add_argument("--summary", help="GitHub step-summary file to append")
+    parser.add_argument(
+        "--github-output",
+        help="GitHub Actions output file; reports repeated regressions via should_fail",
+    )
     args = parser.parse_args(argv)
 
     result_document = _load_json(args.results)
@@ -312,6 +316,11 @@ def main(argv=None):
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8", newline="\n") as file:
             file.write("\n" + report + "\n")
+
+    if args.github_output:
+        with Path(args.github_output).open("a", encoding="utf-8", newline="\n") as file:
+            file.write(f"should_fail={str(should_fail).lower()}\n")
+        return 0
 
     return 1 if should_fail else 0
 
