@@ -60,6 +60,11 @@ internal sealed class ProducerStressTest : IStressTestScenario
         StressTestHelpers.LogResourceUsage("Initial");
 
         throughput.Start();
+        using var watchdog = options.ProgressWatchdog.Track(
+            throughput,
+            Client,
+            Name,
+            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
         var messageIndex = 0L;
         var progress = new PeriodicProgressReporter(throughput);
 

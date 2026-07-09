@@ -64,6 +64,7 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
         StressTestHelpers.LogResourceUsage("Initial");
 
         throughput.Start();
+        using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
         var progress = new PeriodicProgressReporter(throughput);
 
         var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);

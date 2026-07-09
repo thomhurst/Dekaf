@@ -62,6 +62,11 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
         LogResourceUsage("Initial");
 
         throughput.Start();
+        using var watchdog = options.ProgressWatchdog.Track(
+            throughput,
+            Client,
+            Name,
+            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
         var messageIndex = 0L;
         var lastStatusTime = DateTime.UtcNow;
         var lastStatusMessageCount = 0L;

@@ -127,6 +127,9 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Install stack diagnostics
+        run: dotnet tool install --global dotnet-stack --version 9.0.661903
+
       - name: Build Stress Tests
         run: dotnet build tools/Dekaf.StressTests --configuration Release
 
@@ -231,6 +234,7 @@ jobs:
             --client ${{ matrix.client }} \
             --brokers ${{ matrix.brokers }} \
             --connections-per-broker 1 \
+            --producer-delivery-diagnostics \
             --output ./results
 
           if [ "${{ matrix.run_3conn }}" = "true" ]; then
@@ -242,6 +246,7 @@ jobs:
               --client dekaf \
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 3 \
+              --producer-delivery-diagnostics \
               --output ./results
           fi
 
