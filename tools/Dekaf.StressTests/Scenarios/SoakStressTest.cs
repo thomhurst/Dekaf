@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using Dekaf.Compression.Lz4;
+using Dekaf.Compression.Snappy;
+using Dekaf.Compression.Zstd;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
@@ -55,6 +58,15 @@ internal sealed class SoakStressTest : IStressTestScenario
             .WithBatchSize(options.BatchSize)
             .WithBufferMemory(StressTestHelpers.ProducerBufferMemoryBytes)
             .WithConnectionsPerBroker(options.ConnectionsPerBroker);
+
+        _ = options.Compression switch
+        {
+            "lz4" => producerBuilder.UseLz4Compression(),
+            "snappy" => producerBuilder.UseSnappyCompression(),
+            "zstd" => producerBuilder.UseZstdCompression(),
+            _ => producerBuilder
+        };
+
         StressTestHelpers.ConfigureProducerDeliveryDiagnostics(producerBuilder, options);
         var producer = await producerBuilder.BuildAsync(cancellationToken);
         var producerDisposed = false;
