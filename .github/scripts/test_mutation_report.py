@@ -135,6 +135,14 @@ class MutationReportTests(unittest.TestCase):
         self.assertIn("name: mutation-baseline-${{ matrix.campaign }}", workflow)
         self.assertIn("name: mutation-results-${{ matrix.campaign }}", workflow)
 
+    def test_workflow_fails_closed_when_baseline_download_fails(self):
+        workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        download_step = workflow.split("- name: Download previous mutation result", 1)[1]
+        download_step = download_step.split("- name: Run focused mutation tests", 1)[0]
+
+        self.assertNotIn("continue-on-error", download_step)
+
     def test_cli_writes_summary_and_returns_failure_for_large_drop(self):
         current = report_with(mutant("Killed", 1), mutant("Survived", 2))
         previous = report_with(mutant("Killed", 1), mutant("Killed", 2))

@@ -68,7 +68,6 @@ jobs:
 
       - name: Download previous mutation result
         if: steps.previous-run.outputs.run_id != ''
-        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: mutation-baseline-${{ matrix.campaign }}
