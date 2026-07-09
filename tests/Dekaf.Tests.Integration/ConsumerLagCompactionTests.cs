@@ -150,6 +150,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         const int totalProduced = uniqueKeys * duplicatesPerKey;
         const string lagBoundaryKey = "lag-boundary";
         const long lagBoundaryOffset = totalProduced / 2;
+        const int markerTimeoutSeconds = 30;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -185,17 +186,25 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         // Consume through a stable offset boundary. Counting physical records is invalid for
         // compacted topics because earlier duplicate-key records may already be gone.
         long? processedOffset = null;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(markerTimeoutSeconds));
 
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        try
         {
-            if (msg.Key != lagBoundaryKey) continue;
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+            {
+                if (msg.Key != lagBoundaryKey) continue;
 
-            processedOffset = msg.Offset;
-            break;
+                processedOffset = msg.Offset;
+                break;
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Let the assertion below report which deterministic boundary was missed.
         }
 
-        await Assert.That(processedOffset).IsEqualTo(lagBoundaryOffset);
+        await Assert.That(processedOffset).IsEqualTo(lagBoundaryOffset)
+            .Because($"Consumer should reach marker '{lagBoundaryKey}' before the {markerTimeoutSeconds}-second timeout");
 
         // The unique marker gives the exact consumed offset regardless of compacted gaps.
         var processedPosition = processedOffset!.Value + 1;
