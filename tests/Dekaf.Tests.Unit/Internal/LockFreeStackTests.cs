@@ -1,4 +1,5 @@
 using Dekaf.Internal;
+using System.Collections.Concurrent;
 using System.Reflection;
 
 namespace Dekaf.Tests.Unit.Internal;
@@ -50,6 +51,39 @@ public class LockFreeStackTests
     }
 
     [Test]
+    public async Task TryPop_AfterPausedPushCompletes_ReturnsPublishedItem()
+    {
+        var pushPaused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumePush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stack = new LockFreeStack<Item>(1, () =>
+        {
+            pushPaused.SetResult();
+            resumePush.Task.GetAwaiter().GetResult();
+        });
+        var item = new Item { Value = 42 };
+        var pushTask = Task.Run(() => stack.TryPush(item));
+        bool poppedWhilePushPaused;
+
+        try
+        {
+            await pushPaused.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            poppedWhilePushPaused = stack.TryPop(out _);
+        }
+        finally
+        {
+            resumePush.TrySetResult();
+        }
+
+        var pushed = await pushTask.WaitAsync(TimeSpan.FromSeconds(10));
+        var poppedAfterPushCompleted = stack.TryPop(out var result);
+
+        await Assert.That(poppedWhilePushPaused).IsFalse();
+        await Assert.That(pushed).IsTrue();
+        await Assert.That(poppedAfterPushCompleted).IsTrue();
+        await Assert.That(result).IsSameReferenceAs(item);
+    }
+
+    [Test]
     public async Task Count_ReflectsStackState()
     {
         var stack = new LockFreeStack<Item>(4);
@@ -64,6 +98,29 @@ public class LockFreeStackTests
 
         stack.TryPop(out _);
         await Assert.That(stack.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryPush_TryPop_DoNotAllocateInSteadyState()
+    {
+        var stack = new LockFreeStack<Item>(1);
+        var item = new Item { Value = 42 };
+
+        for (var i = 0; i < 100; i++)
+        {
+            stack.TryPush(item);
+            stack.TryPop(out _);
+        }
+
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 10_000; i++)
+        {
+            stack.TryPush(item);
+            stack.TryPop(out _);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
@@ -164,6 +221,8 @@ public class LockFreeStackTests
         var stack = new LockFreeStack<Item>(capacity);
         var pushCount = 0;
         var popCount = 0;
+        var duplicateCount = 0;
+        var poppedValues = new ConcurrentDictionary<int, byte>();
 
         var tasks = new Task[threadCount * 2];
 
@@ -188,8 +247,12 @@ public class LockFreeStackTests
             {
                 for (var j = 0; j < operationsPerThread; j++)
                 {
-                    if (stack.TryPop(out _))
+                    if (stack.TryPop(out var item))
+                    {
                         Interlocked.Increment(ref popCount);
+                        if (!poppedValues.TryAdd(item.Value, 0))
+                            Interlocked.Increment(ref duplicateCount);
+                    }
                 }
             });
         }
@@ -197,12 +260,18 @@ public class LockFreeStackTests
         await Task.WhenAll(tasks);
 
         // Drain remaining
-        while (stack.TryPop(out _))
+        while (stack.TryPop(out var item))
+        {
             Interlocked.Increment(ref popCount);
+            if (!poppedValues.TryAdd(item.Value, 0))
+                Interlocked.Increment(ref duplicateCount);
+        }
 
-        // Pop count + remaining must equal push count
+        // Every accepted item must be returned exactly once after producers quiesce.
         await Assert.That(popCount).IsGreaterThan(0);
-        await Assert.That(popCount).IsLessThanOrEqualTo(pushCount);
+        await Assert.That(popCount).IsEqualTo(pushCount);
+        await Assert.That(poppedValues.Count).IsEqualTo(pushCount);
+        await Assert.That(duplicateCount).IsEqualTo(0);
         await Assert.That(stack.Count).IsEqualTo(0);
     }
 
