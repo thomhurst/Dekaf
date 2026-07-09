@@ -1,5 +1,6 @@
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
+using ConfluentKafka = Confluent.Kafka;
 
 namespace Dekaf.Tests.Unit.Stress;
 
@@ -202,6 +203,19 @@ public class RoundTripMessageCodecTests
                 ordinal: 42,
                 cancellationToken: cancellation.Token))
             .Throws<OperationCanceledException>();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConfluentDeliveryReportFailure_CountsAsDeliveryError()
+    {
+        var throughput = new ThroughputTracker();
+
+        ConfluentProducerRoundTripStressTest.RecordDeliveryReportError(
+            throughput,
+            new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_MsgTimedOut));
+
+        await Assert.That(throughput.DeliveryErrorCount).IsEqualTo(1);
         await Assert.That(throughput.ErrorCount).IsEqualTo(0);
     }
 }

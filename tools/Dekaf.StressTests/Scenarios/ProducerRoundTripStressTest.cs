@@ -250,15 +250,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
 
             Action<ConfluentKafka.DeliveryReport<string, byte[]>> deliveryHandler = report =>
-            {
-                if (report.Error.IsError)
-                {
-                    throughput.RecordError(
-                        "Confluent.Kafka.Error",
-                        report.Error.ToString(),
-                        "Round-trip delivery report");
-                }
-            };
+                RecordDeliveryReportError(throughput, report.Error);
 
             Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Confluent.Kafka...");
             for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
@@ -343,6 +335,19 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             gcStats,
             delivered,
             validation);
+    }
+
+    internal static void RecordDeliveryReportError(ThroughputTracker throughput, ConfluentKafka.Error error)
+    {
+        if (!error.IsError)
+        {
+            return;
+        }
+
+        throughput.RecordDeliveryError(
+            "Confluent.Kafka.Error",
+            error.ToString(),
+            "Round-trip delivery report");
     }
 
     private static bool ConsumeAndValidate(
