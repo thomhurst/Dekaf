@@ -6,7 +6,7 @@ namespace Dekaf.Fuzzing;
 public static class ProtocolReaderFuzzTarget
 {
     private const int MaxInputLength = 1024 * 1024;
-    private const int OperationCount = (int)ProtocolReaderOperation.SkipTaggedFields + 1;
+    private static readonly int OperationCount = Enum.GetValues<ProtocolReaderOperation>().Length;
 
     public static void Run(ReadOnlySpan<byte> input)
     {
@@ -132,9 +132,41 @@ public static class ProtocolReaderFuzzTarget
             case ProtocolReaderOperation.SkipTaggedFields:
                 reader.SkipTaggedFields();
                 break;
+            case ProtocolReaderOperation.ReadArrayWithState:
+                _ = reader.ReadArray(ReadUInt8WithState, (byte)0);
+                break;
+            case ProtocolReaderOperation.ReadCompactArrayWithState:
+                _ = reader.ReadCompactArray(ReadUInt8WithState, (byte)0);
+                break;
+            case ProtocolReaderOperation.ReadCompactNullableArrayWithState:
+                _ = reader.ReadCompactNullableArray(ReadUInt8WithState, (byte)0);
+                break;
+            case ProtocolReaderOperation.ReadArrayIntoWithState:
+                _ = reader.ReadArrayInto(new List<byte>(), ReadUInt8WithState, (byte)0);
+                break;
+            case ProtocolReaderOperation.ReadCompactArrayIntoWithState:
+                _ = reader.ReadCompactArrayInto(new List<byte>(), ReadUInt8WithState, (byte)0);
+                break;
+            case ProtocolReaderOperation.ReadCompactNonNullableString:
+                _ = reader.ReadCompactNonNullableString();
+                break;
+            case ProtocolReaderOperation.ReadRawBytes:
+                _ = reader.ReadRawBytes(reader.ReadUInt8());
+                break;
+            case ProtocolReaderOperation.ReadMemorySlice:
+                _ = reader.ReadMemorySlice(reader.ReadUInt8());
+                break;
+            case ProtocolReaderOperation.Skip:
+                reader.Skip(reader.ReadUInt8());
+                break;
             default:
                 throw new InvalidOperationException($"Unknown protocol reader fuzz operation: {operation}");
         }
+    }
+
+    private static byte ReadUInt8WithState(ref KafkaProtocolReader reader, byte _)
+    {
+        return reader.ReadUInt8();
     }
 
     private enum ProtocolReaderOperation : byte
@@ -160,7 +192,16 @@ public static class ProtocolReaderFuzzTarget
         ReadArray,
         ReadCompactArray,
         ReadCompactNullableArray,
-        SkipTaggedFields
+        SkipTaggedFields,
+        ReadArrayWithState,
+        ReadCompactArrayWithState,
+        ReadCompactNullableArrayWithState,
+        ReadArrayIntoWithState,
+        ReadCompactArrayIntoWithState,
+        ReadCompactNonNullableString,
+        ReadRawBytes,
+        ReadMemorySlice,
+        Skip
     }
 
     private sealed class BufferSegment : ReadOnlySequenceSegment<byte>
