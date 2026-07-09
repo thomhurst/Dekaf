@@ -1900,7 +1900,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
     }
 
-    internal void FinalizeCompletedTransactionState()
+    internal void FinalizeCompletedTransactionState(bool preserveAbortableError = true)
     {
         lock (_partitionsInTransactionLock)
         {
@@ -1909,7 +1909,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         _preparedTransactionState = PreparedTransactionState.Empty;
 
-        if (_transactionState is not (TransactionState.AbortableError or TransactionState.FatalError))
+        var preserveError = _transactionState == TransactionState.FatalError
+            || preserveAbortableError && _transactionState == TransactionState.AbortableError;
+        if (!preserveError)
         {
             _transactionState = TransactionState.Ready;
         }
@@ -4088,9 +4090,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             {
                 // Best-effort abort during disposal — if the broker rejects it
                 // (e.g. InvalidTxnState because no messages were produced),
-                // just clean up state and move on. Fatal and abortable broker responses
-                // remain sticky so an invalid producer cannot be reused after disposal.
-                _producer.FinalizeCompletedTransactionState();
+                // just clean up state and move on. Fatal responses remain sticky, while
+                // abortable responses return to Ready because this transaction is disposed.
+                _producer.FinalizeCompletedTransactionState(preserveAbortableError: false);
             }
         }
     }

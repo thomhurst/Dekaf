@@ -139,7 +139,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    public async Task DisposeAsync_WhenAbortIsRejected_PreservesAbortableError()
+    public async Task DisposeAsync_WhenAbortIsRejected_ReturnsProducerToReady()
     {
         var preparedState = new PreparedTransactionState(42, 5);
         await using var harness = BuildPreparedCompletionHarness(
@@ -153,7 +153,7 @@ public sealed class TransactionTests
 
         await transaction.DisposeAsync();
 
-        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
         await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.InvalidTxnState);
     }
 
