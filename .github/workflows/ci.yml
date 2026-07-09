@@ -32,7 +32,7 @@ jobs:
     name: Build & Unit Test (${{ matrix.framework }})
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         framework: [net8.0, net10.0]
     # Declaring permissions drops all other scopes to none; contents:write is the only scope any
@@ -126,7 +126,7 @@ jobs:
     name: NativeAOT Smoke (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - name: core
@@ -214,7 +214,7 @@ jobs:
       matrix:
         framework: [net8.0, net10.0]
         category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
-      fail-fast: false
+      fail-fast: true
 
     steps:
       - name: Add Swap Space
@@ -283,7 +283,7 @@ jobs:
     strategy:
       matrix:
         category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
-      fail-fast: false
+      fail-fast: true
 
     steps:
       - name: Add Swap Space
