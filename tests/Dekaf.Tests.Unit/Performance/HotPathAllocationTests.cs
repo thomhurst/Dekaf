@@ -89,6 +89,22 @@ public class HotPathAllocationTests
     }
 
     [Test]
+    public async Task Fire_SwallowedSerializationFailure_ReturnsZero()
+    {
+        await using var producer = new KafkaProducer<string, string>(
+            CreateProducerOptions(),
+            new ThrowingSerializer(),
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var accepted = Fire(producer);
+
+        await Assert.That(accepted).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Consumer_RawBytesDecodeHotPath_AllocatesZeroBytes()
     {
         using (var warmup = CreateConsumeBatch(WarmupIterations))
@@ -159,8 +175,10 @@ public class HotPathAllocationTests
 
     private static int Fire(KafkaProducer<string, string> producer)
     {
+        var accumulator = producer.RecordAccumulator;
+        var bufferedBefore = accumulator.BufferedBytes;
         producer.FireAsync(Topic, "allocation-key", "allocation-value").GetAwaiter().GetResult();
-        return 1;
+        return accumulator.BufferedBytes > bufferedBefore ? 1 : 0;
     }
 
     private static AllocationMeasurement WarmAndMeasure(
@@ -295,6 +313,19 @@ public class HotPathAllocationTests
     private readonly record struct AllocationMeasurement(long AllocatedBytes, int Checksum);
 
     private readonly record struct ConsumeMeasurement(int RecordCount, int TotalBytes);
+
+    private sealed class ThrowingSerializer : ISerializer<string>
+    {
+        public void Serialize<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Expected allocation-gate failure");
+    }
 
     private sealed class ConsumeBatchFixture(
         PendingFetchData pending,
