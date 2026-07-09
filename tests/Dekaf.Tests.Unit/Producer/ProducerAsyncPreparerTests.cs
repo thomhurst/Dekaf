@@ -9,11 +9,29 @@ namespace Dekaf.Tests.Unit.Producer;
 
 // Drives the real KafkaProducer async produce path with a serializer that implements
 // IAsyncSerializerPreparer<T>, exercising the preparer gate in ProduceAsyncCore. Uses a
-// process-wide ActivityListener, so it must not run alongside other producing tests.
+// process-wide ActivityListener, so it must not run alongside other listener tests.
 [NotInParallel("ActivityListener")]
 public class ProducerAsyncPreparerTests
 {
     private const string Topic = "prepare-topic";
+    private const string PublishActivityName = Topic + " publish";
+
+    [Test]
+    public async Task ActivityListener_IgnoresOtherDekafOperations()
+    {
+        var (started, stopped, listener) = ListenForActivities();
+        using (listener)
+        {
+            using (var unrelated = DekafDiagnostics.Source.StartActivity(
+                       "other-topic publish", ActivityKind.Producer))
+            {
+                await Assert.That(unrelated).IsNotNull();
+            }
+
+            await Assert.That(started).IsEmpty();
+            await Assert.That(stopped).IsEmpty();
+        }
+    }
 
     // --- Activity lifecycle when preparation faults (regression: a faulting preparer must still
     //     stop and error-tag the started span, matching every other completion path). ---
@@ -126,11 +144,17 @@ public class ProducerAsyncPreparerTests
         {
             ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStarted = started.Add,
-            ActivityStopped = stopped.Add
+            ActivityStarted = activity => CaptureActivity(started, activity),
+            ActivityStopped = activity => CaptureActivity(stopped, activity)
         };
         ActivitySource.AddActivityListener(listener);
         return (started, stopped, listener);
+    }
+
+    private static void CaptureActivity(List<Activity> activities, Activity activity)
+    {
+        if (activity.OperationName == PublishActivityName)
+            activities.Add(activity);
     }
 
     private static KafkaProducer<string, string> CreateProducer(
