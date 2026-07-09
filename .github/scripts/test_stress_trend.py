@@ -73,6 +73,35 @@ class StressTrendTests(unittest.TestCase):
         repeated = {item["metric"] for item in evaluations if item["repeatedRegression"]}
         self.assertEqual({"messagesPerSecond", "cpuMicrosPerMessage"}, repeated)
 
+    def test_warned_run_does_not_widen_next_baseline(self):
+        runs = [
+            history_run(1, messages_per_second=950.0),
+            history_run(2, messages_per_second=1000.0),
+            history_run(3, messages_per_second=1050.0),
+            history_run(
+                4,
+                messages_per_second=890.0,
+                messagesPerSecondTrend="regression",
+            ),
+        ]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=890.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(3, throughput["baselineCount"])
+        self.assertEqual(1000.0, throughput["median"])
+        self.assertEqual(900.0, throughput["lower"])
+        self.assertEqual(1100.0, throughput["upper"])
+        self.assertEqual("regression", throughput["status"])
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertTrue(should_fail)
+
     def test_improvement_is_flagged_but_never_fails(self):
         history = {"version": 1, "runs": [history_run(i) for i in range(1, 4)]}
 

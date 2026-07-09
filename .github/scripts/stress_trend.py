@@ -115,9 +115,18 @@ def evaluate_and_update(history, current_results, run_started_at):
             if not _finite_number(value):
                 continue
 
-            history_values = [item.get(metric) for item in prior[-HISTORY_LIMIT:]]
-            history_values = [item for item in history_values if _finite_number(item)]
-            previous_trend = prior[-1].get(f"{metric}Trend") if prior else None
+            trend_field = f"{metric}Trend"
+            previous_trend = prior[-1].get(trend_field) if prior else None
+            # Keep warned observations for consecutive-trend detection, but do not let
+            # them widen the clean baseline used to judge the next run.
+            history_values = [
+                item.get(metric)
+                for item in prior
+                if item.get(trend_field) != "regression"
+            ]
+            history_values = [
+                item for item in history_values if _finite_number(item)
+            ][-HISTORY_LIMIT:]
 
             evaluation = {
                 "scenario": _scenario_label(result),
