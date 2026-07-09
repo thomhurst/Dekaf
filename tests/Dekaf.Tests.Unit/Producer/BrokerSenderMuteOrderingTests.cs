@@ -38,7 +38,8 @@ public sealed class BrokerSenderMuteOrderingTests
 
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
-        int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
+        int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
+        int maxRequestSize = 1_048_576) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -47,6 +48,7 @@ public sealed class BrokerSenderMuteOrderingTests
             RetryBackoffMs = retryBackoffMs,
             RetryBackoffMaxMs = retryBackoffMaxMs,
             RequestTimeoutMs = requestTimeoutMs,
+            MaxRequestSize = maxRequestSize,
             LingerMs = 0
         };
 
@@ -261,12 +263,23 @@ public sealed class BrokerSenderMuteOrderingTests
         object carryOver,
         int? capturedGeneration = null)
     {
+        var coalescedRequestBudgetUsed = 0L;
+        for (var i = 0; i < coalescedCount; i++)
+        {
+            var existingBatch = coalescedBatches[i];
+            coalescedRequestBudgetUsed += ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+                transactionalId: null,
+                existingBatch.TopicPartition.Topic,
+                existingBatch.EncodedSize);
+        }
+
         var args = new object?[]
         {
             CreateBatchReference(batch, capturedGeneration ?? batch.Generation),
             coalescedBatches,
             coalescedGenerations,
             coalescedCount,
+            coalescedRequestBudgetUsed,
             coalescedPartitions,
             carryOver
         };
@@ -326,6 +339,64 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CoalesceBatch_SeparateDrainPasses_RespectsMaxRequestSizeBudget()
+    {
+        const string topic = "test-topic";
+        const int encodedBatchSize = 100;
+        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            encodedBatchSize);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions(maxRequestSize: maxRequestSize);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var firstBatch = CreateMinimalBatch(topic, partition: 0);
+            var secondBatch = CreateMinimalBatch(topic, partition: 1);
+            var coalescedBatches = new ReadyBatch[4];
+            var coalescedGenerations = new int[4];
+            var coalescedCount = 0;
+            var coalescedPartitions = new HashSet<TopicPartition>();
+            var carryOver = CreateCarryOver();
+
+            // Simulate batches arriving from separate accumulator drain passes. Each batch
+            // exactly fills MaxRequestSize after ProduceRequest framing, so only one can be sent.
+            InvokeCoalesceBatch(
+                sender,
+                firstBatch,
+                coalescedBatches,
+                coalescedGenerations,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver);
+            InvokeCoalesceBatch(
+                sender,
+                secondBatch,
+                coalescedBatches,
+                coalescedGenerations,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver);
+
+            await Assert.That(firstBatch.EncodedSize).IsEqualTo(encodedBatchSize);
+            await Assert.That(maxRequestSize).IsGreaterThan(encodedBatchSize);
+            await Assert.That(coalescedCount).IsEqualTo(1);
+            await Assert.That(coalescedBatches[0]).IsSameReferenceAs(firstBatch);
+            await Assert.That(GetCarryOverCount(carryOver)).IsEqualTo(1);
+            await Assert.That(coalescedPartitions.Contains(secondBatch.TopicPartition)).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
         }
     }
 
