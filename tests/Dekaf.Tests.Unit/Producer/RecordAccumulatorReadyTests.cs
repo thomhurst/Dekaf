@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -1032,11 +1033,16 @@ public class RecordAccumulatorReadyTests
         accumulator.Ready(metadataManager, readyNodes);
         await Assert.That(readyNodes).Contains(1);
 
-        // Drain with a tiny maxRequestSize so only 1 partition's batch fits.
-        // This should re-enqueue notifications for the other 2 partitions.
+        // Budget exactly one framed batch so the other 2 partitions are skipped.
+        // This should re-enqueue notifications for both skipped partitions.
+        var firstBatch = PeekFirstReadyBatch(accumulator, "test-topic", partition: 0);
+        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            "test-topic",
+            firstBatch.EncodedSize);
         var drainResult = new Dictionary<int, List<ReadyBatch>>();
         var batchListPool = new Stack<List<ReadyBatch>>();
-        accumulator.Drain(metadataManager, readyNodes, maxRequestSize: 1, drainResult, batchListPool);
+        accumulator.Drain(metadataManager, readyNodes, maxRequestSize, drainResult, batchListPool);
 
         // Verify only 1 batch was drained (maxRequestSize too small for more)
         await Assert.That(drainResult).ContainsKey(1);
@@ -1096,6 +1102,73 @@ public class RecordAccumulatorReadyTests
             batchListPool);
 
         await Assert.That(drainResult[1]).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Drain_CompressedHeadExceedsMaxRequestSize_FailsLocally()
+    {
+        const string topic = "test-topic";
+        const int maxRequestSize = 256;
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 100_000,
+            MaxRequestSize = maxRequestSize,
+            LingerMs = 0,
+            CompressionType = CompressionType.Gzip
+        };
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(new ExpandingCompressionCodec(
+            CompressionType.Gzip,
+            compressedSize: maxRequestSize));
+
+        await using var accumulator = new RecordAccumulator(options, compressionCodecs);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var metadataManager = CreateMetadataManager(topic, partitionCount: 1, nodeId: 1);
+        var completion = pool.Rent();
+        var completionTask = completion.Task;
+
+        var appended = await accumulator.AppendAsync(
+            topic,
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completion,
+            callback: null,
+            CancellationToken.None);
+        await Assert.That(appended).IsTrue();
+
+        var readyNodes = new HashSet<int>();
+        await TestWait.UntilAsync(
+            () =>
+            {
+                readyNodes.Clear();
+                accumulator.Ready(metadataManager, readyNodes);
+                return readyNodes.Contains(1);
+            },
+            TimeSpan.FromSeconds(5));
+
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(
+            metadataManager,
+            readyNodes,
+            maxRequestSize,
+            drainResult,
+            batchListPool);
+
+        await Assert.That(drainResult).DoesNotContainKey(1);
+        var exception = await Assert.ThrowsAsync<ProduceException>(async () => await completionTask);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(exception.Topic).IsEqualTo(topic);
+        await Assert.That(exception.Partition).IsEqualTo(0);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(accumulator.HasPendingWork()).IsFalse();
     }
 
     [Test]
@@ -1439,6 +1512,25 @@ public class RecordAccumulatorReadyTests
             Interlocked.Increment(ref _compressCount);
             foreach (var segment in source)
                 destination.Write(segment.Span);
+        }
+
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            foreach (var segment in source)
+                destination.Write(segment.Span);
+        }
+    }
+
+    private sealed class ExpandingCompressionCodec(CompressionType type, int compressedSize)
+        : ICompressionCodec
+    {
+        public CompressionType Type { get; } = type;
+
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            var output = destination.GetSpan(compressedSize)[..compressedSize];
+            output.Clear();
+            destination.Advance(compressedSize);
         }
 
         public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)

@@ -1496,6 +1496,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             ReadyBatch? batch;
             var batchRequestSize = 0;
+            var oversizedBatch = false;
             {
                 using var guard = new SpinLockGuard(ref pd.Lock);
                 batch = pd.PeekFirst();
@@ -1518,7 +1519,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 batchRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
                     GetSingleBatchRequestFixedSize(tp.Topic),
                     batch.EncodedSize);
-                if (ready.Count > 0 && size + batchRequestSize > maxRequestSize)
+                oversizedBatch = batchRequestSize > maxRequestSize;
+                if (!oversizedBatch && ready.Count > 0 && size + batchRequestSize > maxRequestSize)
                 {
                     // Ready() already consumed notifications for all partitions on this node.
                     // Re-enqueue this and remaining partitions so they aren't orphaned.
@@ -1541,6 +1543,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (batch is not null)
             {
+                if (oversizedBatch)
+                {
+                    FailOversizedBatch(batch, batchRequestSize, maxRequestSize);
+                    continue;
+                }
+
                 if (_options.EnableDeliveryDiagnostics)
                     batch.AppendDiag('D');
                 size += batchRequestSize;
@@ -1551,6 +1559,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _drainIndex[nodeId] = lastDrainIndex;
         if (reenqueueLeaderChanges)
             SignalWakeup();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void FailOversizedBatch(ReadyBatch batch, int requestBodySize, int maxRequestSize)
+    {
+        var topicPartition = batch.TopicPartition;
+        var exception = new ProduceException(
+            ErrorCode.MessageTooLarge,
+            $"Encoded ProduceRequest body size {requestBodySize} bytes " +
+            $"(record batch {batch.EncodedSize} bytes) exceeds MaxRequestSize of {maxRequestSize} bytes.")
+        {
+            Topic = topicPartition.Topic,
+            Partition = topicPartition.Partition
+        };
+
+        FailBatchAndCleanup(
+            batch,
+            exception,
+            beforeFailure: null,
+            removeFromPipeline: true,
+            returnToPool: true);
     }
 
     /// <summary>
@@ -4519,7 +4548,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         foreach (var batch in readyBatches)
         {
-            FailPurgedBatch(
+            FailBatchAndCleanup(
                 batch,
                 exception,
                 onPurgingBatch,
@@ -4574,7 +4603,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (!OnBatchExitsPipeline(batch))
                 continue;
 
-            FailPurgedBatch(
+            FailBatchAndCleanup(
                 batch,
                 exception,
                 onPurgingBatch,
@@ -4595,14 +4624,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return pd.Contains(batch);
     }
 
-    private void FailPurgedBatch(
+    private void FailBatchAndCleanup(
         ReadyBatch batch,
         Exception exception,
-        Action<ReadyBatch>? onPurgingBatch,
+        Action<ReadyBatch>? beforeFailure,
         bool removeFromPipeline,
         bool returnToPool)
     {
-        try { onPurgingBatch?.Invoke(batch); }
+        try { beforeFailure?.Invoke(batch); }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
         try { batch.Fail(exception); }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
