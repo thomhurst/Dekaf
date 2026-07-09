@@ -1,0 +1,107 @@
+name: Mutation Tests
+
+on:
+  schedule:
+    - cron: '0 3 * * 3' # Weekly Wednesday 3 AM UTC
+  workflow_dispatch:
+    inputs:
+      max_score_drop:
+        description: 'Fail when mutation score drops by this many percentage points'
+        required: false
+        default: '5'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: mutation-tests
+  cancel-in-progress: false
+
+env:
+  ContinuousIntegrationBuild: true
+  Deterministic: true
+
+jobs:
+  mutation-test:
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore local tools
+        run: dotnet tool restore
+
+      - name: Find previous successful main run
+        id: previous-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list \
+            --workflow mutation-tests.yml \
+            --branch main \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download previous mutation result
+        if: steps.previous-run.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: mutation-results
+          path: artifacts/previous
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.previous-run.outputs.run_id }}
+
+      - name: Run focused mutation tests
+        working-directory: src/Dekaf
+        run: >-
+          dotnet stryker
+          --config-file stryker-config.json
+          --output "${{ github.workspace }}/artifacts/mutation"
+
+      - name: Report trend and enforce large-drop gate
+        env:
+          MAX_SCORE_DROP: ${{ github.event.inputs.max_score_drop || '5' }}
+        run: |
+          current_report=$(find artifacts/mutation -type f -name mutation-report.json | sort | tail -n 1)
+          if [ -z "$current_report" ]; then
+            echo "::error::Stryker JSON report was not generated"
+            exit 1
+          fi
+
+          previous_report=$(find artifacts/previous -type f -name mutation-report.json 2>/dev/null | sort | tail -n 1 || true)
+          args=("$current_report" --max-drop "$MAX_SCORE_DROP" --summary artifacts/mutation-summary.md)
+          if [ -n "$previous_report" ]; then
+            args+=(--previous "$previous_report")
+          fi
+
+          set +e
+          python3 .github/scripts/mutation_report.py "${args[@]}"
+          gate_exit=$?
+          set -e
+          cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$gate_exit"
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-results
+          path: |
+            artifacts/mutation/
+            artifacts/mutation-summary.md
+          if-no-files-found: warn
+          retention-days: 90
