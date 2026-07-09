@@ -811,7 +811,9 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task FetchOffsetsAsync_GroupError_ThrowsInsteadOfResettingPosition()
+    [Arguments(ErrorCode.StaleMemberEpoch)]
+    [Arguments(ErrorCode.UnknownMemberId)]
+    public async Task FetchOffsetsAsync_MembershipGroupError_ThrowsAndRequestsRejoin(ErrorCode errorCode)
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
         SetupSuccessfulConsumerProtocolJoin();
@@ -828,20 +830,31 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                     {
                         GroupId = "test-group",
                         Topics = [],
-                        ErrorCode = ErrorCode.StaleMemberEpoch
+                        ErrorCode = errorCode
                     }
                 ]
             }));
 
         var options = CreateConsumerProtocolOptions();
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
-        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        var topics = new HashSet<string> { "test-topic" };
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
 
         var exception = await Assert.That(async () =>
                 await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 0)], CancellationToken.None))
             .Throws<GroupException>();
 
-        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.MemberId).IsEqualTo(
+            errorCode == ErrorCode.UnknownMemberId ? null : "member-1");
+
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+
+        await _connection.Received(2).SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Any<ConsumerGroupHeartbeatRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
     }
 
     #endregion

@@ -694,6 +694,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         if (group.ErrorCode != ErrorCode.None)
                         {
+                            HandleOffsetFetchMembershipError(group.ErrorCode);
                             throw new GroupException(group.ErrorCode,
                                 $"OffsetFetch failed for group: {group.ErrorCode}")
                             {
@@ -734,6 +735,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         finally
         {
             _fetchLock.Release();
+        }
+    }
+
+    private void HandleOffsetFetchMembershipError(ErrorCode errorCode)
+    {
+        switch (errorCode)
+        {
+            case ErrorCode.StaleMemberEpoch:
+                RequestRejoin();
+                break;
+
+            case ErrorCode.UnknownMemberId:
+                ResetMemberState();
+                break;
         }
     }
 
