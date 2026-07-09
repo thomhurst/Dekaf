@@ -239,8 +239,10 @@ public class RecordBatchTests
     public async Task RecordBatch_RoundTrip_PreservesNullEmptyAndHeaderBoundaries()
     {
         const int highHeaderCount = 1024;
+        // Reuse one key so this count boundary does not fill the process-global header-key cache.
+        const string repeatedHeaderKey = "high";
         var highHeaders = Enumerable.Range(0, highHeaderCount)
-            .Select(i => new Header($"high-{i:D4}", [(byte)(i % 251)]))
+            .Select(i => new Header(repeatedHeaderKey, [(byte)(i % 251)]))
             .ToArray();
         var buffer = new ArrayBufferWriter<byte>();
         var originalBatch = new RecordBatch
@@ -322,11 +324,9 @@ public class RecordBatchTests
 
         await Assert.That(highHeaderRecord.HeaderCount).IsEqualTo(highHeaderCount);
         var roundTrippedHighHeaders = highHeaderRecord.Headers!;
-        var actualKeys = roundTrippedHighHeaders
+        await Assert.That(roundTrippedHighHeaders
             .Take(highHeaderRecord.HeaderCount)
-            .Select(header => header.Key);
-        var expectedKeys = Enumerable.Range(0, highHeaderCount).Select(i => $"high-{i:D4}");
-        await Assert.That(actualKeys.SequenceEqual(expectedKeys)).IsTrue();
+            .All(header => header.Key == repeatedHeaderKey)).IsTrue();
         var actualValues = roundTrippedHighHeaders
             .Take(highHeaderRecord.HeaderCount)
             .Select(header => header.Value.Span[0]);

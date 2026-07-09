@@ -11,11 +11,13 @@ public sealed class RecordBoundaryRoundTripTests(KafkaTestContainer kafka) : Kaf
     public async Task ProduceConsume_PreservesNullEmptyAndHeaderBoundaries()
     {
         const int highHeaderCount = 1024;
+        // Reuse one key so this count boundary does not fill the process-global header-key cache.
+        const string repeatedHeaderKey = "boundary-high";
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var highHeaders = new Headers(highHeaderCount);
         for (var i = 0; i < highHeaderCount; i++)
         {
-            highHeaders.Add($"boundary-high-{i:D4}", [(byte)(i % 251)]);
+            highHeaders.Add(repeatedHeaderKey, [(byte)(i % 251)]);
         }
 
         var messages = new ProducerMessage<string?, string?>[]
@@ -110,12 +112,9 @@ public sealed class RecordBoundaryRoundTripTests(KafkaTestContainer kafka) : Kaf
         await Assert.That(duplicateHeaders[2].GetValueAsString()).IsEqualTo("present");
 
         var actualHighHeaders = consumed[3].Headers
-            .Where(header => header.Key.StartsWith("boundary-high-", StringComparison.Ordinal))
+            .Where(header => header.Key == repeatedHeaderKey)
             .ToArray();
         await Assert.That(actualHighHeaders.Length).IsEqualTo(highHeaderCount);
-        var actualKeys = actualHighHeaders.Select(header => header.Key);
-        var expectedKeys = Enumerable.Range(0, highHeaderCount).Select(i => $"boundary-high-{i:D4}");
-        await Assert.That(actualKeys.SequenceEqual(expectedKeys)).IsTrue();
         var actualValues = actualHighHeaders.Select(header => header.Value.Span[0]);
         var expectedValues = Enumerable.Range(0, highHeaderCount).Select(i => (byte)(i % 251));
         await Assert.That(actualValues.SequenceEqual(expectedValues)).IsTrue();
