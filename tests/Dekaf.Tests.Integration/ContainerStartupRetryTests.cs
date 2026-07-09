@@ -4,8 +4,7 @@ using DotNet.Testcontainers.Containers;
 
 namespace Dekaf.Tests.Integration;
 
-[Category("Consumer")]
-[Category("MessagingOrdering")]
+[Category("Retry")]
 public sealed class ContainerStartupRetryTests
 {
     [Test]
