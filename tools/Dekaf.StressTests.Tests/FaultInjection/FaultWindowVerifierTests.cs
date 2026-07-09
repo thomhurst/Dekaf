@@ -93,16 +93,31 @@ public class FaultWindowVerifierTests
     }
 
     [Test]
-    public async Task DetermineExitCode_AllowsOnlyNamedWindowFailures()
+    public async Task DetermineExitCode_AllowsNamedLiveConsumerRecoveryFailure()
     {
         FaultWindowRunResult[] results =
         [
             new()
             {
-                Name = "broker-kill-restart",
+                Name = "leader-election",
                 StartedAtUtc = DateTime.UnixEpoch,
-                Succeeded = false
-            },
+                Succeeded = false,
+                LiveConsumerRecoveryFailed = true
+            }
+        ];
+
+        var allowedFailures = new HashSet<string>(["leader-election"], StringComparer.OrdinalIgnoreCase);
+
+        var exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
+
+        await Assert.That(exitCode).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DetermineExitCode_KeepsOtherFailuresHardInAllowedWindow()
+    {
+        FaultWindowRunResult[] results =
+        [
             new()
             {
                 Name = "leader-election",
@@ -116,11 +131,27 @@ public class FaultWindowVerifierTests
         var exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
 
         await Assert.That(exitCode).IsEqualTo(1);
+    }
 
-        allowedFailures.Add("broker-kill-restart");
-        exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
+    [Test]
+    public async Task DetermineExitCode_KeepsLiveConsumerRecoveryFailureHardOutsideAllowedWindow()
+    {
+        FaultWindowRunResult[] results =
+        [
+            new()
+            {
+                Name = "broker-kill-restart",
+                StartedAtUtc = DateTime.UnixEpoch,
+                Succeeded = false,
+                LiveConsumerRecoveryFailed = true
+            }
+        ];
 
-        await Assert.That(exitCode).IsEqualTo(0);
+        var allowedFailures = new HashSet<string>(["leader-election"], StringComparer.OrdinalIgnoreCase);
+
+        var exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
+
+        await Assert.That(exitCode).IsEqualTo(1);
     }
 
     [Test]

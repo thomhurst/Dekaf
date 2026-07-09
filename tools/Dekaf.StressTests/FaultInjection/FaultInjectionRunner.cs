@@ -85,7 +85,9 @@ internal static class FaultInjectionRunner
         Console.WriteLine($"Windows: {report.Windows.Count - failed.Length} passed, {failed.Length} failed");
         foreach (var window in failed)
         {
-            var allowedSuffix = options.AllowedFailureWindows.Contains(window.Name) ? " (allowed)" : string.Empty;
+            var allowedSuffix = IsAllowedFailure(window, options.AllowedFailureWindows)
+                ? " (allowed)"
+                : string.Empty;
             Console.WriteLine($"  - {window.Name}{allowedSuffix}: {FirstLine(window.Failure)}");
         }
 
@@ -100,7 +102,7 @@ internal static class FaultInjectionRunner
         ArgumentNullException.ThrowIfNull(allowedFailureWindows);
 
         return windows.Any(window =>
-            !window.Succeeded && !allowedFailureWindows.Contains(window.Name)) ? 1 : 0;
+            !window.Succeeded && !IsAllowedFailure(window, allowedFailureWindows)) ? 1 : 0;
     }
 
     private static async Task RunWindowAsync(
@@ -255,6 +257,7 @@ internal static class FaultInjectionRunner
 
             if (liveConsumerFailure is not null)
             {
+                result.LiveConsumerRecoveryFailed = true;
                 throw new InvalidOperationException(
                     "Live Dekaf consumer failed instead of recovering after the fault window.",
                     liveConsumerFailure);
@@ -476,7 +479,7 @@ internal static class FaultInjectionRunner
             await Task.Delay(200, cancellationToken).ConfigureAwait(false);
         }
 
-        throw new TimeoutException(
+        return new TimeoutException(
             $"Live Dekaf consumer did not observe post-heal message {firstPostHealMessageId:N0}.");
     }
 
@@ -571,6 +574,11 @@ internal static class FaultInjectionRunner
         var newline = text.IndexOfAny(['\r', '\n']);
         return newline < 0 ? text : text[..newline];
     }
+
+    private static bool IsAllowedFailure(
+        FaultWindowRunResult window,
+        IReadOnlySet<string> allowedFailureWindows) =>
+        window.LiveConsumerRecoveryFailed && allowedFailureWindows.Contains(window.Name);
 
     private sealed record ProducerOutcome(long AcceptedMessages, long FirstPostHealMessageId);
 

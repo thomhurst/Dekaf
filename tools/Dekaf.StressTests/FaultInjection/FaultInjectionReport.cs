@@ -45,6 +45,7 @@ internal sealed class FaultWindowRunResult
     public long BrokerDeliveredMessages { get; set; }
     public long OracleConsumedMessages { get; set; }
     public long LiveConsumerMessages { get; set; }
+    public bool LiveConsumerRecoveryFailed { get; set; }
     public long UnexplainedLoss { get; set; }
     public long Duplicates { get; set; }
     public long OracleCountMismatch { get; set; }
