@@ -33,6 +33,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // to defeat assignment ABA (A -> B -> A with the same final set).
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
+    // Assignment publication and revocation history form one snapshot. Rebalance callbacks
+    // run only after this lock is released so user code cannot extend its critical section.
+    private readonly Lock _assignmentStateLock = new();
     private IRebalanceListener? _runtimeRebalanceListener;
     private readonly ILogger _logger;
 
@@ -98,29 +101,33 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
 
-    internal HashSet<TopicPartition>? DrainRevokedPartitionsSinceLastSync()
+    internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
+        GetAssignmentSnapshotAndDrainRevocations()
     {
-        HashSet<TopicPartition>? revoked = null;
-        while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+        lock (_assignmentStateLock)
         {
-            (revoked ??= []).Add(partition);
-        }
+            HashSet<TopicPartition>? revoked = null;
+            while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+            {
+                (revoked ??= []).Add(partition);
+            }
 
-        return revoked;
+            return (_assignedPartitions, Volatile.Read(ref _assignmentVersion), revoked);
+        }
     }
 
     internal void RestoreRevokedPartitionsSinceLastSync(HashSet<TopicPartition> revoked)
     {
-        foreach (var partition in revoked)
-            _revokedPartitionsSinceLastSync.Enqueue(partition);
+        lock (_assignmentStateLock)
+        {
+            EnqueueRevokedPartitions(revoked);
+        }
     }
 
-    private void TrackRevokedPartitions(IReadOnlyList<TopicPartition> revoked)
+    private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked)
     {
         foreach (var partition in revoked)
             _revokedPartitionsSinceLastSync.Enqueue(partition);
-
-        _onPartitionsRevoked?.Invoke(revoked);
     }
 
     internal IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener)
@@ -745,13 +752,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         _memberId = null;
         _generationId = -1;
-        _assignedPartitions = [];
         _state = CoordinatorState.Unjoined;
-        if (revoked is not null)
+        lock (_assignmentStateLock)
         {
-            Interlocked.Increment(ref _assignmentVersion);
-            TrackRevokedPartitions(revoked);
+            _assignedPartitions = [];
+            if (revoked is not null)
+            {
+                Interlocked.Increment(ref _assignmentVersion);
+                EnqueueRevokedPartitions(revoked);
+            }
         }
+
+        if (revoked is not null)
+            _onPartitionsRevoked?.Invoke(revoked);
     }
 
     /// <summary>
@@ -1021,11 +1034,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
-            _assignedPartitions = newAssignment;
-            Interlocked.Increment(ref _assignmentVersion);
+            lock (_assignmentStateLock)
+            {
+                _assignedPartitions = newAssignment;
+                Interlocked.Increment(ref _assignmentVersion);
+
+                if (revoked is not null)
+                    EnqueueRevokedPartitions(revoked);
+            }
 
             if (revoked is not null)
-                TrackRevokedPartitions(revoked);
+                _onPartitionsRevoked?.Invoke(revoked);
 
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }

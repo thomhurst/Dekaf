@@ -817,6 +817,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _assignmentEnsureVersion;
     private int _lastManualAssignmentEnsureVersion = -1;
     private int _lastCoordinatorAssignmentVersion = -1;
+    // Deterministic test seam for assignment/revocation snapshot races.
+    internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -3965,9 +3967,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             coordinator = _coordinator;
             if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
             {
-                var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
-                var coordinatorAssignment = coordinator.Assignment;
-                var coordinatorRevocations = coordinator.DrainRevokedPartitionsSinceLastSync();
+                BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
+                var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
+                    coordinator.GetAssignmentSnapshotAndDrainRevocations();
                 if (coordinatorRevocations is not null)
                 {
                     unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);

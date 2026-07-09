@@ -255,6 +255,39 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task EnsureAssignmentAsync_AssignmentChangesBeforeRevocationDrain_UsesMatchingSnapshot()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var coordinator = GetCoordinator(consumer);
+        var revokedPartition = new TopicPartition("test-topic", 0);
+        var assignedPartition = new TopicPartition("test-topic", 1);
+        InvalidateCoordinatorAssignmentSnapshot(consumer);
+        consumer.BeforeCoordinatorAssignmentSnapshotForTest = () =>
+        {
+            consumer.BeforeCoordinatorAssignmentSnapshotForTest = null;
+            ProcessCoordinatorAssignment(coordinator, CreateAssignment(1));
+        };
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(consumer.Assignment).DoesNotContain(revokedPartition);
+        await Assert.That(consumer.Assignment).Contains(assignedPartition);
+        await Assert.That(GetFetchPositions(consumer)[assignedPartition]).IsEqualTo(20L);
+    }
+
+    [Test]
     public async Task CoordinatorRevocationFetchClear_ConcurrentQueueAndDrain_KeepsPendingFlagConsistent()
     {
         await using var consumer = CreateConsumer();
@@ -747,6 +780,28 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_coordinator field not found.");
 
         return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static void InvalidateCoordinatorAssignmentSnapshot(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_lastCoordinatorAssignmentVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_lastCoordinatorAssignmentVersion field not found.");
+
+        field.SetValue(consumer, -1);
+    }
+
+    private static void ProcessCoordinatorAssignment(
+        ConsumerCoordinator coordinator,
+        ConsumerGroupHeartbeatAssignment assignment)
+    {
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "ProcessConsumerGroupAssignment",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment method not found.");
+
+        method.Invoke(coordinator, [assignment]);
     }
 
     private static PendingFetchData CreateFetch(int partition, long baseOffset, string value)
