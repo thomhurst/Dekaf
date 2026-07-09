@@ -218,8 +218,11 @@ internal static class FaultInjectionRunner
                 throw;
             }
 
-            await producer.DisposeAsync().ConfigureAwait(false);
+            var producerToDispose = producer;
             producer = null;
+            await AwaitProducerDisposalAsync(
+                producerToDispose.DisposeAsync(),
+                StressTestHelpers.OperationTimeout).ConfigureAwait(false);
 
             result.AcceptedMessages = producerOutcome.AcceptedMessages;
             result.DeliveryErrors = deliveryErrors.Count;
@@ -354,9 +357,29 @@ internal static class FaultInjectionRunner
             _ = await AwaitLiveConsumerShutdownAsync(liveConsumerTask).ConfigureAwait(false);
             if (producer is not null)
             {
-                try { await producer.DisposeAsync().ConfigureAwait(false); }
+                try
+                {
+                    await AwaitProducerDisposalAsync(
+                        producer.DisposeAsync(),
+                        StressTestHelpers.OperationTimeout).ConfigureAwait(false);
+                }
                 catch (Exception ex) { Console.WriteLine($"  Producer cleanup failed: {ex.Message}"); }
             }
+        }
+    }
+
+    internal static async Task AwaitProducerDisposalAsync(ValueTask disposal, TimeSpan timeout)
+    {
+        try
+        {
+            await disposal.AsTask()
+                .WaitAsync(timeout, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            throw new TimeoutException(
+                $"Producer disposal did not complete within {timeout.TotalSeconds:N0} seconds.",
+                ex);
         }
     }
 

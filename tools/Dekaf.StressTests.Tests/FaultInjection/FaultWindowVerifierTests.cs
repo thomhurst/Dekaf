@@ -220,6 +220,20 @@ public class FaultWindowVerifierTests
     }
 
     [Test]
+    public async Task AwaitProducerDisposalAsync_IncompleteDispose_ThrowsTimeout()
+    {
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var action = () => FaultInjectionRunner.AwaitProducerDisposalAsync(
+            new ValueTask(pending.Task),
+            TimeSpan.Zero);
+
+        await Assert.That(action)
+            .Throws<TimeoutException>()
+            .WithMessageContaining("Producer disposal did not complete");
+    }
+
+    [Test]
     [Arguments(1, false)]
     [Arguments(2, true)]
     [Arguments(4, true)]
