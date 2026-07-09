@@ -41,7 +41,8 @@
 #
 # Lock-name resolution (renew/release/status): -LockName is OPTIONAL there. When
 # omitted it is resolved from, in order: (1) a marker persisted in the current
-# worktree's git config (`agent.lockName`), which `acquire`/`renew -Worktree` writes;
+# worktree's per-worktree git config (`agent.lockName`), which
+# `acquire`/`renew -Worktree` writes after enabling `extensions.worktreeConfig`;
 # then (2) an `issue-<N>-*` branch name -> `issue-<N>`. `acquire` still REQUIRES an
 # explicit name (or an `issue-<N>-*` branch): it runs before the worktree exists, and
 # a PR lock's number (`pr-<N>`) is not derivable from the branch (`issue-<M>-...`).
@@ -76,11 +77,31 @@ $stateDir = Join-Path ([System.IO.Path]::GetTempPath()) 'dekaf-agent-locks'
 
 function Die([int]$code, [string]$msg) { if ($msg) { [Console]::Error.WriteLine($msg) }; exit $code }
 
+function Get-WorktreeLockMarker {
+    # `git config --worktree` aliases shared local config until this extension is
+    # enabled. Skip legacy shared markers entirely so they cannot shadow issue branch
+    # derivation; every marker written by this version enables the extension first.
+    $enabled = (git config --local --bool --get extensions.worktreeConfig 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $enabled -or $enabled.Trim() -ne 'true') { return $null }
+
+    $marker = (git config --worktree --get agent.lockName 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $marker) { return $marker.Trim() }
+    return $null
+}
+
+function Set-WorktreeLockMarker([string]$Path) {
+    # Linked worktrees share --local config. Enable the extension in that common
+    # config, then persist the marker in the target worktree's config.worktree file.
+    git -C $Path config --local extensions.worktreeConfig true 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { return }
+    git -C $Path config --worktree agent.lockName $LockName 2>$null | Out-Null
+}
+
 function Resolve-LockName([string]$Explicit) {
     if ($Explicit) { return $Explicit }
     # 1. marker persisted in the current worktree by a prior `acquire`/`renew -Worktree`.
-    $cfg = (git config --local --get agent.lockName 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $cfg) { return $cfg.Trim() }
+    $marker = Get-WorktreeLockMarker
+    if ($marker) { return $marker }
     # 2. derive issue-<N> from an issue-<N>-<desc> branch (never yields pr-<N>).
     $branch = (git rev-parse --abbrev-ref HEAD 2>$null)
     if ($LASTEXITCODE -eq 0 -and $branch -match '^issue-(\d+)-') { return "issue-$($Matches[1])" }
@@ -149,7 +170,7 @@ switch ($Verb) {
         New-Item -ItemType Directory -Force $stateDir | Out-Null
         Set-Content -LiteralPath $tokenFile -Value $token -NoNewline
         # If the worktree already exists at acquire time, write the auto-derive marker.
-        if ($Worktree) { git -C $Worktree config --local agent.lockName $LockName 2>$null | Out-Null }
+        if ($Worktree) { Set-WorktreeLockMarker $Worktree }
         Write-Output $token
         exit 0
     }
@@ -164,7 +185,7 @@ switch ($Verb) {
         if ((Redis EVAL $script 2 $lockKey $metaKey $token $lockTtlSeconds (New-Meta $token)) -ne '1') {
             Die 4 'LOST'
         }
-        if ($Worktree) { git -C $Worktree config --local agent.lockName $LockName 2>$null | Out-Null }
+        if ($Worktree) { Set-WorktreeLockMarker $Worktree }
         exit 0
     }
 
