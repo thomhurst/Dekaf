@@ -251,8 +251,8 @@ internal static class StressTestHelpers
     /// in 30 seconds against a healthy broker means the producer is stuck, and any
     /// still-buffered messages will surface as undelivered loss.
     /// </summary>
-    internal static async Task FlushWithTimeoutAsync(
-        IKafkaProducer<string, string> producer,
+    internal static async Task FlushWithTimeoutAsync<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer,
         ThroughputTracker throughput)
     {
         try

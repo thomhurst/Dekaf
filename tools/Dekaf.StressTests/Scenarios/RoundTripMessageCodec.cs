@@ -335,6 +335,12 @@ internal sealed class RoundTripValidator
         }
     }
 
+    public void RecordUnexpected()
+    {
+        _consumedMessages++;
+        _unexpectedMessages++;
+    }
+
     public RoundTripValidationSnapshot CreateSnapshot(bool timedOut)
     {
         var expectedMessages = _expectedPerPartition.Sum();

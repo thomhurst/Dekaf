@@ -85,7 +85,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                 }
             }
 
-            await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
         }
 
         var endOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
@@ -153,6 +153,10 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                 if (completion.Record(partition, record.Offset))
                 {
                     validator.Record(record.Key, record.Value, partition, record.Offset);
+                }
+                else
+                {
+                    validator.RecordUnexpected();
                 }
 
                 if (completion.IsComplete)
@@ -356,6 +360,10 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 if (completion.Record(partition, offset))
                 {
                     validator.Record(record.Message.Key, record.Message.Value, partition, offset);
+                }
+                else
+                {
+                    validator.RecordUnexpected();
                 }
             }
             catch (ConfluentKafka.ConsumeException ex)

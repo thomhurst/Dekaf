@@ -122,6 +122,22 @@ public class RoundTripMessageCodecTests
     }
 
     [Test]
+    public async Task Validator_RecordUnexpected_CountsOutOfWindowRecordAsFailure()
+    {
+        var factory = new RoundTripMessageFactory("unexpected-run", partitionCount: 1, payloadSize: 128);
+        _ = factory.Create(partition: 0);
+        var validator = new RoundTripValidator(factory.ExpectedPerPartition);
+
+        validator.RecordUnexpected();
+
+        var snapshot = validator.CreateSnapshot(timedOut: false);
+        await Assert.That(snapshot.ConsumedMessages).IsEqualTo(1);
+        await Assert.That(snapshot.UnexpectedMessages).IsEqualTo(1);
+        await Assert.That(snapshot.MissingMessages).IsEqualTo(1);
+        await Assert.That(snapshot.IsSuccess).IsFalse();
+    }
+
+    [Test]
     public async Task CompletionTracker_HandlesEmptyRangesAndUnexpectedPartitions()
     {
         var tracker = new RoundTripCompletionTracker(
