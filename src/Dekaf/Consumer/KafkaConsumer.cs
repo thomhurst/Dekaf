@@ -998,6 +998,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Initialize adaptive connection scaler if configured (before coordinator, which needs the connection count)
         if (options.EnableAdaptiveConnections && options.MaxConnectionsPerBroker > options.ConnectionsPerBroker)
         {
+            // Shared consumers may narrow local fetch routing, but cannot retire sockets
+            // that sibling clients still use from the shared connection pool.
             _connectionScaler = new ConsumerConnectionScaler(
                 initialConnectionCount: options.ConnectionsPerBroker,
                 maxConnectionCount: options.MaxConnectionsPerBroker,
@@ -1007,12 +1009,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     foreach (var broker in _metadataManager.Metadata.GetBrokers())
                         await _connectionPool.ScaleConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
                 },
-                scaleDownAsync: async ct =>
-                {
-                    var newCount = _connectionScaler!.CurrentConnectionCount;
-                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
-                        await _connectionPool.ShrinkConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
-                },
+                scaleDownAsync: ownsInfrastructure
+                    ? ScaleDownOwnedConnectionGroupsAsync
+                    : static _ => ValueTask.CompletedTask,
                 logError: ex => _logger.LogWarning(ex, "Adaptive connection scaling operation failed"));
         }
 
@@ -1045,6 +1044,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
+    }
+
+    private async ValueTask ScaleDownOwnedConnectionGroupsAsync(CancellationToken cancellationToken)
+    {
+        var newCount = _connectionScaler!.CurrentConnectionCount;
+        foreach (var broker in _metadataManager.Metadata.GetBrokers())
+        {
+            var removedConnection = await _connectionPool.ShrinkConnectionGroupAsync(
+                broker.NodeId,
+                newCount,
+                cancellationToken).ConfigureAwait(false);
+            if (removedConnection is null)
+                continue;
+
+            await DrainAndDisposeRetiredConnectionAsync(
+                removedConnection,
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async ValueTask DrainAndDisposeRetiredConnectionAsync(
+        IKafkaConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Shrink removed the connection from pool routing. Let requests that already
+            // hold its reference finish before transferring final disposal ownership.
+            while (connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 })
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     public StringSet Subscription => _subscriptionSnapshot;
@@ -6278,6 +6312,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Ignore — task may not exit promptly after cancellation
             }
         }
+
+        if (_connectionScaler is not null)
+            await _connectionScaler.StopAndDrainAsync().ConfigureAwait(false);
 
         autoCommitCts?.Dispose();
         prefetchCts?.Dispose();

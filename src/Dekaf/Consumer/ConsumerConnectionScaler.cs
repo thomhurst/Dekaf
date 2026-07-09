@@ -25,12 +25,15 @@ internal sealed class ConsumerConnectionScaler
     private readonly Func<CancellationToken, ValueTask> _scaleUpAsync;
     private readonly Func<CancellationToken, ValueTask> _scaleDownAsync;
     private readonly Action<Exception>? _logError;
+    private readonly object _operationLock = new();
+    private readonly HashSet<Task> _pendingOperations = [];
 
     private int _currentConnectionCount;
     private long _saturationStartTimestamp;
     private long _lowUtilizationStartTimestamp;
     private long _lastScaleTimestamp;
     private long _testTimeOffsetTicks;
+    private int _stopping;
 
     public int CurrentConnectionCount => Interlocked.CompareExchange(ref _currentConnectionCount, 0, 0);
 
@@ -88,6 +91,9 @@ internal sealed class ConsumerConnectionScaler
     /// </summary>
     public void MaybeScale()
     {
+        if (Volatile.Read(ref _stopping) != 0)
+            return;
+
         var now = GetTimestamp();
 
         if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
@@ -125,15 +131,57 @@ internal sealed class ConsumerConnectionScaler
 
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
     {
-        var task = action(CancellationToken.None);
-        if (task.IsCompletedSuccessfully)
+        Task operationTask;
+        lock (_operationLock)
+        {
+            if (_stopping != 0)
+                return;
+
+            var operation = action(CancellationToken.None);
+            if (operation.IsCompletedSuccessfully)
+                return;
+
+            operationTask = operation.AsTask();
+            _pendingOperations.Add(operationTask);
+        }
+
+        _ = operationTask.ContinueWith(
+            static (task, state) => ((ConsumerConnectionScaler)state!).ObserveCompletedOperation(task),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void ObserveCompletedOperation(Task task)
+    {
+        lock (_operationLock)
+            _pendingOperations.Remove(task);
+
+        if (task.Exception is not null)
+            _logError?.Invoke(task.Exception.InnerException ?? task.Exception);
+    }
+
+    internal async ValueTask StopAndDrainAsync()
+    {
+        Task[] pendingOperations;
+        lock (_operationLock)
+        {
+            Volatile.Write(ref _stopping, 1);
+            pendingOperations = [.. _pendingOperations];
+        }
+
+        if (pendingOperations.Length == 0)
             return;
 
-        task.AsTask().ContinueWith(static (t, state) =>
+        try
         {
-            if (t.Exception is not null)
-                ((Action<Exception>?)state)?.Invoke(t.Exception.InnerException ?? t.Exception);
-        }, _logError, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            await Task.WhenAll(pendingOperations).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Each operation's continuation observes and logs its exception.
+        }
     }
 
     /// <summary>
