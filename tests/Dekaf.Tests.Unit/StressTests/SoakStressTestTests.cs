@@ -1,10 +1,76 @@
 #if NET10_0
+using Dekaf.Producer;
+using Dekaf.StressTests.Diagnostics;
+using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.StressTests;
 
 public sealed class SoakStressTestTests
 {
+    [Test]
+    public async Task TrackMeasurementProgress_StallCapturesSoakProducerDiagnostics()
+    {
+        var outputDirectory = Path.Combine(Path.GetTempPath(), $"dekaf-soak-watchdog-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+
+        try
+        {
+            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var throughput = new ThroughputTracker();
+            throughput.Start();
+
+            using var watchdog = new ProgressWatchdog(
+                outputDirectory,
+                captureAfter: TimeSpan.FromMilliseconds(20),
+                exitAfter: TimeSpan.FromMilliseconds(60),
+                pollInterval: TimeSpan.FromMilliseconds(10),
+                exitProcess: code => exited.TrySetResult(code),
+                captureManagedStackReport: () => "fake managed stack");
+            using var registration = new SoakStressTest().TrackMeasurementProgress(
+                watchdog,
+                throughput,
+                () => new ProducerDeliveryDiagnosticsSnapshot
+                {
+                    DiagnosticsEnabled = true,
+                    CapturedAtUtc = DateTimeOffset.UtcNow
+                });
+
+            await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var producerArtifact = Directory.GetFiles(
+                Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName),
+                "*-fatal-producer.json").Single();
+            var contents = await File.ReadAllTextAsync(producerArtifact);
+            await Assert.That(contents).Contains("\"scenario\": \"soak\"");
+            await Assert.That(contents).Contains("\"diagnosticsEnabled\": true");
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task DisposeWithTimeoutAsync_WhenProducerHangs_RecordsError()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        var disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        producer.DisposeAsync().Returns(new ValueTask(disposeCompletion.Task));
+        var throughput = new ThroughputTracker();
+
+        await StressTestHelpers.DisposeWithTimeoutAsync(
+            producer,
+            throughput,
+            TimeSpan.FromMilliseconds(20));
+        disposeCompletion.TrySetResult();
+
+        var snapshot = throughput.GetSnapshot();
+        await Assert.That(snapshot.TotalErrors).IsEqualTo(1);
+        await Assert.That(snapshot.ErrorSamples.Single().ExceptionType).IsEqualTo("DisposeTimeout");
+    }
+
     [Test]
     [Arguments(1_000L, 1_000L, true)]
     [Arguments(1_000L, 999L, false)]

@@ -4,6 +4,7 @@ using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 
@@ -69,7 +70,7 @@ internal sealed class SoakStressTest : IStressTestScenario
 
         StressTestHelpers.ConfigureProducerDeliveryDiagnostics(producerBuilder, options);
         var producer = await producerBuilder.BuildAsync(cancellationToken);
-        var producerDisposed = false;
+        var producerDisposeAttempted = false;
 
         try
         {
@@ -107,12 +108,18 @@ internal sealed class SoakStressTest : IStressTestScenario
             var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, measurementCts.Token);
             var monitorTask = monitor.RunAsync(measurementCts.Token);
 
-            await RunPacedProducerAsync(
-                producer,
-                options,
-                messageValue,
-                throughput,
-                measurementCts.Token).ConfigureAwait(false);
+            using (var measurementWatchdog = TrackMeasurementProgress(
+                       options.ProgressWatchdog,
+                       throughput,
+                       () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)))
+            {
+                await RunPacedProducerAsync(
+                    producer,
+                    options,
+                    messageValue,
+                    throughput,
+                    measurementCts.Token).ConfigureAwait(false);
+            }
 
             try
             {
@@ -145,8 +152,8 @@ internal sealed class SoakStressTest : IStressTestScenario
 
             var completedAt = DateTime.UtcNow;
             var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
-            await producer.DisposeAsync().ConfigureAwait(false);
-            producerDisposed = true;
+            producerDisposeAttempted = true;
+            await StressTestHelpers.DisposeWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
 
             var endOffset = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
                 options.BootstrapServers,
@@ -213,12 +220,18 @@ internal sealed class SoakStressTest : IStressTestScenario
             consumerCts.Cancel();
             await consumerTask.ConfigureAwait(false);
 
-            if (!producerDisposed)
+            if (!producerDisposeAttempted)
             {
-                await producer.DisposeAsync().ConfigureAwait(false);
+                await StressTestHelpers.DisposeWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
             }
         }
     }
+
+    internal IDisposable TrackMeasurementProgress(
+        ProgressWatchdog watchdog,
+        ThroughputTracker throughput,
+        Func<ProducerDeliveryDiagnosticsSnapshot?> captureProducerDiagnostics) =>
+        watchdog.Track(throughput, Client, Name, captureProducerDiagnostics);
 
     internal static bool IsBrokerDeliveryExact(long acceptedMessages, long deliveredMessages) =>
         acceptedMessages == deliveredMessages;
