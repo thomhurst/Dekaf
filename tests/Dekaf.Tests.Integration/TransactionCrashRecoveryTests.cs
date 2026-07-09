@@ -8,6 +8,26 @@ namespace Dekaf.Tests.Integration;
 public sealed class TransactionCrashRecoveryTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task TerminateAsync_ProcessExitsBeforeKill_CompletesSuccessfully()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var crashClient = TransactionalCrashClientProcess.Start(
+            KafkaContainer.BootstrapServers,
+            topic,
+            $"crash-exit-race-{Guid.NewGuid():N}",
+            "crashed-key",
+            "crashed-value");
+        await crashClient.WaitUntilReadyAsync(TimeSpan.FromSeconds(45));
+        crashClient.BeforeForceTerminateForTestAsync = async process =>
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+        };
+
+        await crashClient.TerminateAsync();
+    }
+
+    [Test]
     public async Task ForceTerminatedProducer_ReplacementAbortsDanglingTransaction()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();

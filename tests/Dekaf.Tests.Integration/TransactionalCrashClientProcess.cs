@@ -20,6 +20,8 @@ internal sealed class TransactionalCrashClientProcess : IAsyncDisposable
     private readonly string _readyPath;
     private readonly BoundedProcessDiagnostics _diagnostics;
 
+    internal Func<Process, Task>? BeforeForceTerminateForTestAsync { get; set; }
+
     private TransactionalCrashClientProcess(
         Process process,
         string readyPath,
@@ -125,6 +127,11 @@ internal sealed class TransactionalCrashClientProcess : IAsyncDisposable
 
     private async Task ForceTerminateAsync()
     {
+        if (BeforeForceTerminateForTestAsync is not null)
+        {
+            await BeforeForceTerminateForTestAsync(_process);
+        }
+
         _process.Kill(entireProcessTree: true);
 
         using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(10));
