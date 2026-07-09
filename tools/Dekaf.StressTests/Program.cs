@@ -107,20 +107,28 @@ public static class Program
         string? transactionalTopic = null;
 
         var replicationFactor = Math.Min(options.Brokers, 3);
+        var replayTopicConfigs = new Dictionary<string, string>
+        {
+            ["retention.ms"] = "-1",
+            ["retention.bytes"] = "-1"
+        };
         await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
         if (options.Scenario is "all" or "producer-transactional")
         {
             transactionalTopic = $"stress-transactional-{Guid.NewGuid():N}";
-            await kafka.CreateTopicAsync(transactionalTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
+            await kafka.CreateTopicAsync(
+                transactionalTopic,
+                options.Partitions,
+                replicationFactor,
+                replayTopicConfigs).ConfigureAwait(false);
         }
-        // Consumer scenarios re-read the seeded data set in a loop for the full duration.
-        // Broker-level retention (tuned to bound producer-topic disk usage) must not
-        // delete it mid-run, so retention is disabled at the topic level.
-        await kafka.CreateTopicAsync(consumerTopic, options.Partitions, replicationFactor, new Dictionary<string, string>
-        {
-            ["retention.ms"] = "-1",
-            ["retention.bytes"] = "-1"
-        }).ConfigureAwait(false);
+        // Transaction verification reads from earliest after the workload, while consumer
+        // scenarios replay their seeded data. Broker retention must not delete either data set.
+        await kafka.CreateTopicAsync(
+            consumerTopic,
+            options.Partitions,
+            replicationFactor,
+            replayTopicConfigs).ConfigureAwait(false);
 
         if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "all")
         {
