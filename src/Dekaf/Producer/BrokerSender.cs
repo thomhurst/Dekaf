@@ -374,8 +374,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     // Per-connection pending responses. Each list tracks in-flight requests for one connection.
-    // Single-threaded: only accessed by the send loop. Resized by adaptive connection scaling.
-    private List<PendingResponse>[] _pendingResponsesByConnection;
+    // Single-threaded: only accessed by the send loop. Pre-sized at the scaling ceiling.
+    private readonly List<PendingResponse>[] _pendingResponsesByConnection;
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
     // Must be thread-safe: with multi-connection sends, multiple Z handlers (catch blocks)
@@ -448,12 +448,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // All producers use partition affinity (partition % N) for CPU cache locality.
     // Idempotent producers additionally require affinity for per-partition sequence ordering;
     // during scaling, _migratingPartitions overrides the modulo to preserve ordering.
-    private IKafkaConnection?[] _pinnedConnections;
+    private readonly IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
     private readonly bool _isIdempotent;
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
+    private readonly bool _canPhysicallyShrinkConnections;
     private readonly int _minConnectionCount; // Initial ConnectionsPerBroker — never scale below this
     private readonly int _maxConnectionsPerBroker;
     private long _lastPressureSnapshot;
@@ -565,7 +566,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<short>? getCurrentEpoch,
         Action<ReadyBatch, int>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
-        ILogger? logger)
+        ILogger? logger,
+        bool canPhysicallyShrinkConnections = true)
     {
         _brokerId = brokerId;
         _connectionPool = connectionPool;
@@ -607,6 +609,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers additionally need affinity for sequence ordering.
         // Transactions are excluded because coordinator requests require a single connection.
         _adaptiveScalingEnabled = options.EnableAdaptiveConnections && options.TransactionalId is null;
+        _canPhysicallyShrinkConnections = canPhysicallyShrinkConnections;
         _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
         _scaleCooldownMs = options.ScaleCooldownMsOverride ?? ScaleCooldownMs;
@@ -771,12 +774,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void RerouteRejectedBatch(ReadyBatch batch, int expectedGeneration)
     {
-        if (_redeliverAfterLoopExit
-            && Volatile.Read(ref _disposed) == 0
-            && _rerouteBatch is not null)
+        if (_redeliverAfterLoopExit && _rerouteBatch is not null)
         {
             try
             {
+                // KafkaProducer disposes a crashed sender as soon as its first survivor
+                // creates the replacement. Callers that already captured this sender can
+                // still race in afterward; they must follow that same replacement path.
+                // Producer disposal is guarded by the reroute callback itself.
                 _rerouteBatch(batch, expectedGeneration);
                 return;
             }
@@ -3688,25 +3693,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Observe any in-flight shrink task and dispose the draining connection.
         // After the send loop exits, these won't be polled by MaybeScaleConnections.
-        if (_pendingShrinkTask is not null)
+        if (_pendingShrinkTask is { } pendingShrinkTask)
         {
-            if (_pendingShrinkTask.Status == TaskStatus.RanToCompletion)
-            {
-                var removedConn = _pendingShrinkTask.Result;
-                if (removedConn is not null)
-                {
-                    try { await removedConn.DisposeAsync().ConfigureAwait(false); }
-                    catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
-                }
-            }
-            else if (_pendingShrinkTask.IsFaulted)
-            {
-                // Observe the exception to prevent UnobservedTaskException
-                LogBatchCleanupStepFailed(
-                    _pendingShrinkTask.Exception!.InnerException ?? _pendingShrinkTask.Exception, _brokerId);
-            }
-
             _pendingShrinkTask = null;
+            if (pendingShrinkTask.IsCompleted)
+            {
+                await DisposeShrinkResultAsync(pendingShrinkTask).ConfigureAwait(false);
+            }
+            else
+            {
+                // A test double or custom pool may ignore the cancelled lifetime token.
+                // Keep ownership of any connection removed after disposal returns.
+                _ = DisposeShrinkResultAsync(pendingShrinkTask);
+            }
         }
 
         if (_drainingConnection is not null)
@@ -3756,6 +3755,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _cts.Dispose();
         _anyResponseCompleted.Dispose();
+    }
+
+    private async Task DisposeShrinkResultAsync(Task<IKafkaConnection?> shrinkTask)
+    {
+        try
+        {
+            var removedConnection = await shrinkTask.ConfigureAwait(false);
+            if (removedConnection is not null)
+                await removedConnection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when sender lifetime cancellation reaches pool shrink.
+        }
+        catch (Exception ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
+        }
     }
 
     private async Task ObserveMetadataRefreshAsync(string topic, CancellationToken cancellationToken)
@@ -3951,6 +3968,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _lastScaleTimeTicks = now;
         _lowUtilizationStartTicks = 0; // Reset for the next scale-down cycle
+
+        // KafkaClient shares one ConnectionPool across producers, consumers, and admin
+        // clients. This sender can reduce its own routing width, but cannot prove the
+        // shared pool slot is idle for every owner and therefore must not remove it.
+        if (!_canPhysicallyShrinkConnections)
+        {
+            _pinnedConnections[targetShrinkCount] = null;
+            LogAdaptiveScaleDown(_brokerId, targetShrinkCount + 1, targetShrinkCount);
+            return targetShrinkCount;
+        }
+
         _pendingShrinkTask = _connectionPool.ShrinkConnectionGroupAsync(
             _brokerId, targetShrinkCount, _cts.Token).AsTask();
 

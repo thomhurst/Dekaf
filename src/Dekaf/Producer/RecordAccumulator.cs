@@ -6028,6 +6028,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             'H' => "BrokerSender.HandleRetriableBatch",
             'T' => "BrokerSender.HandleTimedOutRequest",
             'Z' => "BrokerSender.SendFailed",
+            'Y' => "BrokerSender.LoopExitRedelivery",
             'F' => "BrokerSender.FailAndCleanupBatch",
             'X' => "RecordAccumulator.OnBatchExitsPipeline",
             _ => "unknown"

@@ -2811,7 +2811,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             getCurrentEpoch: useEpochRecovery ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
-            _logger);
+            _logger,
+            canPhysicallyShrinkConnections: _ownsInfrastructure);
     }
 
     /// <summary>

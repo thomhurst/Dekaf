@@ -96,7 +96,8 @@ public sealed class AdaptiveScaleDownTests
         ProducerOptions options,
         RecordAccumulator accumulator,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
-        Action<ReadyBatch, int>? rerouteBatch = null) =>
+        Action<ReadyBatch, int>? rerouteBatch = null,
+        bool canPhysicallyShrinkConnections = true) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -111,7 +112,8 @@ public sealed class AdaptiveScaleDownTests
             getCurrentEpoch: null,
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
-            logger: null);
+            logger: null,
+            canPhysicallyShrinkConnections: canPhysicallyShrinkConnections);
 
     /// <summary>
     /// Drives a full scale-up → scale-down cycle through the live send loop with an
@@ -295,6 +297,86 @@ public sealed class AdaptiveScaleDownTests
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task SharedInfrastructure_DoesNotShrinkConnectionGroup()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            scaleDownSustainedMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
+
+        try
+        {
+            typeof(BrokerSender).GetField(
+                "_connectionCount",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(sender, 2);
+
+            var maybeScaleConnections = typeof(BrokerSender).GetMethod(
+                "MaybeScaleConnections",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+            // First pass starts low-utilization tracking; zero sustained window makes
+            // the second pass eligible to shrink if shared-pool protection is absent.
+            maybeScaleConnections.Invoke(sender, null);
+            maybeScaleConnections.Invoke(sender, null);
+
+            var connectionCount = (int)typeof(BrokerSender).GetField(
+                "_connectionCount",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(sender)!;
+
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+            await Assert.That(connectionCount).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_LateShrinkCompletion_DisposesRemovedConnection(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var shrinkCompletion = new TaskCompletionSource<IKafkaConnection?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var removedConnection = new TestKafkaConnection();
+
+        typeof(BrokerSender).GetField(
+            "_pendingShrinkTask",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, shrinkCompletion.Task);
+
+        await sender.DisposeAsync();
+
+        shrinkCompletion.SetResult(removedConnection);
+        while (Volatile.Read(ref removedConnection.DisposeCalls) == 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
+
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
     }
 
     [Test]

@@ -133,6 +133,21 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
+    public async Task CreateDeliveryDiagnostic_LoopExitRedelivery_DescribesRecoverySource()
+    {
+        await using var accumulator = new RecordAccumulator(CreateOptions(enableDeliveryDiagnostics: true));
+        var batches = await AppendAndDrainBatchesAsync(accumulator);
+        var batch = batches[0];
+        batch.AppendDiag('Y');
+
+        var diagnostic = batch.CreateDeliveryDiagnostic(batch.Generation, batch.TopicPartition);
+
+        await Assert.That(diagnostic.LastTouchedBy).IsEqualTo("BrokerSender.LoopExitRedelivery");
+
+        CompleteAndReturn(accumulator, batches);
+    }
+
+    [Test]
     public async Task DiagTrace_KeepsMostRecentTransitionsWhenCapacityIsExceeded()
     {
         var batch = new ReadyBatch();

@@ -1048,7 +1048,7 @@ public sealed class BrokerSenderMuteOrderingTests
     /// </summary>
     [Test]
     [Timeout(30_000)]
-    public async Task UnexpectedLoopExit_RedeliveryPreemptsRejectedNewerBatch(CancellationToken ct)
+    public async Task UnexpectedLoopExit_AfterRetiredSenderDisposal_RedeliveryPreemptsRejectedNewerBatch(CancellationToken ct)
     {
         var responses = Enumerable.Range(0, 3)
             .Select(_ => new TaskCompletionSource<ProduceResponse>(
@@ -1112,8 +1112,12 @@ public sealed class BrokerSenderMuteOrderingTests
                 await Task.Yield();
             }
 
-            // This enqueue observes _loopExited and follows the rejected-enqueue handoff.
-            // The crash barrier/recovery references must keep it behind A and B.
+            // Production disposes the crashed sender as soon as the first survivor creates
+            // its replacement. A caller that already captured the old sender can still race
+            // in afterward; its rejected batch must follow the replacement handoff, not fail.
+            await exited.DisposeAsync();
+
+            // Crash recovery references must keep this newer batch behind A and B.
             exited.Enqueue(newer);
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
