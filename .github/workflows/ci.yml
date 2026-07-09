@@ -372,3 +372,8 @@ jobs:
       - name: Check Formatting
         run: dotnet format --verify-no-changes --verbosity diagnostic
         continue-on-error: true  # Format check is informational
+
+      - name: Run Stress Report Unit Tests
+        env:
+          PYTHONPATH: .github/scripts
+        run: python3 -m unittest discover -s .github/scripts -p 'test_stress_*.py'
