@@ -18,7 +18,7 @@ Strict message checks remain active for the entire run:
 - broker end-offset growth must equal client-accepted messages;
 - the consumer must catch up to every broker-delivered message after the producer drains.
 
-After a 60-minute warmup, linear regression is calculated over every one-minute sample. The run fails when any slope crosses its limit:
+After a 30-minute warmup, linear regression is calculated over every one-minute sample. The run fails when any slope crosses its limit:
 
 | Metric | Limit |
 |---|---:|
