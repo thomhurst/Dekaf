@@ -234,6 +234,27 @@ public class FaultWindowVerifierTests
     }
 
     [Test]
+    public async Task CompletePreFaultPhaseAsync_DrainsBeforeSignalingFault()
+    {
+        var flush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readyForFault = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var completion = FaultInjectionRunner.CompletePreFaultPhaseAsync(
+            new ValueTask(flush.Task),
+            acceptedMessages: 37,
+            readyForFault,
+            CancellationToken.None);
+
+        await Assert.That(readyForFault.Task.IsCompleted).IsFalse();
+
+        flush.SetResult();
+        var firstFaultMessageId = await completion;
+
+        await Assert.That(firstFaultMessageId).IsEqualTo(37);
+        await Assert.That(readyForFault.Task.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
     [Arguments(1, false)]
     [Arguments(2, true)]
     [Arguments(4, true)]

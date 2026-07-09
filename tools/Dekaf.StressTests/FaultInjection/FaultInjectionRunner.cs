@@ -12,6 +12,7 @@ namespace Dekaf.StressTests.FaultInjection;
 internal static class FaultInjectionRunner
 {
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ProducerFlushTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan RecoveryTimeout = TimeSpan.FromMinutes(1);
 
     internal static async Task<int> RunAsync(
@@ -383,6 +384,18 @@ internal static class FaultInjectionRunner
         }
     }
 
+    internal static async Task<long> CompletePreFaultPhaseAsync(
+        ValueTask producerFlush,
+        long acceptedMessages,
+        TaskCompletionSource readyForFault,
+        CancellationToken cancellationToken)
+    {
+        await producerFlush.AsTask()
+            .WaitAsync(ProducerFlushTimeout, cancellationToken).ConfigureAwait(false);
+        readyForFault.TrySetResult();
+        return acceptedMessages;
+    }
+
     private static async Task<ProducerOutcome> RunProducerLoadAsync(
         IKafkaProducer<string, string> producer,
         string topic,
@@ -403,8 +416,12 @@ internal static class FaultInjectionRunner
                 await ProduceOneAsync().ConfigureAwait(false);
             }
 
-            var firstFaultMessageId = accepted;
-            readyForFault.TrySetResult();
+            Console.WriteLine($"  Flushing {accepted:N0} pre-fault messages...");
+            var firstFaultMessageId = await CompletePreFaultPhaseAsync(
+                producer.FlushAsync(CancellationToken.None),
+                accepted,
+                readyForFault,
+                cancellationToken).ConfigureAwait(false);
             await faultActive.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             var duringFault = 0;
@@ -428,7 +445,7 @@ internal static class FaultInjectionRunner
             Console.WriteLine($"  Flushing {accepted:N0} accepted messages...");
             await producer.FlushAsync(CancellationToken.None)
                 .AsTask()
-                .WaitAsync(TimeSpan.FromMinutes(2), CancellationToken.None)
+                .WaitAsync(ProducerFlushTimeout, CancellationToken.None)
                 .ConfigureAwait(false);
             return new ProducerOutcome(accepted, firstFaultMessageId, firstPostHealMessageId);
         }
