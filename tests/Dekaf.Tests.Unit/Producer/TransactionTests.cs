@@ -139,6 +139,25 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task DisposeAsync_WhenAbortIsRejected_PreservesAbortableError()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            endTxnError: ErrorCode.InvalidTxnState);
+
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        await transaction.DisposeAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.InvalidTxnState);
+    }
+
+    [Test]
     public async Task InitTransactionsAsync_WithoutTransactionalId_Throws()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
