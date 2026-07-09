@@ -769,6 +769,60 @@ public class PooledValueTaskSourceTests
         batch.Reset();
     }
 
+    [Test]
+    public async Task ReadyBatchDoneTask_ResetBeforeContinuationConsumesResult_RemainsValid()
+    {
+        var batch = new ReadyBatch();
+        InitializeBatch(batch);
+
+        using var continuationStarted = new ManualResetEventSlim();
+        using var releaseContinuation = new ManualResetEventSlim();
+        using var continuationFinished = new ManualResetEventSlim();
+        var awaiter = batch.DoneTask.GetAwaiter();
+        Exception? continuationException = null;
+        var result = false;
+
+        awaiter.UnsafeOnCompleted(() =>
+        {
+            continuationStarted.Set();
+            releaseContinuation.Wait();
+            try
+            {
+                result = awaiter.GetResult();
+            }
+            catch (Exception exception)
+            {
+                continuationException = exception;
+            }
+            finally
+            {
+                continuationFinished.Set();
+            }
+        });
+
+        try
+        {
+            batch.CompleteDelivery();
+            await Assert.That(continuationStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            // Pool return resets ReadyBatch before an asynchronous DoneTask continuation
+            // necessarily consumes the result. The captured task must remain independent.
+            batch.Reset();
+            releaseContinuation.Set();
+
+            await Assert.That(continuationFinished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            if (continuationException is not null)
+                ExceptionDispatchInfo.Capture(continuationException).Throw();
+
+            await Assert.That(result).IsTrue();
+        }
+        finally
+        {
+            releaseContinuation.Set();
+            batch.Reset();
+        }
+    }
+
     private static async Task<T> CompleteWithoutRunningContinuationInlineAsync<T>(
         ValueTask<T> valueTask,
         Action complete)

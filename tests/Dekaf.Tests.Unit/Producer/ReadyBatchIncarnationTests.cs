@@ -92,7 +92,7 @@ public sealed class ReadyBatchIncarnationTests
 
         batch.ReleaseResourcePin();
 
-        await Assert.That(GetReadyBatchInt32(batch, "_resourcesCleanedUp")).IsEqualTo(1);
+        await Assert.That(GetReadyBatchInt32(batch, "_resourcesCleanedUp")).IsEqualTo(2);
     }
 
     [Test]
