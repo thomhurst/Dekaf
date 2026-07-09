@@ -109,6 +109,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return revoked;
     }
 
+    internal void RestoreRevokedPartitionsSinceLastSync(HashSet<TopicPartition> revoked)
+    {
+        foreach (var partition in revoked)
+            _revokedPartitionsSinceLastSync.Enqueue(partition);
+    }
+
     private void TrackRevokedPartitions(IReadOnlyList<TopicPartition> revoked)
     {
         foreach (var partition in revoked)

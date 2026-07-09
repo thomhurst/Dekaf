@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -216,6 +217,41 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_AbaInitializationFailure_RetriesRevocationRecovery()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupAssignmentAbaConsumerGroupHeartbeat(connection);
+        SetupOffsetFetchFailureAfterInitialAssignment(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var reassignedPartition = new TopicPartition("test-topic", 1);
+        var coordinator = GetCoordinator(consumer);
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        var exception = await Assert.That(async () =>
+                await consumer.EnsureAssignmentAsync(CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
+        await Assert.That(GetFetchPositions(consumer).ContainsKey(reassignedPartition)).IsFalse();
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(GetFetchPositions(consumer)[reassignedPartition]).IsEqualTo(20L);
     }
 
     [Test]
@@ -483,33 +519,58 @@ public sealed class ConsumerAssignmentFastPathTests
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static void SetupOffsetFetchFailureAfterInitialAssignment(IKafkaConnection connection)
+    {
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref callCount) == 2
+                ? ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "group-a",
+                            Topics = [],
+                            ErrorCode = ErrorCode.StaleMemberEpoch
+                        }
+                    ]
+                })
+                : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static OffsetFetchResponse CreateSuccessfulOffsetFetchResponse() => new()
+    {
+        ErrorCode = ErrorCode.None,
+        Topics =
+        [
+            new OffsetFetchResponseTopic
             {
-                ErrorCode = ErrorCode.None,
-                Topics =
+                Name = "test-topic",
+                Partitions =
                 [
-                    new OffsetFetchResponseTopic
+                    new OffsetFetchResponsePartition
                     {
-                        Name = "test-topic",
-                        Partitions =
-                        [
-                            new OffsetFetchResponsePartition
-                            {
-                                PartitionIndex = 0,
-                                CommittedOffset = 10,
-                                ErrorCode = ErrorCode.None
-                            },
-                            new OffsetFetchResponsePartition
-                            {
-                                PartitionIndex = 1,
-                                CommittedOffset = 20,
-                                ErrorCode = ErrorCode.None
-                            }
-                        ]
+                        PartitionIndex = 0,
+                        CommittedOffset = 10,
+                        ErrorCode = ErrorCode.None
+                    },
+                    new OffsetFetchResponsePartition
+                    {
+                        PartitionIndex = 1,
+                        CommittedOffset = 20,
+                        ErrorCode = ErrorCode.None
                     }
                 ]
-            }));
-    }
+            }
+        ]
+    };
 
     private static ConsumerGroupHeartbeatAssignment CreateAssignment(params int[] partitions)
     {

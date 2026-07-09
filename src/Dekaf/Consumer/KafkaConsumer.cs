@@ -3959,6 +3959,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // _assignment HashSet causes NullReferenceException during enumeration.
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
+        (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
         try
         {
             coordinator = _coordinator;
@@ -3967,6 +3968,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
                 var coordinatorAssignment = coordinator.Assignment;
                 var coordinatorRevocations = coordinator.DrainRevokedPartitionsSinceLastSync();
+                if (coordinatorRevocations is not null)
+                {
+                    unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
+                }
 
                 // Set equality alone is insufficient: the assignment can change away and back
                 // between polls. Unseen revocations require stale-fetch cleanup and position reset.
@@ -4046,6 +4051,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+                unacknowledgedCoordinatorRevocations = null;
             }
             else
             {
@@ -4076,6 +4082,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
+            // Position initialization and assignment-version publication acknowledge the drain.
+            // Restore on failure so the next sync repeats revocation cleanup and initialization.
+            if (unacknowledgedCoordinatorRevocations is { } revocations)
+                revocations.Coordinator.RestoreRevokedPartitionsSinceLastSync(revocations.Partitions);
+
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
     }
