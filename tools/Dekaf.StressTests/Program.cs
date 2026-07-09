@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Producer;
 using Dekaf.StressTests.Infrastructure;
 using Dekaf.StressTests.Metrics;
@@ -32,11 +33,21 @@ namespace Dekaf.StressTests;
 /// </summary>
 public static class Program
 {
+    private static readonly ConcurrentQueue<Exception> UnobservedTaskExceptions = new();
+
     public static async Task<int> Main(string[] args)
     {
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             Console.WriteLine($"UNHANDLED EXCEPTION: {e.ExceptionObject}");
+        };
+
+        // A task exception nobody awaited means a background failure escaped every
+        // error path — collected here and escalated to a run failure at the end.
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            UnobservedTaskExceptions.Enqueue(e.Exception);
+            e.SetObserved();
         };
 
         Console.CancelKeyPress += (_, e) =>
@@ -206,75 +217,161 @@ public static class Program
         Console.WriteLine();
         Console.WriteLine(MarkdownReporter.Generate(allResults));
 
-        return CheckForMessageLoss(results) ? 1 : 0;
+        return CheckForFailures(results) ? 1 : 0;
     }
 
     /// <summary>
-    /// The stress environment (healthy broker, tmpfs logs, no restarts) never justifies
-    /// a dropped message, so any produce/consume error fails the run. Delivered can
-    /// legitimately exceed accepted-minus-errors when non-idempotent retries duplicate a
-    /// batch, so only the shortfall counts as loss. Leader-ack producer scenarios do not
-    /// treat high-watermark lag as loss because followers can trail successful leader
-    /// acknowledgements. Results are already saved at this point; the non-zero exit only
-    /// fails the CI job.
+    /// Maximum consecutive seconds with zero client progress before the run is failed as
+    /// stalled. A healthy broker never starves a producer or consumer for 30 straight
+    /// seconds; a stall that long is a hang that happened to recover. Converted to a
+    /// sample count via <see cref="StressTestHelpers.SamplerIntervalSeconds"/>.
     /// </summary>
-    private static bool CheckForMessageLoss(List<StressTestResult> results)
+    private const int StallThresholdSeconds = 30;
+
+    private const int StallThresholdSamples = StallThresholdSeconds / StressTestHelpers.SamplerIntervalSeconds;
+
+    /// <summary>
+    /// The stress environment (healthy broker, tmpfs logs, no restarts) never justifies a
+    /// dropped message, an error, a stall, or a hung shutdown, so all of them fail the run:
+    /// - Any loop error (append/consume failures) or delivery error (broker-side failure of
+    ///   an accepted message, observed via the producer error metric or delivery reports).
+    /// - Undelivered shortfall: accepted minus broker-confirmed delivered minus delivery
+    ///   errors. The post-run drain wait already absorbs follower high-watermark lag, so
+    ///   every producer scenario treats a remaining shortfall as loss — no exemptions.
+    /// - Duplicate delivery in idempotent scenarios (delivered exceeding accepted), which
+    ///   means broker-side deduplication of retries is broken. Non-idempotent scenarios
+    ///   skip this check because retry duplicates are legitimate there.
+    /// - A run that ended measurably earlier than its configured duration (a swallowed
+    ///   cancellation or crashed loop would otherwise pass with a fraction of the load).
+    /// - A sustained mid-run stall (see <see cref="StallThresholdSeconds"/>).
+    /// - Task exceptions nobody observed, surfaced after a final finalizer sweep.
+    /// Results are already saved at this point; the non-zero exit only fails the CI job.
+    /// </summary>
+    private static bool CheckForFailures(List<StressTestResult> results)
     {
-        var failures = new List<(StressTestResult Result, long Errors, long? Delivered, long Lost)>();
+        var anyFailure = false;
+
+        void MarkFailure()
+        {
+            if (!anyFailure)
+            {
+                Console.WriteLine();
+                Console.WriteLine("CORRECTNESS FAILURES DETECTED - failing the run:");
+                anyFailure = true;
+            }
+        }
 
         foreach (var result in results)
         {
+            var reasons = new List<string>();
             var errors = result.Throughput.TotalErrors;
+            var deliveryErrors = result.Throughput.TotalDeliveryErrors;
+            var accepted = result.Throughput.TotalMessages;
             var lost = 0L;
+
+            if (errors > 0)
+            {
+                reasons.Add($"{errors:N0} errors");
+            }
+
+            if (deliveryErrors > 0)
+            {
+                reasons.Add($"{deliveryErrors:N0} delivery errors");
+            }
 
             if (result.DeliveredMessages is { } delivered)
             {
-                lost = Math.Max(0, result.Throughput.TotalMessages - delivered - errors);
+                lost = Math.Max(0, accepted - delivered - deliveryErrors);
+                if (lost > 0)
+                {
+                    reasons.Add($"{lost:N0} undelivered messages");
+                }
+
+                // Idempotent producers rely on broker-side retry deduplication, so any
+                // overage means that guarantee is broken.
+                if (result.Idempotent && delivered > accepted)
+                {
+                    reasons.Add($"{delivered - accepted:N0} duplicate deliveries (idempotence violated)");
+                }
             }
 
-            if (errors > 0 || (lost > 0 && result.FailOnDeliveredShortfall))
+            var expectedSeconds = result.DurationMinutes * 60;
+            if (result.Throughput.ElapsedSeconds < expectedSeconds * 0.9)
             {
-                failures.Add((result, errors, result.DeliveredMessages, lost));
+                reasons.Add(
+                    $"run ended early ({result.Throughput.ElapsedSeconds:N0}s of {expectedSeconds:N0}s)");
             }
-        }
 
-        if (failures.Count == 0)
-        {
-            return false;
-        }
+            var maxStall = MaxConsecutiveZeroSamples(result.Throughput.MessagesPerSecondSamples);
+            if (maxStall >= StallThresholdSamples)
+            {
+                reasons.Add($"stalled for {maxStall * StressTestHelpers.SamplerIntervalSeconds:N0} consecutive seconds with zero progress");
+            }
 
-        Console.WriteLine();
-        Console.WriteLine("MESSAGE LOSS DETECTED - failing the run:");
-        foreach (var failure in failures)
-        {
-            var result = failure.Result;
-            var delivered = failure.Delivered is { } deliveredMessages
-                ? deliveredMessages.ToString("N0")
-                : "unknown";
+            if (reasons.Count == 0)
+            {
+                continue;
+            }
 
+            MarkFailure();
+
+            var deliveredText = result.DeliveredMessages is { } d ? d.ToString("N0") : "n/a";
             Console.WriteLine(
-                $"  {result.Client} {result.Scenario}: " +
-                $"accepted={result.Throughput.TotalMessages:N0}, " +
-                $"delivered={delivered}, " +
-                $"errors={failure.Errors:N0}, " +
-                $"undelivered={failure.Lost:N0}");
+                $"  {result.Client} {result.Scenario}: {string.Join("; ", reasons)} " +
+                $"[accepted={accepted:N0}, delivered={deliveredText}, " +
+                $"errors={errors:N0}, deliveryErrors={deliveryErrors:N0}]");
 
             if (result.Throughput.ErrorSamples.Count > 0)
             {
                 PrintErrorSamples(result.Throughput.ErrorSamples);
             }
-            else if (failure.Errors > 0)
+            else if (errors > 0 || deliveryErrors > 0)
             {
                 Console.WriteLine("    No exception samples captured for these errors.");
             }
 
-            if (failure.Lost > 0)
+            if (lost > 0)
             {
                 PrintProducerDeliveryDiagnostics(result.ProducerDeliveryDiagnostics);
             }
         }
 
-        return true;
+        // Drain finalizers so exceptions from abandoned tasks surface before the verdict.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        if (!UnobservedTaskExceptions.IsEmpty)
+        {
+            MarkFailure();
+
+            Console.WriteLine($"  {UnobservedTaskExceptions.Count:N0} unobserved task exception(s):");
+            var printed = 0;
+            foreach (var exception in UnobservedTaskExceptions)
+            {
+                Console.WriteLine($"    - {exception}");
+                if (++printed >= 5)
+                {
+                    Console.WriteLine("    (further exceptions omitted)");
+                    break;
+                }
+            }
+        }
+
+        return anyFailure;
+    }
+
+    private static int MaxConsecutiveZeroSamples(List<double> samples)
+    {
+        var max = 0;
+        var current = 0;
+        foreach (var sample in samples)
+        {
+            current = sample <= 0 ? current + 1 : 0;
+            max = Math.Max(max, current);
+        }
+
+        return max;
     }
 
     private static void PrintProducerDeliveryDiagnostics(ProducerDeliveryDiagnosticsSnapshot? snapshot)

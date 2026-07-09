@@ -70,7 +70,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
         {
             // Expected — duration timer expired
         }

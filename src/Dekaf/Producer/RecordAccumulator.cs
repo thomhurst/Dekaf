@@ -5517,7 +5517,8 @@ internal sealed class PartitionBatch
                 _arena,
                 _callbacks,
                 _callbackCount,
-                _arrayReuseQueue);
+                _arrayReuseQueue,
+                _recordCount);
 
             _completedBatch = readyBatch;
 
@@ -5747,6 +5748,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private PooledValueTaskSource<RecordMetadata>[]? _completionSourcesArray;
     private int _completionSourcesCount;
 
+    // Total records sealed into this batch, captured at Initialize because the
+    // RecordBatch's record list may already be recycled when Fail needs the count.
+    private int _recordCount;
+
     // Reuse queue for returning working arrays back to PartitionBatch without ArrayPool round-trip
     private BatchArrayReuseQueue? _arrayReuseQueue;
     private BatchArena? _arena; // Arena holding the batch's encoded record bytes
@@ -5837,7 +5842,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             {
                 Topic = _topicPartition.Topic ?? string.Empty,
                 Partition = _topicPartition.Partition,
-                RecordCount = recordBatch?.Records.Count ?? _completionSourcesCount,
+                RecordCount = _recordCount > 0 ? _recordCount : _completionSourcesCount,
                 DataSize = DataSize,
                 EncodedSize = EncodedSize,
                 ReadyBatchId = RuntimeHelpers.GetHashCode(this),
@@ -6148,7 +6153,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         BatchArena? arena = null,
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0,
-        BatchArrayReuseQueue? arrayReuseQueue = null)
+        BatchArrayReuseQueue? arrayReuseQueue = null,
+        int recordCount = 0)
     {
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
@@ -6179,6 +6185,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _recordBatch = recordBatch;
         _completionSourcesArray = completionSourcesArray;
         _completionSourcesCount = completionSourcesCount;
+        // Captured at seal time because the RecordBatch's record list may be recycled or
+        // never materialized by the time a (possibly stale) Fail needs the count.
+        _recordCount = recordCount;
         DataSize = dataSize;
         EncodedSize = dataSize;
         _arena = arena;
@@ -6390,6 +6399,19 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         try
         {
             ProducerDebugCounters.RecordBatchFailed();
+
+            // Records without a completion source (fire-and-forget and callback appends) have
+            // no awaiter that will observe this failure, so count them here — otherwise
+            // messaging.client.sent.errors never reflects fire-and-forget delivery failures.
+            // ProduceAsync records are excluded: each awaiter increments the counter itself.
+            var unobservedRecords = _recordCount - _completionSourcesCount;
+            if (Diagnostics.DekafMetrics.ProduceErrors.Enabled && unobservedRecords > 0)
+            {
+                Diagnostics.DekafMetrics.ProduceErrors.Add(unobservedRecords, new TagList
+                {
+                    { Diagnostics.DekafDiagnostics.MessagingDestinationName, _topicPartition.Topic }
+                });
+            }
 
             // Fail per-message completion sources - these throw for ProduceAsync callers
             if (_completionSourcesCount > 0 && _completionSourcesArray is not null)

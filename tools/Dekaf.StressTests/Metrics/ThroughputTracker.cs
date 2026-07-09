@@ -13,11 +13,15 @@ internal sealed class ThroughputTracker
     private long _messageCount;
     private long _byteCount;
     private long _errorCount;
+    private long _deliveryErrorCount;
     private readonly Stopwatch _stopwatch = new();
     private readonly List<double> _messagesPerSecondSamples = [];
     private readonly object _samplesLock = new();
     private readonly List<ThroughputErrorSample> _errorSamples = [];
     private readonly object _errorsLock = new();
+    // Lock-free fast path once the sample list is full, so error storms don't contend
+    // the produce loop just to discard samples.
+    private volatile bool _errorSamplesFull;
     private long _lastSampleMessageCount;
     private DateTime _lastSampleTime;
     private TimeSpan _cpuTimeStart;
@@ -26,6 +30,7 @@ internal sealed class ThroughputTracker
     public long MessageCount => Interlocked.Read(ref _messageCount);
     public long ByteCount => Interlocked.Read(ref _byteCount);
     public long ErrorCount => Interlocked.Read(ref _errorCount);
+    public long DeliveryErrorCount => Interlocked.Read(ref _deliveryErrorCount);
     public TimeSpan Elapsed => _stopwatch.Elapsed;
 
     /// <summary>
@@ -68,17 +73,41 @@ internal sealed class ThroughputTracker
 
     public void RecordError(Exception exception, string? operation = null, long? messageIndex = null)
     {
-        RecordErrorCore(
-            exception.GetType().FullName ?? exception.GetType().Name,
-            exception.Message,
-            exception.ToString(),
-            operation,
-            messageIndex);
+        AddErrorSample(Interlocked.Increment(ref _errorCount), exception, operation, messageIndex);
     }
 
     public void RecordError(string errorType, string? message, string? operation = null, long? messageIndex = null)
     {
         RecordErrorCore(errorType, message, details: null, operation, messageIndex);
+    }
+
+    /// <summary>
+    /// Records broker-side delivery failures of messages this client had already accepted
+    /// (i.e. counted in <see cref="MessageCount"/>). Kept separate from <see cref="RecordError"/>:
+    /// loop errors happen before a message is accepted, delivery errors after — the distinction
+    /// is what lets undelivered loss be computed as accepted - delivered - deliveryErrors.
+    /// Count-only overload for metric listeners that observe failures in bulk (per batch).
+    /// </summary>
+    public void RecordDeliveryErrors(long count)
+    {
+        Interlocked.Add(ref _deliveryErrorCount, count);
+    }
+
+    /// <summary>
+    /// Records a single delivery failure with exception detail for the failure report.
+    /// </summary>
+    public void RecordDeliveryError(string errorType, string? message, string? operation = null, long? messageIndex = null)
+    {
+        AddErrorSample(Interlocked.Increment(ref _deliveryErrorCount), errorType, message, details: null, operation, messageIndex);
+    }
+
+    /// <summary>
+    /// Records exception detail for a delivery failure whose count is already tracked
+    /// elsewhere (e.g. via the producer's error metric), without double-counting.
+    /// </summary>
+    public void RecordDeliveryErrorDetail(Exception exception, string? operation = null, long? messageIndex = null)
+    {
+        AddErrorSample(DeliveryErrorCount, exception, operation, messageIndex);
     }
 
     private void RecordErrorCore(
@@ -89,6 +118,40 @@ internal sealed class ThroughputTracker
         long? messageIndex)
     {
         var errorNumber = Interlocked.Increment(ref _errorCount);
+        AddErrorSample(errorNumber, errorType, message, details, operation, messageIndex);
+    }
+
+    private void AddErrorSample(long errorNumber, Exception exception, string? operation, long? messageIndex)
+    {
+        // Checked before formatting: rendering a stack trace per message during an
+        // error storm would contend the produce loop for nothing once samples are full.
+        if (_errorSamplesFull)
+        {
+            return;
+        }
+
+        AddErrorSample(
+            errorNumber,
+            exception.GetType().FullName ?? exception.GetType().Name,
+            exception.Message,
+            exception.ToString(),
+            operation,
+            messageIndex);
+    }
+
+    private void AddErrorSample(
+        long errorNumber,
+        string? errorType,
+        string? message,
+        string? details,
+        string? operation,
+        long? messageIndex)
+    {
+        if (_errorSamplesFull)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(errorType) && string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(details))
         {
             return;
@@ -98,6 +161,7 @@ internal sealed class ThroughputTracker
         {
             if (_errorSamples.Count >= MaxErrorSamples)
             {
+                _errorSamplesFull = true;
                 return;
             }
 
@@ -181,6 +245,7 @@ internal sealed class ThroughputTracker
             TotalMessages = MessageCount,
             TotalBytes = ByteCount,
             TotalErrors = ErrorCount,
+            TotalDeliveryErrors = DeliveryErrorCount,
             ElapsedSeconds = _stopwatch.Elapsed.TotalSeconds,
             AverageMessagesPerSecond = GetAverageMessagesPerSecond(),
             AverageMegabytesPerSecond = GetAverageMegabytesPerSecond(),
@@ -195,6 +260,13 @@ internal sealed class ThroughputSnapshot
     public required long TotalMessages { get; init; }
     public required long TotalBytes { get; init; }
     public required long TotalErrors { get; init; }
+
+    /// <summary>
+    /// Broker-side delivery failures of accepted messages. Absent from older result
+    /// files, so it defaults to zero on deserialization.
+    /// </summary>
+    public long TotalDeliveryErrors { get; init; }
+
     public required double ElapsedSeconds { get; init; }
     public required double AverageMessagesPerSecond { get; init; }
     public required double AverageMegabytesPerSecond { get; init; }

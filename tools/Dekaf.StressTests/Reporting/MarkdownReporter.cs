@@ -101,7 +101,14 @@ internal static class MarkdownReporter
                 var accepted = result.AcceptedMessagesPerSecond is { } acceptedRate ? acceptedRate.ToString("N0") : "-";
                 var cpuPerMessage = result.CpuMicrosPerMessage is { } cpu ? $"{cpu:F2}" : "-";
                 var coresUsed = result.AverageCoresUsed is { } cores ? $"{cores:F2}" : "-";
-                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {rate,12:N0} | {median,12} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {result.Throughput.TotalErrors,6} | {coresUsed,10} | {ratio:F2}x |");
+                // Errors column includes broker-side delivery failures so a run that lost
+                // accepted messages can never render a clean zero; the "dlv" suffix keeps
+                // "client loop broke" distinguishable from "broker rejected accepted messages".
+                var deliveryErrors = result.Throughput.TotalDeliveryErrors;
+                var errors = deliveryErrors > 0
+                    ? $"{result.Throughput.TotalErrors} (+{deliveryErrors} dlv)"
+                    : result.Throughput.TotalErrors.ToString()!;
+                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {rate,12:N0} | {median,12} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {errors,6} | {coresUsed,10} | {ratio:F2}x |");
             }
 
             sb.AppendLine();
@@ -118,15 +125,9 @@ internal static class MarkdownReporter
             {
                 sb.AppendLine("*Messages/sec counts broker-confirmed deliveries (end-offset delta). " +
                     "Accepted msg/s is the client-side append rate — a large gap means messages were " +
-                    "buffered or dropped without ever reaching the broker.*");
+                    "buffered or dropped without ever reaching the broker. Every producer run fails " +
+                    "on an unexplained shortfall between accepted and delivered.*");
                 sb.AppendLine();
-
-                if (sizeResults.Any(r => !r.FailOnDeliveredShortfall))
-                {
-                    sb.AppendLine("*Leader-ack producer runs report end-offset lag but do not fail on that " +
-                        "shortfall; acks-all/idempotent runs enforce it as a correctness failure.*");
-                    sb.AppendLine();
-                }
             }
         }
     }

@@ -18,7 +18,15 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
-    public bool FailOnDeliveredShortfall { get; init; } = true;
+
+    /// <summary>
+    /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
+    /// producer configuration a few lines above where each scenario sets it. The failure
+    /// policy in Program.CheckForFailures derives duplicate-delivery enforcement from
+    /// this fact: idempotent runs fail when delivered exceeds accepted (broker-side
+    /// retry deduplication broken); non-idempotent runs tolerate retry duplicates.
+    /// </summary>
+    public bool Idempotent { get; init; }
 
     /// <summary>
     /// Broker-confirmed message count, measured as the end-offset (high watermark)
@@ -26,10 +34,10 @@ internal sealed class StressTestResult
     /// scenarios count client-side appends in <see cref="Throughput"/>; when the client
     /// buffers faster than the broker accepts (or the broker degrades mid-run), accepted
     /// and delivered diverge — this is the honest throughput number.
-    /// Leader-ack producer scenarios can report a shortfall while followers are still
-    /// advancing the high watermark; they set <see cref="FailOnDeliveredShortfall"/> to
-    /// false so this remains a visibility metric instead of a correctness failure.
-    /// Null when the scenario doesn't measure it or the watermark query failed.
+    /// Every producer scenario fails the run when delivered falls short of accepted
+    /// minus recorded delivery errors: the post-run drain wait already absorbs follower
+    /// high-watermark lag, so a remaining shortfall is message loss.
+    /// Null when the scenario doesn't measure it (consumers).
     /// </summary>
     public long? DeliveredMessages { get; init; }
 
