@@ -350,7 +350,13 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task SharedPool_SingleLocalSlot_ReconnectsByIndex()
+    [Arguments(false, false, true)]
+    [Arguments(true, true, true)]
+    [Arguments(true, false, false)]
+    public async Task SingleSlot_ReconnectsThroughExpectedPoolPath(
+        bool canPhysicallyShrinkConnections,
+        bool scaleBeforeReconnect,
+        bool expectsIndexedConnection)
     {
         var options = CreateOptions(idempotent: true);
         var accumulator = new RecordAccumulator(options);
@@ -368,10 +374,22 @@ public sealed class AdaptiveScaleDownTests
             options,
             accumulator,
             onAcknowledgement: null,
-            canPhysicallyShrinkConnections: false);
+            canPhysicallyShrinkConnections: canPhysicallyShrinkConnections);
 
         try
         {
+            if (scaleBeforeReconnect)
+            {
+                typeof(BrokerSender).GetMethod(
+                    "ApplyScaleUp",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [2]);
+                typeof(BrokerSender).GetField(
+                    "_connectionCount",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(sender, 1);
+            }
+
             var pinnedConnections = (IKafkaConnection?[])typeof(BrokerSender).GetField(
                 "_pinnedConnections",
                 BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -387,7 +405,22 @@ public sealed class AdaptiveScaleDownTests
 
             var connection = await pendingConnection;
 
-            await Assert.That(connection).IsSameReferenceAs(indexedConnection);
+            await Assert.That(connection).IsSameReferenceAs(
+                expectsIndexedConnection ? indexedConnection : unindexedConnection);
+
+            if (expectsIndexedConnection)
+            {
+                await pool.DidNotReceive().GetConnectionAsync(
+                    Arg.Any<int>(),
+                    Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                await pool.DidNotReceive().GetConnectionByIndexAsync(
+                    Arg.Any<int>(),
+                    Arg.Any<int>(),
+                    Arg.Any<CancellationToken>());
+            }
         }
         finally
         {

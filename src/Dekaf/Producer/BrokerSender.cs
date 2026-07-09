@@ -455,6 +455,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
     private readonly bool _canPhysicallyShrinkConnections;
+    private bool _hasScaledConnectionGroup;
     private readonly int _minConnectionCount; // Initial ConnectionsPerBroker — never scale below this
     private readonly int _maxConnectionsPerBroker;
     private long _lastPressureSnapshot;
@@ -3365,10 +3366,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (conn is not null && conn.IsConnected)
             return conn;
 
-        // Shared senders can retain an expanded pool group after reducing their local
-        // routing width to one. Keep slot 0 indexed so a reconnect cannot round-robin
-        // onto a different physical connection while an older request is still pending.
-        var connection = _connectionCount > 1 || !_canPhysicallyShrinkConnections
+        // Shared pools may retain an expanded group owned by another client. An owning
+        // sender also retains a one-slot group after scaling back down. Keep those slots
+        // indexed, while preserving the singleton path before this sender first scales up.
+        var connection = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
             ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
             : await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
@@ -3999,6 +4000,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         actualCount = Math.Min(actualCount, _pendingResponsesByConnection.Length);
 
         var oldCount = _connectionCount;
+        _hasScaledConnectionGroup = true;
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
         // Only reset on successful growth — intentional. If the pool returned fewer
