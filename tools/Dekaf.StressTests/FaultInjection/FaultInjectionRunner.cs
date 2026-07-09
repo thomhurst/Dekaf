@@ -105,6 +105,29 @@ internal static class FaultInjectionRunner
             !window.Succeeded && !IsAllowedFailure(window, allowedFailureWindows)) ? 1 : 0;
     }
 
+    internal static LiveConsumerFailureKind ClassifyLiveConsumerFailure(
+        Exception? recoveryFailure,
+        Exception? shutdownFailure) =>
+        recoveryFailure is not null
+            ? LiveConsumerFailureKind.Recovery
+            : shutdownFailure is not null
+                ? LiveConsumerFailureKind.Shutdown
+                : LiveConsumerFailureKind.None;
+
+    internal static long GetExpectedBrokerDeliveryCount(long acceptedMessages, long deliveryErrorCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(acceptedMessages);
+        ArgumentOutOfRangeException.ThrowIfNegative(deliveryErrorCount);
+        if (deliveryErrorCount > acceptedMessages)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(deliveryErrorCount),
+                "Delivery errors cannot exceed accepted messages.");
+        }
+
+        return acceptedMessages - deliveryErrorCount;
+    }
+
     private static async Task RunWindowAsync(
         FaultInjectionKafkaEnvironment environment,
         FaultWindowDefinition definition,
@@ -201,20 +224,29 @@ internal static class FaultInjectionRunner
             }
 
             await environment.WaitForTopicHealthyAsync(topic, windowCts.Token).ConfigureAwait(false);
-            var liveConsumerFailure = await WaitForLiveConsumerRecoveryAsync(
+            var liveConsumerRecoveryFailure = await WaitForLiveConsumerRecoveryAsync(
                 liveConsumerTask,
                 liveState,
                 producerOutcome.FirstPostHealMessageId,
                 windowCts.Token).ConfigureAwait(false);
 
             liveConsumerCts.Cancel();
-            liveConsumerFailure ??= await AwaitLiveConsumerShutdownAsync(liveConsumerTask).ConfigureAwait(false);
+            var liveConsumerShutdownFailure = await AwaitLiveConsumerShutdownAsync(liveConsumerTask)
+                .ConfigureAwait(false);
+            var liveConsumerFailureKind = ClassifyLiveConsumerFailure(
+                liveConsumerRecoveryFailure,
+                liveConsumerShutdownFailure);
             result.LiveConsumerMessages = Volatile.Read(ref liveState.MessageCount);
 
-            var brokerDelivered = await StressTestHelpers.QueryTotalEndOffsetAsync(
+            var expectedBrokerDeliveryCount = GetExpectedBrokerDeliveryCount(
+                producerOutcome.AcceptedMessages,
+                deliveryErrors.Count);
+            var brokerDelivered = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
                 environment.BootstrapServers,
                 topic,
-                options.PartitionCount).ConfigureAwait(false)
+                options.PartitionCount,
+                startOffset: 0,
+                acceptedMessages: expectedBrokerDeliveryCount).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Broker end-offset query failed after fault recovery.");
             var consumedIds = await ReadBrokerLogWithConfluentAsync(
                 environment.BootstrapServers,
@@ -236,7 +268,7 @@ internal static class FaultInjectionRunner
             result.MissingIds = verification.MissingIds.Take(100).ToArray();
             result.DuplicateIds = verification.DuplicateIds.Take(100).ToArray();
             result.UnexpectedIds = verification.UnexpectedIds.Take(100).ToArray();
-            result.Succeeded = verification.Succeeded && liveConsumerFailure is null;
+            result.Succeeded = verification.Succeeded && liveConsumerFailureKind == LiveConsumerFailureKind.None;
 
             Console.WriteLine(
                 $"  accepted={result.AcceptedMessages:N0} errors={result.DeliveryErrors:N0} " +
@@ -255,12 +287,20 @@ internal static class FaultInjectionRunner
                     $"unexpected IDs={verification.UnexpectedIds.Count}.");
             }
 
-            if (liveConsumerFailure is not null)
+            if (liveConsumerFailureKind == LiveConsumerFailureKind.Recovery)
             {
                 result.LiveConsumerRecoveryFailed = true;
                 throw new InvalidOperationException(
                     "Live Dekaf consumer failed instead of recovering after the fault window.",
-                    liveConsumerFailure);
+                    liveConsumerRecoveryFailure);
+            }
+
+            if (liveConsumerFailureKind == LiveConsumerFailureKind.Shutdown)
+            {
+                result.LiveConsumerShutdownFailed = true;
+                throw new InvalidOperationException(
+                    "Live Dekaf consumer recovered but failed to stop after the fault window.",
+                    liveConsumerShutdownFailure);
             }
         }
         finally

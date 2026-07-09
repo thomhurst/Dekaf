@@ -155,6 +155,47 @@ public class FaultWindowVerifierTests
     }
 
     [Test]
+    public async Task ClassifyLiveConsumerFailure_ShutdownAfterRecovery_RemainsHardFailure()
+    {
+        var failure = FaultInjectionRunner.ClassifyLiveConsumerFailure(
+            recoveryFailure: null,
+            shutdownFailure: new TimeoutException("consumer did not stop"));
+
+        await Assert.That(failure).IsEqualTo(LiveConsumerFailureKind.Shutdown);
+    }
+
+    [Test]
+    public async Task DetermineExitCode_KeepsShutdownFailureHardInAllowedWindow()
+    {
+        FaultWindowRunResult[] results =
+        [
+            new()
+            {
+                Name = "leader-election",
+                StartedAtUtc = DateTime.UnixEpoch,
+                Succeeded = false,
+                LiveConsumerShutdownFailed = true
+            }
+        ];
+
+        var allowedFailures = new HashSet<string>(["leader-election"], StringComparer.OrdinalIgnoreCase);
+
+        var exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
+
+        await Assert.That(exitCode).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GetExpectedBrokerDeliveryCount_SubtractsDeliveryErrors()
+    {
+        var expected = FaultInjectionRunner.GetExpectedBrokerDeliveryCount(
+            acceptedMessages: 10,
+            deliveryErrorCount: 2);
+
+        await Assert.That(expected).IsEqualTo(8);
+    }
+
+    [Test]
     public async Task Validate_RejectsAllowedFailureOutsideSelectedPlan()
     {
         var options = new FaultInjectionOptions
