@@ -33,15 +33,21 @@ internal static class ProduceRequestSizeCalculator
         if (available <= 1)
             return 0;
 
-        var encodedBatchSize = available - 1;
-        while (true)
+        // Compact-length jumps leave some budgets without an exact fit.
+        // Find the largest batch whose encoded size stays within the available bytes.
+        var lowerBound = 0;
+        var upperBound = available - 1;
+        while (lowerBound < upperBound)
         {
-            var adjustedSize = available - CompactBytesLengthSize(encodedBatchSize);
-            if (adjustedSize == encodedBatchSize)
-                return encodedBatchSize;
-
-            encodedBatchSize = adjustedSize;
+            var candidate = lowerBound + (upperBound - lowerBound + 1) / 2;
+            var encodedSizeWithLength = candidate + CompactBytesLengthSize(candidate);
+            if (encodedSizeWithLength <= available)
+                lowerBound = candidate;
+            else
+                upperBound = candidate - 1;
         }
+
+        return lowerBound;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

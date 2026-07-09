@@ -1156,6 +1156,36 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    [Arguments(128, 126)]
+    [Arguments(16_385, 16_382)]
+    public async Task ProduceRequestSizeCalculator_SkippedVarintBudget_ReturnsLargestFittingBatch(
+        int available,
+        int expectedBatchSize)
+    {
+        const string topic = "t";
+        var fixedSize = ProduceRequestSizeCalculator.GetSingleBatchFixedSize(
+            transactionalId: null,
+            topic);
+        var maxRequestSize = fixedSize + available;
+
+        // Keep a non-termination regression from hanging the whole test process.
+        var maxEncodedBatchSize = await Task.Run(() =>
+                ProduceRequestSizeCalculator.GetMaxEncodedBatchSize(
+                    maxRequestSize,
+                    transactionalId: null,
+                    topic))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(maxEncodedBatchSize).IsEqualTo(expectedBatchSize);
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            fixedSize,
+            maxEncodedBatchSize)).IsLessThanOrEqualTo(maxRequestSize);
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            fixedSize,
+            maxEncodedBatchSize + 1)).IsGreaterThan(maxRequestSize);
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_RecordOneByteOverMaxRequestSize_ThrowsTypedLocalRejection()
     {
         const string topic = "test-topic";
