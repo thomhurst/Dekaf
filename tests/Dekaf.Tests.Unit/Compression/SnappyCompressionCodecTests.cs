@@ -93,10 +93,10 @@ public class SnappyCompressionCodecTests
     }
 
     [Test]
-    public async Task Decompress_InvalidMagicHeader_Throws()
+    public async Task Decompress_MalformedRawPayload_Throws()
     {
         var codec = new SnappyCompressionCodec();
-        var invalidData = new byte[] { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07 };
+        var invalidData = new byte[] { 0x80 }; // Truncated raw Snappy uncompressed-length varint.
         var decompressedBuffer = new ArrayBufferWriter<byte>();
 
         await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(invalidData), decompressedBuffer))
@@ -142,6 +142,22 @@ public class SnappyCompressionCodecTests
 
         codec.Compress(new ReadOnlySequence<byte>(original), compressedBuffer);
         codec.Decompress(new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory), decompressedBuffer);
+
+        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(original);
+    }
+
+    [Test]
+    public async Task Decompress_RawSnappyPayload_PreservesData()
+    {
+        var codec = new SnappyCompressionCodec();
+        var original = Encoding.UTF8.GetBytes(new string('R', 10_000));
+        var compressed = new byte[Snappier.Snappy.GetMaxCompressedLength(original.Length)];
+        var compressedLength = Snappier.Snappy.Compress(original, compressed);
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+
+        codec.Decompress(
+            new ReadOnlySequence<byte>(compressed.AsMemory(0, compressedLength)),
+            decompressedBuffer);
 
         await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(original);
     }

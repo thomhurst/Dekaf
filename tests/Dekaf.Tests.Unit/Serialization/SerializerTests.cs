@@ -111,6 +111,22 @@ public class SerializerTests
     }
 
     [Test]
+    public async Task ByteArraySerializer_NullRecord_ReturnsNull()
+    {
+        var serializer = Serializers.ByteArray;
+        var context = new SerializationContext
+        {
+            Topic = "test",
+            Component = SerializationComponent.Value,
+            IsNull = true
+        };
+
+        var result = serializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
     public async Task DoubleSerializer_SerializesAndDeserializes()
     {
         var serializer = Serializers.Double;

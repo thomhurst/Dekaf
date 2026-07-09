@@ -6,8 +6,9 @@ using Dekaf.Protocol.Records;
 namespace Dekaf.Compression.Snappy;
 
 /// <summary>
-/// Snappy compression codec with xerial-snappy framing.
-/// Kafka uses xerial-snappy format which wraps raw snappy blocks with:
+/// Snappy compression codec with xerial-snappy framing for writes and support for both
+/// xerial-framed and raw Snappy payloads when reading. Kafka clients may emit either format.
+/// Xerial-snappy wraps raw Snappy blocks with:
 /// - Magic header (8 bytes): 0x82 SNAPPY 0x00
 /// - Version (4 bytes BE): 1
 /// - Min compatible version (4 bytes BE): 1
@@ -94,6 +95,12 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
+        if (!HasXerialMagic(source))
+        {
+            Snappier.Snappy.Decompress(source, destination);
+            return;
+        }
+
         if (source.Length < HeaderSize)
             throw new InvalidDataException("Snappy data too short for xerial header.");
 
@@ -134,6 +141,16 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
 
         if (remaining != 0)
             throw new InvalidDataException("Trailing data after last xerial-snappy block.");
+    }
+
+    private static bool HasXerialMagic(ReadOnlySequence<byte> source)
+    {
+        if (source.Length < XerialMagic.Length)
+            return false;
+
+        Span<byte> magic = stackalloc byte[XerialMagic.Length];
+        source.Slice(0, XerialMagic.Length).CopyTo(magic);
+        return magic.SequenceEqual(XerialMagic);
     }
 
 }
