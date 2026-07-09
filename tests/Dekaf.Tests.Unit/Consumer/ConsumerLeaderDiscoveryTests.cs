@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using NSubstitute;
 
@@ -231,6 +233,52 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_StopsDecodedBatchAtLastDeliveredRecord()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var pending = CreatePendingFetchData();
+        GetPendingFetches(consumer).Enqueue(pending);
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            GetCanContinueBatchIteration(consumer));
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_StopsRawBatchAtLastDeliveredRecord()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var pending = CreatePendingFetchData();
+        GetPendingFetches(consumer).Enqueue(pending);
+        var batch = new ConsumeRawBatch(pending, GetCanContinueBatchIteration(consumer));
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(1);
     }
 
     [Test]
@@ -473,6 +521,38 @@ public sealed class ConsumerLeaderDiscoveryTests
                 EndOffset = endOffset
             }
         };
+
+    private static PendingFetchData CreatePendingFetchData()
+    {
+        var records = new Record[3];
+        for (var i = 0; i < records.Length; i++)
+        {
+            records[i] = new Record
+            {
+                OffsetDelta = i,
+                Key = Encoding.UTF8.GetBytes($"key-{i}"),
+                Value = Encoding.UTF8.GetBytes($"value-{i}")
+            };
+        }
+
+        var pending = PendingFetchData.Create(
+            Topic,
+            partitionIndex: 0,
+            [new RecordBatch { BaseOffset = 0, Records = records }]);
+        pending.EagerParseAll();
+        return pending;
+    }
+
+    private static Func<TopicPartition, bool> GetCanContinueBatchIteration(
+        KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CanContinueBatchIteration",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CanContinueBatchIteration method not found");
+
+        return method.CreateDelegate<Func<TopicPartition, bool>>(consumer);
+    }
 
     private static async ValueTask InvokeHandleLeaderEpochRefreshAsync(
         KafkaConsumer<string, string> consumer,

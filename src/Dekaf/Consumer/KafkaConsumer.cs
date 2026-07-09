@@ -1743,7 +1743,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pending,
                         _keyDeserializer,
                         _valueDeserializer,
-                        IsCurrentlyAssigned,
+                        CanContinueBatchIteration,
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
@@ -1879,7 +1879,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
-                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned, _options.MaxPollRecords);
+                    ConsumeRawBatch batch = new(pending, CanContinueBatchIteration, _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
                 }
@@ -3711,6 +3711,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return _assignmentSnapshot.Contains(partition);
     }
+
+    private bool CanContinueBatchIteration(TopicPartition partition) =>
+        !_coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
+        && IsCurrentlyAssigned(partition);
 
     private bool IsFetchBufferEpochStale(int fetchBufferEpoch) =>
         Volatile.Read(ref _fetchBufferEpoch) != fetchBufferEpoch;
