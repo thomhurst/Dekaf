@@ -174,15 +174,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         await using var consumer = CreateConsumer(pool, metadataManager);
         consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
 
-        var partitionResponse = new FetchResponsePartition
-        {
-            PartitionIndex = 0,
-            DivergingEpoch = new EpochEndOffset
-            {
-                Epoch = 7,
-                EndOffset = 42
-            }
-        };
+        var partitionResponse = CreateDivergingEpochResponse();
 
         InvokeResetToDivergingEpoch(consumer, partitionResponse);
 
@@ -200,15 +192,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         await using var consumer = CreateConsumer(pool, metadataManager);
         consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 43)]);
 
-        var partitionResponse = new FetchResponsePartition
-        {
-            PartitionIndex = 0,
-            DivergingEpoch = new EpochEndOffset
-            {
-                Epoch = 7,
-                EndOffset = 42
-            }
-        };
+        var partitionResponse = CreateDivergingEpochResponse();
 
         InvokeResetToDivergingEpoch(consumer, partitionResponse);
 
@@ -216,6 +200,61 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(43);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
         await Assert.That(DrainPendingFetchException(consumer)).IsNull();
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_ExplicitSeekSupersedesPendingReset()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var partition = new TopicPartition(Topic, 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var partitionResponse = CreateDivergingEpochResponse();
+
+        InvokeResetToDivergingEpoch(consumer, partitionResponse);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 5));
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_ReassignmentSupersedesPendingReset()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var partition = new TopicPartition(Topic, 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var partitionResponse = CreateDivergingEpochResponse();
+
+        InvokeResetToDivergingEpoch(consumer, partitionResponse);
+        consumer.IncrementalUnassign([partition]);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 5)]);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_ManualAssignSupersedesPendingReset()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var partition = new TopicPartition(Topic, 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var partitionResponse = CreateDivergingEpochResponse();
+
+        InvokeResetToDivergingEpoch(consumer, partitionResponse);
+        consumer.Assign(partition);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0);
     }
 
     [Test]
@@ -371,6 +410,17 @@ public sealed class ConsumerLeaderDiscoveryTests
             await task.ConfigureAwait(false);
         }
     }
+
+    private static FetchResponsePartition CreateDivergingEpochResponse() =>
+        new()
+        {
+            PartitionIndex = 0,
+            DivergingEpoch = new EpochEndOffset
+            {
+                Epoch = 7,
+                EndOffset = 42
+            }
+        };
 
     private static async ValueTask InvokeHandleLeaderEpochRefreshAsync(
         KafkaConsumer<string, string> consumer,

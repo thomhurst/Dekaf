@@ -3454,7 +3454,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearFetchBuffer()
     {
-        Interlocked.Increment(ref _fetchBufferEpoch);
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            Interlocked.Increment(ref _fetchBufferEpoch);
+            _pendingDivergingEpochResets.Clear();
+        }
 
         // Dispose and clear pending fetches to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
@@ -3482,7 +3486,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (removeSet.Count == 0)
             return;
 
-        Interlocked.Increment(ref _fetchBufferEpoch);
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            Interlocked.Increment(ref _fetchBufferEpoch);
+            foreach (var partition in removeSet)
+                _pendingDivergingEpochResets.TryRemove(partition, out _);
+        }
 
         // Filter in-place without allocating a temporary queue
         // Dequeue all items and re-enqueue only those we want to keep
@@ -3550,10 +3559,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void QueueDivergingEpochReset(TopicPartition partition, long endOffset, int epoch)
+    private void QueueDivergingEpochReset(
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
+            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+                return;
+
             _pendingDivergingEpochResets[partition] = (endOffset, epoch);
             _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             Interlocked.Increment(ref _fetchBufferEpoch);
@@ -5248,7 +5264,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
             return;
 
-        QueueDivergingEpochReset(partition, divergingEpoch.EndOffset, divergingEpoch.Epoch);
+        QueueDivergingEpochReset(
+            partition,
+            divergingEpoch.EndOffset,
+            divergingEpoch.Epoch,
+            fetchBufferEpoch);
     }
 
     private async ValueTask ResetOffsetOutOfRangeAsync(
