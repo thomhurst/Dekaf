@@ -159,9 +159,33 @@ public class FaultWindowVerifierTests
     {
         var failure = FaultInjectionRunner.ClassifyLiveConsumerFailure(
             recoveryFailure: null,
-            shutdownFailure: new TimeoutException("consumer did not stop"));
+            shutdownFailure: new TimeoutException("consumer did not stop"),
+            consumerExitedBeforeCancellation: false);
 
         await Assert.That(failure).IsEqualTo(LiveConsumerFailureKind.Shutdown);
+    }
+
+    [Test]
+    public async Task ClassifyLiveConsumerFailure_RecoveryTimeoutAndShutdownHang_RemainsHardFailure()
+    {
+        var failure = FaultInjectionRunner.ClassifyLiveConsumerFailure(
+            recoveryFailure: new TimeoutException("consumer did not recover"),
+            shutdownFailure: new TimeoutException("consumer did not stop"),
+            consumerExitedBeforeCancellation: false);
+
+        await Assert.That(failure).IsEqualTo(LiveConsumerFailureKind.Shutdown);
+    }
+
+    [Test]
+    public async Task ClassifyLiveConsumerFailure_ConsumerFaultDuringRecovery_IsRecoveryFailure()
+    {
+        var consumerFailure = new InvalidOperationException("consumer failed");
+        var failure = FaultInjectionRunner.ClassifyLiveConsumerFailure(
+            recoveryFailure: consumerFailure,
+            shutdownFailure: consumerFailure,
+            consumerExitedBeforeCancellation: true);
+
+        await Assert.That(failure).IsEqualTo(LiveConsumerFailureKind.Recovery);
     }
 
     [Test]

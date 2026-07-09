@@ -107,12 +107,19 @@ internal static class FaultInjectionRunner
 
     internal static LiveConsumerFailureKind ClassifyLiveConsumerFailure(
         Exception? recoveryFailure,
-        Exception? shutdownFailure) =>
-        recoveryFailure is not null
+        Exception? shutdownFailure,
+        bool consumerExitedBeforeCancellation)
+    {
+        if (shutdownFailure is not null
+            && (recoveryFailure is null || !consumerExitedBeforeCancellation))
+        {
+            return LiveConsumerFailureKind.Shutdown;
+        }
+
+        return recoveryFailure is not null
             ? LiveConsumerFailureKind.Recovery
-            : shutdownFailure is not null
-                ? LiveConsumerFailureKind.Shutdown
-                : LiveConsumerFailureKind.None;
+            : LiveConsumerFailureKind.None;
+    }
 
     internal static long GetExpectedBrokerDeliveryCount(long acceptedMessages, long deliveryErrorCount)
     {
@@ -230,12 +237,14 @@ internal static class FaultInjectionRunner
                 producerOutcome.FirstPostHealMessageId,
                 windowCts.Token).ConfigureAwait(false);
 
+            var consumerExitedBeforeCancellation = liveConsumerTask.IsCompleted;
             liveConsumerCts.Cancel();
             var liveConsumerShutdownFailure = await AwaitLiveConsumerShutdownAsync(liveConsumerTask)
                 .ConfigureAwait(false);
             var liveConsumerFailureKind = ClassifyLiveConsumerFailure(
                 liveConsumerRecoveryFailure,
-                liveConsumerShutdownFailure);
+                liveConsumerShutdownFailure,
+                consumerExitedBeforeCancellation);
             result.LiveConsumerMessages = Volatile.Read(ref liveState.MessageCount);
 
             var expectedBrokerDeliveryCount = GetExpectedBrokerDeliveryCount(
