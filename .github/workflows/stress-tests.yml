@@ -344,8 +344,8 @@ jobs:
           from datetime import datetime
           from stress_report import generate_scenario_tables, format_gc_table
 
-          # Find all JSON result files
-          json_files = glob.glob("all-results/**/*.json", recursive=True)
+          # Parse only result envelopes; watchdog diagnostics are separate JSON artifacts.
+          json_files = glob.glob("all-results/**/stress-test-results*.json", recursive=True)
           print(f"Found {len(json_files)} result files")
 
           if not json_files:
@@ -479,8 +479,8 @@ jobs:
           output.append(":::")
           output.append("")
 
-          # Find and parse JSON results
-          json_files = glob.glob("results/**/*.json", recursive=True)
+          # Parse only result envelopes; watchdog diagnostics are separate JSON artifacts.
+          json_files = glob.glob("results/**/stress-test-results*.json", recursive=True)
 
           if json_files:
               # Use the most recent file

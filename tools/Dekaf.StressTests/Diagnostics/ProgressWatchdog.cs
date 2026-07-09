@@ -69,20 +69,26 @@ internal sealed class StallDetector
 /// <summary>
 /// Watches active stress-scenario progress from a dedicated thread, independent of
 /// thread-pool health. A prolonged stall captures managed stacks and live producer
-/// diagnostics into the normal results directory. A five-minute stall captures a
-/// final snapshot, then terminates the process before the CI timeout loses evidence.
+/// diagnostics into a dedicated watchdog subdirectory. A five-minute stall captures
+/// a final snapshot, then terminates the process before the CI timeout loses evidence.
 /// </summary>
 internal sealed class ProgressWatchdog : IDisposable
 {
+    internal const string ArtifactsDirectoryName = "watchdog";
+
     internal static readonly TimeSpan DefaultCaptureAfter = TimeSpan.FromSeconds(30);
     internal static readonly TimeSpan DefaultExitAfter = TimeSpan.FromMinutes(5);
 
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan StackCaptureTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan DefaultProducerDiagnosticsTimeout = TimeSpan.FromSeconds(5);
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
-    private readonly string _outputDirectory;
+    private readonly string _diagnosticsDirectory;
     private readonly TimeSpan _captureAfter;
     private readonly TimeSpan _exitAfter;
     private readonly TimeSpan _pollInterval;
@@ -109,7 +115,7 @@ internal sealed class ProgressWatchdog : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
 
-        _outputDirectory = Path.GetFullPath(outputDirectory);
+        _diagnosticsDirectory = Path.Combine(Path.GetFullPath(outputDirectory), ArtifactsDirectoryName);
         _captureAfter = captureAfter ?? DefaultCaptureAfter;
         _exitAfter = exitAfter ?? DefaultExitAfter;
         _pollInterval = pollInterval ?? DefaultPollInterval;
@@ -122,7 +128,7 @@ internal sealed class ProgressWatchdog : IDisposable
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_pollInterval, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_producerDiagnosticsTimeout, TimeSpan.Zero);
 
-        Directory.CreateDirectory(_outputDirectory);
+        Directory.CreateDirectory(_diagnosticsDirectory);
         _thread = new Thread(Run)
         {
             IsBackground = true,
@@ -239,12 +245,12 @@ internal sealed class ProgressWatchdog : IDisposable
         var sequence = Interlocked.Increment(ref _captureSequence);
         var kind = action == StallAction.CaptureAndExit ? "fatal" : "stall";
         var prefix = Path.Combine(
-            _outputDirectory,
+            _diagnosticsDirectory,
             $"watchdog-{Sanitize(activeRun.Client)}-{Sanitize(activeRun.Scenario)}-{capturedAt:yyyyMMdd-HHmmss}-{sequence:D2}-{kind}");
 
         Console.Error.WriteLine(
             $"PROGRESS WATCHDOG: {activeRun.Client} {activeRun.Scenario} made no message progress " +
-            $"for {stalledFor.TotalSeconds:F0}s; capturing {kind} diagnostics in {_outputDirectory}");
+            $"for {stalledFor.TotalSeconds:F0}s; capturing {kind} diagnostics in {_diagnosticsDirectory}");
 
         // Capture stacks first because the producer snapshot can contend on the lock
         // responsible for the stall. Its bounded capture runs afterwards so the fatal

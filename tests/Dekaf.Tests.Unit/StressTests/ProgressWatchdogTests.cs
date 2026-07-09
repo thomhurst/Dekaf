@@ -36,12 +36,14 @@ public sealed class ProgressWatchdogTests
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(exitCode).IsEqualTo(1);
-            var stackArtifacts = Directory.GetFiles(outputDirectory, "*-stacks.txt");
-            var producerArtifacts = Directory.GetFiles(outputDirectory, "*-producer.json");
+            var diagnosticsDirectory = GetDiagnosticsDirectory(outputDirectory);
+            var stackArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt");
+            var producerArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-producer.json");
             await Assert.That(stackArtifacts.Length).IsEqualTo(2);
             await Assert.That(producerArtifacts.Length).IsEqualTo(2);
+            await Assert.That(Directory.GetFiles(outputDirectory, "*.json")).IsEmpty();
             await Assert.That(await File.ReadAllTextAsync(stackArtifacts[0])).Contains("fake managed stack");
-            await Assert.That(await File.ReadAllTextAsync(producerArtifacts[0])).Contains("\"DiagnosticsEnabled\": true");
+            await Assert.That(await File.ReadAllTextAsync(producerArtifacts[0])).Contains("\"diagnosticsEnabled\": true");
         }
         finally
         {
@@ -71,7 +73,9 @@ public sealed class ProgressWatchdogTests
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(exitCode).IsEqualTo(1);
-            var fatalArtifact = Directory.GetFiles(outputDirectory, "*-fatal-stacks.txt").Single();
+            var fatalArtifact = Directory.GetFiles(
+                GetDiagnosticsDirectory(outputDirectory),
+                "*-fatal-stacks.txt").Single();
             await Assert.That(await File.ReadAllTextAsync(fatalArtifact)).Contains("capture unavailable");
         }
         finally
@@ -114,8 +118,9 @@ public sealed class ProgressWatchdogTests
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(exitCode).IsEqualTo(1);
-            var fatalStackArtifact = Directory.GetFiles(outputDirectory, "*-fatal-stacks.txt").Single();
-            var fatalProducerArtifact = Directory.GetFiles(outputDirectory, "*-fatal-producer.json").Single();
+            var diagnosticsDirectory = GetDiagnosticsDirectory(outputDirectory);
+            var fatalStackArtifact = Directory.GetFiles(diagnosticsDirectory, "*-fatal-stacks.txt").Single();
+            var fatalProducerArtifact = Directory.GetFiles(diagnosticsDirectory, "*-fatal-producer.json").Single();
             await Assert.That(await File.ReadAllTextAsync(fatalStackArtifact)).Contains("fake managed stack");
             await Assert.That(await File.ReadAllTextAsync(fatalProducerArtifact)).Contains("timed out");
         }
@@ -133,4 +138,7 @@ public sealed class ProgressWatchdogTests
         Directory.CreateDirectory(path);
         return path;
     }
+
+    private static string GetDiagnosticsDirectory(string outputDirectory) =>
+        Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
 }

@@ -59,11 +59,13 @@ public sealed class StallDetectorTests
             var captureOrder = new ConcurrentQueue<string>();
             var producerCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var stacksCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var unexpectedExit = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var watchdog = new ProgressWatchdog(
                 outputDirectory,
                 captureAfter: TimeSpan.FromMilliseconds(40),
                 exitAfter: TimeSpan.FromSeconds(10),
                 pollInterval: TimeSpan.FromMilliseconds(5),
+                exitProcess: code => unexpectedExit.TrySetResult(code),
                 captureManagedStackReport: () =>
                 {
                     captureOrder.Enqueue("stacks");
@@ -83,19 +85,21 @@ public sealed class StallDetectorTests
 
             await Task.WhenAll(producerCaptured.Task, stacksCaptured.Task)
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await Assert.That(() => Directory.GetFiles(outputDirectory, "*-stacks.txt").Length)
+            var diagnosticsDirectory = Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
+            await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt").Length)
                 .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
-            await Assert.That(() => Directory.GetFiles(outputDirectory, "*-producer.json").Length)
+            await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-producer.json").Length)
                 .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
 
             var order = captureOrder.ToArray();
             await Assert.That(order.Length).IsEqualTo(2);
             await Assert.That(order[0]).IsEqualTo("stacks");
             await Assert.That(order[1]).IsEqualTo("producer");
-            await Assert.That(File.ReadAllText(Directory.GetFiles(outputDirectory, "*-stacks.txt").Single()))
+            await Assert.That(File.ReadAllText(Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt").Single()))
                 .Contains("test managed stack");
-            await Assert.That(File.ReadAllText(Directory.GetFiles(outputDirectory, "*-producer.json").Single()))
-                .Contains("ProducerDeliveryDiagnostics");
+            await Assert.That(File.ReadAllText(Directory.GetFiles(diagnosticsDirectory, "*-producer.json").Single()))
+                .Contains("producerDeliveryDiagnostics");
+            await Assert.That(unexpectedExit.Task.IsCompleted).IsFalse();
         }
         finally
         {
@@ -122,7 +126,8 @@ public sealed class StallDetectorTests
             var actualExitCode = await exitCode.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(actualExitCode).IsEqualTo(1);
-            await Assert.That(() => Directory.GetFiles(outputDirectory, "*-fatal-stacks.txt").Length)
+            var diagnosticsDirectory = Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
+            await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-fatal-stacks.txt").Length)
                 .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
         }
         finally

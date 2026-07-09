@@ -466,10 +466,10 @@ public static class Program
     {
         Console.WriteLine($"Generating report from: {options.InputPath}");
 
-        var jsonFiles = Directory.GetFiles(options.InputPath, "*.json");
+        var jsonFiles = Directory.GetFiles(options.InputPath, "stress-test-results*.json");
         if (jsonFiles.Length == 0)
         {
-            Console.WriteLine("No JSON result files found");
+            Console.WriteLine("No stress-test result JSON files found");
             return 1;
         }
 
