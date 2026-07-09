@@ -235,6 +235,105 @@ public class RecordBatchTests
         await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
     }
 
+    [Test]
+    public async Task RecordBatch_RoundTrip_PreservesNullEmptyAndHeaderBoundaries()
+    {
+        const int highHeaderCount = 1024;
+        var highHeaders = Enumerable.Range(0, highHeaderCount)
+            .Select(i => new Header($"high-{i:D4}", [(byte)(i % 251)]))
+            .ToArray();
+        var buffer = new ArrayBufferWriter<byte>();
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 0,
+            MaxTimestamp = 3,
+            LastOffsetDelta = 3,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    IsKeyNull = true,
+                    IsValueNull = true
+                },
+                new Record
+                {
+                    OffsetDelta = 1,
+                    TimestampDelta = 1,
+                    Headers = [new Header("single", Array.Empty<byte>())],
+                    HeaderCount = 1
+                },
+                new Record
+                {
+                    OffsetDelta = 2,
+                    TimestampDelta = 2,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray(),
+                    Headers =
+                    [
+                        new Header("duplicate", (byte[]?)null),
+                        new Header("duplicate", Array.Empty<byte>()),
+                        new Header("duplicate", "present"u8.ToArray())
+                    ],
+                    HeaderCount = 3
+                },
+                new Record
+                {
+                    OffsetDelta = 3,
+                    TimestampDelta = 3,
+                    Key = "many"u8.ToArray(),
+                    Value = "headers"u8.ToArray(),
+                    Headers = highHeaders,
+                    HeaderCount = highHeaderCount
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        using var parsedBatch = RecordBatch.Read(ref reader);
+        var nullRecord = parsedBatch.Records[0];
+        var emptyRecord = parsedBatch.Records[1];
+        var duplicateHeaderRecord = parsedBatch.Records[2];
+        var highHeaderRecord = parsedBatch.Records[3];
+
+        await Assert.That(nullRecord.IsKeyNull).IsTrue();
+        await Assert.That(nullRecord.IsValueNull).IsTrue();
+        await Assert.That(nullRecord.HeaderCount).IsEqualTo(0);
+
+        await Assert.That(emptyRecord.IsKeyNull).IsFalse();
+        await Assert.That(emptyRecord.Key.Length).IsEqualTo(0);
+        await Assert.That(emptyRecord.IsValueNull).IsFalse();
+        await Assert.That(emptyRecord.Value.Length).IsEqualTo(0);
+        await Assert.That(emptyRecord.HeaderCount).IsEqualTo(1);
+        await Assert.That(emptyRecord.Headers![0].IsValueNull).IsFalse();
+        await Assert.That(emptyRecord.Headers[0].Value.Length).IsEqualTo(0);
+
+        await Assert.That(duplicateHeaderRecord.HeaderCount).IsEqualTo(3);
+        await Assert.That(duplicateHeaderRecord.Headers![0].Key).IsEqualTo("duplicate");
+        await Assert.That(duplicateHeaderRecord.Headers[0].IsValueNull).IsTrue();
+        await Assert.That(duplicateHeaderRecord.Headers[1].Key).IsEqualTo("duplicate");
+        await Assert.That(duplicateHeaderRecord.Headers[1].IsValueNull).IsFalse();
+        await Assert.That(duplicateHeaderRecord.Headers[1].Value.Length).IsEqualTo(0);
+        await Assert.That(duplicateHeaderRecord.Headers[2].GetValueAsString()).IsEqualTo("present");
+
+        await Assert.That(highHeaderRecord.HeaderCount).IsEqualTo(highHeaderCount);
+        var roundTrippedHighHeaders = highHeaderRecord.Headers!;
+        var actualKeys = roundTrippedHighHeaders
+            .Take(highHeaderRecord.HeaderCount)
+            .Select(header => header.Key);
+        var expectedKeys = Enumerable.Range(0, highHeaderCount).Select(i => $"high-{i:D4}");
+        await Assert.That(actualKeys.SequenceEqual(expectedKeys)).IsTrue();
+        var actualValues = roundTrippedHighHeaders
+            .Take(highHeaderRecord.HeaderCount)
+            .Select(header => header.Value.Span[0]);
+        var expectedValues = Enumerable.Range(0, highHeaderCount).Select(i => (byte)(i % 251));
+        await Assert.That(actualValues.SequenceEqual(expectedValues)).IsTrue();
+    }
+
     #endregion
 
     #region Attributes Tests
