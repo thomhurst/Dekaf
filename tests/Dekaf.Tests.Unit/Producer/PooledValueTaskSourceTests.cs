@@ -824,39 +824,42 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
-    public async Task ReadyBatchDoneTask_SourcePublicationRacesWithReuse_CompletesCapturedLifecycle()
+    public async Task ReadyBatchDoneTask_SourcePublicationRacesWithMultipleReuses_CompletesCapturedLifecycle()
     {
         var batch = new ReadyBatch();
         InitializeBatch(batch);
 
-        using var sourceCreated = new ManualResetEventSlim();
-        using var continuePublication = new ManualResetEventSlim();
-        batch.BeforeDoneTaskSourcePublishedForTest = () =>
+        using var observerRegistered = new ManualResetEventSlim();
+        using var continueGetter = new ManualResetEventSlim();
+        batch.AfterDoneTaskObserverRegisteredForTest = () =>
         {
-            sourceCreated.Set();
-            continuePublication.Wait();
+            observerRegistered.Set();
+            continueGetter.Wait();
         };
 
         var getterTask = Task.Run(() => batch.DoneTask);
         try
         {
-            await Assert.That(sourceCreated.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(observerRegistered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
 
+            batch.Fail(new InvalidOperationException("expected"));
+            batch.Reset();
+            InitializeBatch(batch);
             batch.CompleteDelivery();
             batch.Reset();
             InitializeBatch(batch);
-            batch.BeforeDoneTaskSourcePublishedForTest = null;
+            batch.AfterDoneTaskObserverRegisteredForTest = null;
 
-            continuePublication.Set();
+            continueGetter.Set();
             var capturedTask = await getterTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             var result = await capturedTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
 
-            await Assert.That(result).IsTrue();
+            await Assert.That(result).IsFalse();
         }
         finally
         {
-            batch.BeforeDoneTaskSourcePublishedForTest = null;
-            continuePublication.Set();
+            batch.AfterDoneTaskObserverRegisteredForTest = null;
+            continueGetter.Set();
             batch.CompleteDelivery();
             batch.Reset();
         }

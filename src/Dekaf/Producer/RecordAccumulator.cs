@@ -5920,43 +5920,15 @@ internal sealed class ReadyBatch
     {
         get
         {
-            while (true)
+            var state = RegisterDoneTaskObserver();
+            if (TryGetDoneTaskCompletion(state.Generation, out var succeeded))
             {
-                var generation = Generation;
-                if (TryGetDoneTaskCompletion(generation, out var succeeded))
-                    return new ValueTask<bool>(succeeded);
-
-                var state = Volatile.Read(ref _doneTaskState);
-                if (state?.Generation != generation)
-                {
-                    var created = new DoneTaskState(generation);
-                    BeforeDoneTaskSourcePublishedForTest?.Invoke();
-
-                    // Completion and pool reuse may both happen while the source is being
-                    // allocated. Prefer the captured lifecycle's result when it is still the
-                    // most recent completion; otherwise retry against the current generation.
-                    if (TryGetDoneTaskCompletion(generation, out succeeded))
-                        return new ValueTask<bool>(succeeded);
-
-                    if (Generation != generation)
-                        continue;
-
-                    var observed = Interlocked.CompareExchange(ref _doneTaskState, created, state);
-                    if (!ReferenceEquals(observed, state))
-                        continue;
-
-                    state = created;
-                }
-
-                if (TryGetDoneTaskCompletion(generation, out succeeded))
-                    state.Source.TrySetResult(succeeded);
-
-                // A published source is safe to return while its generation is current:
-                // completion observes it before the batch can be recycled. If recycling won
-                // the race, retry unless that source was already completed.
-                if (state.Source.Task.IsCompleted || Generation == generation)
-                    return new ValueTask<bool>(state.Source.Task);
+                RemoveDoneTaskObserver(state);
+                return new ValueTask<bool>(succeeded);
             }
+
+            AfterDoneTaskObserverRegisteredForTest?.Invoke();
+            return new ValueTask<bool>(state.Source.Task);
         }
     }
 
@@ -6344,9 +6316,11 @@ internal sealed class ReadyBatch
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    private DoneTaskState? _doneTaskState;
+    private SpinLock _doneTaskObserverLock = new(enableThreadOwnerTracking: false);
+    private List<DoneTaskState>? _doneTaskObservers;
+    private int _doneTaskObserverCount;
     private long _lastDoneTaskCompletion;
-    internal Action? BeforeDoneTaskSourcePublishedForTest;
+    internal Action? AfterDoneTaskObserverRegisteredForTest;
 
     private const int CompletionSucceeded = 1;
     private const int CompletionFailed = 2;
@@ -6466,9 +6440,6 @@ internal sealed class ReadyBatch
         // mismatch. With the old order (flags first), a holder could see _returnedToPool == 0
         // while still reading its own stale generation — passing both checks and acting on
         // a batch now owned by someone else.
-        // Clear the old lazy source before publishing the next generation. A stale getter may
-        // still race this write, but its generation tag prevents it from capturing new work.
-        Volatile.Write(ref _doneTaskState, null);
         Interlocked.Increment(ref _generation);
 
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
@@ -6569,7 +6540,6 @@ internal sealed class ReadyBatch
         // previous lifecycle calling CompleteSend/Fail will hit the guard and return early.
         // These flags are reset in Initialize() when the batch starts a new lifecycle.
         // Captured DoneTask instances retain their own TaskCompletionSource after pool return.
-        Volatile.Write(ref _doneTaskState, null);
     }
 
     /// <summary>
@@ -6810,10 +6780,80 @@ internal sealed class ReadyBatch
             return;
 
         Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
+        if (Volatile.Read(ref _doneTaskObserverCount) != 0)
+            CompleteDoneTaskObservers(generation, succeeded);
+    }
 
-        var state = Volatile.Read(ref _doneTaskState);
-        if (state?.Generation == generation)
-            state.Source.TrySetResult(succeeded);
+    private DoneTaskState RegisterDoneTaskObserver()
+    {
+        // Publish registration intent before taking the lock. A racing completion either
+        // waits for this observer to be added or leaves its packed result for the immediate
+        // catch-up check in DoneTask.
+        Interlocked.Increment(ref _doneTaskObserverCount);
+        var lockTaken = false;
+        try
+        {
+            _doneTaskObserverLock.Enter(ref lockTaken);
+            var state = new DoneTaskState(Generation);
+            (_doneTaskObservers ??= new List<DoneTaskState>(1)).Add(state);
+            return state;
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _doneTaskObserverCount);
+            throw;
+        }
+        finally
+        {
+            if (lockTaken)
+                _doneTaskObserverLock.Exit();
+        }
+    }
+
+    private void RemoveDoneTaskObserver(DoneTaskState state)
+    {
+        var removed = false;
+        var lockTaken = false;
+        try
+        {
+            _doneTaskObserverLock.Enter(ref lockTaken);
+            removed = _doneTaskObservers?.Remove(state) == true;
+        }
+        finally
+        {
+            if (lockTaken)
+                _doneTaskObserverLock.Exit();
+        }
+
+        if (removed)
+            Interlocked.Decrement(ref _doneTaskObserverCount);
+    }
+
+    private void CompleteDoneTaskObservers(int generation, bool succeeded)
+    {
+        var lockTaken = false;
+        try
+        {
+            _doneTaskObserverLock.Enter(ref lockTaken);
+            if (_doneTaskObservers is null)
+                return;
+
+            for (var i = _doneTaskObservers.Count - 1; i >= 0; i--)
+            {
+                var state = _doneTaskObservers[i];
+                if (state.Generation != generation)
+                    continue;
+
+                _doneTaskObservers.RemoveAt(i);
+                Interlocked.Decrement(ref _doneTaskObserverCount);
+                state.Source.TrySetResult(succeeded);
+            }
+        }
+        finally
+        {
+            if (lockTaken)
+                _doneTaskObserverLock.Exit();
+        }
     }
 
     private bool TryGetDoneTaskCompletion(int generation, out bool succeeded)
