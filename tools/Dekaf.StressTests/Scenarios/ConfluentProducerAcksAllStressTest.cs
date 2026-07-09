@@ -56,6 +56,7 @@ internal sealed class ConfluentProducerAcksAllStressTest : IStressTestScenario
         StressTestHelpers.LogResourceUsage("Initial");
 
         throughput.Start();
+        using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
         var messageIndex = 0L;
         var progress = new PeriodicProgressReporter(throughput);
 

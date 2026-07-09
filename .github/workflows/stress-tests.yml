@@ -127,6 +127,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Install stack diagnostics
+        run: |
+          dotnet tool install --global dotnet-stack --version 9.0.661903
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
       - name: Build Stress Tests
         run: dotnet build tools/Dekaf.StressTests --configuration Release
 
@@ -343,8 +348,8 @@ jobs:
           from datetime import datetime
           from stress_report import generate_scenario_tables, format_gc_table
 
-          # Find all JSON result files
-          json_files = glob.glob("all-results/**/*.json", recursive=True)
+          # Parse only result envelopes; watchdog diagnostics are separate JSON artifacts.
+          json_files = glob.glob("all-results/**/stress-test-results*.json", recursive=True)
           print(f"Found {len(json_files)} result files")
 
           if not json_files:
@@ -478,8 +483,8 @@ jobs:
           output.append(":::")
           output.append("")
 
-          # Find and parse JSON results
-          json_files = glob.glob("results/**/*.json", recursive=True)
+          # Parse only result envelopes; watchdog diagnostics are separate JSON artifacts.
+          json_files = glob.glob("results/**/stress-test-results*.json", recursive=True)
 
           if json_files:
               # Use the most recent file

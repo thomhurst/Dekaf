@@ -1,3 +1,4 @@
+using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.Reporting;
 
 namespace Dekaf.StressTests.Scenarios;
@@ -22,4 +23,5 @@ internal sealed class StressTestOptions
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;
     public bool EnableProducerDeliveryDiagnostics { get; init; }
+    public required ProgressWatchdog ProgressWatchdog { get; init; }
 }

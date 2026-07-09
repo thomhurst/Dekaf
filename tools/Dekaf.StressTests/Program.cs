@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Dekaf.Producer;
+using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.Infrastructure;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
@@ -20,7 +21,7 @@ namespace Dekaf.StressTests;
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
-///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message-loss failures
+///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
 ///   report --input &lt;path&gt;   Generate report from existing results
 ///
 /// Environment Variables:
@@ -96,9 +97,14 @@ public static class Program
         Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine($"Brokers: {options.Brokers}");
         Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
+        Console.WriteLine($"Progress watchdog: stacks at {ProgressWatchdog.DefaultCaptureAfter.TotalSeconds:F0}s; " +
+            $"fail at {ProgressWatchdog.DefaultExitAfter.TotalMinutes:F0} minutes");
         if (options.ConnectionsPerBroker > 1)
             Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
         Console.WriteLine(new string('-', 50));
+
+        Directory.CreateDirectory(options.OutputPath);
+        using var progressWatchdog = new ProgressWatchdog(options.OutputPath);
 
         await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers).ConfigureAwait(false);
 
@@ -137,7 +143,8 @@ public static class Program
             Compression = options.Compression,
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
-            EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics
+            EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics,
+            ProgressWatchdog = progressWatchdog
         };
 
         if (options.ConnectionsPerBroker == 1)
@@ -190,10 +197,6 @@ public static class Program
         };
 
         var outputDir = options.OutputPath;
-        if (!Directory.Exists(outputDir))
-        {
-            Directory.CreateDirectory(outputDir);
-        }
 
         // Broker/connection counts are part of the name so runs of the same
         // client+scenario (e.g. 1-broker vs 3-broker CI matrix jobs, which can start
@@ -560,10 +563,10 @@ public static class Program
     {
         Console.WriteLine($"Generating report from: {options.InputPath}");
 
-        var jsonFiles = Directory.GetFiles(options.InputPath, "*.json");
+        var jsonFiles = Directory.GetFiles(options.InputPath, "stress-test-results*.json");
         if (jsonFiles.Length == 0)
         {
-            Console.WriteLine("No JSON result files found");
+            Console.WriteLine("No stress-test result JSON files found");
             return 1;
         }
 
@@ -684,7 +687,7 @@ public static class Program
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
-              --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message-loss failures
+              --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
               report --input <path>   Generate report from existing results
 
             Environment Variables:
