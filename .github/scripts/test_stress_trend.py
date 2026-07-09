@@ -114,6 +114,24 @@ class StressTrendTests(unittest.TestCase):
         self.assertFalse(should_fail)
         self.assertEqual({"improvement"}, {item["status"] for item in evaluations})
 
+    def test_zero_mad_uses_relative_noise_floor(self):
+        history = {"version": 1, "runs": [history_run(i) for i in range(1, 4)]}
+
+        evaluations, _, should_fail = evaluate_and_update(
+            history,
+            [result(messages_per_second=995.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(0.0, throughput["mad"])
+        self.assertEqual(990.0, throughput["lower"])
+        self.assertEqual(1010.0, throughput["upper"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+
     def test_different_configuration_does_not_supply_baseline(self):
         history = {"version": 1, "runs": [history_run(i) for i in range(1, 4)]}
 

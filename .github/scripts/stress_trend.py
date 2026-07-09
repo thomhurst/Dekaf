@@ -13,6 +13,7 @@ HISTORY_VERSION = 1
 HISTORY_LIMIT = 10
 MIN_BASELINE_RUNS = 3
 MAD_MULTIPLIER = 2.0
+RELATIVE_NOISE_FLOOR = 0.01
 
 _IDENTITY_FIELDS = (
     "scenario",
@@ -100,7 +101,10 @@ def _scenario_label(result):
 def _metric_status(value, baseline, lower_is_regression):
     baseline_median = median(baseline)
     mad = median(abs(item - baseline_median) for item in baseline)
-    half_width = MAD_MULTIPLIER * mad
+    half_width = max(
+        MAD_MULTIPLIER * mad,
+        abs(baseline_median) * RELATIVE_NOISE_FLOOR,
+    )
     lower = baseline_median - half_width
     upper = baseline_median + half_width
 
@@ -207,7 +211,8 @@ def format_markdown(evaluations):
         "",
         (
             f"Current metrics are compared with up to {HISTORY_LIMIT} matching runs. "
-            f"The noise band is trailing median ± {MAD_MULTIPLIER:g}×MAD; "
+            f"The noise band is trailing median ± max({MAD_MULTIPLIER:g}×MAD, "
+            f"{RELATIVE_NOISE_FLOOR:.0%} of median); "
             "a second consecutive adverse excursion fails the job."
         ),
         "",
