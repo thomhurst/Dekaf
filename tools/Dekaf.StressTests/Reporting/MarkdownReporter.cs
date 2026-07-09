@@ -39,6 +39,10 @@ internal static class MarkdownReporter
 
             GenerateGcTable(sb, groupResults, $"GC Statistics - {label}");
 
+            var resultsWithResourceTrends = groupResults.Where(r => r.ResourceTrend is not null).ToList();
+            if (resultsWithResourceTrends.Count > 0)
+                GenerateResourceTrendTable(sb, resultsWithResourceTrends, $"Resource Trends - {label}");
+
             var resultsWithErrorSamples = groupResults
                 .Where(r => r.Throughput.ErrorSamples.Count > 0)
                 .ToList();
@@ -250,6 +254,37 @@ internal static class MarkdownReporter
         sb.AppendLine();
     }
 
+    private static void GenerateResourceTrendTable(StringBuilder sb, List<StressTestResult> results, string title)
+    {
+        var clientWidth = GetClientColumnWidth(results);
+
+        sb.AppendLine($"## {title}");
+        sb.AppendLine();
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Samples | Working Set MiB/h | GC Heap MiB/h | LOH MiB/h | Produced %/h | Consumed %/h | Consumed | Status |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|---------|-------------------|---------------|-----------|---------------|---------------|----------|--------|");
+
+        foreach (var result in results.OrderBy(r => r.Client))
+        {
+            var trend = result.ResourceTrend!.Analysis;
+            var consumed = result.ConsumedMessages is { } count ? count.ToString("N0") : "-";
+            var status = trend.Passed ? "PASS" : "FAIL";
+            sb.AppendLine(
+                $"| {result.Client.PadRight(clientWidth)} | {trend.SampleCount,7:N0} | " +
+                $"{trend.WorkingSetSlopeMibPerHour,17:N2} | {trend.GcHeapSlopeMibPerHour,13:N2} | " +
+                $"{trend.LohSlopeMibPerHour,9:N2} | {trend.ProducedThroughputSlopePercentPerHour,13:N2} | " +
+                $"{trend.ConsumedThroughputSlopePercentPerHour,13:N2} | {consumed,8} | {status} |");
+
+            foreach (var failure in trend.Failures)
+            {
+                sb.AppendLine($"| {new string(' ', clientWidth)} |  |  |  |  |  |  |  | {EscapeTableCell(failure)} |");
+            }
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("*Memory slopes use post-warmup linear regression. LOH is sampled separately; LOH collections occur with Gen2 collections.*");
+        sb.AppendLine();
+    }
+
     private static string FormatScenarioTitle(string scenario) => scenario switch
     {
         "producer" => "Producer (Fire-and-Forget) Throughput",
@@ -262,6 +297,7 @@ internal static class MarkdownReporter
         "consumer-batch" => "Consumer (Batch) Throughput",
         "consumer-raw" => "Consumer (Raw Bytes) Throughput",
         "consumer-raw-batch" => "Consumer (Raw Batch) Throughput",
+        "soak" => "Mixed Produce/Consume Soak",
         _ => $"{scenario} Throughput"
     };
 
@@ -277,6 +313,7 @@ internal static class MarkdownReporter
         "consumer-batch" => "Consumer (Batch)",
         "consumer-raw" => "Consumer (Raw Bytes)",
         "consumer-raw-batch" => "Consumer (Raw Batch)",
+        "soak" => "Mixed Soak",
         _ => scenario
     };
 

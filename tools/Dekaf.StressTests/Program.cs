@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Dekaf.Producer;
 using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.FaultInjection;
@@ -118,6 +119,11 @@ public static class Program
 
         Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine($"Brokers: {options.Brokers}");
+        if (options.Scenario.Equals("soak", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"Soak target rate: {options.SoakMessagesPerSecond:N0} msg/s");
+            Console.WriteLine($"Resource sample interval: {options.ResourceSampleIntervalSeconds:N0} seconds");
+        }
         Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
         Console.WriteLine($"Progress watchdog: stacks at {ProgressWatchdog.DefaultCaptureAfter.TotalSeconds:F0}s; " +
             $"fail at {ProgressWatchdog.DefaultExitAfter.TotalMinutes:F0} minutes");
@@ -172,7 +178,7 @@ public static class Program
             if (scenarioName.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase))
                 return transactionalTopic ?? throw new InvalidOperationException("Transactional topic was not created.");
 
-            return scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase)
+            return UsesProducerTopic(scenarioName)
                 ? producerTopic
                 : consumerTopic;
         }
@@ -190,7 +196,18 @@ public static class Program
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
             EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics,
-            ProgressWatchdog = progressWatchdog
+            ProgressWatchdog = progressWatchdog,
+            SoakMessagesPerSecond = options.SoakMessagesPerSecond,
+            ResourceSampleIntervalSeconds = options.ResourceSampleIntervalSeconds,
+            ResourceTrendThresholds = new ResourceTrendThresholds
+            {
+                WarmupMinutes = options.SoakWarmupMinutes,
+                MinimumSampleCount = options.SoakMinimumSamples,
+                MaxWorkingSetSlopeMibPerHour = options.MaxWorkingSetSlopeMibPerHour,
+                MaxGcHeapSlopeMibPerHour = options.MaxGcHeapSlopeMibPerHour,
+                MaxLohSlopeMibPerHour = options.MaxLohSlopeMibPerHour,
+                MaxThroughputDecayPercentPerHour = options.MaxThroughputDecayPercentPerHour
+            }
         };
 
         if (options.ConnectionsPerBroker == 1)
@@ -214,7 +231,7 @@ public static class Program
             // Multi-connection pass: Dekaf-only producer scenarios with explicit
             // ConnectionsPerBroker to measure parallel TCP connection throughput.
             var multiConnScenarios = scenarios
-                .Where(s => s.Client == "Dekaf" && s.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase))
+                .Where(s => s.Client == "Dekaf" && UsesProducerTopic(s.Name))
                 .ToList();
             foreach (var scenario in multiConnScenarios)
             {
@@ -273,8 +290,39 @@ public static class Program
         Console.WriteLine();
         Console.WriteLine(MarkdownReporter.Generate(allResults));
 
-        return CheckForFailures(results) ? 1 : 0;
+        var failed = CheckForFailures(results);
+        failed |= CheckForResourceTrendFailures(results);
+        return failed ? 1 : 0;
     }
+
+    private static bool CheckForResourceTrendFailures(List<StressTestResult> results)
+    {
+        var failures = results
+            .Where(result => result.ResourceTrend?.Analysis.Passed == false)
+            .ToList();
+
+        if (failures.Count == 0)
+        {
+            return false;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("RESOURCE TREND REGRESSION DETECTED - failing the run:");
+        foreach (var result in failures)
+        {
+            Console.WriteLine($"  {result.Client} {result.Scenario} ({result.BrokerCount} broker(s)):");
+            foreach (var failure in result.ResourceTrend!.Analysis.Failures)
+            {
+                Console.WriteLine($"    - {failure}");
+            }
+        }
+
+        return true;
+    }
+
+    private static bool UsesProducerTopic(string scenarioName) =>
+        scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ||
+        scenarioName.Equals("soak", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Maximum consecutive seconds with zero client progress before the run is failed as
@@ -594,9 +642,17 @@ public static class Program
     private static List<IStressTestScenario> GetScenarios(CliOptions options)
     {
         var scenarios = CreateAllScenarios()
-            .Where(s => options.Scenario == "all" || s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
+            .Where(s => options.Scenario == "all"
+                ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase)
+                : s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
             .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
             .ToList();
+
+        if (scenarios.Count == 0)
+        {
+            throw new ArgumentException(
+                $"No stress scenario matched --scenario {options.Scenario} --client {options.Client}.");
+        }
 
         return ApplyClientOrder(scenarios, options.Client);
     }
@@ -618,7 +674,8 @@ public static class Program
             new ConsumerBatchStressTest(),
             new ConsumerRawStressTest(),
             new ConsumerRawBatchStressTest(),
-            new ConfluentConsumerStressTest()
+            new ConfluentConsumerStressTest(),
+            new SoakStressTest()
         ];
 
     private static List<IStressTestScenario> ApplyClientOrder(List<IStressTestScenario> scenarios, string requestedClient)
@@ -778,6 +835,34 @@ public static class Program
                 case "--messages-after-fault":
                     options.MessagesAfterFault = ParsePositiveInt(args[++i], "--messages-after-fault");
                     break;
+                case "--soak-messages-per-second":
+                    options.SoakMessagesPerSecond = ParsePositiveInt(args[++i], arg);
+                    break;
+                case "--resource-sample-seconds":
+                    options.ResourceSampleIntervalSeconds = ParsePositiveDouble(args[++i], arg);
+                    break;
+                case "--soak-warmup-minutes":
+                    options.SoakWarmupMinutes = ParseNonNegativeDouble(args[++i], arg);
+                    break;
+                case "--soak-minimum-samples":
+                    options.SoakMinimumSamples = ParsePositiveInt(args[++i], arg);
+                    if (options.SoakMinimumSamples < 2)
+                    {
+                        throw new ArgumentException("--soak-minimum-samples must be at least 2");
+                    }
+                    break;
+                case "--max-working-set-slope-mib-per-hour":
+                    options.MaxWorkingSetSlopeMibPerHour = ParseNonNegativeDouble(args[++i], arg);
+                    break;
+                case "--max-gc-heap-slope-mib-per-hour":
+                    options.MaxGcHeapSlopeMibPerHour = ParseNonNegativeDouble(args[++i], arg);
+                    break;
+                case "--max-loh-slope-mib-per-hour":
+                    options.MaxLohSlopeMibPerHour = ParseNonNegativeDouble(args[++i], arg);
+                    break;
+                case "--max-throughput-decay-percent-per-hour":
+                    options.MaxThroughputDecayPercentPerHour = ParsePositiveDouble(args[++i], arg);
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -791,13 +876,29 @@ public static class Program
 
     private static int ParsePositiveInt(string value, string optionName)
     {
-        var parsed = int.Parse(value);
+        var parsed = int.Parse(value, CultureInfo.InvariantCulture);
         if (parsed < 1)
         {
             throw new ArgumentException($"{optionName} must be at least 1");
         }
 
         return parsed;
+    }
+
+    private static double ParsePositiveDouble(string value, string option)
+    {
+        var parsed = double.Parse(value, CultureInfo.InvariantCulture);
+        return parsed > 0 && double.IsFinite(parsed)
+            ? parsed
+            : throw new ArgumentException($"{option} must be finite and greater than zero");
+    }
+
+    private static double ParseNonNegativeDouble(string value, string option)
+    {
+        var parsed = double.Parse(value, CultureInfo.InvariantCulture);
+        return parsed >= 0 && double.IsFinite(parsed)
+            ? parsed
+            : throw new ArgumentException($"{option} must be finite and non-negative");
     }
 
     private static void PrintHelp()
@@ -811,7 +912,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -822,6 +923,14 @@ public static class Program
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
               --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
+              --soak-messages-per-second <n>   Mixed soak target rate (default: 5000)
+              --resource-sample-seconds <n>    Soak resource sample interval (default: 60)
+              --soak-warmup-minutes <n>        Samples excluded before trend analysis (default: 60)
+              --soak-minimum-samples <n>       Minimum post-warmup trend samples (default: 30)
+              --max-working-set-slope-mib-per-hour <n>  Working-set growth limit (default: 8)
+              --max-gc-heap-slope-mib-per-hour <n>      GC-heap growth limit (default: 4)
+              --max-loh-slope-mib-per-hour <n>          LOH growth limit (default: 4)
+              --max-throughput-decay-percent-per-hour <n> Throughput decay limit (default: 5)
               report --input <path>   Generate report from existing results
 
             Fault injection:
@@ -844,6 +953,7 @@ public static class Program
               dotnet run -c Release -- --duration 15 --message-size 1000
               dotnet run -c Release -- --scenario producer --client dekaf --duration 5
               dotnet run -c Release -- --scenario producer-transactional --client dekaf --duration 15
+              dotnet run -c Release -- --scenario soak --client dekaf --duration 1440 --brokers 1
               dotnet run -c Release -- report --input ./results
               dotnet run -c Release -- fault --fault-profile broker --brokers 3
             """);
@@ -873,5 +983,13 @@ public static class Program
         public int MaxMessagesDuringFault { get; set; } = 20_000;
         public int MessagesAfterFault { get; set; } = 2_000;
         public HashSet<string> AllowedFailureWindows { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public int SoakMessagesPerSecond { get; set; } = 5_000;
+        public double ResourceSampleIntervalSeconds { get; set; } = 60;
+        public double SoakWarmupMinutes { get; set; } = 60;
+        public int SoakMinimumSamples { get; set; } = 30;
+        public double MaxWorkingSetSlopeMibPerHour { get; set; } = 8;
+        public double MaxGcHeapSlopeMibPerHour { get; set; } = 4;
+        public double MaxLohSlopeMibPerHour { get; set; } = 4;
+        public double MaxThroughputDecayPercentPerHour { get; set; } = 5;
     }
 }
