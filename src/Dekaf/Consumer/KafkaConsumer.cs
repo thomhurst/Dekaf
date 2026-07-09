@@ -3157,6 +3157,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             keyDeserializer: _keyDeserializer,
                             valueDeserializer: _valueDeserializer);
 
+                        if (HasPublishedPendingFetchClear(pending.TopicPartition))
+                            break;
+
                         TrackConsumedPosition(pending, offset, messageBytes);
 
                         if (hasInterceptors)

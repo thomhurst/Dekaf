@@ -292,6 +292,38 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task ResetToDivergingEpoch_StopsConsumeOneAsyncBeforeUndeliveredRecord()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var keyDeserializer = Substitute.For<IDeserializer<string>>();
+        using var cancellationSource = new CancellationTokenSource();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, keyDeserializer);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        SetInitialized(consumer);
+
+        keyDeserializer.Deserialize(
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<SerializationContext>())
+            .Returns(callInfo =>
+            {
+                InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+                cancellationSource.Cancel();
+                return Encoding.UTF8.GetString(callInfo.ArgAt<ReadOnlyMemory<byte>>(0).Span);
+            });
+
+        GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
+
+        var result = await consumer.ConsumeOneAsync(
+            TimeSpan.FromSeconds(1),
+            cancellationSource.Token);
+
+        await Assert.That(result).IsNull();
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_StopsRawBatchAtLastDeliveredRecord()
     {
         var pool = Substitute.For<IConnectionPool>();
