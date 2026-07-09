@@ -300,6 +300,23 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task RecordBatch_Records_AfterDispose_ThrowsObjectDisposedException()
+    {
+        // Dispose returns the batch to a shared pool. Suite-wide isolation prevents
+        // another test from re-renting it before the disposed-state assertion.
+        var batch = new RecordBatch { Records = [] };
+
+        batch.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+        {
+            _ = batch.Records;
+            return Task.CompletedTask;
+        });
+    }
+
+    [Test]
     public async Task RecordBatch_Dispose_IsIdempotent()
     {
         var buffer = new ArrayBufferWriter<byte>();
