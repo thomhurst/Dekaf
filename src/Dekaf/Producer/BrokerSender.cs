@@ -2261,8 +2261,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    var failureException = KafkaException.FromErrorCode(partitionResponse.ErrorCode,
-                        $"Produce failed: {partitionResponse.ErrorCode}");
+                    KafkaException failureException = partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
+                        ? new ProduceException(partitionResponse.ErrorCode,
+                            $"Produce failed: {partitionResponse.ErrorCode}")
+                        {
+                            Topic = expectedTopic,
+                            Partition = expectedPartition
+                        }
+                        : KafkaException.FromErrorCode(partitionResponse.ErrorCode,
+                            $"Produce failed: {partitionResponse.ErrorCode}");
                     if (_muteOnSend)
                         UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }

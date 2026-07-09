@@ -2253,6 +2253,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         try
         {
             recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+            ThrowIfRecordExceedsMaxRequestSize(
+                topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
+                headers, headerCount, recordSize);
         }
         catch
         {
@@ -2615,6 +2618,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
 
         var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+        ThrowIfRecordExceedsMaxRequestSize(
+            topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
+            headers, headerCount, recordSize);
 
         // Try non-blocking memory reservation. If buffer is full, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
@@ -2649,6 +2655,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
         var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
+        ThrowIfRecordExceedsMaxRequestSize(
+            topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
+            headers, headerCount, recordSize);
 
         if (!TryReserveMemory(recordSize))
             return false;
@@ -3036,6 +3045,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         try
         {
             recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
+            ThrowIfRecordExceedsMaxRequestSize(
+                topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
+                headers, headerCount, recordSize);
         }
         catch
         {
@@ -3055,6 +3067,62 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
             headers, headerCount, callback, recordSize, partitionCount, cancellationToken);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfRecordExceedsMaxRequestSize(
+        string topic,
+        int partition,
+        bool keyIsNull,
+        int keyLength,
+        bool valueIsNull,
+        int valueLength,
+        Header[]? headers,
+        int headerCount,
+        int estimatedRecordSize)
+    {
+        var maxRequestSize = _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1_048_576;
+        if ((long)RecordBatch.TotalBatchHeaderSize + estimatedRecordSize <= maxRequestSize)
+            return;
+
+        ThrowIfRecordExceedsMaxRequestSizeSlow(
+            topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
+            headers, headerCount, maxRequestSize);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowIfRecordExceedsMaxRequestSizeSlow(
+        string topic,
+        int partition,
+        bool keyIsNull,
+        int keyLength,
+        bool valueIsNull,
+        int valueLength,
+        Header[]? headers,
+        int headerCount,
+        int maxRequestSize)
+    {
+        var bodySize = Record.ComputeBodySize(
+            timestampDelta: 0,
+            offsetDelta: 0,
+            keyIsNull,
+            keyLength,
+            valueIsNull,
+            valueLength,
+            headers,
+            headerCount);
+        var encodedRecordSize = checked(Record.VarIntSize(bodySize) + bodySize);
+        var encodedBatchSize = checked(RecordBatch.TotalBatchHeaderSize + encodedRecordSize);
+        if (encodedBatchSize <= maxRequestSize)
+            return;
+
+        throw new ProduceException(
+            ErrorCode.MessageTooLarge,
+            $"Encoded record batch size {encodedBatchSize} exceeds MaxRequestSize of {maxRequestSize} bytes.")
+        {
+            Topic = topic,
+            Partition = partition
+        };
     }
 
     /// <summary>
@@ -3251,10 +3319,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    // Immediate post-append sealing is limited to LingerMs == 0. Full-batch rotations that
-    // carry a pending overestimate between loop iterations require linger to keep batches open.
     private bool ShouldSealAppendedBatch(PartitionBatch batch)
-        => _options.LingerMs == 0 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs);
+        => batch.IsExactlyAtSizeLimit
+            || (_options.LingerMs == 0 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs));
 
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
@@ -5179,6 +5246,12 @@ internal sealed class PartitionBatch
     public int ReservedSize => _reservedSize;
     public int OverestimatedBytes => Math.Max(0, _reservedSize - _estimatedSize);
     public int CompletionSourcesCount => _completionSourceCount;
+    public bool IsExactlyAtSizeLimit =>
+        (long)RecordBatch.TotalBatchHeaderSize + _encodedRecordsLength == EffectiveBatchSizeLimit;
+
+    private int EffectiveBatchSizeLimit => Math.Min(
+        _options.BatchSize,
+        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1_048_576);
 
     internal readonly record struct ReservedRecordAppend(
         BatchArena Arena,
@@ -5406,9 +5479,10 @@ internal sealed class PartitionBatch
             headerCount);
         var encodedRecordSize = checked(Record.VarIntSize(bodySize) + bodySize);
 
-        // Check size limit. BatchSize is the full wire batch budget, so records must
-        // leave room for the fixed RecordBatch header.
-        var maxRecordsSize = Math.Max(0, _options.BatchSize - RecordBatch.TotalBatchHeaderSize);
+        // BatchSize and MaxRequestSize are full wire-batch budgets, so records must
+        // leave room for the fixed RecordBatch header. A first record may exceed
+        // BatchSize via the documented expanded-arena path, but never MaxRequestSize.
+        var maxRecordsSize = Math.Max(0, EffectiveBatchSizeLimit - RecordBatch.TotalBatchHeaderSize);
         if ((long)_estimatedSize + encodedRecordSize > maxRecordsSize && recordIndex > 0)
         {
             reservedAppend = default;
