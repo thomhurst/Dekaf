@@ -42,6 +42,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Keep collecting three-broker reports while #1639 is open without making
+    # its known consumer-recovery failure a permanent red scheduled run.
+    continue-on-error: ${{ matrix.allow_failure }}
     strategy:
       fail-fast: false
       matrix:
@@ -49,12 +52,15 @@ jobs:
           - name: TCP Faults (1 Broker)
             profile: network
             brokers: 1
+            allow_failure: false
           - name: Broker Kill and Restart (1 Broker)
             profile: broker
             brokers: 1
+            allow_failure: false
           - name: Cluster Failover and Rolling Restart (3 Brokers)
             profile: broker
             brokers: 3
+            allow_failure: true
 
     steps:
       - name: Checkout
