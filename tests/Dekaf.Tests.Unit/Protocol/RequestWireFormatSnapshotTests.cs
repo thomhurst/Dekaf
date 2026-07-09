@@ -5,7 +5,9 @@ using System.Runtime.ExceptionServices;
 using System.Text;
 using Dekaf.Compression;
 using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 using VerifyTUnit;
 
 namespace Dekaf.Tests.Unit.Protocol;
@@ -49,6 +51,21 @@ public class RequestWireFormatSnapshotTests
         settings.DisableRequireUniquePrefix();
 
         await Verifier.Verify(snapshot, settings);
+    }
+
+    [Test]
+    public async Task DeterministicProduceRequest_IncludesEncodedRecord()
+    {
+        var request = (ProduceRequest)DeterministicRequestFactory.Create(typeof(ProduceRequest));
+        var partition = request.TopicData.Single().PartitionData.Single();
+
+        await Assert.That(partition.Records.Count).IsEqualTo(1);
+        await Assert.That(partition.Compression).IsEqualTo(CompressionType.None);
+
+        var record = partition.Records[0].Records.Single();
+        await Assert.That(record.Key.IsEmpty).IsFalse();
+        await Assert.That(record.Value.IsEmpty).IsFalse();
+        await Assert.That(record.HeaderCount).IsEqualTo(1);
     }
 
     public static IEnumerable<(string RequestType, short Version)> RequestVersions()
@@ -221,6 +238,13 @@ public class RequestWireFormatSnapshotTests
                 return 42.5M;
             }
 
+            if (type == typeof(CompressionType))
+            {
+                // Keep ProduceRequest records readable in the golden hex dump and stable
+                // across runtime-specific compression implementations.
+                return CompressionType.None;
+            }
+
             if (type.IsEnum)
             {
                 var values = Enum.GetValues(type);
@@ -283,13 +307,37 @@ public class RequestWireFormatSnapshotTests
         {
             if (elementType == typeof(RecordBatch))
             {
-                return Array.CreateInstance(elementType, 0);
+                return new[] { CreateRecordBatch() };
             }
 
             var array = Array.CreateInstance(elementType, 1);
             array.SetValue(CreateValue(elementType, memberName, depth + 1, ancestors), 0);
             return array;
         }
+
+        private static RecordBatch CreateRecordBatch() => new()
+        {
+            BaseOffset = 0,
+            PartitionLeaderEpoch = -1,
+            LastOffsetDelta = 0,
+            BaseTimestamp = 1_700_000_000_000L,
+            MaxTimestamp = 1_700_000_000_000L,
+            ProducerId = -1,
+            ProducerEpoch = -1,
+            BaseSequence = -1,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "wire-key"u8.ToArray(),
+                    Value = "wire-value"u8.ToArray(),
+                    Headers = [new Header("wire-header", "wire-header-value"u8.ToArray())],
+                    HeaderCount = 1
+                }
+            ]
+        };
 
         private static Type? TryGetListElementType(Type type)
         {
