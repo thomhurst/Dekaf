@@ -89,9 +89,17 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
     }
 
     [Test]
-    public async Task SmallFetchBuffer_WithLargeMessages_HandlesCorrectly()
+    public async Task FetchMaxBytes_BelowFirstRecord_Kip74StillProgresses()
     {
-        // Arrange - produce messages larger than the configured max fetch bytes
+        const int fetchMaxBytes = 1024;
+        const int oversizedRecordSize = 10_000;
+        var expectedRecords = new (string Key, string Value)[]
+        {
+            ("oversized", new string('X', oversizedRecordSize)),
+            ("after-oversized-1", "small-1"),
+            ("after-oversized-2", "small-2")
+        };
+
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -99,48 +107,39 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Produce 5 messages, each ~10KB
-        const int messageCount = 5;
-        const int messageSize = 10_000;
-        for (var i = 0; i < messageCount; i++)
+        // Awaiting each delivery keeps the oversized first record and the later records
+        // in separate batches, so later offsets require another fetch to make progress.
+        foreach (var (key, value) in expectedRecords)
         {
-            var value = new string((char)('A' + i), messageSize);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
-                Key = $"key-{i}",
+                Key = key,
                 Value = value
             }, CancellationToken.None);
         }
 
-        // Act - consumer with a small max partition fetch bytes
-        // Kafka will still return at least one complete message per partition even if
-        // it exceeds the configured limit, so all messages should be consumable
+        // Keep the per-partition limit above the record size to isolate fetch.max.bytes.
+        // KIP-74 requires the first oversized record batch to be returned anyway.
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithFetchMaxBytes(1024) // 1KB - much smaller than message size
-            .WithMaxPartitionFetchBytes(1024) // 1KB per partition
+            .WithFetchMaxBytes(fetchMaxBytes)
+            .WithMaxPartitionFetchBytes(oversizedRecordSize * 2)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
 
-        var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var messages = await ConsumeMessagesAsync(consumer, expectedRecords.Length);
 
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        await Assert.That(messages).Count().IsEqualTo(expectedRecords.Length);
+        await Assert.That(messages[0].Value.Length).IsGreaterThan(fetchMaxBytes);
+        for (var i = 0; i < expectedRecords.Length; i++)
         {
-            messages.Add(msg);
-            if (messages.Count >= messageCount) break;
-        }
-
-        // Assert - all messages should be consumed despite small fetch buffer
-        // Kafka guarantees at least one complete record per fetch response
-        await Assert.That(messages).Count().IsEqualTo(messageCount);
-        for (var i = 0; i < messageCount; i++)
-        {
-            await Assert.That(messages[i].Value.Length).IsEqualTo(messageSize);
+            await Assert.That(messages[i].Key).IsEqualTo(expectedRecords[i].Key);
+            await Assert.That(messages[i].Value).IsEqualTo(expectedRecords[i].Value);
+            await Assert.That(messages[i].Offset).IsEqualTo(i);
         }
     }
 
