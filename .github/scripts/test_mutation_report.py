@@ -125,13 +125,15 @@ class MutationReportTests(unittest.TestCase):
             project_path.read_text(encoding="utf-8"),
         )
 
-    def test_workflow_finds_baseline_per_campaign_artifact(self):
+    def test_workflow_finds_only_successful_campaign_baselines(self):
         workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
 
-        self.assertIn("ARTIFACT_NAME: mutation-results-${{ matrix.campaign }}", workflow)
+        self.assertIn("ARTIFACT_NAME: mutation-baseline-${{ matrix.campaign }}", workflow)
         self.assertIn("actions/artifacts?name=${ARTIFACT_NAME}", workflow)
-        self.assertNotIn("--status success", workflow)
+        self.assertIn("- name: Upload successful mutation baseline\n        if: success()", workflow)
+        self.assertIn("name: mutation-baseline-${{ matrix.campaign }}", workflow)
+        self.assertIn("name: mutation-results-${{ matrix.campaign }}", workflow)
 
     def test_cli_writes_summary_and_returns_failure_for_large_drop(self):
         current = report_with(mutant("Killed", 1), mutant("Survived", 2))

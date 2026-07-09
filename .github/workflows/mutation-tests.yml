@@ -57,10 +57,10 @@ jobs:
         id: previous-run
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: mutation-results-${{ matrix.campaign }}
+          ARTIFACT_NAME: mutation-baseline-${{ matrix.campaign }}
         run: |
-          # Select this campaign's latest retained main-branch artifact. A failed
-          # sibling matrix leg must not erase the passing campaign's baseline.
+          # Select this campaign's latest successful main-branch baseline. Each
+          # matrix leg uploads independently, so a failed sibling cannot erase it.
           run_id=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
             --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
@@ -71,7 +71,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          name: mutation-results-${{ matrix.campaign }}
+          name: mutation-baseline-${{ matrix.campaign }}
           path: artifacts/previous
           github-token: ${{ github.token }}
           run-id: ${{ steps.previous-run.outputs.run_id }}
@@ -107,6 +107,15 @@ jobs:
             cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$gate_exit"
+
+      - name: Upload successful mutation baseline
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-baseline-${{ matrix.campaign }}
+          path: artifacts/mutation/${{ matrix.campaign }}/**/mutation-report.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Upload mutation results
         if: always()
