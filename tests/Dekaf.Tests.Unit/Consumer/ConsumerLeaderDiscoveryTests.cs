@@ -185,6 +185,37 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task QueueDivergingEpochResets_QueuesEveryPartitionBeforeInvalidatingEpoch()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(Topic, 0, 10, leaderEpoch: 3),
+            new TopicPartitionOffset(Topic, 1, 20, leaderEpoch: 4)
+        ]);
+        var fetchBufferEpoch = GetFetchBufferEpoch(consumer);
+
+        InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(partition: 0, epoch: 7, endOffset: 8),
+            fetchBufferEpoch);
+        InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(partition: 1, epoch: 8, endOffset: 18),
+            fetchBufferEpoch);
+
+        await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch);
+        InvokeCompleteDivergingEpochResets(consumer, fetchBufferEpoch);
+
+        await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch + 1);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition: 0)).IsEqualTo(-1);
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition: 1)).IsEqualTo(-1);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_ResumesAfterLastYieldedBufferedRecord()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -429,14 +460,17 @@ public sealed class ConsumerLeaderDiscoveryTests
         }
     }
 
-    private static FetchResponsePartition CreateDivergingEpochResponse() =>
+    private static FetchResponsePartition CreateDivergingEpochResponse(
+        int partition = 0,
+        int epoch = 7,
+        long endOffset = 42) =>
         new()
         {
-            PartitionIndex = 0,
+            PartitionIndex = partition,
             DivergingEpoch = new EpochEndOffset
             {
-                Epoch = 7,
-                EndOffset = 42
+                Epoch = epoch,
+                EndOffset = endOffset
             }
         };
 
@@ -458,13 +492,29 @@ public sealed class ConsumerLeaderDiscoveryTests
 
     private static void InvokeResetToDivergingEpoch(
         KafkaConsumer<string, string> consumer,
-        FetchResponsePartition partitionResponse)
+        FetchResponsePartition partitionResponse,
+        int? fetchBufferEpoch = null)
     {
         var method = typeof(KafkaConsumer<string, string>)
             .GetMethod("ResetToDivergingEpoch", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ResetToDivergingEpoch method not found");
 
-        method.Invoke(consumer, [Topic, partitionResponse, GetFetchBufferEpoch(consumer)]);
+        var epoch = fetchBufferEpoch ?? GetFetchBufferEpoch(consumer);
+        method.Invoke(consumer, [Topic, partitionResponse, epoch]);
+
+        if (fetchBufferEpoch is null)
+            InvokeCompleteDivergingEpochResets(consumer, epoch);
+    }
+
+    private static void InvokeCompleteDivergingEpochResets(
+        KafkaConsumer<string, string> consumer,
+        int fetchBufferEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("CompleteDivergingEpochResets", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CompleteDivergingEpochResets method not found");
+
+        method.Invoke(consumer, [fetchBufferEpoch]);
     }
 
     private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer)
@@ -487,14 +537,16 @@ public sealed class ConsumerLeaderDiscoveryTests
         return (Queue<PendingFetchData>)field.GetValue(consumer)!;
     }
 
-    private static int GetLastConsumedLeaderEpoch(KafkaConsumer<string, string> consumer)
+    private static int GetLastConsumedLeaderEpoch(
+        KafkaConsumer<string, string> consumer,
+        int partition = 0)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "GetLastConsumedLeaderEpoch",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("GetLastConsumedLeaderEpoch method not found");
 
-        return (int)method.Invoke(consumer, [new TopicPartition(Topic, 0)])!;
+        return (int)method.Invoke(consumer, [new TopicPartition(Topic, partition)])!;
     }
 
     private static Exception? DrainPendingFetchException(KafkaConsumer<string, string> consumer)

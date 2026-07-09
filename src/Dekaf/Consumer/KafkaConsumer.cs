@@ -2431,6 +2431,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // concurrently for different brokers AND different connections to the same broker
             var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd((brokerId, connectionIndex), static _ => []);
             pendingItems.Clear();
+            var queuedDivergingEpochReset = false;
 
             // Write to prefetch channel
             try
@@ -2452,9 +2453,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.DivergingEpoch is not null)
                         {
-                            ResetToDivergingEpoch(topic, partitionResponse, fetchBufferEpoch);
+                            queuedDivergingEpochReset |= ResetToDivergingEpoch(
+                                topic,
+                                partitionResponse,
+                                fetchBufferEpoch);
                             continue;
                         }
+
+                        // A correction invalidates this response, but keep scanning it so every
+                        // partition with the same correction is queued before the epoch changes.
+                        if (queuedDivergingEpochReset)
+                            continue;
 
                         if (partitionResponse.ErrorCode != ErrorCode.None)
                         {
@@ -2514,6 +2523,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             finally
             {
+                if (queuedDivergingEpochReset)
+                    CompleteDivergingEpochResets(fetchBufferEpoch);
+
                 // Return the response and its nested objects to their pools.
                 // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
                 response.ReturnToPool();
@@ -3567,12 +3579,45 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+            if (!TryQueueDivergingEpochResetLocked(partition, endOffset, epoch, fetchBufferEpoch))
                 return;
 
-            _pendingDivergingEpochResets[partition] = (endOffset, epoch);
-            _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             Interlocked.Increment(ref _fetchBufferEpoch);
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+        }
+    }
+
+    private bool StageDivergingEpochReset(
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            return TryQueueDivergingEpochResetLocked(partition, endOffset, epoch, fetchBufferEpoch);
+    }
+
+    private bool TryQueueDivergingEpochResetLocked(
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
+    {
+        if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+            return false;
+
+        _pendingDivergingEpochResets[partition] = (endOffset, epoch);
+        _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+        return true;
+    }
+
+    private void CompleteDivergingEpochResets(int fetchBufferEpoch)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            if (!IsFetchBufferEpochStale(fetchBufferEpoch))
+                Interlocked.Increment(ref _fetchBufferEpoch);
+
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
         }
     }
@@ -4997,6 +5042,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Collect pending fetch data items - we need to assign memory owner to the last one
         List<PendingFetchData>? pendingItems = null;
+        var queuedDivergingEpochReset = false;
 
         // Queue pending fetch data for lazy iteration - don't parse records yet!
         try
@@ -5018,9 +5064,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (partitionResponse.DivergingEpoch is not null)
                     {
-                        ResetToDivergingEpoch(topic, partitionResponse, fetchBufferEpoch);
+                        queuedDivergingEpochReset |= ResetToDivergingEpoch(
+                            topic,
+                            partitionResponse,
+                            fetchBufferEpoch);
                         continue;
                     }
+
+                    // A correction invalidates this response, but keep scanning it so every
+                    // partition with the same correction is queued before the epoch changes.
+                    if (queuedDivergingEpochReset)
+                        continue;
 
                     if (partitionResponse.ErrorCode != ErrorCode.None)
                     {
@@ -5079,6 +5133,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
+            if (queuedDivergingEpochReset)
+                CompleteDivergingEpochResets(fetchBufferEpoch);
+
             // Return the response and its nested objects to their pools.
             // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
             response.ReturnToPool();
@@ -5257,19 +5314,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _pendingFetchExceptions.Enqueue(exception);
     }
 
-    private void ResetToDivergingEpoch(
+    private bool ResetToDivergingEpoch(
         string topic,
         FetchResponsePartition partitionResponse,
         int fetchBufferEpoch)
     {
         if (partitionResponse.DivergingEpoch is not { } divergingEpoch)
-            return;
+            return false;
 
         var partition = new TopicPartition(topic, partitionResponse.PartitionIndex);
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
-            return;
+            return false;
 
-        QueueDivergingEpochReset(
+        return StageDivergingEpochReset(
             partition,
             divergingEpoch.EndOffset,
             divergingEpoch.Epoch,
