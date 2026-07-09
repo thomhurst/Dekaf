@@ -1,5 +1,8 @@
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration;
 
@@ -16,10 +19,11 @@ namespace Dekaf.Tests.Integration;
 public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task Transaction_FencedByNewerProducer_ThrowsFatalAndProducerIsUnusable()
+    public async Task Transaction_FencedByNewerProducer_AllOperationsFailFatalAndWritesStayInvisible()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-fence-{Guid.NewGuid():N}";
+        var consumerGroupId = $"txn-fence-group-{Guid.NewGuid():N}";
 
         await using var producer1 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -37,8 +41,8 @@ public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : KafkaInte
         await txn1.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
-            Key = "fence-key",
-            Value = "fence-value"
+            Key = "fenced-key",
+            Value = "fenced-value"
         }, CancellationToken.None);
 
         // A second producer with the same transactional id bumps the epoch, fencing producer1.
@@ -51,12 +55,72 @@ public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : KafkaInte
 
         await producer2.InitTransactionsAsync();
 
-        // producer1's commit (EndTxn) is now rejected with a fatal, fencing error.
-        var commit = () => txn1.CommitAsync().AsTask();
-        await Assert.That(commit).Throws<FatalTransactionException>();
+        // producer1's commit (EndTxn) detects the fence and transitions the producer to a
+        // permanent fatal state.
+        await AssertFencedAsync(() => txn1.CommitAsync().AsTask(), txnId);
 
-        // The producer is in a fatal state and cannot start further transactions.
-        var begin = () => producer1.BeginTransaction();
-        await Assert.That(begin).Throws<InvalidOperationException>();
+        // Every transaction operation must now fail locally with the same fatal error. None may
+        // overwrite the fatal state or attempt to resurrect the producer with a new epoch.
+        await AssertFencedAsync(() => txn1.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "post-fence-key",
+            Value = "post-fence-value"
+        }).AsTask(), txnId);
+
+        await AssertFencedAsync(() => txn1.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset(topic, 0, 1)], consumerGroupId).AsTask(), txnId);
+
+        await AssertFencedAsync(() => txn1.PrepareAsync().AsTask(), txnId);
+        await AssertFencedAsync(() => txn1.CommitAsync().AsTask(), txnId);
+        await AssertFencedAsync(() => txn1.AbortAsync().AsTask(), txnId);
+        await AssertFencedAsync(() => producer1.InitTransactionsAsync().AsTask(), txnId);
+
+        var beginException = await Assert.That(() => producer1.BeginTransaction())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(beginException!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(beginException.TransactionalId).IsEqualTo(txnId);
+
+        // The replacement producer remains healthy and can commit with the newer epoch.
+        await using (var txn2 = producer2.BeginTransaction())
+        {
+            await txn2.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "replacement-key",
+                Value = "replacement-value"
+            });
+            await txn2.CommitAsync();
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"txn-fence-verify-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithIsolationLevel(IsolationLevel.ReadCommitted)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var visible = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
+
+        await Assert.That(visible).IsNotNull();
+        var visibleMessage = visible!.Value;
+        await Assert.That(visibleMessage.Key).IsEqualTo("replacement-key");
+        await Assert.That(visibleMessage.Value).IsEqualTo("replacement-value");
+
+        var unexpected = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
+        await Assert.That(unexpected).IsNull();
+    }
+
+    private static async Task AssertFencedAsync(Func<Task> action, string transactionalId)
+    {
+        var exception = await Assert.That(action).Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(exception.TransactionalId).IsEqualTo(transactionalId);
     }
 }

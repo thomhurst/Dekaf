@@ -1692,16 +1692,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             throw new InvalidOperationException("Producer is not transactional. Set TransactionalId in options.");
         }
 
+        ThrowIfFatalTransactionError("Cannot begin transaction");
+
         if (_transactionState == TransactionState.Uninitialized)
         {
             throw new InvalidOperationException(
                 "Transactions not initialized. Call InitTransactionsAsync() before BeginTransaction().");
-        }
-
-        if (_transactionState == TransactionState.FatalError)
-        {
-            throw new InvalidOperationException(
-                "Producer is in a fatal error state and cannot begin new transactions.");
         }
 
         if (_transactionState == TransactionState.AbortableError)
@@ -1754,6 +1750,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         ThrowIfNotInitialized();
+        ThrowIfFatalTransactionError("Cannot initialize transactions");
         ThrowIfTwoPhaseCommitUnsupported(keepPreparedTransaction);
 
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
@@ -1792,6 +1789,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             throw new ArgumentException("Prepared transaction state must identify a transaction.", nameof(preparedState));
 
         ThrowIfNotInitialized();
+        ThrowIfFatalTransactionError("Cannot complete prepared transaction");
 
         if (_transactionState != TransactionState.PreparedTransaction)
         {
@@ -1856,6 +1854,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     internal PreparedTransactionState PrepareCurrentTransaction()
     {
+        ThrowIfFatalTransactionError("Cannot prepare transaction");
+
         if (!_options.EnableTwoPhaseCommit)
         {
             throw new TransactionException(ErrorCode.InvalidTxnState,
@@ -1900,7 +1900,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
     }
 
-    internal void FinalizeCompletedTransactionState()
+    internal void FinalizeCompletedTransactionState(bool preserveAbortableError = true)
     {
         lock (_partitionsInTransactionLock)
         {
@@ -1909,7 +1909,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         _preparedTransactionState = PreparedTransactionState.Empty;
 
-        if (_transactionState is not (TransactionState.AbortableError or TransactionState.FatalError))
+        var preserveError = _transactionState == TransactionState.FatalError
+            || preserveAbortableError && _transactionState == TransactionState.AbortableError;
+        if (!preserveError)
         {
             _transactionState = TransactionState.Ready;
         }
@@ -2966,11 +2968,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (txnState == TransactionState.FatalError)
         {
-            throw new FatalTransactionException(_lastTransactionError,
-                "Cannot produce: the producer is in a fatal error state and must be closed.")
-            {
-                TransactionalId = _options.TransactionalId
-            };
+            ThrowFatalTransactionError("Cannot produce");
         }
 
         if (txnState == TransactionState.PreparedTransaction)
@@ -2981,6 +2979,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 TransactionalId = _options.TransactionalId
             };
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ThrowIfFatalTransactionError(string operation)
+    {
+        if (_transactionState == TransactionState.FatalError)
+            ThrowFatalTransactionError(operation);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ThrowFatalTransactionError(string operation)
+    {
+        throw new FatalTransactionException(_lastTransactionError,
+            $"{operation}: the producer is in a fatal error state and must be closed.")
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -3956,6 +3971,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError("Cannot produce");
 
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
@@ -3970,6 +3986,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError("Cannot commit transaction");
 
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
@@ -3993,6 +4010,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     public async ValueTask<PreparedTransactionState> PrepareAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError("Cannot prepare transaction");
 
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
@@ -4014,6 +4032,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     public async ValueTask AbortAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError("Cannot abort transaction");
 
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
@@ -4046,6 +4065,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         CancellationToken cancellationToken = default)
     {
         ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError("Cannot send offsets to transaction");
 
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
@@ -4070,12 +4090,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             {
                 // Best-effort abort during disposal — if the broker rejects it
                 // (e.g. InvalidTxnState because no messages were produced),
-                // just clean up state and move on.
-                lock (_producer._partitionsInTransactionLock)
-                {
-                    _producer._partitionsInTransaction.Clear();
-                }
-                _producer._transactionState = TransactionState.Ready;
+                // just clean up state and move on. Fatal responses remain sticky, while
+                // abortable responses return to Ready because this transaction is disposed.
+                _producer.FinalizeCompletedTransactionState(preserveAbortableError: false);
             }
         }
     }

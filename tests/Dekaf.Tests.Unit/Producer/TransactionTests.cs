@@ -66,10 +66,95 @@ public sealed class TransactionTests
             .WithTransactionalId("test-txn-id")
             .Build();
 
-        ((KafkaProducer<string, string>)producer)._transactionState = TransactionState.FatalError;
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        kafkaProducer._transactionState = TransactionState.FatalError;
+        kafkaProducer._lastTransactionError = ErrorCode.ProducerFenced;
 
         var act = () => producer.BeginTransaction();
-        await Assert.That(act).Throws<InvalidOperationException>();
+        var exception = await Assert.That(act).Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(exception.TransactionalId).IsEqualTo("test-txn-id");
+    }
+
+    [Test]
+    public async Task FatalErrorState_AllTransactionOperationsFailFast()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        SetInstanceField(kafkaProducer, "_initialized", true);
+        kafkaProducer._transactionState = TransactionState.FatalError;
+        kafkaProducer._lastTransactionError = ErrorCode.ProducerFenced;
+
+        await using var transaction = new Transaction<string, string>(kafkaProducer);
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = "test-topic",
+            Key = "key",
+            Value = "value"
+        };
+
+        await Assert.That(() => transaction.ProduceAsync(message).AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(() => transaction.SendOffsetsToTransactionAsync(
+                [new TopicPartitionOffset("test-topic", 0, 1)], "test-group").AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(() => transaction.PrepareAsync().AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(() => transaction.AbortAsync().AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(() => producer.InitTransactionsAsync().AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(() => producer.BeginTransaction())
+            .Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    public async Task DisposeAsync_WhenAbortIsFenced_PreservesFatalError()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            endTxnError: ErrorCode.ProducerFenced);
+
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        await transaction.DisposeAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+
+        var exception = await Assert.That(() => harness.Producer.BeginTransaction())
+            .Throws<FatalTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    [Test]
+    public async Task DisposeAsync_WhenAbortIsRejected_ReturnsProducerToReady()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            endTxnError: ErrorCode.InvalidTxnState);
+
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        await transaction.DisposeAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.InvalidTxnState);
     }
 
     [Test]
@@ -492,7 +577,8 @@ public sealed class TransactionTests
     private static PreparedCompletionHarness BuildPreparedCompletionHarness(
         PreparedTransactionState preparedState,
         long currentProducerId,
-        short currentProducerEpoch)
+        short currentProducerEpoch,
+        ErrorCode endTxnError = ErrorCode.None)
     {
         EndTxnRequest? capturedRequest = null;
         var connection = Substitute.For<IKafkaConnection>();
@@ -505,7 +591,7 @@ public sealed class TransactionTests
                 Arg.Any<CancellationToken>())
             .Returns(_ => new ValueTask<EndTxnResponse>(new EndTxnResponse
             {
-                ErrorCode = ErrorCode.None,
+                ErrorCode = endTxnError,
                 ProducerId = preparedState.ProducerId,
                 ProducerEpoch = (short)(preparedState.ProducerEpoch + 1)
             }));
