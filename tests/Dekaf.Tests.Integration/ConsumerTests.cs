@@ -567,6 +567,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     public async Task Consumer_SeekToEnd_SkipsExistingMessages()
     {
         // Arrange - produce messages first
+        const int existingMessageCount = 5;
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -575,7 +576,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < existingMessageCount; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
@@ -585,38 +586,26 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             }, CancellationToken.None);
         }
 
-        // Act - create consumer, assign, and use AutoOffsetReset.Latest
-        // This tests that with Latest, we only get new messages
+        // Act - create consumer, assign, and seek past the existing messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .WithAutoOffsetReset(AutoOffsetReset.Latest)
+            .WithPartitionEof()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
+        consumer.SeekToEnd(tp);
 
-        // Start consuming in background - should wait for new messages
-        var receivedMessages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var results = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator();
 
-        var consumeTask = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-                {
-                    receivedMessages.Add(msg);
-                    if (receivedMessages.Count >= 1) break;
-                }
-            }
-            catch (OperationCanceledException) { }
-        });
+        // EOF confirms the broker resolved SeekToEnd and fetched at that boundary.
+        await Assert.That(await results.MoveNextAsync()).IsTrue();
+        await Assert.That(results.Current.IsPartitionEof).IsTrue();
+        await Assert.That(results.Current.Offset).IsEqualTo(existingMessageCount);
 
-        // Wait for consumer to start and resolve the offset
-        await Task.Delay(1000);
-
-        // Produce a new message
+        // Produce only after the boundary is observed.
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
@@ -624,12 +613,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Value = "new-value"
         }, CancellationToken.None);
 
-        await consumeTask;
-
         // Assert - should get the new message, not the old ones
-        await Assert.That(receivedMessages.Count).IsEqualTo(1);
-        await Assert.That(receivedMessages[0].Key).IsEqualTo("new-key");
-        await Assert.That(receivedMessages[0].Value).IsEqualTo("new-value");
+        await Assert.That(await results.MoveNextAsync()).IsTrue();
+        await Assert.That(results.Current.IsPartitionEof).IsFalse();
+        await Assert.That(results.Current.Offset).IsEqualTo(existingMessageCount);
+        await Assert.That(results.Current.Key).IsEqualTo("new-key");
+        await Assert.That(results.Current.Value).IsEqualTo("new-value");
     }
 
     [Test]
