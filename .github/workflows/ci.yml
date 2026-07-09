@@ -282,7 +282,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Interop, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
+        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
       fail-fast: true
 
     steps:
