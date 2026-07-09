@@ -1,0 +1,92 @@
+name: Fault Injection Stress
+
+on:
+  schedule:
+    - cron: '0 3 * * 3'  # Weekly Wednesday 3 AM UTC
+  workflow_dispatch:
+    inputs:
+      fault_duration_seconds:
+        description: 'Duration of each active fault window'
+        required: false
+        default: '5'
+      messages_before_fault:
+        description: 'Messages produced before each fault'
+        required: false
+        default: '2000'
+      max_messages_during_fault:
+        description: 'Maximum messages buffered during each fault'
+        required: false
+        default: '20000'
+      messages_after_fault:
+        description: 'Messages proving recovery after each fault'
+        required: false
+        default: '2000'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fault-injection-stress
+  cancel-in-progress: false
+
+env:
+  ContinuousIntegrationBuild: true
+  Deterministic: true
+  FAULT_DURATION_SECONDS: ${{ inputs.fault_duration_seconds || '5' }}
+  MESSAGES_BEFORE_FAULT: ${{ inputs.messages_before_fault || '2000' }}
+  MAX_MESSAGES_DURING_FAULT: ${{ inputs.max_messages_during_fault || '20000' }}
+  MESSAGES_AFTER_FAULT: ${{ inputs.messages_after_fault || '2000' }}
+
+jobs:
+  fault-injection:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: TCP Faults (1 Broker)
+            profile: network
+            brokers: 1
+          - name: Broker Kill and Restart (1 Broker)
+            profile: broker
+            brokers: 1
+          - name: Cluster Failover and Rolling Restart (3 Brokers)
+            profile: broker
+            brokers: 3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build Fault Injection Suite
+        run: dotnet build tools/Dekaf.StressTests --configuration Release
+
+      - name: Run ${{ matrix.name }}
+        run: >-
+          dotnet run --project tools/Dekaf.StressTests --configuration Release --no-build --
+          fault
+          --fault-profile ${{ matrix.profile }}
+          --brokers ${{ matrix.brokers }}
+          --partitions 6
+          --message-size 1000
+          --fault-duration-seconds "$FAULT_DURATION_SECONDS"
+          --messages-before-fault "$MESSAGES_BEFORE_FAULT"
+          --max-messages-during-fault "$MAX_MESSAGES_DURING_FAULT"
+          --messages-after-fault "$MESSAGES_AFTER_FAULT"
+          --output ./results
+
+      - name: Upload Fault Report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fault-injection-${{ matrix.profile }}-${{ matrix.brokers }}brokers
+          path: results/fault-injection-*.json
+          if-no-files-found: warn
+          retention-days: 90

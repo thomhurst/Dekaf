@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <InternalsVisibleTo Include="Dekaf.StressTests.Tests" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,6 +27,8 @@
     <PackageReference Include="Confluent.Kafka" Version="2.15.0" />
     <PackageReference Include="Testcontainers" Version="4.13.0" />
     <PackageReference Include="Testcontainers.Kafka" Version="4.13.0" />
+    <PackageReference Include="Testcontainers.Toxiproxy" Version="4.13.0" />
+    <PackageReference Include="ToxiproxyNetCore" Version="1.0.50" />
   </ItemGroup>
 
   <ItemGroup>
