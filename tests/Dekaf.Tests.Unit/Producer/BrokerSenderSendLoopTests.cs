@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -1432,6 +1433,88 @@ public sealed class BrokerSenderSendLoopTests
             await Assert.That(throttleDelayCalled).IsFalse();
             await Assert.That(observedThrottleTimes).IsEquivalentTo([0, 0]);
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_InjectedClockControlsThrottleWakeupAndDeliveryExpiry(
+        CancellationToken cancellationToken)
+    {
+        const int deliveryTimeoutMs = 10_000;
+        const int throttleTimeMs = 20_000;
+
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: deliveryTimeoutMs);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var expiringBatch = CreateTestBatch(valueTaskSourcePool, "test-topic", 1);
+        var fakeTimestamp = expiringBatch.StopwatchCreatedTicks + options.DeliveryTimeoutTicks / 2;
+        var firstDelayRequested = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unexpectedSecondDelay = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondDelayGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deliveryFailure = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var delayCount = 0;
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, error) =>
+            {
+                if (topicPartition.Partition == 1 && error is not null)
+                    deliveryFailure.TrySetResult(error);
+            },
+            getTimestamp: () => Volatile.Read(ref fakeTimestamp),
+            delayForThrottle: (delayMs, token) =>
+            {
+                if (Interlocked.Increment(ref delayCount) == 1)
+                {
+                    firstDelayRequested.TrySetResult(delayMs);
+                    Volatile.Write(
+                        ref fakeTimestamp,
+                        expiringBatch.StopwatchCreatedTicks + options.DeliveryTimeoutTicks);
+                    return ValueTask.CompletedTask;
+                }
+
+                unexpectedSecondDelay.TrySetResult();
+                return new ValueTask(secondDelayGate.Task.WaitAsync(token));
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(expiringBatch);
+            firstResponse.SetResult(CreateSuccessResponse(
+                "test-topic", 0, baseOffset: 10, throttleTimeMs));
+
+            await Assert.That(await firstDelayRequested.Task.WaitAsync(cancellationToken))
+                .IsEqualTo(deliveryTimeoutMs / 2);
+
+            var progress = await Task.WhenAny(deliveryFailure.Task, unexpectedSecondDelay.Task)
+                .WaitAsync(cancellationToken);
+            await Assert.That(progress).IsSameReferenceAs(deliveryFailure.Task);
+            await Assert.That(await deliveryFailure.Task).IsTypeOf<KafkaTimeoutException>();
+            await Assert.That(sendSignals[1].Task.IsCompleted).IsFalse();
         }
         finally
         {

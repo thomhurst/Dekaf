@@ -2444,7 +2444,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private int ComputeNextWakeupMs(PartitionCarryOver carryOver)
     {
-        var now = Stopwatch.GetTimestamp();
+        var now = _getTimestamp();
         var earliestTicks = long.MaxValue;
 
         // Use request timeout for pending responses (Java handleTimedOutRequests pattern).
@@ -3564,7 +3564,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void SweepExpiredCarryOver(PartitionCarryOver carryOver)
     {
-        var now = Stopwatch.GetTimestamp();
+        var now = _getTimestamp();
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
         foreach (var kvp in carryOver.Partitions)
@@ -3592,7 +3592,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition);
-                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks, now);
                 var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                 FailAndCleanupBatch(batch, new KafkaTimeoutException(
                     TimeoutKind.Delivery,
