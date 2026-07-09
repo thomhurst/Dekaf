@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Confluent.Kafka" Version="2.15.0" />
     <PackageReference Include="Testcontainers" Version="4.13.0" />
     <PackageReference Include="Testcontainers.Kafka" Version="4.13.0" />

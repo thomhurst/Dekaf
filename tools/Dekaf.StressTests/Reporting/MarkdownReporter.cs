@@ -27,6 +27,12 @@ internal static class MarkdownReporter
 
             GenerateThroughputTable(sb, title, groupResults);
 
+            var transactionalResults = groupResults
+                .Where(r => r.TransactionVerification is not null)
+                .ToList();
+            if (transactionalResults.Count > 0)
+                GenerateTransactionVerificationTable(sb, transactionalResults, $"Transaction Verification - {label}");
+
             var resultsWithLatency = groupResults.Where(r => r.Latency is not null).ToList();
             if (resultsWithLatency.Count > 0)
                 GenerateLatencyTable(sb, resultsWithLatency, $"Latency - {label}");
@@ -178,6 +184,43 @@ internal static class MarkdownReporter
         sb.AppendLine();
     }
 
+    private static void GenerateTransactionVerificationTable(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string title)
+    {
+        var clientWidth = GetClientColumnWidth(results);
+
+        sb.AppendLine($"## {title}");
+        sb.AppendLine();
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Accepted | Committed | Aborted | Delivered | Duplicates | Shortfall | Aborted leaks | Unexpected | Missing sentinels | Status |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|----------|-----------|---------|-----------|------------|-----------|---------------|------------|-------------------|--------|");
+
+        foreach (var result in results.OrderBy(r => r.Client))
+        {
+            var verification = result.TransactionVerification!;
+            var status = verification.IsSuccessful ? "PASS" : "FAIL";
+            sb.AppendLine(
+                $"| {result.Client.PadRight(clientWidth)} | {verification.AcceptedMessages,8:N0} | " +
+                $"{verification.CommittedMessages,9:N0} | {verification.AbortedMessages,7:N0} | " +
+                $"{verification.DeliveredMessages,9:N0} | {verification.DuplicateMessages,10:N0} | " +
+                $"{verification.ShortfallMessages,9:N0} | {verification.LeakedAbortedMessages,13:N0} | " +
+                $"{verification.UnexpectedMessages,10:N0} | {verification.MissingSentinelPartitions,17:N0} | {status} |");
+        }
+
+        sb.AppendLine();
+        var failureSamples = results
+            .SelectMany(r => r.TransactionVerification!.FailureSamples.Select(sample => (r.Client, Sample: sample)))
+            .ToList();
+        if (failureSamples.Count == 0)
+            return;
+
+        sb.AppendLine("**Transaction verification failure samples:**");
+        foreach (var (client, sample) in failureSamples)
+            sb.AppendLine($"- {client}: {sample}");
+        sb.AppendLine();
+    }
+
     private static void GenerateErrorSamplesTable(StringBuilder sb, List<StressTestResult> results, string title)
     {
         var clientWidth = GetClientColumnWidth(results);
@@ -214,6 +257,7 @@ internal static class MarkdownReporter
         "producer-acks-all" => "Producer (Acks All) Throughput",
         "producer-async" => "Producer (Async) Throughput",
         "producer-async-idempotent" => "Producer (Async, Idempotent) Throughput",
+        "producer-transactional" => "Producer (Transactional EOS) Throughput",
         "consumer" => "Consumer Throughput",
         "consumer-batch" => "Consumer (Batch) Throughput",
         "consumer-raw" => "Consumer (Raw Bytes) Throughput",
@@ -228,6 +272,7 @@ internal static class MarkdownReporter
         "producer-acks-all" => "Acks All",
         "producer-async" => "Async",
         "producer-async-idempotent" => "Async (Idempotent)",
+        "producer-transactional" => "Transactional EOS",
         "consumer" => "Consumer",
         "consumer-batch" => "Consumer (Batch)",
         "consumer-raw" => "Consumer (Raw Bytes)",

@@ -18,7 +18,6 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
-
     /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
     /// producer configuration a few lines above where each scenario sets it. The failure
@@ -28,15 +27,17 @@ internal sealed class StressTestResult
     /// </summary>
     public bool Idempotent { get; init; }
 
+    public TransactionVerificationSnapshot? TransactionVerification { get; init; }
+
     /// <summary>
     /// Broker-confirmed message count, measured as the end-offset (high watermark)
     /// delta across all topic partitions between test start and end. Fire-and-forget
     /// scenarios count client-side appends in <see cref="Throughput"/>; when the client
     /// buffers faster than the broker accepts (or the broker degrades mid-run), accepted
     /// and delivered diverge — this is the honest throughput number.
-    /// Every producer scenario fails the run when delivered falls short of accepted
-    /// minus recorded delivery errors: the post-run drain wait already absorbs follower
-    /// high-watermark lag, so a remaining shortfall is message loss.
+    /// Non-transactional producer scenarios fail when delivered falls short of accepted
+    /// minus recorded delivery errors. Transactional scenarios compare delivered records
+    /// with committed records because aborted records are intentionally invisible.
     /// Null when the scenario doesn't measure it (consumers).
     /// </summary>
     public long? DeliveredMessages { get; init; }
@@ -131,6 +132,27 @@ internal sealed class StressTestResult
 
     public static StressTestResult? FromJson(string json) =>
         JsonSerializer.Deserialize<StressTestResult>(json, JsonOptions);
+}
+
+internal sealed class TransactionVerificationSnapshot
+{
+    public required long AcceptedMessages { get; init; }
+    public required long CommittedMessages { get; init; }
+    public required long AbortedMessages { get; init; }
+    public required long DeliveredMessages { get; init; }
+    public required long DuplicateMessages { get; init; }
+    public required long ShortfallMessages { get; init; }
+    public required long LeakedAbortedMessages { get; init; }
+    public required long UnexpectedMessages { get; init; }
+    public required int MissingSentinelPartitions { get; init; }
+    public required List<string> FailureSamples { get; init; }
+
+    public bool IsSuccessful =>
+        DuplicateMessages == 0 &&
+        ShortfallMessages == 0 &&
+        LeakedAbortedMessages == 0 &&
+        UnexpectedMessages == 0 &&
+        MissingSentinelPartitions == 0;
 }
 
 internal sealed class StressTestResults

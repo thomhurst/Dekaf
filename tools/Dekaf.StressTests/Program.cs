@@ -16,7 +16,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -104,9 +104,15 @@ public static class Program
 
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
         var consumerTopic = $"stress-consumer-{Guid.NewGuid():N}";
+        string? transactionalTopic = null;
 
         var replicationFactor = Math.Min(options.Brokers, 3);
         await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
+        if (options.Scenario is "all" or "producer-transactional")
+        {
+            transactionalTopic = $"stress-transactional-{Guid.NewGuid():N}";
+            await kafka.CreateTopicAsync(transactionalTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
+        }
         // Consumer scenarios re-read the seeded data set in a loop for the full duration.
         // Broker-level retention (tuned to bound producer-topic disk usage) must not
         // delete it mid-run, so retention is disabled at the topic level.
@@ -125,10 +131,20 @@ public static class Program
         var results = new List<StressTestResult>();
         var runStartedAt = DateTime.UtcNow;
 
+        string ResolveScenarioTopic(string scenarioName)
+        {
+            if (scenarioName.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase))
+                return transactionalTopic ?? throw new InvalidOperationException("Transactional topic was not created.");
+
+            return scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase)
+                ? producerTopic
+                : consumerTopic;
+        }
+
         StressTestOptions BuildTestOptions(string scenarioName, int connectionsPerBroker) => new()
         {
             BootstrapServers = kafka.BootstrapServers,
-            Topic = scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ? producerTopic : consumerTopic,
+            Topic = ResolveScenarioTopic(scenarioName),
             DurationMinutes = options.DurationMinutes,
             MessageSizeBytes = options.MessageSizeBytes,
             Partitions = options.Partitions,
@@ -165,11 +181,18 @@ public static class Program
                 .ToList();
             foreach (var scenario in multiConnScenarios)
             {
+                var connectionsPerBroker = scenario.Name.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase)
+                    ? 1
+                    : options.ConnectionsPerBroker;
+                var connectionLabel = connectionsPerBroker > 1 ? $" ({connectionsPerBroker}conn)" : "";
                 Console.WriteLine();
-                Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name} ({options.ConnectionsPerBroker}conn) ===");
+                Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name}{connectionLabel} ===");
 
-                var result = await scenario.RunAsync(BuildTestOptions(scenario.Name, options.ConnectionsPerBroker), CancellationToken.None).ConfigureAwait(false);
-                result.Client = $"Dekaf ({options.ConnectionsPerBroker}conn)";
+                var result = await scenario.RunAsync(
+                    BuildTestOptions(scenario.Name, connectionsPerBroker),
+                    CancellationToken.None).ConfigureAwait(false);
+                if (connectionsPerBroker > 1)
+                    result.Client = $"Dekaf ({connectionsPerBroker}conn)";
                 results.Add(result);
 
                 GC.Collect();
@@ -236,8 +259,8 @@ public static class Program
     /// - Any loop error (append/consume failures) or delivery error (broker-side failure of
     ///   an accepted message, observed via the producer error metric or delivery reports).
     /// - Undelivered shortfall: accepted minus broker-confirmed delivered minus delivery
-    ///   errors. The post-run drain wait already absorbs follower high-watermark lag, so
-    ///   every producer scenario treats a remaining shortfall as loss — no exemptions.
+    ///   errors for non-transactional runs; committed minus delivered for transactional
+    ///   runs, where aborted records are intentionally invisible to read-committed consumers.
     /// - Duplicate delivery in idempotent scenarios (delivered exceeding accepted), which
     ///   means broker-side deduplication of retries is broken. Non-idempotent scenarios
     ///   skip this check because retry duplicates are legitimate there.
@@ -247,7 +270,7 @@ public static class Program
     /// - Task exceptions nobody observed, surfaced after a final finalizer sweep.
     /// Results are already saved at this point; the non-zero exit only fails the CI job.
     /// </summary>
-    private static bool CheckForFailures(List<StressTestResult> results)
+    internal static bool CheckForFailures(List<StressTestResult> results)
     {
         var anyFailure = false;
 
@@ -267,6 +290,7 @@ public static class Program
             var errors = result.Throughput.TotalErrors;
             var deliveryErrors = result.Throughput.TotalDeliveryErrors;
             var accepted = result.Throughput.TotalMessages;
+            var transactionVerification = result.TransactionVerification;
             var lost = 0L;
 
             if (errors > 0)
@@ -281,10 +305,13 @@ public static class Program
 
             if (result.DeliveredMessages is { } delivered)
             {
-                lost = Math.Max(0, accepted - delivered - deliveryErrors);
+                var expectedDelivered = transactionVerification?.CommittedMessages ?? accepted;
+                lost = Math.Max(0, expectedDelivered - delivered - deliveryErrors);
                 if (lost > 0)
                 {
-                    reasons.Add($"{lost:N0} undelivered messages");
+                    reasons.Add(transactionVerification is null
+                        ? $"{lost:N0} undelivered messages"
+                        : $"{lost:N0} committed messages undelivered");
                 }
 
                 // Idempotent producers rely on broker-side retry deduplication, so any
@@ -306,6 +333,11 @@ public static class Program
             if (maxStall >= StallThresholdSamples)
             {
                 reasons.Add($"stalled for {maxStall * StressTestHelpers.SamplerIntervalSeconds:N0} consecutive seconds with zero progress");
+            }
+
+            if (transactionVerification is { IsSuccessful: false })
+            {
+                reasons.Add("transaction verification failed");
             }
 
             if (reasons.Count == 0)
@@ -333,6 +365,11 @@ public static class Program
             if (lost > 0)
             {
                 PrintProducerDeliveryDiagnostics(result.ProducerDeliveryDiagnostics);
+            }
+
+            if (transactionVerification is { IsSuccessful: false })
+            {
+                PrintTransactionVerificationFailure(transactionVerification);
             }
         }
 
@@ -372,6 +409,26 @@ public static class Program
         }
 
         return max;
+    }
+
+    private static void PrintTransactionVerificationFailure(TransactionVerificationSnapshot verification)
+    {
+        Console.WriteLine(
+            "    Transaction verification: " +
+            $"accepted={verification.AcceptedMessages:N0}, " +
+            $"committed={verification.CommittedMessages:N0}, " +
+            $"aborted={verification.AbortedMessages:N0}, " +
+            $"delivered={verification.DeliveredMessages:N0}, " +
+            $"duplicates={verification.DuplicateMessages:N0}, " +
+            $"shortfall={verification.ShortfallMessages:N0}, " +
+            $"leakedAborted={verification.LeakedAbortedMessages:N0}, " +
+            $"unexpected={verification.UnexpectedMessages:N0}, " +
+            $"missingSentinels={verification.MissingSentinelPartitions:N0}");
+
+        foreach (var sample in verification.FailureSamples)
+        {
+            Console.WriteLine($"      - {sample}");
+        }
     }
 
     private static void PrintProducerDeliveryDiagnostics(ProducerDeliveryDiagnosticsSnapshot? snapshot)
@@ -493,8 +550,16 @@ public static class Program
 
     private static List<IStressTestScenario> GetScenarios(CliOptions options)
     {
-        var allScenarios = new List<IStressTestScenario>
-        {
+        var scenarios = CreateAllScenarios()
+            .Where(s => options.Scenario == "all" || s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
+            .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return ApplyClientOrder(scenarios, options.Client);
+    }
+
+    internal static IReadOnlyList<IStressTestScenario> CreateAllScenarios() =>
+        [
             new ProducerStressTest(),
             new ConfluentProducerStressTest(),
             new ProducerIdempotentStressTest(),
@@ -505,20 +570,13 @@ public static class Program
             new ConfluentProducerAcksAllStressTest(),
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
+            new TransactionalProducerStressTest(),
             new ConsumerStressTest(),
             new ConsumerBatchStressTest(),
             new ConsumerRawStressTest(),
             new ConsumerRawBatchStressTest(),
             new ConfluentConsumerStressTest()
-        };
-
-        var scenarios = allScenarios
-            .Where(s => options.Scenario == "all" || s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
-            .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        return ApplyClientOrder(scenarios, options.Client);
-    }
+        ];
 
     private static List<IStressTestScenario> ApplyClientOrder(List<IStressTestScenario> scenarios, string requestedClient)
     {
@@ -674,7 +732,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -696,6 +754,7 @@ public static class Program
             Examples:
               dotnet run -c Release -- --duration 15 --message-size 1000
               dotnet run -c Release -- --scenario producer --client dekaf --duration 5
+              dotnet run -c Release -- --scenario producer-transactional --client dekaf --duration 15
               dotnet run -c Release -- report --input ./results
             """);
     }

@@ -1,6 +1,6 @@
 import unittest
 
-from stress_report import format_throughput_table
+from stress_report import format_throughput_table, generate_scenario_tables
 
 
 def stress_result(client, effective_rate, median_rate=None):
@@ -58,6 +58,31 @@ class StressReportTests(unittest.TestCase):
 
         self.assertTrue(rows[0].startswith("| Dekaf"))
         self.assertIn("| 2.00x |", rows[0])
+
+    def test_transactional_scenario_reports_verification_counts(self):
+        transactional = stress_result("Dekaf", effective_rate=750)
+        transactional.update({
+            "scenario": "producer-transactional",
+            "transactionVerification": {
+                "acceptedMessages": 1000,
+                "committedMessages": 750,
+                "abortedMessages": 250,
+                "deliveredMessages": 750,
+                "duplicateMessages": 0,
+                "shortfallMessages": 0,
+                "leakedAbortedMessages": 0,
+                "unexpectedMessages": 0,
+                "missingSentinelPartitions": 0,
+                "isSuccessful": True,
+            },
+        })
+
+        lines = generate_scenario_tables([transactional])
+        report = "\n".join(lines)
+
+        self.assertIn("Producer (Transactional EOS)", report)
+        self.assertIn("Transaction Verification", report)
+        self.assertIn("| Dekaf | 1,000 | 750 | 250 | 750 | 0 | 0 | 0 | 0 | 0 | PASS |", report)
 
 
 if __name__ == "__main__":
