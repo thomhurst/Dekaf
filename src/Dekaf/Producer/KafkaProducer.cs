@@ -4088,12 +4088,15 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             {
                 // Best-effort abort during disposal — if the broker rejects it
                 // (e.g. InvalidTxnState because no messages were produced),
-                // just clean up state and move on.
+                // just clean up state and move on. A fatal broker response must remain
+                // sticky so the fenced producer cannot be reused after disposal.
                 lock (_producer._partitionsInTransactionLock)
                 {
                     _producer._partitionsInTransaction.Clear();
                 }
-                _producer._transactionState = TransactionState.Ready;
+
+                if (_producer._transactionState != TransactionState.FatalError)
+                    _producer._transactionState = TransactionState.Ready;
             }
         }
     }

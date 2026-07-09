@@ -116,6 +116,29 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task DisposeAsync_WhenAbortIsFenced_PreservesFatalError()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            endTxnError: ErrorCode.ProducerFenced);
+
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        await transaction.DisposeAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+
+        var exception = await Assert.That(() => harness.Producer.BeginTransaction())
+            .Throws<FatalTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    [Test]
     public async Task InitTransactionsAsync_WithoutTransactionalId_Throws()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -535,7 +558,8 @@ public sealed class TransactionTests
     private static PreparedCompletionHarness BuildPreparedCompletionHarness(
         PreparedTransactionState preparedState,
         long currentProducerId,
-        short currentProducerEpoch)
+        short currentProducerEpoch,
+        ErrorCode endTxnError = ErrorCode.None)
     {
         EndTxnRequest? capturedRequest = null;
         var connection = Substitute.For<IKafkaConnection>();
@@ -548,7 +572,7 @@ public sealed class TransactionTests
                 Arg.Any<CancellationToken>())
             .Returns(_ => new ValueTask<EndTxnResponse>(new EndTxnResponse
             {
-                ErrorCode = ErrorCode.None,
+                ErrorCode = endTxnError,
                 ProducerId = preparedState.ProducerId,
                 ProducerEpoch = (short)(preparedState.ProducerEpoch + 1)
             }));
