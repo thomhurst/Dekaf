@@ -65,7 +65,7 @@ internal static class KafkaTestImages
             UnixFileModes.OtherRead | UnixFileModes.OtherExecute);
     }
 
-    private static KafkaTestImage Parse(string image)
+    internal static KafkaTestImage Parse(string image)
     {
         var digestSeparator = image.IndexOf('@');
         var tagSeparator = digestSeparator > 0 ? image.LastIndexOf(':', digestSeparator) : -1;
@@ -80,6 +80,12 @@ internal static class KafkaTestImages
             !int.TryParse(components[2], out var patch))
         {
             throw new InvalidOperationException($"Kafka image '{image}' must use a major.minor.patch tag.");
+        }
+
+        if (major < 0 || minor is < 0 or > 9 || patch is < 0 or > 9)
+        {
+            throw new InvalidOperationException(
+                $"Kafka image '{image}' must use a non-negative major and single-digit minor and patch components.");
         }
 
         var versionNumber = checked(major * 100 + minor * 10 + patch);

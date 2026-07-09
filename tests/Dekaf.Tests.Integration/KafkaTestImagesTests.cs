@@ -31,6 +31,18 @@ public sealed class KafkaTestImagesTests
     }
 
     [Test]
+    [Arguments("4.0.10")]
+    [Arguments("4.10.0")]
+    public async Task Parse_MultiDigitCompactVersionComponent_Throws(string release)
+    {
+        var image = $"apache/kafka:{release}@sha256:test";
+
+        await Assert.That(() => KafkaTestImages.Parse(image))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("single-digit minor and patch");
+    }
+
+    [Test]
     [NotInParallel("KafkaTestLaneEnvironment")]
     public async Task Selected_UsesConfiguredLane()
     {
