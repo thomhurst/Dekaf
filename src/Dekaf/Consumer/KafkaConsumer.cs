@@ -3581,11 +3581,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
+            var cancelledDivergingEpochReset = false;
             foreach (var partition in partitions)
             {
-                if (!_pendingDivergingEpochResets.ContainsKey(partition))
-                    _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+                cancelledDivergingEpochReset |= _pendingDivergingEpochResets.TryRemove(partition, out _);
+                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
             }
+
+            // Reject fetches started after the correction but before reassignment.
+            if (cancelledDivergingEpochReset)
+                Interlocked.Increment(ref _fetchBufferEpoch);
 
             if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
                 Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);

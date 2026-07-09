@@ -321,6 +321,46 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task CancelCoordinatorRevokedPartitionsFetchClear_ReassignedPartitionRemovesPendingClear()
+    {
+        await using var consumer = CreateConsumer();
+        var reassignedPartition = new TopicPartition("test-topic", 0);
+        var stillRevokedPartition = new TopicPartition("test-topic", 1);
+
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [reassignedPartition, stillRevokedPartition]);
+
+        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [reassignedPartition]);
+
+        var pendingRevocations = GetCoordinatorRevokedPartitionsPendingFetchClear(consumer);
+        await Assert.That(pendingRevocations.ContainsKey(reassignedPartition)).IsFalse();
+        await Assert.That(pendingRevocations.ContainsKey(stillRevokedPartition)).IsTrue();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
+
+        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [stillRevokedPartition]);
+
+        await Assert.That(pendingRevocations).IsEmpty();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task CancelCoordinatorRevokedPartitionsFetchClear_ReassignmentCancelsDivergenceReset()
+    {
+        await using var consumer = CreateConsumer();
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 0)]);
+
+        QueueDivergingEpochReset(consumer, partition, endOffset: 42, epoch: 7, GetFetchBufferEpoch(consumer));
+        var staleFetchEpoch = GetFetchBufferEpoch(consumer);
+
+        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [partition]);
+        QueueDivergingEpochReset(consumer, partition, endOffset: 43, epoch: 8, staleFetchEpoch);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0L);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task WritePrefetchedItemsAsync_DropsUnassignedPartitionsBeforeAdvancingFetchPosition()
     {
         await using var consumer = CreateConsumer();
@@ -717,6 +757,33 @@ public sealed class ConsumerAssignmentFastPathTests
             "QueueCoordinatorRevokedPartitionsForFetchClear",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("QueueCoordinatorRevokedPartitionsForFetchClear method not found.");
+
+        method.Invoke(consumer, [partitions]);
+    }
+
+    private static void QueueDivergingEpochReset(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "QueueDivergingEpochReset",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("QueueDivergingEpochReset method not found.");
+
+        method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch]);
+    }
+
+    private static void CancelCoordinatorRevokedPartitionsFetchClear(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition[] partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CancelCoordinatorRevokedPartitionsFetchClear",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CancelCoordinatorRevokedPartitionsFetchClear method not found.");
 
         method.Invoke(consumer, [partitions]);
     }
