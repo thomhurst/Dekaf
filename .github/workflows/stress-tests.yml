@@ -128,7 +128,9 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Install stack diagnostics
-        run: dotnet tool install --global dotnet-stack --version 9.0.661903
+        run: |
+          dotnet tool install --global dotnet-stack --version 9.0.661903
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Build Stress Tests
         run: dotnet build tools/Dekaf.StressTests --configuration Release
