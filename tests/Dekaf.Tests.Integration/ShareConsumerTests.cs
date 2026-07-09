@@ -15,7 +15,7 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 [Category("ShareConsumer")]
 [SupportsKafka(420)]
-[NotInParallel("ShareConsumerKafka42")]
+[NotInParallel("ShareConsumerKafkaCurrent")]
 public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -273,7 +273,7 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 /// </summary>
 [Category("ShareConsumerAdmin")]
 [SupportsKafka(420)]
-[NotInParallel("ShareConsumerKafka42")]
+[NotInParallel("ShareConsumerKafkaCurrent")]
 public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -62,6 +63,42 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             await pool.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task Metadata_NegotiatesDownToBrokerMaximum()
+    {
+        await using var pool = new ConnectionPool(
+            "version-negotiation-test",
+            new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
+            null);
+        await using var metadataManager = new MetadataManager(
+            pool,
+            [KafkaContainer.BootstrapServers]);
+
+        await metadataManager.InitializeAsync(CancellationToken.None);
+
+        var parts = KafkaContainer.BootstrapServers.Split(':');
+        var connection = await pool.GetConnectionAsync(
+            parts[0],
+            int.Parse(parts[1]),
+            CancellationToken.None);
+        var apiVersions = await SendApiVersionsAsync(connection);
+        var brokerMetadataVersion = apiVersions.ApiKeys.Single(version => version.ApiKey == ApiKey.Metadata);
+        var simulatedClientMaximum = checked((short)(brokerMetadataVersion.MaxVersion + 1));
+
+        var negotiatedVersion = metadataManager.GetNegotiatedApiVersion(
+            ApiKey.Metadata,
+            MetadataRequest.LowestSupportedVersion,
+            simulatedClientMaximum);
+        var metadata = await connection.SendAsync<MetadataRequest, MetadataResponse>(
+            MetadataRequest.ForAllTopics(),
+            negotiatedVersion,
+            CancellationToken.None);
+
+        await Assert.That(negotiatedVersion).IsEqualTo(brokerMetadataVersion.MaxVersion);
+        await Assert.That(negotiatedVersion).IsLessThan(simulatedClientMaximum);
+        await Assert.That(metadata.Brokers).IsNotEmpty();
     }
 
     [Test]

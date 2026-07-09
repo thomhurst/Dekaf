@@ -1,3 +1,32 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^tests\\/Dekaf.Tests.Integration\\/KafkaTestImages\\.cs$/"
+      ],
+      "matchStrings": [
+        "renovate: datasource=(?<datasource>\\S+) packageName=(?<packageName>\\S+) depName=(?<depName>\\S+)\\s+public const string \\w+Image = \\\"[^:\\\"]+:(?<currentValue>[^\\\"@]+)@(?<currentDigest>sha256:[a-f0-9]+)\\\";"
+      ],
+      "versioningTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the compatibility lane on Kafka 4.0.x",
+      "matchDepNames": [
+        "apache-kafka-floor"
+      ],
+      "allowedVersions": "/^4\\.0\\./",
+      "pinDigests": true
+    },
+    {
+      "description": "Keep the current-stable Kafka lane digest-pinned",
+      "matchDepNames": [
+        "apache-kafka-current"
+      ],
+      "pinDigests": true
+    }
+  ]
 }

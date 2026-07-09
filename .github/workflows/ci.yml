@@ -212,12 +212,13 @@ jobs:
           retention-days: 7
 
   integration-tests:
-    name: Integration Tests (${{ matrix.category }}, ${{ matrix.framework }})
+    name: Integration Tests (${{ matrix.category }}, ${{ matrix.framework }}, Kafka ${{ matrix.kafka }})
     needs: build-and-unit-test
     runs-on: ubuntu-latest
     strategy:
       matrix:
         framework: [net8.0, net10.0]
+        kafka: [floor, current]
         category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Interop, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
       fail-fast: true
 
@@ -257,6 +258,7 @@ jobs:
       - name: Run Pipeline
         env:
           NET_VERSION: ${{ matrix.framework }}
+          DEKAF_TEST_KAFKA_LANE: ${{ matrix.kafka }}
           INTEGRATION_TEST_CATEGORY: ${{ matrix.category }}
           SKIP_UNIT_TESTS: 'true'
         run: dotnet run --project tools/Dekaf.Pipeline
@@ -265,7 +267,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-integration-${{ matrix.category }}-${{ matrix.framework }}
+          name: test-results-integration-${{ matrix.category }}-${{ matrix.framework }}-kafka-${{ matrix.kafka }}
           path: |
             **/TestResults/**
             **/test-results/**
@@ -275,18 +277,19 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hangdump-artifacts-${{ matrix.category }}-${{ matrix.framework }}
+          name: hangdump-artifacts-${{ matrix.category }}-${{ matrix.framework }}-kafka-${{ matrix.kafka }}
           path: |
             **/*.dmp
           if-no-files-found: ignore
           retention-days: 7
 
   integration-tests-aot:
-    name: Integration Tests AOT (${{ matrix.category }})
+    name: Integration Tests AOT (${{ matrix.category }}, Kafka ${{ matrix.kafka }})
     needs: native-aot-integration-publish
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        kafka: [floor, current]
         category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
       fail-fast: true
 
@@ -321,6 +324,7 @@ jobs:
         timeout-minutes: 25
         env:
           NET_VERSION: net10.0
+          DEKAF_TEST_KAFKA_LANE: ${{ matrix.kafka }}
           DOTNET_GCConserveMemory: '9'
         run: |
           chmod +x ./artifacts/aot/integration/Dekaf.Tests.Integration
@@ -344,7 +348,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-integration-aot-${{ matrix.category }}
+          name: test-results-integration-aot-${{ matrix.category }}-kafka-${{ matrix.kafka }}
           path: |
             **/TestResults/**
             **/test-results/**
@@ -354,7 +358,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hangdump-artifacts-integration-aot-${{ matrix.category }}
+          name: hangdump-artifacts-integration-aot-${{ matrix.category }}-kafka-${{ matrix.kafka }}
           path: |
             **/*.dmp
           if-no-files-found: ignore

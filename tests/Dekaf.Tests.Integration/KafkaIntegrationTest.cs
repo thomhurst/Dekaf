@@ -7,9 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// The <see cref="KafkaTestContainer"/> instance is shared across all tests in the session via TUnit's ClassDataSource.
 /// Derived classes receive the container through their own primary constructor parameter.
 /// </summary>
-[ClassDataSource<KafkaContainer40>(Shared = SharedType.PerTestSession)]
-[ClassDataSource<KafkaContainer41>(Shared = SharedType.PerTestSession)]
-[ClassDataSource<KafkaContainer42>(Shared = SharedType.PerTestSession)]
+[ClassDataSource<KafkaVersionMatrixContainer>(Shared = SharedType.PerTestSession)]
 public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer)
 {
     public KafkaTestContainer KafkaContainer { get; } = kafkaTestContainer;

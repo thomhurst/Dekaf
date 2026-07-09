@@ -4,10 +4,13 @@ using Testcontainers.Kafka;
 
 namespace Dekaf.Tests.Integration;
 
-public class KafkaContainer42 : KafkaTestContainer
+public sealed class KafkaVersionMatrixContainer : KafkaTestContainer
 {
-    public override string ContainerName => "apache/kafka:4.2.0";
-    public override int Version => 420;
+    private static readonly KafkaTestImage s_selectedImage = KafkaTestImages.Resolve(
+        Environment.GetEnvironmentVariable(KafkaTestImages.LaneEnvironmentVariable));
+
+    public override string ContainerName => s_selectedImage.Image;
+    public override int Version => s_selectedImage.VersionNumber;
 
     // Testcontainers.Kafka generates a startup script that sets
     // KAFKA_ADVERTISED_LISTENERS with a trailing comma when no extra
@@ -23,6 +26,9 @@ public class KafkaContainer42 : KafkaTestContainer
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder)
     {
+        if (Version < KafkaTestImages.CurrentVersionNumber)
+            return builder;
+
         return builder
             .WithResourceMapping(RunWrapperScript, "/etc/kafka/docker/run", 0, 0,
                 UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |

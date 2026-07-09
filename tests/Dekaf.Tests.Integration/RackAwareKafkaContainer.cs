@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 
 public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private const string Image = "apache/kafka:4.2.0";
+    private const string Image = KafkaTestImages.CurrentImage;
     private const int InternalBrokerPort = 9092;
     private const int ControllerPort = 9093;
     private const int ExternalBrokerPort = 19092;
