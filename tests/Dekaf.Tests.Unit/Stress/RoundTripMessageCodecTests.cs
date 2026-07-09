@@ -1,3 +1,4 @@
+using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
 
 namespace Dekaf.Tests.Unit.Stress;
@@ -151,5 +152,56 @@ public class RoundTripMessageCodecTests
         await Assert.That(tracker.IsComplete).IsFalse();
         await Assert.That(tracker.Record(partition: 1, offset: 6)).IsTrue();
         await Assert.That(tracker.IsComplete).IsTrue();
+    }
+
+    [Test]
+    public async Task TryRecordProduceTimeout_WhenDeadlineExpires_RecordsHardError()
+    {
+        var throughput = new ThroughputTracker();
+
+        var timedOut = RoundTripScenarioHelpers.TryRecordProduceTimeout(
+            true,
+            throughput,
+            client: "Dekaf",
+            ordinal: 42,
+            cancellationToken: CancellationToken.None);
+
+        await Assert.That(timedOut).IsTrue();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(1);
+        await Assert.That(throughput.GetSnapshot().ErrorSamples.Single().Message)
+            .IsEqualTo("Dekaf round-trip produce phase exceeded its timeout.");
+    }
+
+    [Test]
+    public async Task TryRecordProduceTimeout_BeforeDeadline_DoesNothing()
+    {
+        var throughput = new ThroughputTracker();
+
+        var timedOut = RoundTripScenarioHelpers.TryRecordProduceTimeout(
+            false,
+            throughput,
+            client: "Dekaf",
+            ordinal: 0,
+            cancellationToken: CancellationToken.None);
+
+        await Assert.That(timedOut).IsFalse();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task TryRecordProduceTimeout_WhenRunIsCancelled_PropagatesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var throughput = new ThroughputTracker();
+
+        await Assert.That(() => RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                true,
+                throughput,
+                client: "Dekaf",
+                ordinal: 42,
+                cancellationToken: cancellation.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(0);
     }
 }

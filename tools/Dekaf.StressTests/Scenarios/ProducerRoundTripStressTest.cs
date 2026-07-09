@@ -65,9 +65,22 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 
         await using (var producer = await builder.BuildAsync(cancellationToken))
         {
+            using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
+
             Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Dekaf...");
             for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
             {
+                if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                        produceTimeout.IsCancellationRequested,
+                        throughput,
+                        client: "Dekaf",
+                        ordinal: ordinal,
+                        cancellationToken: cancellationToken))
+                {
+                    break;
+                }
+
                 var message = factory.Create(ordinal % options.Partitions);
                 try
                 {
@@ -250,10 +263,19 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Confluent.Kafka...");
             for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
             {
+                if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                        produceTimeout.IsCancellationRequested,
+                        throughput,
+                        client: "Confluent",
+                        ordinal: ordinal,
+                        cancellationToken: cancellationToken))
+                {
+                    break;
+                }
+
                 var message = factory.Create(ordinal % options.Partitions);
                 try
                 {
-                    produceTimeout.Token.ThrowIfCancellationRequested();
                     ConfluentStressTestHelpers.ProduceWithBackpressure(
                         producer,
                         options.Topic,
@@ -268,11 +290,12 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 }
                 catch (OperationCanceledException) when (produceTimeout.IsCancellationRequested)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    throughput.RecordError(
-                        new TimeoutException("Confluent round-trip produce phase exceeded its timeout."),
-                        "Round-trip produce",
-                        ordinal);
+                    _ = RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                        produceTimeout.IsCancellationRequested,
+                        throughput,
+                        client: "Confluent",
+                        ordinal: ordinal,
+                        cancellationToken: cancellationToken);
                     break;
                 }
                 catch (Exception ex)
@@ -392,6 +415,26 @@ internal static class RoundTripScenarioHelpers
 
     public static TimeSpan GetTimeout(StressTestOptions options) =>
         TimeSpan.FromMinutes(Math.Max(5, options.DurationMinutes));
+
+    public static bool TryRecordProduceTimeout(
+        bool timeoutExpired,
+        ThroughputTracker throughput,
+        string client,
+        long ordinal,
+        CancellationToken cancellationToken)
+    {
+        if (!timeoutExpired)
+        {
+            return false;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        throughput.RecordError(
+            new TimeoutException($"{client} round-trip produce phase exceeded its timeout."),
+            "Round-trip produce",
+            ordinal);
+        return true;
+    }
 
     public static long CountRecords(long[] startOffsets, long[] endOffsets)
     {

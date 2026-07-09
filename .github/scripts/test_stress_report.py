@@ -1,5 +1,4 @@
 import unittest
-from pathlib import Path
 
 from stress_report import (
     format_roundtrip_validation_table,
@@ -32,33 +31,6 @@ def stress_result(client, effective_rate, median_rate=None):
 
 
 class StressReportTests(unittest.TestCase):
-    def test_confluent_roundtrip_produce_wait_is_bounded(self):
-        scenario_path = (
-            Path(__file__).parents[2]
-            / "tools"
-            / "Dekaf.StressTests"
-            / "Scenarios"
-            / "ProducerRoundTripStressTest.cs"
-        )
-        source = scenario_path.read_text(encoding="utf-8")
-        confluent_source = source.split(
-            "internal sealed class ConfluentProducerRoundTripStressTest", maxsplit=1
-        )[1]
-
-        self.assertIn(
-            "CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)",
-            confluent_source,
-        )
-        self.assertIn(
-            "produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options))",
-            confluent_source,
-        )
-        self.assertIn("produceTimeout.Token", confluent_source)
-        self.assertIn(
-            "catch (OperationCanceledException) when (produceTimeout.IsCancellationRequested)",
-            confluent_source,
-        )
-
     def test_throughput_table_orders_and_ratios_by_median_when_available(self):
         lines = format_throughput_table(
             [
