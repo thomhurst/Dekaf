@@ -11,6 +11,7 @@ namespace Dekaf.Pipeline.Modules;
 public record PackedProject(string Name, string Version);
 
 [DependsOn<BuildModule>]
+[DependsOn<RunStressTestsUnitTestsModule>]
 [DependsOn<RunUnitTestsModule>]
 [DependsOn<GenerateVersionModule>]
 public class PackModule : Module<List<PackedProject>>
