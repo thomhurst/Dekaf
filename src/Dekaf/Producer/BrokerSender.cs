@@ -388,6 +388,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // FIFO ordering (matching the old List iteration order) and is optimized for the
     // cross-thread producer-consumer pattern used here.
     //
+    // The send loop drains this queue through HandleRetriableBatch so connection failures
+    // trigger the same metadata refresh and ordering logic as broker error responses.
+    //
     // Each entry carries the batch's generation captured at send start. ReadyBatch objects
     // are pooled, so a reference sitting in this queue can be completed and recycled by
     // another owner before the send loop dequeues it. IsReturnedToPool alone cannot detect
@@ -956,13 +959,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                 // ── 2. Pick up send-failed retries ──
-                // FIFO dequeue + AddFirst reverses the enqueue order, but this is intentional:
-                // each retry batch goes before all existing carry-over for its partition,
-                // matching Java's Deque.addFirst semantics for retry priority.
+                // Process these through the common retriable-error path. In particular, a
+                // stopped leader often fails before returning a ProduceResponse, so this is
+                // the only point that can request fresh metadata before the stale route retries.
                 while (_sendFailedRetries.TryDequeue(out var retry))
                 {
                     if (retry.Batch.IsCurrentIncarnation(retry.Generation))
-                        carryOver.AddFirst(new BatchReference(retry.Batch, retry.Generation));
+                    {
+                        HandleRetriableBatch(
+                            retry.Batch,
+                            retry.Generation,
+                            ErrorCode.NetworkException,
+                            carryOver,
+                            cancellationToken);
+                    }
                     else
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
                 }
@@ -3019,12 +3029,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
-                        // Mute partition (ordering guarantee) and queue for retry.
-                        if (!batch.IsLoopExitRedelivery)
-                            MutePartition(batch.TopicPartition);
-                        batch.IsRetry = true;
-                        batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                            _options.RetryBackoffTicks;
+                        // Queue for the single-threaded send loop to apply the common
+                        // retriable-error path, including metadata refresh and partition muting.
                         _sendFailedRetries.Enqueue((batch, generations[i]));
                     }
                 }

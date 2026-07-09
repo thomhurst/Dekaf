@@ -150,6 +150,39 @@ public sealed class BrokerSenderSendLoopTests
             ]
         };
 
+    private static MetadataResponse CreateLeaderMetadataResponse(
+        string topic,
+        int leaderId,
+        int leaderEpoch) =>
+        new()
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 },
+                new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9094 }
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = topic,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = leaderId,
+                            LeaderEpoch = leaderEpoch,
+                            ReplicaNodes = [1, 2],
+                            IsrNodes = [1, 2]
+                        }
+                    ]
+                }
+            ]
+        };
+
     /// <summary>
     /// Creates a BrokerSender with standard test defaults, reducing constructor boilerplate.
     /// </summary>
@@ -158,12 +191,14 @@ public sealed class BrokerSenderSendLoopTests
         ProducerOptions options,
         RecordAccumulator accumulator,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
+        MetadataManager? metadataManager = null,
+        Action<ReadyBatch>? rerouteBatch = null,
         Action<int>? onBrokerThrottle = null,
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null) =>
         new(
             brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
+            metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
             accumulator, options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
@@ -173,7 +208,7 @@ public sealed class BrokerSenderSendLoopTests
             ensurePartitionInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
-            rerouteBatch: null,
+            rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: null,
             onBrokerThrottle: onBrokerThrottle,
@@ -631,6 +666,81 @@ public sealed class BrokerSenderSendLoopTests
             // Batch should eventually be acknowledged
             var offset = await acknowledged.Task.WaitAsync(cancellationToken);
             await Assert.That(offset).IsEqualTo(99);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_SendFailure_RefreshesMetadataAndReroutes(CancellationToken cancellationToken)
+    {
+        const string topic = "test-topic";
+        var staleConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+                ValueTask.FromException<Task<ProduceResponse>>(new IOException("Leader connection closed"))
+        };
+        var metadataConnection = Substitute.For<IKafkaConnection>();
+        var metadataRequests = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
+            .Returns(staleConnection);
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
+        metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        metadataConnection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref metadataRequests);
+                return new ValueTask<MetadataResponse>(CreateLeaderMetadataResponse(topic, leaderId: 2, leaderEpoch: 2));
+            });
+
+        var options = CreateOptions(retryBackoffMs: 10, retryBackoffMaxMs: 10);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(topic, leaderId: 1, leaderEpoch: 1));
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var rerouted = new TaskCompletionSource<ReadyBatch>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            metadataManager,
+            rerouteBatch: batch => rerouted.TrySetResult(batch));
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, topic, partition: 0);
+            sender.Enqueue(batch);
+
+            var reroutedBatch = await rerouted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(reroutedBatch).IsSameReferenceAs(batch);
+            await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
+            await Assert.That(metadataManager.Metadata.GetPartitionLeader(topic, 0)!.NodeId).IsEqualTo(2);
         }
         finally
         {

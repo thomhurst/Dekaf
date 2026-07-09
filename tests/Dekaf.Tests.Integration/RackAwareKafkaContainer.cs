@@ -124,6 +124,110 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         return topic;
     }
 
+    public async Task<string> CreateReplicatedTopicAsync()
+    {
+        var topic = $"replicated-{Guid.NewGuid():N}";
+        await using var admin = CreateAdminClient();
+
+        await admin.CreateTopicsAsync([
+            new NewTopic
+            {
+                Name = topic,
+                NumPartitions = -1,
+                ReplicationFactor = -1,
+                ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>>
+                {
+                    [0] = [1, 2, 3]
+                },
+                Configs = new Dictionary<string, string>
+                {
+                    ["min.insync.replicas"] = "2"
+                }
+            }
+        ]).ConfigureAwait(false);
+
+        await WaitForTopicAssignmentAsync(admin, topic, [1, 2, 3]).ConfigureAwait(false);
+        return topic;
+    }
+
+    public async Task<int> GetPartitionLeaderIdAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        await using var admin = CreateAdminClient();
+        var descriptions = await admin.DescribeTopicsAsync([topic], cancellationToken).ConfigureAwait(false);
+        return descriptions[topic].Partitions.Single().LeaderId;
+    }
+
+    public Task StopBrokerAsync(int nodeId, CancellationToken cancellationToken = default) =>
+        GetBroker(nodeId).StopAsync(cancellationToken);
+
+    public async Task StartBrokerAsync(int nodeId, CancellationToken cancellationToken = default)
+    {
+        var broker = GetBroker(nodeId);
+        if (broker.State != TestcontainersStates.Running)
+            await broker.StartAsync(cancellationToken).ConfigureAwait(false);
+
+        await WaitForClusterAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<int> WaitForPartitionLeaderChangeAsync(
+        string topic,
+        int previousLeaderId,
+        CancellationToken cancellationToken = default)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 90; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var leaderId = await GetPartitionLeaderIdAsync(topic, cancellationToken).ConfigureAwait(false);
+                if (leaderId >= 0 && leaderId != previousLeaderId)
+                    return leaderId;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"Topic '{topic}' did not elect a new leader after broker {previousLeaderId} stopped. " +
+            $"Last error: {lastError?.Message}");
+    }
+
+    public async Task WaitForInSyncReplicasAsync(
+        string topic,
+        int expectedCount,
+        CancellationToken cancellationToken = default)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await using var admin = CreateAdminClient();
+                var descriptions = await admin.DescribeTopicsAsync([topic], cancellationToken).ConfigureAwait(false);
+                if (descriptions[topic].Partitions.Single().IsrNodes.Count == expectedCount)
+                    return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"Topic '{topic}' did not restore {expectedCount} in-sync replicas. " +
+            $"Last error: {lastError?.Message}");
+    }
+
     private IContainer CreateBroker(int nodeId, string rack, int externalPort)
     {
         var brokerAlias = BrokerAlias(nodeId);
@@ -171,15 +275,16 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         };
     }
 
-    private async Task WaitForClusterAsync()
+    private async Task WaitForClusterAsync(CancellationToken cancellationToken = default)
     {
         Exception? lastError = null;
         for (var attempt = 0; attempt < 90; attempt++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 await using var admin = CreateAdminClient();
-                var cluster = await admin.DescribeClusterAsync().ConfigureAwait(false);
+                var cluster = await admin.DescribeClusterAsync(cancellationToken).ConfigureAwait(false);
                 if (cluster.Nodes.Count == 3)
                     return;
             }
@@ -188,7 +293,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
                 lastError = ex;
             }
 
-            await Task.Delay(1000).ConfigureAwait(false);
+            await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(
@@ -197,14 +302,22 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
 
     private static async Task WaitForTopicAssignmentAsync(IAdminClient admin, string topic)
     {
+        await WaitForTopicAssignmentAsync(admin, topic, [1, 2]).ConfigureAwait(false);
+    }
+
+    private static async Task WaitForTopicAssignmentAsync(
+        IAdminClient admin,
+        string topic,
+        IReadOnlyList<int> expectedReplicas)
+    {
         for (var attempt = 0; attempt < 60; attempt++)
         {
             var descriptions = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
             var partition = descriptions[topic].Partitions.Single();
 
             if (partition.LeaderId == 1
-                && partition.ReplicaNodes.SequenceEqual([1, 2])
-                && partition.IsrNodes.Contains(2))
+                && partition.ReplicaNodes.SequenceEqual(expectedReplicas)
+                && expectedReplicas.All(partition.IsrNodes.Contains))
             {
                 return;
             }
@@ -213,6 +326,15 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         }
 
         throw new InvalidOperationException($"Topic '{topic}' did not get expected rack-aware assignment.");
+    }
+
+    private IContainer GetBroker(int nodeId)
+    {
+        if (nodeId < 1 || nodeId > _brokers.Length)
+            throw new ArgumentOutOfRangeException(nameof(nodeId), nodeId, "Broker node ID must be between 1 and 3.");
+
+        return _brokers[nodeId - 1]
+            ?? throw new InvalidOperationException($"Broker {nodeId} has not been initialized.");
     }
 
     private static int[] GetFreeTcpPorts(int count)
