@@ -1,6 +1,6 @@
 # KafkaProtocolReader fuzzing
 
-`Dekaf.Fuzzing` exposes a SharpFuzz 2.3.0 libFuzzer target for `KafkaProtocolReader` primitives. Byte 0 selects a read operation; its high bit selects a two-segment `ReadOnlySequence<byte>`. Remaining bytes are parser input. Inputs above 1 MiB are ignored so hostile length prefixes cannot turn one iteration into unbounded allocation.
+`Dekaf.Fuzzing` exposes a SharpFuzz 2.3.0 libFuzzer target for `KafkaProtocolReader` primitives. Byte 0 selects a read operation; its high bit selects a two-segment `ReadOnlySequence<byte>`. The original 22 operations retain their modulo-22 selectors, while bit `0x40` selects later operations by their offset from that fixed boundary. Remaining bytes are parser input. Inputs above 1 MiB are ignored so hostile length prefixes cannot turn one iteration into unbounded allocation.
 
 Expected parse failures are limited to `InsufficientDataException` (truncated input) and `MalformedProtocolDataException` (invalid structure). Any other managed exception, access violation, hang, or resource failure remains visible to libFuzzer as a crash.
 

@@ -6,7 +6,10 @@ namespace Dekaf.Fuzzing;
 public static class ProtocolReaderFuzzTarget
 {
     private const int MaxInputLength = 1024 * 1024;
-    private static readonly int OperationCount = Enum.GetValues<ProtocolReaderOperation>().Length;
+    private const byte SegmentedInputMask = 0x80;
+    private const byte ExtendedOperationMask = 0x40;
+    private const int LegacyOperationCount = (int)ProtocolReaderOperation.SkipTaggedFields + 1;
+    internal static readonly int OperationCount = Enum.GetValues<ProtocolReaderOperation>().Length;
 
     public static void Run(ReadOnlySpan<byte> input)
     {
@@ -16,11 +19,14 @@ public static class ProtocolReaderFuzzTarget
         }
 
         var selector = input[0];
-        var operation = (ProtocolReaderOperation)((selector & 0x7F) % OperationCount);
+        if (GetOperation(selector) is not { } operation)
+        {
+            return;
+        }
 
         try
         {
-            if ((selector & 0x80) == 0)
+            if ((selector & SegmentedInputMask) == 0)
             {
                 RunContiguous(operation, input[1..]);
             }
@@ -37,6 +43,34 @@ public static class ProtocolReaderFuzzTarget
         {
             // Structurally invalid input is an expected parse outcome.
         }
+    }
+
+    internal static ProtocolReaderOperation? GetOperation(byte selector)
+    {
+        var operationSelector = selector & ~SegmentedInputMask;
+        // Preserve the original corpus's modulo-22 selectors. Appended operations use the
+        // 0x40 lane so extending the enum cannot silently retarget existing seeds.
+        var operationValue = (operationSelector & ExtendedOperationMask) == 0
+            ? operationSelector % LegacyOperationCount
+            : LegacyOperationCount + (operationSelector & ~ExtendedOperationMask);
+
+        return operationValue < OperationCount
+            ? (ProtocolReaderOperation)operationValue
+            : null;
+    }
+
+    internal static byte GetSelector(ProtocolReaderOperation operation, bool segmented = false)
+    {
+        var operationValue = (int)operation;
+        if ((uint)operationValue >= (uint)OperationCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(operation));
+        }
+
+        var selector = operationValue < LegacyOperationCount
+            ? (byte)operationValue
+            : (byte)(ExtendedOperationMask + operationValue - LegacyOperationCount);
+        return segmented ? (byte)(selector | SegmentedInputMask) : selector;
     }
 
     private static void RunContiguous(ProtocolReaderOperation operation, ReadOnlySpan<byte> input)
@@ -62,7 +96,7 @@ public static class ProtocolReaderFuzzTarget
         Execute(operation, ref reader);
     }
 
-    private static void Execute(ProtocolReaderOperation operation, ref KafkaProtocolReader reader)
+    internal static void Execute(ProtocolReaderOperation operation, ref KafkaProtocolReader reader)
     {
         switch (operation)
         {
@@ -151,13 +185,13 @@ public static class ProtocolReaderFuzzTarget
                 _ = reader.ReadCompactNonNullableString();
                 break;
             case ProtocolReaderOperation.ReadRawBytes:
-                _ = reader.ReadRawBytes(reader.ReadUInt8());
+                _ = reader.ReadRawBytes(reader.ReadInt32());
                 break;
             case ProtocolReaderOperation.ReadMemorySlice:
-                _ = reader.ReadMemorySlice(reader.ReadUInt8());
+                _ = reader.ReadMemorySlice(reader.ReadInt32());
                 break;
             case ProtocolReaderOperation.Skip:
-                reader.Skip(reader.ReadUInt8());
+                reader.Skip(reader.ReadInt32());
                 break;
             default:
                 throw new InvalidOperationException($"Unknown protocol reader fuzz operation: {operation}");
@@ -167,41 +201,6 @@ public static class ProtocolReaderFuzzTarget
     private static byte ReadUInt8WithState(ref KafkaProtocolReader reader, byte _)
     {
         return reader.ReadUInt8();
-    }
-
-    private enum ProtocolReaderOperation : byte
-    {
-        ReadInt8,
-        ReadUInt8,
-        ReadInt16,
-        ReadInt32,
-        ReadInt64,
-        ReadUInt16,
-        ReadUInt32,
-        ReadUuid,
-        ReadFloat64,
-        ReadVarInt,
-        ReadVarLong,
-        ReadUnsignedVarInt,
-        ReadBoolean,
-        ReadString,
-        ReadCompactString,
-        ReadCompactStringBytes,
-        ReadBytes,
-        ReadCompactBytes,
-        ReadArray,
-        ReadCompactArray,
-        ReadCompactNullableArray,
-        SkipTaggedFields,
-        ReadArrayWithState,
-        ReadCompactArrayWithState,
-        ReadCompactNullableArrayWithState,
-        ReadArrayIntoWithState,
-        ReadCompactArrayIntoWithState,
-        ReadCompactNonNullableString,
-        ReadRawBytes,
-        ReadMemorySlice,
-        Skip
     }
 
     private sealed class BufferSegment : ReadOnlySequenceSegment<byte>
@@ -221,4 +220,39 @@ public static class ProtocolReaderFuzzTarget
             return segment;
         }
     }
+}
+
+internal enum ProtocolReaderOperation : byte
+{
+    ReadInt8 = 0,
+    ReadUInt8 = 1,
+    ReadInt16 = 2,
+    ReadInt32 = 3,
+    ReadInt64 = 4,
+    ReadUInt16 = 5,
+    ReadUInt32 = 6,
+    ReadUuid = 7,
+    ReadFloat64 = 8,
+    ReadVarInt = 9,
+    ReadVarLong = 10,
+    ReadUnsignedVarInt = 11,
+    ReadBoolean = 12,
+    ReadString = 13,
+    ReadCompactString = 14,
+    ReadCompactStringBytes = 15,
+    ReadBytes = 16,
+    ReadCompactBytes = 17,
+    ReadArray = 18,
+    ReadCompactArray = 19,
+    ReadCompactNullableArray = 20,
+    SkipTaggedFields = 21,
+    ReadArrayWithState = 22,
+    ReadCompactArrayWithState = 23,
+    ReadCompactNullableArrayWithState = 24,
+    ReadArrayIntoWithState = 25,
+    ReadCompactArrayIntoWithState = 26,
+    ReadCompactNonNullableString = 27,
+    ReadRawBytes = 28,
+    ReadMemorySlice = 29,
+    Skip = 30
 }
