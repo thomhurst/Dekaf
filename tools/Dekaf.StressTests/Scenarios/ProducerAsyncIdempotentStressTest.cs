@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
@@ -11,8 +10,6 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
 {
-    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
-
     public string Name => "producer-async-idempotent";
     public string Client => "Dekaf";
 
@@ -43,11 +40,15 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
         StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
         var producer = await builder.BuildAsync(cancellationToken);
 
-        Console.WriteLine($"  Warming up Dekaf async idempotent producer...");
-        for (var i = 0; i < 1000; i++)
-        {
-            await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
-        }
+        // Even though every ProduceAsync is awaited, the broker-confirmed end-offset
+        // delta is still verified: a client bug that completes the delivery task
+        // without the broker persisting the message would otherwise be invisible.
+        var startOffset = await StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            "Dekaf async idempotent producer",
+            throughput,
+            cancellationToken);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -59,22 +60,22 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
 
         Console.WriteLine($"  Running Dekaf async idempotent producer stress test for {options.DurationMinutes} minutes...");
         Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
-        LogResourceUsage("Initial");
+        StressTestHelpers.LogResourceUsage("Initial");
 
         throughput.Start();
         var messageIndex = 0L;
         var lastStatusTime = DateTime.UtcNow;
         var lastStatusMessageCount = 0L;
 
-        var samplerTask = RunSamplerAsync(throughput, cts.Token);
-        var resourceMonitorTask = RunResourceMonitorAsync(cts.Token);
+        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
+        var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(cts.Token);
 
         while (!cts.Token.IsCancellationRequested)
         {
             try
             {
                 var start = Stopwatch.GetTimestamp();
-                await producer.ProduceAsync(options.Topic, GetKey(messageIndex), messageValue, cts.Token).ConfigureAwait(false);
+                await producer.ProduceAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue, cts.Token).ConfigureAwait(false);
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
@@ -94,7 +95,7 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
                     }
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
             {
                 break;
             }
@@ -112,19 +113,23 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
-        LogResourceUsage("Final");
+        StressTestHelpers.LogResourceUsage("Final");
         var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
 
         Console.WriteLine($"  Disposing producer...");
-        try
-        {
-            await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
-            Console.WriteLine($"  Producer disposed successfully");
-        }
-        catch (TimeoutException)
-        {
-            Console.WriteLine($"  Warning: Dispose timed out after 30 seconds");
-        }
+        await StressTestHelpers.DisposeWithTimeoutAsync(producer, throughput);
+
+        // Queried after dispose so all delivery attempts have finished — the delta is
+        // what the broker actually accepted.
+        var endOffset = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
+            options.BootstrapServers,
+            options.Topic,
+            options.Partitions,
+            startOffset,
+            throughput.MessageCount,
+            throughput,
+            "Post-run drain");
+        var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
 
         return new StressTestResult
         {
@@ -136,73 +141,12 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
+            DeliveredMessages = delivered,
+            Idempotent = true,
             Latency = latency.GetSnapshot(),
             GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = throughput.CpuTimeSeconds,
             ProducerDeliveryDiagnostics = producerDiagnostics
         };
-    }
-
-    private static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-                throughput.TakeSample();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private static string[] CreatePreAllocatedKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-        {
-            keys[i] = $"key-{i}";
-        }
-        return keys;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
-
-    private static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
-    {
-        var process = Process.GetCurrentProcess();
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
-                LogResourceUsage("Monitor", process);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private static void LogResourceUsage(string label, Process? process = null)
-    {
-        process ??= Process.GetCurrentProcess();
-        process.Refresh();
-
-        var workingSet = process.WorkingSet64 / (1024.0 * 1024.0);
-        var privateMemory = process.PrivateMemorySize64 / (1024.0 * 1024.0);
-        var gcHeap = GC.GetTotalMemory(forceFullCollection: false) / (1024.0 * 1024.0);
-        var threadCount = process.Threads.Count;
-        var gen0 = GC.CollectionCount(0);
-        var gen1 = GC.CollectionCount(1);
-        var gen2 = GC.CollectionCount(2);
-
-        Console.WriteLine($"  [{DateTime.UtcNow:HH:mm:ss}] {label} Resources: " +
-            $"WorkingSet={workingSet:F1}MB, Private={privateMemory:F1}MB, GCHeap={gcHeap:F1}MB, " +
-            $"Threads={threadCount}, GC=[{gen0}/{gen1}/{gen2}]");
     }
 }

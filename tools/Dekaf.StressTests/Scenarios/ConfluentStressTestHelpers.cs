@@ -140,7 +140,12 @@ internal static class ConfluentStressTestHelpers
         {
             if (report.Error.IsError)
             {
-                throughput.RecordError(
+                // The message was already accepted into MessageCount when enqueued, so a
+                // failed delivery report is a delivery error, not a loop error. Unsampled
+                // fire-and-forget messages carry no report handler (the per-message handler
+                // shim would skew the throughput comparison), so their failures surface via
+                // the always-fatal delivered-vs-accepted shortfall check instead.
+                throughput.RecordDeliveryError(
                     "Confluent.Kafka.Error",
                     report.Error.ToString(),
                     "SampleDeliveryLatency delivery report",
@@ -151,5 +156,72 @@ internal static class ConfluentStressTestHelpers
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
             }
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Warms up the producer and snapshots the pre-run end offset, waiting for the
+    /// warmup messages to drain first — mirroring
+    /// <see cref="StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync"/>. Without the
+    /// drain wait, warmup messages landing after the snapshot inflate the run's delivered
+    /// count and can mask real loss.
+    /// </summary>
+    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
+        ConfluentKafka.IProducer<string, string> producer,
+        StressTestOptions options,
+        string producerName,
+        ThroughputTracker throughput)
+    {
+        var warmupStartOffset = QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
+
+        Console.WriteLine($"  Warming up {producerName}...");
+        for (var i = 0; i < StressTestHelpers.ProducerWarmupMessageCount; i++)
+        {
+            producer.Produce(options.Topic, new ConfluentKafka.Message<string, string> { Key = "warmup", Value = "warmup" });
+        }
+        FlushWithTimeout(producer, throughput);
+
+        return await QueryTotalEndOffsetAfterProducerDrainAsync(
+            options,
+            warmupStartOffset,
+            StressTestHelpers.ProducerWarmupMessageCount,
+            throughput,
+            "Warmup drain").ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Confluent counterpart of
+    /// <see cref="StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync"/>: same
+    /// shared catch-up loop, Confluent-only watermark query so these scenarios stay
+    /// Dekaf-free end to end.
+    /// </summary>
+    internal static Task<long?> QueryTotalEndOffsetAfterProducerDrainAsync(
+        StressTestOptions options,
+        long? startOffset,
+        long acceptedMessages,
+        ThroughputTracker throughput,
+        string operation)
+        => StressTestHelpers.WaitForEndOffsetCatchUpAsync(
+            () => Task.FromResult(QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions)),
+            startOffset,
+            acceptedMessages,
+            throughput,
+            operation);
+
+    /// <summary>
+    /// Flushes the producer, recording an error when messages remain queued after the
+    /// timeout: a flush that cannot drain against a healthy broker means the client is
+    /// stuck, and the leftover messages will surface as undelivered loss.
+    /// </summary>
+    internal static void FlushWithTimeout(
+        ConfluentKafka.IProducer<string, string> producer,
+        ThroughputTracker throughput)
+    {
+        var remaining = producer.Flush(StressTestHelpers.OperationTimeout);
+        if (remaining > 0)
+        {
+            var message = $"Flush timed out with {remaining:N0} messages still queued";
+            Console.WriteLine($"  Error: {message}");
+            throughput.RecordError("FlushTimeout", message, "Flush");
+        }
     }
 }

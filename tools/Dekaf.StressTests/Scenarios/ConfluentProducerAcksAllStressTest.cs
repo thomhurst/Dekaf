@@ -37,14 +37,11 @@ internal sealed class ConfluentProducerAcksAllStressTest : IStressTestScenario
 
         using var producer = new ConfluentKafka.ProducerBuilder<string, string>(config).Build();
 
-        Console.WriteLine($"  Warming up Confluent acks-all producer...");
-        for (var i = 0; i < 1000; i++)
-        {
-            producer.Produce(options.Topic, new ConfluentKafka.Message<string, string> { Key = "warmup", Value = "warmup" });
-        }
-        producer.Flush(TimeSpan.FromSeconds(30));
-
-        var startOffset = ConfluentStressTestHelpers.QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
+        var startOffset = await ConfluentStressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            "Confluent acks-all producer",
+            throughput);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -93,7 +90,7 @@ internal sealed class ConfluentProducerAcksAllStressTest : IStressTestScenario
                     progress.RecordMessage();
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
             {
                 break;
             }
@@ -103,15 +100,21 @@ internal sealed class ConfluentProducerAcksAllStressTest : IStressTestScenario
             }
         }
 
-        producer.Flush(TimeSpan.FromSeconds(30));
+        ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
         throughput.Stop();
         gcStats.Capture();
 
         // Queried after the final flush — and outside the measurement window, so a slow
         // query against a degraded broker can't skew elapsed/CPU stats — so the delta
         // reflects what the broker actually accepted rather than what librdkafka's local
-        // queue absorbed.
-        var endOffset = ConfluentStressTestHelpers.QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
+        // queue absorbed. The drain wait absorbs follower high-watermark lag before the
+        // always-fatal shortfall check.
+        var endOffset = await ConfluentStressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
+            options,
+            startOffset,
+            throughput.MessageCount,
+            throughput,
+            "Post-run drain");
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }

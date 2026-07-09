@@ -16,6 +16,9 @@ internal sealed class ProducerStressTest : IStressTestScenario
     {
         var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
+        // Fire-and-forget messages have no awaiter; the error metric is the only signal
+        // that an accepted message failed delivery.
+        using var deliveryErrorListener = new DekafDeliveryErrorListener(throughput);
         var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
 
@@ -45,6 +48,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
             producer,
             options,
             "Dekaf producer",
+            throughput,
             cancellationToken);
 
         GC.Collect();
@@ -88,7 +92,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
                     progress.RecordMessage();
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
             {
                 break;
             }
@@ -99,14 +103,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         }
 
         Console.WriteLine($"  Flushing remaining messages...");
-        try
-        {
-            await producer.FlushAsync(CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            Console.WriteLine($"  Warning: Flush timed out after 30 seconds");
-        }
+        await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput);
 
         throughput.Stop();
         gcStats.Capture();
@@ -120,15 +117,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
 
         Console.WriteLine($"  Disposing producer...");
-        try
-        {
-            await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
-            Console.WriteLine($"  Producer disposed successfully");
-        }
-        catch (TimeoutException)
-        {
-            Console.WriteLine($"  Warning: Dispose timed out after 30 seconds");
-        }
+        await StressTestHelpers.DisposeWithTimeoutAsync(producer, throughput);
 
         // Queried after dispose so all delivery attempts (including the final flush)
         // have finished — the delta is what the broker actually accepted.
@@ -137,7 +126,9 @@ internal sealed class ProducerStressTest : IStressTestScenario
             options.Topic,
             options.Partitions,
             startOffset,
-            throughput.MessageCount);
+            throughput.MessageCount,
+            throughput,
+            "Post-run drain");
         var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
 
         return new StressTestResult
@@ -151,7 +142,6 @@ internal sealed class ProducerStressTest : IStressTestScenario
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
             DeliveredMessages = delivered,
-            FailOnDeliveredShortfall = false,
             Latency = latency.GetSnapshot(),
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,

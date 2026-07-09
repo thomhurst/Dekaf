@@ -28,7 +28,21 @@ internal static class StressTestHelpers
     /// </summary>
     internal const ulong ProducerBufferMemoryBytes = 512UL * 1024 * 1024;
 
-    private const int ProducerWarmupMessageCount = 1000;
+    /// <summary>
+    /// Shared with <see cref="ConfluentStressTestHelpers"/> so both clients drain the
+    /// same warmup target — a mismatch would corrupt one side's start-offset arithmetic
+    /// and surface as a phantom shortfall on that client only.
+    /// </summary>
+    internal const int ProducerWarmupMessageCount = 1000;
+
+    /// <summary>
+    /// Throughput sampler tick. The stall detector in Program.CheckForFailures converts
+    /// its seconds threshold using this, so changing the tick rescales nothing silently.
+    /// </summary>
+    internal const int SamplerIntervalSeconds = 1;
+
+    internal static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(30);
+
     private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
     private static readonly TimeSpan ProducerEndOffsetCatchUpTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ProducerEndOffsetCatchUpDelay = TimeSpan.FromMilliseconds(500);
@@ -121,6 +135,7 @@ internal static class StressTestHelpers
         IKafkaProducer<string, string> producer,
         StressTestOptions options,
         string producerName,
+        ThroughputTracker throughput,
         CancellationToken cancellationToken)
     {
         var warmupStartOffset = await QueryTotalEndOffsetAsync(
@@ -139,12 +154,17 @@ internal static class StressTestHelpers
         }
 
         await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        // A stale start snapshot is a correctness hazard, not just noise: warmup messages
+        // landing after the snapshot would inflate the run's delivered count and mask real
+        // loss, so a catch-up timeout here is recorded as an error via the tracker.
         return await QueryTotalEndOffsetAfterProducerDrainAsync(
             options.BootstrapServers,
             options.Topic,
             options.Partitions,
             warmupStartOffset,
-            ProducerWarmupMessageCount).ConfigureAwait(false);
+            ProducerWarmupMessageCount,
+            throughput,
+            "Warmup drain").ConfigureAwait(false);
     }
 
     /// <summary>
@@ -152,16 +172,37 @@ internal static class StressTestHelpers
     /// trail leader-ack writes briefly. Wait for the post-run watermark snapshot to
     /// reach the accepted-message target before returning the final snapshot.
     /// </summary>
-    internal static async Task<long?> QueryTotalEndOffsetAfterProducerDrainAsync(
+    internal static Task<long?> QueryTotalEndOffsetAfterProducerDrainAsync(
         string bootstrapServers,
         string topic,
         int partitionCount,
         long? startOffset,
-        long acceptedMessages)
+        long acceptedMessages,
+        ThroughputTracker throughput,
+        string operation)
+        => WaitForEndOffsetCatchUpAsync(
+            () => QueryTotalEndOffsetAsync(bootstrapServers, topic, partitionCount),
+            startOffset,
+            acceptedMessages,
+            throughput,
+            operation);
+
+    /// <summary>
+    /// Client-agnostic catch-up loop shared by the Dekaf and Confluent scenarios; each
+    /// side supplies its own watermark query so Confluent runs stay Dekaf-free. A catch-up
+    /// timeout is recorded as an error on <paramref name="throughput"/> because a lagging
+    /// snapshot either masks loss (warmup) or is loss (post-run).
+    /// </summary>
+    internal static async Task<long?> WaitForEndOffsetCatchUpAsync(
+        Func<Task<long?>> queryTotalEndOffset,
+        long? startOffset,
+        long acceptedMessages,
+        ThroughputTracker throughput,
+        string operation)
     {
         if (startOffset is not { } start || acceptedMessages <= 0)
         {
-            return await QueryTotalEndOffsetAsync(bootstrapServers, topic, partitionCount).ConfigureAwait(false);
+            return await queryTotalEndOffset().ConfigureAwait(false);
         }
 
         var expectedEndOffset = start + acceptedMessages;
@@ -170,7 +211,7 @@ internal static class StressTestHelpers
 
         while (true)
         {
-            var endOffset = await QueryTotalEndOffsetAsync(bootstrapServers, topic, partitionCount).ConfigureAwait(false);
+            var endOffset = await queryTotalEndOffset().ConfigureAwait(false);
             if (endOffset is null || endOffset >= expectedEndOffset)
             {
                 if (loggedWait && endOffset is not null)
@@ -184,10 +225,12 @@ internal static class StressTestHelpers
             var lag = expectedEndOffset - endOffset.Value;
             if (DateTime.UtcNow >= deadline)
             {
-                Console.WriteLine(
-                    $"  Warning: end offsets still lag accepted messages after " +
+                var message =
+                    $"end offsets still lag accepted messages after " +
                     $"{ProducerEndOffsetCatchUpTimeout.TotalSeconds:N0}s: observed {endOffset:N0}, " +
-                    $"target {expectedEndOffset:N0}, lag {lag:N0}");
+                    $"target {expectedEndOffset:N0}, lag {lag:N0}";
+                Console.WriteLine($"  Error: {message}");
+                throughput.RecordError("EndOffsetCatchUpTimeout", message, operation);
                 return endOffset;
             }
 
@@ -200,6 +243,50 @@ internal static class StressTestHelpers
             }
 
             await Task.Delay(ProducerEndOffsetCatchUpDelay, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Flushes the producer, recording a timeout as an error: a flush that cannot drain
+    /// in 30 seconds against a healthy broker means the producer is stuck, and any
+    /// still-buffered messages will surface as undelivered loss.
+    /// </summary>
+    internal static async Task FlushWithTimeoutAsync(
+        IKafkaProducer<string, string> producer,
+        ThroughputTracker throughput)
+    {
+        try
+        {
+            await producer.FlushAsync(CancellationToken.None).AsTask()
+                .WaitAsync(OperationTimeout, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            var message = $"Flush did not complete within {OperationTimeout.TotalSeconds:N0} seconds";
+            Console.WriteLine($"  Error: {message}");
+            throughput.RecordError("FlushTimeout", message, "FlushAsync");
+        }
+    }
+
+    /// <summary>
+    /// Disposes the producer, recording a timeout as an error — a hung dispose is a
+    /// shutdown bug even when every message was already delivered.
+    /// </summary>
+    internal static async Task DisposeWithTimeoutAsync(
+        IKafkaProducer<string, string> producer,
+        ThroughputTracker throughput)
+    {
+        try
+        {
+            await producer.DisposeAsync().AsTask()
+                .WaitAsync(OperationTimeout, CancellationToken.None).ConfigureAwait(false);
+            Console.WriteLine($"  Producer disposed successfully");
+        }
+        catch (TimeoutException)
+        {
+            var message = $"Dispose did not complete within {OperationTimeout.TotalSeconds:N0} seconds";
+            Console.WriteLine($"  Error: {message}");
+            throughput.RecordError("DisposeTimeout", message, "DisposeAsync");
         }
     }
 
@@ -286,7 +373,10 @@ internal static class StressTestHelpers
             }
             catch (Exception ex)
             {
-                throughput.RecordError(ex, "SampleDeliveryLatency", messageIndex);
+                // Detail only: the failure count is already captured via the producer's
+                // messaging.client.sent.errors metric (DekafDeliveryErrorListener), and
+                // this message was accepted into MessageCount before delivery failed.
+                throughput.RecordDeliveryErrorDetail(ex, "SampleDeliveryLatency", messageIndex);
             }
         }
     }
@@ -297,7 +387,7 @@ internal static class StressTestHelpers
         {
             try
             {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(SamplerIntervalSeconds), cancellationToken).ConfigureAwait(false);
                 throughput.TakeSample();
             }
             catch (OperationCanceledException)

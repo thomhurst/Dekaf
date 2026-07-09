@@ -98,9 +98,14 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
         {
-            // Expected
+            // Expected — duration timer expired
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Consumer error: {ex}");
+            throughput.RecordError(ex, "Confluent consume loop");
         }
 
         throughput.Stop();
