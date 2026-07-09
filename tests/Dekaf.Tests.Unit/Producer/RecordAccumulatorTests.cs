@@ -1034,19 +1034,24 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task AppendFromSpansAsync_RecordExactlyAtMaxRequestSize_SealsAndAppends()
+    public async Task AppendFromSpansAsync_RequestExactlyAtMaxRequestSize_SealsAndAppends()
     {
+        const string topic = "test-topic";
         const int valueLength = 32;
-        var maxRequestSize = RecordBatch.TotalBatchHeaderSize + EncodedRecordSize(
+        var encodedBatchSize = RecordBatch.TotalBatchHeaderSize + EncodedRecordSize(
             timestampDelta: 0,
             offsetDelta: 0,
             valueLength);
+        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            encodedBatchSize);
         var options = new ProducerOptions
         {
-            BootstrapServers = new[] { "localhost:9092" },
+            BootstrapServers = ["localhost:9092"],
             ClientId = "test-producer",
             BufferMemory = ulong.MaxValue,
-            BatchSize = maxRequestSize * 2,
+            BatchSize = encodedBatchSize * 2,
             MaxRequestSize = maxRequestSize,
             LingerMs = 10_000
         };
@@ -1055,7 +1060,7 @@ public class RecordAccumulatorTests
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         var appended = await accumulator.AppendFromSpansAsync(
-            "test-topic",
+            topic,
             partition: 0,
             timestamp,
             ReadOnlySpan<byte>.Empty,
@@ -1070,26 +1075,30 @@ public class RecordAccumulatorTests
 
         await Assert.That(appended).IsTrue();
         await Assert.That(accumulator.TryDrainBatch(out var readyBatch)).IsTrue();
-        await Assert.That(readyBatch!.RecordBatch.GetEncodedSize()).IsEqualTo(maxRequestSize);
+        await Assert.That(readyBatch!.RecordBatch.GetEncodedSize()).IsEqualTo(encodedBatchSize);
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            readyBatch.EncodedSize)).IsEqualTo(maxRequestSize);
 
         readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.FromUnixTimeMilliseconds(timestamp));
     }
 
     [Test]
-    public async Task AppendFromSpansAsync_RecordOneByteOverMaxRequestSize_ThrowsTypedLocalRejection()
+    public async Task AppendFromSpansAsync_BatchFitsButRequestFramingExceedsMax_Throws()
     {
-        const int maxValueLength = 32;
-        var maxRequestSize = RecordBatch.TotalBatchHeaderSize + EncodedRecordSize(
+        const int valueLength = 32;
+        var encodedBatchSize = RecordBatch.TotalBatchHeaderSize + EncodedRecordSize(
             timestampDelta: 0,
             offsetDelta: 0,
-            valueLength: maxValueLength);
+            valueLength);
         var options = new ProducerOptions
         {
-            BootstrapServers = new[] { "localhost:9092" },
+            BootstrapServers = ["localhost:9092"],
             ClientId = "test-producer",
             BufferMemory = ulong.MaxValue,
-            BatchSize = maxRequestSize * 2,
-            MaxRequestSize = maxRequestSize,
+            BatchSize = encodedBatchSize * 2,
+            MaxRequestSize = encodedBatchSize,
             LingerMs = 10_000
         };
 
@@ -1098,6 +1107,82 @@ public class RecordAccumulatorTests
         {
             await accumulator.AppendFromSpansAsync(
                 "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                new byte[valueLength],
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+        }).Throws<ProduceException>();
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(exception.Topic).IsEqualTo("test-topic");
+        await Assert.That(exception.Partition).IsEqualTo(0);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(accumulator.HasPendingWork()).IsFalse();
+    }
+
+    [Test]
+    [Arguments(64)]
+    [Arguments(127)]
+    [Arguments(128)]
+    [Arguments(129)]
+    [Arguments(16_383)]
+    [Arguments(16_384)]
+    [Arguments(1_048_576)]
+    public async Task ProduceRequestSizeCalculator_MaxBatchExactlyFillsBudget(int maxRequestSize)
+    {
+        const string transactionalId = "transactional-id";
+        const string topic = "tøpic";
+        var maxEncodedBatchSize = ProduceRequestSizeCalculator.GetMaxEncodedBatchSize(
+            maxRequestSize,
+            transactionalId,
+            topic);
+
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId,
+            topic,
+            maxEncodedBatchSize)).IsEqualTo(maxRequestSize);
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId,
+            topic,
+            maxEncodedBatchSize + 1)).IsGreaterThan(maxRequestSize);
+    }
+
+    [Test]
+    public async Task AppendFromSpansAsync_RecordOneByteOverMaxRequestSize_ThrowsTypedLocalRejection()
+    {
+        const string topic = "test-topic";
+        const int maxValueLength = 32;
+        var maxEncodedBatchSize = RecordBatch.TotalBatchHeaderSize + EncodedRecordSize(
+            timestampDelta: 0,
+            offsetDelta: 0,
+            valueLength: maxValueLength);
+        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            maxEncodedBatchSize);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = maxEncodedBatchSize * 2,
+            MaxRequestSize = maxRequestSize,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        var exception = await Assert.That(async () =>
+        {
+            await accumulator.AppendFromSpansAsync(
+                topic,
                 partition: 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 ReadOnlySpan<byte>.Empty,
@@ -1113,7 +1198,7 @@ public class RecordAccumulatorTests
 
         await Assert.That(exception).IsNotNull();
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
-        await Assert.That(exception.Topic).IsEqualTo("test-topic");
+        await Assert.That(exception.Topic).IsEqualTo(topic);
         await Assert.That(exception.Partition).IsEqualTo(0);
         await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         await Assert.That(accumulator.HasPendingWork()).IsFalse();

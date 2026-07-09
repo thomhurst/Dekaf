@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
@@ -3164,10 +3163,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var partIdx = 0;
             var runStart = 0;
             var requestBodySizeHint = checked(
-                CompactStringSize(_request.TransactionalId) +
+                ProduceRequestSizeCalculator.CompactStringSize(_request.TransactionalId) +
                 2 + // Acks
                 4 + // TimeoutMs
-                CompactArrayLengthSize(topicCount) +
+                ProduceRequestSizeCalculator.CompactArrayLengthSize(topicCount) +
                 1); // Request tagged fields
 
             // Single pass: populate scratch topic and partition data from contiguous runs
@@ -3184,8 +3183,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var partitionDataStart = partIdx;
                 requestBodySizeHint = checked(
                     requestBodySizeHint +
-                    CompactStringSize(topicName) +
-                    CompactArrayLengthSize(partCount) +
+                    ProduceRequestSizeCalculator.CompactStringSize(topicName) +
+                    ProduceRequestSizeCalculator.CompactArrayLengthSize(partCount) +
                     1); // Topic tagged fields
 
                 for (var p = 0; p < partCount; p++)
@@ -3198,7 +3197,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     requestBodySizeHint = checked(
                         requestBodySizeHint +
                         4 + // Partition index
-                        CompactBytesLengthSize(batch.EncodedSize) +
+                        ProduceRequestSizeCalculator.CompactBytesLengthSize(batch.EncodedSize) +
                         batch.EncodedSize +
                         1); // Partition tagged fields
                     partIdx++;
@@ -3241,20 +3240,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _lastPartitionCount = 0;
         }
 
-        private static int CompactStringSize(string? value)
-        {
-            if (value is null)
-                return 1;
-
-            var byteCount = Encoding.UTF8.GetByteCount(value);
-            return checked(CompactBytesLengthSize(byteCount) + byteCount);
-        }
-
-        private static int CompactArrayLengthSize(int count)
-            => Record.VarUIntSize((uint)checked(count + 1));
-
-        private static int CompactBytesLengthSize(int byteCount)
-            => Record.VarUIntSize((uint)checked(byteCount + 1));
     }
 
     /// <summary>

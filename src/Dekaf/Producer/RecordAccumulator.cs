@@ -874,6 +874,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly ProducerOptions _options;
     private readonly CompressionCodecRegistry? _compressionCodecs;
+    private readonly ConcurrentDictionary<string, int> _singleBatchRequestFixedSizes =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Per-partition deques of sealed ReadyBatches, matching Java's
@@ -1459,7 +1461,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
             startIndex = 0;
 
-        var size = 0;
+        var size = 0L;
         var count = partitions.Count;
         var now = Stopwatch.GetTimestamp();
         var lastDrainIndex = startIndex;
@@ -1493,6 +1495,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
 
             ReadyBatch? batch;
+            var batchRequestSize = 0;
             {
                 using var guard = new SpinLockGuard(ref pd.Lock);
                 batch = pd.PeekFirst();
@@ -1512,7 +1515,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     && now < batch.RetryNotBefore)
                     continue;
 
-                var batchRequestSize = batch.EncodedSize;
+                batchRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+                    GetSingleBatchRequestFixedSize(tp.Topic),
+                    batch.EncodedSize);
                 if (ready.Count > 0 && size + batchRequestSize > maxRequestSize)
                 {
                     // Ready() already consumed notifications for all partitions on this node.
@@ -1538,7 +1543,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 if (_options.EnableDeliveryDiagnostics)
                     batch.AppendDiag('D');
-                size += batch.EncodedSize;
+                size += batchRequestSize;
                 ready.Add(batch);
             }
         }
@@ -3081,13 +3086,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         int estimatedRecordSize)
     {
-        var maxRequestSize = _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1_048_576;
-        if ((long)RecordBatch.TotalBatchHeaderSize + estimatedRecordSize <= maxRequestSize)
-            return;
+        var maxRequestSize = _options.MaxRequestSize > 0
+            ? _options.MaxRequestSize
+            : ProduceRequestSizeCalculator.DefaultMaxRequestSize;
+        var fixedSize = GetSingleBatchRequestFixedSize(topic);
+        var estimatedBatchSize = (long)RecordBatch.TotalBatchHeaderSize + estimatedRecordSize;
+        if (estimatedBatchSize <= int.MaxValue)
+        {
+            var estimatedRequestBodySize = fixedSize +
+                ProduceRequestSizeCalculator.CompactBytesLengthSize((int)estimatedBatchSize) +
+                estimatedBatchSize;
+            if (estimatedRequestBodySize <= maxRequestSize)
+                return;
+        }
 
         ThrowIfRecordExceedsMaxRequestSizeSlow(
             topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
-            headers, headerCount, maxRequestSize);
+            headers, headerCount, maxRequestSize, fixedSize);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -3100,7 +3115,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int valueLength,
         Header[]? headers,
         int headerCount,
-        int maxRequestSize)
+        int maxRequestSize,
+        int singleBatchFixedSize)
     {
         var bodySize = Record.ComputeBodySize(
             timestampDelta: 0,
@@ -3113,16 +3129,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             headerCount);
         var encodedRecordSize = checked(Record.VarIntSize(bodySize) + bodySize);
         var encodedBatchSize = checked(RecordBatch.TotalBatchHeaderSize + encodedRecordSize);
-        if (encodedBatchSize <= maxRequestSize)
+        var encodedRequestBodySize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            singleBatchFixedSize,
+            encodedBatchSize);
+        if (encodedRequestBodySize <= maxRequestSize)
             return;
 
         throw new ProduceException(
             ErrorCode.MessageTooLarge,
-            $"Encoded record batch size {encodedBatchSize} exceeds MaxRequestSize of {maxRequestSize} bytes.")
+            $"Encoded ProduceRequest body size {encodedRequestBodySize} bytes " +
+            $"(record batch {encodedBatchSize} bytes) exceeds MaxRequestSize of {maxRequestSize} bytes.")
         {
             Topic = topic,
             Partition = partition
         };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetSingleBatchRequestFixedSize(string topic)
+    {
+        if (_singleBatchRequestFixedSizes.TryGetValue(topic, out var fixedSize))
+            return fixedSize;
+
+        fixedSize = ProduceRequestSizeCalculator.GetSingleBatchFixedSize(
+            _options.TransactionalId,
+            topic);
+        return _singleBatchRequestFixedSizes.GetOrAdd(topic, fixedSize);
     }
 
     /// <summary>
@@ -5082,6 +5114,7 @@ internal sealed class PartitionBatch
     private int _encodedRecordsLength;
     private int _estimatedSize;
     private int _reservedSize;
+    private int _effectiveBatchSizeLimit;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
     private long _createdStopwatchTimestamp;
     private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
@@ -5104,6 +5137,7 @@ internal sealed class PartitionBatch
     {
         _topicPartition = topicPartition;
         _options = options;
+        _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(topicPartition, options);
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
 
         _initialRecordCapacity = options.InitialBatchRecordCapacity > 0
@@ -5170,6 +5204,7 @@ internal sealed class PartitionBatch
     {
         _topicPartition = topicPartition;
         _partitionCount = partitionCount;
+        _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(topicPartition, _options);
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
         _completionSourceCount = 0;
@@ -5249,9 +5284,21 @@ internal sealed class PartitionBatch
     public bool IsExactlyAtSizeLimit =>
         (long)RecordBatch.TotalBatchHeaderSize + _encodedRecordsLength == EffectiveBatchSizeLimit;
 
-    private int EffectiveBatchSizeLimit => Math.Min(
-        _options.BatchSize,
-        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1_048_576);
+    private int EffectiveBatchSizeLimit => _effectiveBatchSizeLimit;
+
+    private static int GetEffectiveBatchSizeLimit(
+        TopicPartition topicPartition,
+        ProducerOptions options)
+    {
+        var maxRequestSize = options.MaxRequestSize > 0
+            ? options.MaxRequestSize
+            : ProduceRequestSizeCalculator.DefaultMaxRequestSize;
+        var maxEncodedBatchSize = ProduceRequestSizeCalculator.GetMaxEncodedBatchSize(
+            maxRequestSize,
+            options.TransactionalId,
+            topicPartition.Topic ?? string.Empty);
+        return Math.Min(options.BatchSize, maxEncodedBatchSize);
+    }
 
     internal readonly record struct ReservedRecordAppend(
         BatchArena Arena,

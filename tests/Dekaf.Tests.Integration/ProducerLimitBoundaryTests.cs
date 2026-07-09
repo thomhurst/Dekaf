@@ -19,16 +19,27 @@ public sealed class ProducerLimitBoundaryTests(KafkaTestContainer kafka) : Kafka
         [new("traceparent", new byte[TraceparentValueLength])];
 
     [Test]
-    public async Task MaxRequestSize_ExactBatchSucceeds_OneByteOverIsRejectedLocallyWithoutDrop()
+    public async Task MaxRequestSize_ExactRequestSucceeds_OneByteOverIsRejectedLocallyWithoutDrop()
     {
         using var activityListener = ListenToDekafActivities();
         var topic = await KafkaContainer.CreateTestTopicAsync();
-        var exactPayload = CreatePayloadForEncodedBatchSize(BoundarySize);
+        var maxEncodedBatchSize = ProduceRequestSizeCalculator.GetMaxEncodedBatchSize(
+            BoundarySize,
+            transactionalId: null,
+            topic);
+        var exactPayload = CreatePayloadForEncodedBatchSize(maxEncodedBatchSize);
         var oversizedPayload = new byte[exactPayload.Length + 1];
         oversizedPayload.AsSpan().Fill(0x2A);
         var sentinel = new byte[] { 0x7F };
 
-        await Assert.That(GetEncodedBatchSize(oversizedPayload.Length)).IsEqualTo(BoundarySize + 1);
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            GetEncodedBatchSize(exactPayload.Length))).IsEqualTo(BoundarySize);
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            GetEncodedBatchSize(oversizedPayload.Length))).IsEqualTo(BoundarySize + 1);
 
         await using var producer = await Kafka.CreateProducer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

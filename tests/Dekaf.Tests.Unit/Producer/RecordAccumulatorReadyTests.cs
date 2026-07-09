@@ -1050,6 +1050,55 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
+    public async Task Drain_MaxRequestSizeBudgetIncludesProduceRequestFraming()
+    {
+        const string topic = "test-topic";
+        var options = CreateTestOptions(batchSize: 50, lingerMs: 10_000);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var metadataManager = CreateMetadataManager(topic, partitionCount: 2, nodeId: 1);
+        var nullMemory = new PooledMemory(null, 0, isNull: true);
+
+        for (var partition = 0; partition < 2; partition++)
+        {
+            for (var record = 0; record < 2; record++)
+            {
+                var appended = accumulator.TryAppendWithCompletion(
+                    topic,
+                    partition,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    nullMemory,
+                    nullMemory,
+                    headers: null,
+                    headerCount: 0,
+                    pool.Rent());
+                await Assert.That(appended).IsTrue();
+            }
+        }
+
+        var firstBatch = PeekFirstReadyBatch(accumulator, topic, partition: 0);
+        var secondBatch = PeekFirstReadyBatch(accumulator, topic, partition: 1);
+        var encodedBatchesOnlyBudget = firstBatch.EncodedSize + secondBatch.EncodedSize;
+        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            transactionalId: null,
+            topic,
+            firstBatch.EncodedSize)).IsLessThanOrEqualTo(encodedBatchesOnlyBudget);
+
+        var readyNodes = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes);
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(
+            metadataManager,
+            readyNodes,
+            encodedBatchesOnlyBudget,
+            drainResult,
+            batchListPool);
+
+        await Assert.That(drainResult[1]).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Drain_MultipleBatchesSamePartition_ReenqueuesRemaining()
     {
         // Regression test: when PollFirst drains one batch from a partition that has
@@ -1491,6 +1540,18 @@ public class RecordAccumulatorReadyTests
             BindingFlags.NonPublic | BindingFlags.Instance,
             [typeof(string), typeof(int)]);
         return method!.Invoke(accumulator, [topic, partition])!;
+    }
+
+    private static ReadyBatch PeekFirstReadyBatch(
+        RecordAccumulator accumulator,
+        string topic,
+        int partition)
+    {
+        var partitionDeque = GetPartitionDeque(accumulator, topic, partition);
+        var method = partitionDeque.GetType().GetMethod(
+            "PeekFirst",
+            BindingFlags.Public | BindingFlags.Instance);
+        return (ReadyBatch)method!.Invoke(partitionDeque, null)!;
     }
 
     private static void SetInstanceField<T>(object instance, string fieldName, T value)
