@@ -735,19 +735,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
-        var hadAssignment = _assignedPartitions.Count != 0;
-        if (hadAssignment)
-        {
-            var revoked = _assignedPartitions.ToList();
-            TrackRevokedPartitions(revoked);
-        }
+        var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
         _memberId = null;
         _generationId = -1;
         _assignedPartitions = [];
         _state = CoordinatorState.Unjoined;
-        if (hadAssignment)
+        if (revoked is not null)
+        {
             Interlocked.Increment(ref _assignmentVersion);
+            TrackRevokedPartitions(revoked);
+        }
     }
 
     /// <summary>
@@ -1017,11 +1015,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
+            _assignedPartitions = newAssignment;
+            Interlocked.Increment(ref _assignmentVersion);
+
             if (revoked is not null)
                 TrackRevokedPartitions(revoked);
 
-            _assignedPartitions = newAssignment;
-            Interlocked.Increment(ref _assignmentVersion);
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }
 

@@ -329,6 +329,64 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_RevocationCallback_ObservesPublishedAssignment()
+    {
+        SetupFindCoordinator();
+
+        var callCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60000,
+                    Assignment = count == 1
+                        ? CreateAssignment(TestTopicId, 0, 1)
+                        : CreateAssignment(TestTopicId, 1)
+                });
+            });
+
+        ConsumerCoordinator? coordinator = null;
+        HashSet<TopicPartition>? assignmentObservedByCallback = null;
+        var versionObservedByCallback = -1;
+
+        void OnPartitionsRevoked(IReadOnlyList<TopicPartition> _)
+        {
+            assignmentObservedByCallback = coordinator!.Assignment.ToHashSet();
+            versionObservedByCallback = coordinator.AssignmentVersion;
+        }
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60000);
+        coordinator = new ConsumerCoordinator(
+            options,
+            _connectionPool,
+            _metadataManager,
+            onPartitionsRevoked: OnPartitionsRevoked);
+        await using var coordinatorLifetime = coordinator;
+        var topics = new HashSet<string> { "test-topic" };
+
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        var versionAfterInitialAssignment = coordinator.AssignmentVersion;
+
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        await Assert.That(assignmentObservedByCallback).IsNotNull();
+        await Assert.That(assignmentObservedByCallback!).Contains(new TopicPartition("test-topic", 1));
+        await Assert.That(assignmentObservedByCallback).DoesNotContain(new TopicPartition("test-topic", 0));
+        await Assert.That(versionObservedByCallback).IsEqualTo(versionAfterInitialAssignment + 1);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_AssignmentVersion_IncrementsWhenResetClearsAssignment()
     {
         SetupFindCoordinator();
