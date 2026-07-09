@@ -350,6 +350,53 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    public async Task SharedPool_SingleLocalSlot_ReconnectsByIndex()
+    {
+        var options = CreateOptions(idempotent: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var disconnectedConnection = Substitute.For<IKafkaConnection>();
+        disconnectedConnection.IsConnected.Returns(false);
+        var unindexedConnection = Substitute.For<IKafkaConnection>();
+        var indexedConnection = Substitute.For<IKafkaConnection>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(unindexedConnection);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(indexedConnection);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
+
+        try
+        {
+            var pinnedConnections = (IKafkaConnection?[])typeof(BrokerSender).GetField(
+                "_pinnedConnections",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(sender)!;
+            pinnedConnections[0] = disconnectedConnection;
+
+            var getConnectionAtIndexAsync = typeof(BrokerSender).GetMethod(
+                "GetConnectionAtIndexAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var pendingConnection = (ValueTask<IKafkaConnection>)getConnectionAtIndexAsync.Invoke(
+                sender,
+                [0, CancellationToken.None])!;
+
+            var connection = await pendingConnection;
+
+            await Assert.That(connection).IsSameReferenceAs(indexedConnection);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(10_000)]
     public async Task DisposeAsync_LateShrinkCompletion_DisposesRemovedConnection(
         CancellationToken cancellationToken)

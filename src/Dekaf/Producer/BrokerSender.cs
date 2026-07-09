@@ -3365,7 +3365,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (conn is not null && conn.IsConnected)
             return conn;
 
-        var connection = _connectionCount > 1
+        // Shared senders can retain an expanded pool group after reducing their local
+        // routing width to one. Keep slot 0 indexed so a reconnect cannot round-robin
+        // onto a different physical connection while an older request is still pending.
+        var connection = _connectionCount > 1 || !_canPhysicallyShrinkConnections
             ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
             : await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
