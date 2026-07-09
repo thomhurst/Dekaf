@@ -363,8 +363,9 @@ public static class Program
     ///   means broker-side deduplication of retries is broken. Non-idempotent scenarios
     ///   skip this check because retry duplicates are legitimate there.
     /// - Round-trip checksum, partition, sequence, duplicate, gap, and timeout violations.
-    /// - A run that ended measurably earlier than its configured duration (a swallowed
-    ///   cancellation or crashed loop would otherwise pass with a fraction of the load).
+    /// - A duration-bounded run that ended measurably earlier than its configured duration
+    ///   (a swallowed cancellation or crashed loop would otherwise pass with a fraction of
+    ///   the load). Message-bounded round-trip runs are exempt from this duration guard.
     /// - A sustained mid-run stall (see <see cref="StallThresholdSeconds"/>).
     /// - Task exceptions nobody observed, surfaced after a final finalizer sweep.
     /// Results are already saved at this point; the non-zero exit only fails the CI job.
@@ -426,9 +427,12 @@ public static class Program
                 reasons.Add("round-trip validation failed");
             }
 
-            var expectedSeconds = result.DurationMinutes * 60;
-            if (result.Throughput.ElapsedSeconds < expectedSeconds * 0.9)
+            if (StressRunCompletionPolicy.EndedEarly(
+                    result.Throughput.ElapsedSeconds,
+                    result.DurationMinutes,
+                    isMessageBounded: result.RoundTripValidation is not null))
             {
+                var expectedSeconds = result.DurationMinutes * 60;
                 reasons.Add(
                     $"run ended early ({result.Throughput.ElapsedSeconds:N0}s of {expectedSeconds:N0}s)");
             }
