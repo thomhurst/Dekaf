@@ -824,11 +824,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionDeque> _partitionDeques = new();
 
     /// <summary>
-    /// Muted partitions — skipped by Ready() and Drain().
-    /// ConcurrentDictionary for thread safety: BrokerSender threads call MutePartition/UnmutePartition
-    /// while the sender thread reads via Contains in Ready/Drain.
+    /// Muted partitions — skipped by Ready() and Drain(). The value is a reference count:
+    /// independent BrokerSenders and crash-recovery barriers may overlap for the same partition.
+    /// Updates are serialized by <see cref="_partitionMuteLock"/>, while Ready/Drain perform
+    /// lock-free presence checks.
     /// </summary>
-    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
+    private readonly ConcurrentDictionary<TopicPartition, int> _mutedPartitions = new();
+    private readonly System.Threading.Lock _partitionMuteLock = new();
 
     /// <summary>
     /// Per-broker drain index for fair round-robin partition ordering.
@@ -1524,16 +1526,70 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         SignalWakeup();
     }
 
-    internal void MutePartition(TopicPartition tp) => _mutedPartitions.TryAdd(tp, 0);
+    internal void MutePartition(TopicPartition tp)
+    {
+        lock (_partitionMuteLock)
+        {
+            if (_mutedPartitions.TryGetValue(tp, out var count))
+                _mutedPartitions[tp] = count + 1;
+            else
+                _mutedPartitions[tp] = 1;
+        }
+    }
+
+    /// <summary>
+    /// Registers the batch's single crash-recovery mute reference without racing pool return.
+    /// A temporary mute reservation is taken before the token CAS; the loser rolls its
+    /// reservation back, and a winner that became stale releases only if ReturnReadyBatch
+    /// did not already consume the token.
+    /// </summary>
+    internal bool TryRegisterLoopExitRecovery(ReadyBatch batch, int expectedGeneration)
+    {
+        if (!batch.TryAcquireResourcePin(expectedGeneration))
+            return false;
+
+        try
+        {
+            var topicPartition = batch.TopicPartition;
+            MutePartition(topicPartition);
+
+            if (!batch.TryRegisterLoopExitRecovery())
+            {
+                UnmutePartition(topicPartition);
+                return batch.IsCurrentIncarnation(expectedGeneration)
+                    && batch.IsLoopExitRedelivery;
+            }
+
+            if (batch.IsCurrentIncarnation(expectedGeneration))
+                return true;
+
+            if (batch.TryCompleteLoopExitRecovery())
+                UnmutePartition(topicPartition);
+            return false;
+        }
+        finally
+        {
+            batch.ReleaseResourcePin();
+        }
+    }
 
     internal void UnmutePartition(TopicPartition tp)
     {
-        // TryRemove must precede Enqueue to ensure Ready() does not observe the notification
-        // but then find the partition still muted (which would cause a wasted re-enqueue cycle).
-        // This ordering is safe because Ready() is single-consumer (sender thread) and
-        // UnmutePartition is also called from the sender thread, so there is no concurrent
-        // race between the remove and the enqueue.
-        _mutedPartitions.TryRemove(tp, out _);
+        lock (_partitionMuteLock)
+        {
+            if (!_mutedPartitions.TryGetValue(tp, out var count))
+                return;
+
+            if (count > 1)
+            {
+                _mutedPartitions[tp] = count - 1;
+                return;
+            }
+
+            // Remove must precede notification so Ready() cannot consume the notification
+            // while the partition still appears muted.
+            _mutedPartitions.TryRemove(tp, out _);
+        }
 
         // Re-notify so Ready() picks up any sealed batches that were skipped while muted.
         if (_partitionDeques.TryGetValue(tp, out var pd))
@@ -1816,15 +1872,49 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
-        // Atomic guard: only the first caller returns the batch to the pool.
-        // Multiple paths may attempt to return the same batch (e.g., BrokerSender.CleanupBatch
-        // racing with ForceFailAllInFlightBatches during disposal). Double-return to the pool
-        // causes two renters to share the same object — silent data corruption.
-        if (Interlocked.Exchange(ref batch._returnedToPool, 1) != 0)
+        if (!TryClaimReadyBatchReturn(batch))
             return;
 
+        CompleteClaimedReadyBatchReturn(batch);
+    }
+
+    /// <summary>
+    /// Publishes completion of generation-safe terminal bookkeeping and returns the batch
+    /// without touching it after a racing return owner can recycle it.
+    /// </summary>
+    internal void CompleteTerminalBookkeepingAndReturnReadyBatch(ReadyBatch batch)
+    {
+        // Claim before publishing completion. If another path already owns the return, it is
+        // waiting on the bookkeeping flag and may recycle the object immediately after the
+        // volatile write below, so this method must not access batch again in that case.
+        var returnClaimed = TryClaimReadyBatchReturn(batch);
+        batch.CompleteTerminalBookkeeping();
+
+        if (returnClaimed)
+            CompleteClaimedReadyBatchReturn(batch);
+    }
+
+    private static bool TryClaimReadyBatchReturn(ReadyBatch batch)
+    {
+        // Atomic guard: only the first caller returns the batch to the pool.
+        // Multiple paths may race during disposal; a double-return lets two renters share
+        // the same object and causes silent data corruption.
+        return Interlocked.Exchange(ref batch._returnedToPool, 1) == 0;
+    }
+
+    private void CompleteClaimedReadyBatchReturn(ReadyBatch batch)
+    {
         batch.WaitForPreSerializationIfStarted();
+        batch.WaitForResourcePins();
         batch.WaitForCleanupIfStarted();
+        batch.WaitForTerminalBookkeeping();
+
+        // Registration is protected by a resource pin, so release recovery only after all
+        // pins and terminal bookkeeping finish. This also keeps newer work fenced until the
+        // recovered batch is fully disposed. Only the pool-return owner reaches this point.
+        if (batch.TryCompleteLoopExitRecovery())
+            UnmutePartition(batch.TopicPartition);
+
         _readyBatchPool.Return(batch);
     }
 
@@ -5781,7 +5871,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
     /// Tracks the last few transitions as single-char codes to keep overhead minimal.
     /// Codes: E=EntersPipeline, D=Drained, Q=EnqueuedToBrokerSender, C=Coalesced,
-    /// O=CarriedOver, S=Sent, R=ResponseReceived, X=ExitsPipeline, F=Failed
+    /// O=CarriedOver, S=Sent, R=ResponseReceived, Y=LoopExitRedelivery,
+    /// X=ExitsPipeline, F=Failed
     /// </summary>
     internal string DiagTrace
     {
@@ -6026,6 +6117,25 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal bool IsRetry { get; set; }
 
     /// <summary>
+    /// True while this batch owns a crash-recovery mute reference. Kept separate from
+    /// <see cref="IsRetry"/> because the reference survives sender-to-sender reroutes and
+    /// is released only when the batch reaches a terminal state.
+    /// </summary>
+    internal bool IsLoopExitRedelivery => Volatile.Read(ref _loopExitRecoveryRegistered) != 0;
+    private int _loopExitRecoveryRegistered;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryRegisterLoopExitRecovery()
+        => Interlocked.CompareExchange(ref _loopExitRecoveryRegistered, 1, 0) == 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryCompleteLoopExitRecovery()
+        => Interlocked.CompareExchange(ref _loopExitRecoveryRegistered, 0, 1) == 1;
+
+    /// <summary>Replacement-sender FIFO position for loop-exit recovery ordering.</summary>
+    internal long LoopExitRedeliveryOrder { get; set; }
+
+    /// <summary>
     /// Stopwatch timestamp before which this retry batch should not be sent (backoff).
     /// Set by ProcessCompletedResponses when a retriable error occurs. The send loop
     /// skips batches where the backoff hasn't elapsed. 0 means no backoff.
@@ -6064,6 +6174,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private int _activeResourcePins; // readers holding RecordBatch/arena stable during serialization
     private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
     private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
+    private int _terminalBookkeepingCompleted = 1; // generation-safe terminal owner finished post-Fail cleanup
     internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
     private int _generation; // Incremented on each Initialize() — detects batch object recycling
     private Task? _preSerializationTask;
@@ -6128,6 +6239,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             TryCleanupResources();
     }
 
+    internal void WaitForResourcePins()
+    {
+        if (Volatile.Read(ref _activeResourcePins) == 0)
+            return;
+
+        var sw = new SpinWait();
+        do { sw.SpinOnce(); }
+        while (Volatile.Read(ref _activeResourcePins) != 0);
+    }
+
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
     /// </summary>
@@ -6170,6 +6291,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _activeResourcePins, 0);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
+        Volatile.Write(ref _terminalBookkeepingCompleted, 1);
         Interlocked.Exchange(ref _returnedToPool, 0);
         Interlocked.Exchange(ref _memoryReleased, 0);
         Volatile.Write(ref _preSerialized, 0);
@@ -6238,6 +6360,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // so stale references calling TrySetMemoryReleased() return false (safe no-op).
         // Cleared in Initialize() at the start of the next lifecycle.
         IsRetry = false;
+        Volatile.Write(ref _loopExitRecoveryRegistered, 0);
+        LoopExitRedeliveryOrder = 0;
         RetryNotBefore = 0;
         _diagTraceLen = 0;
 
@@ -6377,6 +6501,41 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal bool FailFromPreSerialization(Exception exception)
         => FailCore(exception, waitForPreSerialization: false);
 
+    /// <summary>
+    /// Claims terminal completion for the expected incarnation while its caller holds a
+    /// resource pin. Pool return waits for pins before evaluating cleanup state, so a
+    /// successful claim may safely finish after releasing the pin.
+    /// </summary>
+    internal bool TryClaimSendCompletion(int expectedGeneration)
+    {
+        if (!IsCurrentIncarnation(expectedGeneration)
+            || Interlocked.CompareExchange(ref _sendCompleted, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        // Caller holds a resource pin. Any racing pool return must wait for that pin,
+        // then for this flag, before Reset can recycle fields used by post-Fail cleanup.
+        Volatile.Write(ref _terminalBookkeepingCompleted, 0);
+        return true;
+    }
+
+    internal void CompleteTerminalBookkeeping()
+        => Volatile.Write(ref _terminalBookkeepingCompleted, 1);
+
+    internal void WaitForTerminalBookkeeping()
+    {
+        if (Volatile.Read(ref _terminalBookkeepingCompleted) != 0)
+            return;
+
+        var sw = new SpinWait();
+        do { sw.SpinOnce(); }
+        while (Volatile.Read(ref _terminalBookkeepingCompleted) == 0);
+    }
+
+    internal void FailAfterSendCompletionClaimed(Exception exception)
+        => CompleteFailure(exception, waitForPreSerialization: true);
+
     private bool FailCore(Exception exception, bool waitForPreSerialization)
     {
         // Atomic entry guard: only one thread can execute Fail/CompleteSend.
@@ -6384,6 +6543,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
             return false;
 
+        CompleteFailure(exception, waitForPreSerialization);
+        return true;
+    }
+
+    private void CompleteFailure(Exception exception, bool waitForPreSerialization)
+    {
         if (waitForPreSerialization)
             WaitForPreSerializationIfStarted();
 
@@ -6443,8 +6608,6 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             Cleanup();
         }
-
-        return true;
     }
 
     /// <summary>

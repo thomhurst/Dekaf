@@ -2682,9 +2682,51 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
+        FailBatch(batch, ex, sendCompletionClaimed: false);
+        try { _accumulator.ReturnReadyBatch(batch); }
+        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+    }
+
+    private void FailAndCleanupBatch(ReadyBatch batch, int expectedGeneration, Exception ex)
+    {
+        if (!batch.TryAcquireResourcePin(expectedGeneration))
+            return;
+
+        var sendCompletionClaimed = false;
+        try
+        {
+            sendCompletionClaimed = batch.TryClaimSendCompletion(expectedGeneration);
+        }
+        finally
+        {
+            batch.ReleaseResourcePin();
+        }
+
+        if (!sendCompletionClaimed)
+            return;
+
+        try
+        {
+            FailBatch(batch, ex, sendCompletionClaimed: true);
+        }
+        finally
+        {
+            try { _accumulator.CompleteTerminalBookkeepingAndReturnReadyBatch(batch); }
+            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+        }
+    }
+
+    private void FailBatch(ReadyBatch batch, Exception ex, bool sendCompletionClaimed)
+    {
         try { CompleteInflightEntry(batch); }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
-        try { batch.Fail(ex); }
+        try
+        {
+            if (sendCompletionClaimed)
+                batch.FailAfterSendCompletionClaimed(ex);
+            else
+                batch.Fail(ex);
+        }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
@@ -2698,8 +2740,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // (atomic _returnedToPool flag), so this is safe even if another path races.
         try { _accumulator.OnBatchExitsPipeline(batch); }
         catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
-        try { _accumulator.ReturnReadyBatch(batch); }
-        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
     }
 
     /// <summary>
@@ -2778,37 +2818,57 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Routes a batch to the current leader's BrokerSender.
     /// Used as a callback by BrokerSender when a retry discovers the leader has moved to a different broker.
     /// </summary>
-    private void RerouteBatchToCurrentLeader(ReadyBatch batch)
+    private void RerouteBatchToCurrentLeader(ReadyBatch batch, int expectedGeneration)
     {
+        if (!batch.TryAcquireResourcePin(expectedGeneration))
+            return;
+
+        TopicPartition topicPartition;
         try
         {
+            if (!batch.IsCurrentIncarnation(expectedGeneration))
+                return;
+            topicPartition = batch.TopicPartition;
+        }
+        finally
+        {
+            batch.ReleaseResourcePin();
+        }
+
+        try
+        {
+            if (!batch.IsCurrentIncarnation(expectedGeneration))
+                return;
+
             // During disposal, don't create new BrokerSenders — fail the batch instead.
             // Without this guard, retries that discover leader changes create new senders
             // via GetOrCreateBrokerSender after the disposal loop has already snapshotted
             // _brokerSenders, leaving orphaned send loops that prevent process exit.
             if (Volatile.Read(ref _disposed) != 0)
             {
-                LogRerouteBlockedByDisposal(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
+                LogRerouteBlockedByDisposal(topicPartition.Topic, topicPartition.Partition);
+                FailAndCleanupBatch(batch, expectedGeneration,
+                    new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
                 return;
             }
 
             var leader = _metadataManager.Metadata.GetPartitionLeader(
-                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                topicPartition.Topic, topicPartition.Partition);
 
             if (leader is null)
             {
-                FailAndCleanupBatch(batch, new KafkaException(ErrorCode.LeaderNotAvailable,
-                    $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}"));
+                FailAndCleanupBatch(batch, expectedGeneration,
+                    new KafkaException(ErrorCode.LeaderNotAvailable,
+                        $"No leader available for {topicPartition.Topic}-{topicPartition.Partition}"));
                 return;
             }
 
-            LogReroutedBatch(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
-            GetOrCreateBrokerSender(leader.NodeId).Enqueue(batch);
+            LogReroutedBatch(topicPartition.Topic, topicPartition.Partition, leader.NodeId);
+            GetOrCreateBrokerSender(leader.NodeId).Enqueue(batch, expectedGeneration);
         }
         catch (Exception ex)
         {
-            FailAndCleanupBatch(batch, ex);
+            FailAndCleanupBatch(batch, expectedGeneration, ex);
         }
     }
 

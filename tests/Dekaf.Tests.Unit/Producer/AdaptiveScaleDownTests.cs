@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -34,22 +35,22 @@ public sealed class AdaptiveScaleDownTests
         int deliveryTimeoutMs = 30_000,
         long? scaleCooldownMs = null,
         long? scaleDownSustainedMs = null) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        MaxInFlightRequestsPerConnection = 1,
-        Acks = Acks.All,
-        EnableIdempotence = idempotent,
-        DeliveryTimeoutMs = deliveryTimeoutMs,
-        RetryBackoffMs = 100,
-        RetryBackoffMaxMs = 1000,
-        RequestTimeoutMs = 30_000,
-        LingerMs = 0,
-        ConnectionsPerBroker = 1,
-        EnableAdaptiveConnections = true,
-        MaxConnectionsPerBroker = 4,
-        ScaleCooldownMsOverride = scaleCooldownMs,
-        ScaleDownSustainedMsOverride = scaleDownSustainedMs
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            MaxInFlightRequestsPerConnection = 1,
+            Acks = Acks.All,
+            EnableIdempotence = idempotent,
+            DeliveryTimeoutMs = deliveryTimeoutMs,
+            RetryBackoffMs = 100,
+            RetryBackoffMaxMs = 1000,
+            RequestTimeoutMs = 30_000,
+            LingerMs = 0,
+            ConnectionsPerBroker = 1,
+            EnableAdaptiveConnections = true,
+            MaxConnectionsPerBroker = 4,
+            ScaleCooldownMsOverride = scaleCooldownMs,
+            ScaleDownSustainedMsOverride = scaleDownSustainedMs
+        };
 
     private static ReadyBatch CreateTestBatch(
         ValueTaskSourcePool<RecordMetadata> pool, int partition, int dataSize = 100)
@@ -95,7 +96,7 @@ public sealed class AdaptiveScaleDownTests
         ProducerOptions options,
         RecordAccumulator accumulator,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
-        Action<ReadyBatch>? rerouteBatch = null) =>
+        Action<ReadyBatch, int>? rerouteBatch = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -264,27 +265,71 @@ public sealed class AdaptiveScaleDownTests
         ReadyBatch? rerouted = null;
         var sender = CreateSender(pool, options, accumulator,
             (_, _, _, _, ex) => ackException = ex,
-            rerouteBatch: b => rerouted = b);
+            rerouteBatch: (b, _) => rerouted = b);
 
         try
         {
             var batch = CreateTestBatch(vtPool, partition: 0);
+            var topicPartition = batch.TopicPartition;
+            const long retryNotBefore = 123;
+            batch.RetryNotBefore = retryNotBefore;
             sender.RedeliverOrFailOnLoopExit(batch, redeliver: true,
                 new ObjectDisposedException(nameof(BrokerSender)));
 
             await Assert.That(rerouted).IsSameReferenceAs(batch);
             await Assert.That(ackException).IsNull();
+            await Assert.That(batch.IsRetry).IsTrue();
+            await Assert.That(batch.RetryNotBefore).IsEqualTo(retryNotBefore);
+            await Assert.That(batch.DiagTrace).Contains("Y");
+            await Assert.That(accumulator.IsMuted(topicPartition)).IsTrue();
 
             // The batch is still live — hand it back for cleanup so pooled sources
             // aren't leaked by the test.
             sender.RedeliverOrFailOnLoopExit(batch, redeliver: false,
                 new ObjectDisposedException(nameof(BrokerSender)));
+            await Assert.That(accumulator.IsMuted(topicPartition)).IsFalse();
         }
         finally
         {
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ApplyScaleDown_EmptyRemovedSlot_DisposesConnectionImmediately()
+    {
+        var options = CreateOptions(idempotent: false);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var disposeThreadId = 0;
+        var removedConnection = Substitute.For<IKafkaConnection>();
+        removedConnection.DisposeAsync().Returns(_ =>
+        {
+            Interlocked.CompareExchange(
+                ref disposeThreadId,
+                Environment.CurrentManagedThreadId,
+                comparand: 0);
+            return ValueTask.CompletedTask;
+        });
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            var applyScaleDown = typeof(BrokerSender).GetMethod(
+                "ApplyScaleDown",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+            var applyThreadId = Environment.CurrentManagedThreadId;
+            applyScaleDown.Invoke(sender, [removedConnection]);
+
+            await Assert.That(Volatile.Read(ref disposeThreadId)).IsEqualTo(applyThreadId);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
         }
     }
 
@@ -301,7 +346,7 @@ public sealed class AdaptiveScaleDownTests
         var reroutedCount = 0;
         var sender = CreateSender(pool, options, accumulator,
             (_, _, _, _, ex) => ackException = ex,
-            rerouteBatch: _ => reroutedCount++);
+            rerouteBatch: (_, _) => reroutedCount++);
 
         try
         {
