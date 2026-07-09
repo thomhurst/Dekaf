@@ -37,6 +37,12 @@ public sealed class RecordBatchWireFormatSnapshotTests
             snapshots.Add(EncodeRecordBatch("transactional", transactional, CompressionType.None, registry));
         }
 
+        using (var transactionalLz4 = CreateRecordBatch(RecordBatchAttributes.IsTransactional, includeHeaders: true))
+        {
+            snapshots.Add(EncodeRecordBatch("transactional-lz4", transactionalLz4, CompressionType.Lz4, registry));
+        }
+
+        // Kafka control batches contain one uncompressed control record.
         using (var control = CreateControlBatch())
         {
             snapshots.Add(EncodeRecordBatch("control-commit-marker", control, CompressionType.None, registry));
