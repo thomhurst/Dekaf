@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
 using ConfluentConsumerConfig = Confluent.Kafka.ConsumerConfig;
 
@@ -250,12 +251,15 @@ internal static class FaultInjectionRunner
             var expectedBrokerDeliveryCount = GetExpectedBrokerDeliveryCount(
                 producerOutcome.AcceptedMessages,
                 deliveryErrors.Count);
+            var brokerDrain = new ThroughputTracker();
             var brokerDelivered = await StressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
                 environment.BootstrapServers,
                 topic,
                 options.PartitionCount,
                 startOffset: 0,
-                acceptedMessages: expectedBrokerDeliveryCount).ConfigureAwait(false)
+                acceptedMessages: expectedBrokerDeliveryCount,
+                throughput: brokerDrain,
+                operation: "Fault recovery drain").ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Broker end-offset query failed after fault recovery.");
             var consumedIds = await ReadBrokerLogWithConfluentAsync(
                 environment.BootstrapServers,
@@ -286,6 +290,12 @@ internal static class FaultInjectionRunner
             Console.WriteLine(
                 $"  unexplained-loss={result.UnexplainedLoss:N0} duplicates={result.Duplicates:N0} " +
                 $"oracle-mismatch={result.OracleCountMismatch:N0}");
+
+            if (brokerDrain.ErrorCount > 0)
+            {
+                throw new InvalidOperationException(
+                    "Broker end offsets did not catch up after fault recovery.");
+            }
 
             if (!verification.Succeeded)
             {
