@@ -261,6 +261,37 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task ResetToDivergingEpoch_StopsConsumeAsyncBeforeUndeliveredRecord()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var keyDeserializer = Substitute.For<IDeserializer<string>>();
+        using var cancellationSource = new CancellationTokenSource();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, keyDeserializer);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        SetInitialized(consumer);
+
+        keyDeserializer.Deserialize(
+                Arg.Any<ReadOnlyMemory<byte>>(),
+                Arg.Any<SerializationContext>())
+            .Returns(callInfo =>
+            {
+                InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+                cancellationSource.Cancel();
+                return Encoding.UTF8.GetString(callInfo.ArgAt<ReadOnlyMemory<byte>>(0).Span);
+            });
+
+        GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
+        await using var enumerator = consumer
+            .ConsumeAsync(cancellationSource.Token)
+            .GetAsyncEnumerator();
+
+        await Assert.That(await enumerator.MoveNextAsync()).IsFalse();
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_StopsRawBatchAtLastDeliveredRecord()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -434,14 +465,15 @@ public sealed class ConsumerLeaderDiscoveryTests
 
     private static KafkaConsumer<string, string> CreateConsumer(
         IConnectionPool pool,
-        MetadataManager metadataManager)
+        MetadataManager metadataManager,
+        IDeserializer<string>? keyDeserializer = null)
         => new(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 ClientId = "test-consumer"
             },
-            Serializers.String,
+            keyDeserializer ?? Serializers.String,
             Serializers.String,
             pool,
             metadataManager);
@@ -605,6 +637,16 @@ public sealed class ConsumerLeaderDiscoveryTests
             ?? throw new InvalidOperationException("_fetchBufferEpoch field not found.");
 
         return (int)field.GetValue(consumer)!;
+    }
+
+    private static void SetInitialized(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_initialized",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_initialized field not found.");
+
+        field.SetValue(consumer, true);
     }
 
     private static Queue<PendingFetchData> GetPendingFetches(KafkaConsumer<string, string> consumer)

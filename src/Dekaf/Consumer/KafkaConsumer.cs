@@ -1526,6 +1526,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 keyDeserializer: _keyDeserializer,
                                 valueDeserializer: _valueDeserializer);
 
+                            if (HasPublishedPendingFetchClear(pending.TopicPartition))
+                                break;
+
                             TrackConsumedPosition(pending, offset, messageBytes);
                             // Position dictionaries are flushed once per fetch; auto-commit reads
                             // the published active snapshot without touching the pending queue.
@@ -3711,6 +3714,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return _assignmentSnapshot.Contains(partition);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasPublishedPendingFetchClear(TopicPartition partition) =>
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0
+        && _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition);
 
     private bool CanContinueBatchIteration(TopicPartition partition) =>
         !_coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
