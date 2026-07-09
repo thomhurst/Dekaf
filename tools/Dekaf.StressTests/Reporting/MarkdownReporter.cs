@@ -43,6 +43,12 @@ internal static class MarkdownReporter
             if (resultsWithResourceTrends.Count > 0)
                 GenerateResourceTrendTable(sb, resultsWithResourceTrends, $"Resource Trends - {label}");
 
+            var roundTripResults = groupResults
+                .Where(r => r.RoundTripValidation is not null)
+                .ToList();
+            if (roundTripResults.Count > 0)
+                GenerateRoundTripValidationTable(sb, roundTripResults, $"Round-Trip Validation - {label}");
+
             var resultsWithErrorSamples = groupResults
                 .Where(r => r.Throughput.ErrorSamples.Count > 0)
                 .ToList();
@@ -285,6 +291,33 @@ internal static class MarkdownReporter
         sb.AppendLine();
     }
 
+    private static void GenerateRoundTripValidationTable(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string title)
+    {
+        var clientWidth = GetClientColumnWidth(results);
+
+        sb.AppendLine($"## {title}");
+        sb.AppendLine();
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Expected | Consumed | Missing | Duplicates | Corrupt | Out of Order | Wrong Partition | Unexpected | Timed Out | Result |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|----------|----------|---------|------------|---------|--------------|-----------------|------------|-----------|--------|");
+
+        foreach (var result in results.OrderBy(r => r.Client))
+        {
+            var validation = result.RoundTripValidation!;
+            sb.AppendLine(
+                $"| {result.Client.PadRight(clientWidth)} | {validation.ExpectedMessages,8:N0} | " +
+                $"{validation.ConsumedMessages,8:N0} | {validation.MissingMessages,7:N0} | " +
+                $"{validation.DuplicateMessages,10:N0} | {validation.CorruptMessages,7:N0} | " +
+                $"{validation.OutOfOrderMessages,12:N0} | {validation.MispartitionedMessages,15:N0} | " +
+                $"{validation.UnexpectedMessages,10:N0} | {(validation.TimedOut ? "yes" : "no"),9} | " +
+                $"{(validation.IsSuccess ? "PASS" : "FAIL")} |");
+        }
+
+        sb.AppendLine();
+    }
+
     private static string FormatScenarioTitle(string scenario) => scenario switch
     {
         "producer" => "Producer (Fire-and-Forget) Throughput",
@@ -293,6 +326,7 @@ internal static class MarkdownReporter
         "producer-async" => "Producer (Async) Throughput",
         "producer-async-idempotent" => "Producer (Async, Idempotent) Throughput",
         "producer-transactional" => "Producer (Transactional EOS) Throughput",
+        "producer-roundtrip" => "Producer → Consumer Round-Trip Throughput",
         "consumer" => "Consumer Throughput",
         "consumer-batch" => "Consumer (Batch) Throughput",
         "consumer-raw" => "Consumer (Raw Bytes) Throughput",
@@ -309,6 +343,7 @@ internal static class MarkdownReporter
         "producer-async" => "Async",
         "producer-async-idempotent" => "Async (Idempotent)",
         "producer-transactional" => "Transactional EOS",
+        "producer-roundtrip" => "Producer → Consumer Round-Trip",
         "consumer" => "Consumer",
         "consumer-batch" => "Consumer (Batch)",
         "consumer-raw" => "Consumer (Raw Bytes)",

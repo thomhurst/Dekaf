@@ -23,6 +23,7 @@ internal sealed class StressTestOptions
     public string Compression { get; init; } = "none";
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;
+    public int RoundTripMessages { get; init; } = 250_000;
     public bool EnableProducerDeliveryDiagnostics { get; init; }
     public required ProgressWatchdog ProgressWatchdog { get; init; }
     public int SoakMessagesPerSecond { get; init; } = 5_000;

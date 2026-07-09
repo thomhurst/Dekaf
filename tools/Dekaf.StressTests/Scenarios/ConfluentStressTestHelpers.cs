@@ -108,11 +108,11 @@ internal static class ConfluentStressTestHelpers
     /// queue-full messages are silently dropped and counted as errors, which makes
     /// throughput numbers incomparable (drops vs. delivered goodput).
     /// </summary>
-    internal static void ProduceWithBackpressure(
-        ConfluentKafka.IProducer<string, string> producer,
+    internal static void ProduceWithBackpressure<TKey, TValue>(
+        ConfluentKafka.IProducer<TKey, TValue> producer,
         string topic,
-        ConfluentKafka.Message<string, string> message,
-        Action<ConfluentKafka.DeliveryReport<string, string>>? deliveryHandler,
+        ConfluentKafka.Message<TKey, TValue> message,
+        Action<ConfluentKafka.DeliveryReport<TKey, TValue>>? deliveryHandler,
         CancellationToken cancellationToken)
         => ConfluentProducerBackpressure.ProduceWithBackpressure(
             producer,

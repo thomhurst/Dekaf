@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
+using Dekaf.StressTests.Scenarios;
 
 namespace Dekaf.StressTests.Reporting;
 
@@ -18,6 +19,8 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
+    public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
+
     /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
     /// producer configuration a few lines above where each scenario sets it. The failure

@@ -7,11 +7,11 @@ internal static class ConfluentProducerBackpressure
 {
     internal const int QueueBufferingMaxMessages = 10_000_000;
 
-    internal static void ProduceWithBackpressure(
-        ConfluentKafka.IProducer<string, string> producer,
+    internal static void ProduceWithBackpressure<TKey, TValue>(
+        ConfluentKafka.IProducer<TKey, TValue> producer,
         string topic,
-        ConfluentKafka.Message<string, string> message,
-        Action<ConfluentKafka.DeliveryReport<string, string>>? deliveryHandler,
+        ConfluentKafka.Message<TKey, TValue> message,
+        Action<ConfluentKafka.DeliveryReport<TKey, TValue>>? deliveryHandler,
         CancellationToken cancellationToken,
         TimeSpan? retryTimeout = null)
     {
@@ -24,7 +24,7 @@ internal static class ConfluentProducerBackpressure
                 producer.Produce(topic, message, deliveryHandler);
                 return;
             }
-            catch (ConfluentKafka.ProduceException<string, string> ex)
+            catch (ConfluentKafka.ProduceException<TKey, TValue> ex)
                 when (ex.Error.Code == ConfluentKafka.ErrorCode.Local_QueueFull &&
                       ShouldRetry(startedAt, retryTimeout))
             {

@@ -1,6 +1,10 @@
 import unittest
 
-from stress_report import format_throughput_table, generate_scenario_tables
+from stress_report import (
+    format_roundtrip_validation_table,
+    format_throughput_table,
+    generate_scenario_tables,
+)
 
 
 def stress_result(client, effective_rate, median_rate=None):
@@ -83,6 +87,27 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("Producer (Transactional EOS)", report)
         self.assertIn("Transaction Verification", report)
         self.assertIn("| Dekaf | 1,000 | 750 | 250 | 750 | 0 | 0 | 0 | 0 | 0 | PASS |", report)
+
+    def test_roundtrip_validation_table_reports_strict_failures(self):
+        result = stress_result("Dekaf", effective_rate=1000)
+        result["roundTripValidation"] = {
+            "expectedMessages": 100,
+            "consumedMessages": 99,
+            "missingMessages": 1,
+            "duplicateMessages": 0,
+            "corruptMessages": 0,
+            "outOfOrderMessages": 0,
+            "mispartitionedMessages": 0,
+            "unexpectedMessages": 0,
+            "timedOut": False,
+            "isSuccess": False,
+        }
+
+        lines = format_roundtrip_validation_table([result])
+
+        self.assertIn("Round-Trip Validation", "\n".join(lines))
+        self.assertIn("| Dekaf | 100 | 99 | 1 |", "\n".join(lines))
+        self.assertIn("| FAIL |", "\n".join(lines))
 
 
 if __name__ == "__main__":

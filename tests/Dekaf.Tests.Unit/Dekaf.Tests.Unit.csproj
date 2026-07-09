@@ -41,6 +41,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Protocol\ResponseFixtures\*.bin" />
+    <Compile Include="..\..\tools\Dekaf.StressTests\Scenarios\RoundTripMessageCodec.cs" Link="Stress\RoundTripMessageCodec.cs" />
   </ItemGroup>
 
 </Project>
