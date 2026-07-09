@@ -85,10 +85,22 @@ internal static class FaultInjectionRunner
         Console.WriteLine($"Windows: {report.Windows.Count - failed.Length} passed, {failed.Length} failed");
         foreach (var window in failed)
         {
-            Console.WriteLine($"  - {window.Name}: {FirstLine(window.Failure)}");
+            var allowedSuffix = options.AllowedFailureWindows.Contains(window.Name) ? " (allowed)" : string.Empty;
+            Console.WriteLine($"  - {window.Name}{allowedSuffix}: {FirstLine(window.Failure)}");
         }
 
-        return failed.Length == 0 ? 0 : 1;
+        return DetermineExitCode(report.Windows, options.AllowedFailureWindows);
+    }
+
+    internal static int DetermineExitCode(
+        IEnumerable<FaultWindowRunResult> windows,
+        IReadOnlySet<string> allowedFailureWindows)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(allowedFailureWindows);
+
+        return windows.Any(window =>
+            !window.Succeeded && !allowedFailureWindows.Contains(window.Name)) ? 1 : 0;
     }
 
     private static async Task RunWindowAsync(

@@ -42,9 +42,6 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # Keep collecting three-broker reports while #1639 is open without making
-    # its known consumer-recovery failure a permanent red scheduled run.
-    continue-on-error: ${{ matrix.allow_failure }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,15 +49,17 @@ jobs:
           - name: TCP Faults (1 Broker)
             profile: network
             brokers: 1
-            allow_failure: false
+            allowed_failure_windows: ''
           - name: Broker Kill and Restart (1 Broker)
             profile: broker
             brokers: 1
-            allow_failure: false
+            allowed_failure_windows: ''
           - name: Cluster Failover and Rolling Restart (3 Brokers)
             profile: broker
             brokers: 3
-            allow_failure: true
+            # #1639 covers only these two live-consumer recovery windows.
+            # Setup failures and broker-kill-restart remain hard failures.
+            allowed_failure_windows: 'leader-election,rolling-restart'
 
     steps:
       - name: Checkout
@@ -79,6 +78,7 @@ jobs:
           dotnet run --project tools/Dekaf.StressTests --configuration Release --no-build --
           fault
           --fault-profile ${{ matrix.profile }}
+          --allowed-failure-windows "${{ matrix.allowed_failure_windows }}"
           --brokers ${{ matrix.brokers }}
           --partitions 6
           --message-size 1000

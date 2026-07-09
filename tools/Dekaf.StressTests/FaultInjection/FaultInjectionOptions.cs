@@ -11,10 +11,12 @@ internal sealed class FaultInjectionOptions
     internal int MaxMessagesDuringFault { get; init; } = 20_000;
     internal int MessagesAfterFault { get; init; } = 2_000;
     internal string OutputPath { get; init; } = "./results";
+    internal IReadOnlySet<string> AllowedFailureWindows { get; init; } =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     internal void Validate()
     {
-        _ = FaultInjectionPlan.Build(Profile, BrokerCount);
+        var plan = FaultInjectionPlan.Build(Profile, BrokerCount);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(PartitionCount);
         ArgumentOutOfRangeException.ThrowIfLessThan(MessageSizeBytes, 32);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(FaultDuration, TimeSpan.Zero);
@@ -22,5 +24,15 @@ internal sealed class FaultInjectionOptions
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxMessagesDuringFault);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MessagesAfterFault);
         ArgumentException.ThrowIfNullOrWhiteSpace(OutputPath);
+
+        foreach (var allowedFailure in AllowedFailureWindows)
+        {
+            if (!plan.Any(window => window.Name.Equals(allowedFailure, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new ArgumentException(
+                    $"Allowed failure window '{allowedFailure}' is not part of the selected fault plan.",
+                    nameof(AllowedFailureWindows));
+            }
+        }
     }
 }

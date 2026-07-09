@@ -91,4 +91,50 @@ public class FaultWindowVerifierTests
 
         await Assert.That(plan).Count().IsEqualTo(expectedCount);
     }
+
+    [Test]
+    public async Task DetermineExitCode_AllowsOnlyNamedWindowFailures()
+    {
+        FaultWindowRunResult[] results =
+        [
+            new()
+            {
+                Name = "broker-kill-restart",
+                StartedAtUtc = DateTime.UnixEpoch,
+                Succeeded = false
+            },
+            new()
+            {
+                Name = "leader-election",
+                StartedAtUtc = DateTime.UnixEpoch,
+                Succeeded = false
+            }
+        ];
+
+        var allowedFailures = new HashSet<string>(["leader-election"], StringComparer.OrdinalIgnoreCase);
+
+        var exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
+
+        await Assert.That(exitCode).IsEqualTo(1);
+
+        allowedFailures.Add("broker-kill-restart");
+        exitCode = FaultInjectionRunner.DetermineExitCode(results, allowedFailures);
+
+        await Assert.That(exitCode).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_RejectsAllowedFailureOutsideSelectedPlan()
+    {
+        var options = new FaultInjectionOptions
+        {
+            Profile = "broker",
+            BrokerCount = 1,
+            AllowedFailureWindows = new HashSet<string>(["leader-election"], StringComparer.OrdinalIgnoreCase)
+        };
+
+        await Assert.That(options.Validate)
+            .Throws<ArgumentException>()
+            .WithMessageContaining("leader-election");
+    }
 }

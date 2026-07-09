@@ -82,7 +82,8 @@ public static class Program
                     MessagesBeforeFault = options.MessagesBeforeFault,
                     MaxMessagesDuringFault = options.MaxMessagesDuringFault,
                     MessagesAfterFault = options.MessagesAfterFault,
-                    OutputPath = options.OutputPath
+                    OutputPath = options.OutputPath,
+                    AllowedFailureWindows = options.AllowedFailureWindows
                 }).ConfigureAwait(false);
             }
 
@@ -680,6 +681,13 @@ public static class Program
                 case "--fault-profile":
                     options.FaultProfile = args[++i].ToLowerInvariant();
                     break;
+                case "--allowed-failure-windows":
+                    foreach (var window in args[++i].Split(
+                                 ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        options.AllowedFailureWindows.Add(window);
+                    }
+                    break;
                 case "--fault-duration-seconds":
                     options.FaultDurationSeconds = ParsePositiveInt(args[++i], "--fault-duration-seconds");
                     break;
@@ -741,6 +749,7 @@ public static class Program
             Fault injection:
               fault                    Run fault-injection correctness suite
               --fault-profile <name>   network, broker, or all (default: all)
+              --allowed-failure-windows <names>  Comma-separated window names that may fail
               --fault-duration-seconds <n>  Active duration of each fault (default: 5)
               --messages-before-fault <n>   Messages produced before activation (default: 2000)
               --max-messages-during-fault <n>  Maximum buffered during active fault (default: 20000)
@@ -784,5 +793,6 @@ public static class Program
         public int MessagesBeforeFault { get; set; } = 2_000;
         public int MaxMessagesDuringFault { get; set; } = 20_000;
         public int MessagesAfterFault { get; set; } = 2_000;
+        public HashSet<string> AllowedFailureWindows { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
