@@ -72,7 +72,7 @@ public static class Program
 
             if (options.IsFaultInjection)
             {
-                return await FaultInjectionRunner.RunAsync(new FaultInjectionOptions
+                var exitCode = await FaultInjectionRunner.RunAsync(new FaultInjectionOptions
                 {
                     Profile = options.FaultProfile,
                     BrokerCount = options.Brokers,
@@ -85,6 +85,8 @@ public static class Program
                     OutputPath = options.OutputPath,
                     AllowedFailureWindows = options.AllowedFailureWindows
                 }).ConfigureAwait(false);
+
+                return CompleteRun(exitCode);
             }
 
             return await RunStressTestsAsync(options).ConfigureAwait(false);
@@ -359,29 +361,39 @@ public static class Program
             }
         }
 
+        return CompleteRun(anyFailure ? 1 : 0) != 0;
+    }
+
+    private static int CompleteRun(int exitCode)
+    {
         // Drain finalizers so exceptions from abandoned tasks surface before the verdict.
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        if (!UnobservedTaskExceptions.IsEmpty)
-        {
-            MarkFailure();
+        return EscalateUnobservedTaskExceptions(exitCode, UnobservedTaskExceptions);
+    }
 
-            Console.WriteLine($"  {UnobservedTaskExceptions.Count:N0} unobserved task exception(s):");
-            var printed = 0;
-            foreach (var exception in UnobservedTaskExceptions)
+    internal static int EscalateUnobservedTaskExceptions(
+        int exitCode,
+        IReadOnlyCollection<Exception> exceptions)
+    {
+        if (exceptions.Count == 0)
+            return exitCode;
+
+        Console.WriteLine($"  {exceptions.Count:N0} unobserved task exception(s):");
+        var printed = 0;
+        foreach (var exception in exceptions)
+        {
+            Console.WriteLine($"    - {exception}");
+            if (++printed >= 5)
             {
-                Console.WriteLine($"    - {exception}");
-                if (++printed >= 5)
-                {
-                    Console.WriteLine("    (further exceptions omitted)");
-                    break;
-                }
+                Console.WriteLine("    (further exceptions omitted)");
+                break;
             }
         }
 
-        return anyFailure;
+        return 1;
     }
 
     private static int MaxConsecutiveZeroSamples(List<double> samples)
