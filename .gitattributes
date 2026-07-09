@@ -1,1 +1,4 @@
 *.verified.txt text eol=lf
+
+# Fuzz corpora are byte-exact binary regression fixtures.
+tools/Dekaf.Fuzzing/Corpus/** -text -diff
