@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using Dekaf.Admin;
+using DotNet.Testcontainers.Configurations;
 using Testcontainers.Kafka;
 using TUnit.Core.Interfaces;
 
@@ -25,6 +26,9 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         "size=$(wc -c < /testcontainers.sh); sleep 0.1; done; " +
         "exec /bin/sh /testcontainers.sh";
 
+    internal static ComposableEnumerable<string> StartupCommandOverride { get; } =
+        new OverwriteEnumerable<string>([StartupCommand]);
+
     private KafkaContainer? _container;
     protected KafkaContainer? ContainerInstance => _container;
 
@@ -38,7 +42,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete"));
 
         return builder
-            .WithCommand(StartupCommand)
+            .WithCommand(StartupCommandOverride)
             .Build();
     }
 

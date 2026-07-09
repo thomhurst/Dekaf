@@ -110,8 +110,13 @@ public sealed class ContainerStartupRetryTests
     }
 
     [Test]
-    public async Task KafkaStartupCommand_WaitsForStableCopy_ThenUsesShell()
+    public async Task KafkaStartupCommand_OverwritesTestcontainersDefault()
     {
+        var effectiveCommand = KafkaTestContainer.StartupCommandOverride
+            .Compose(["while [ ! -f /testcontainers.sh ]; do sleep 0.1; done; /testcontainers.sh"])
+            .ToArray();
+
+        await Assert.That(effectiveCommand).IsEquivalentTo([KafkaTestContainer.StartupCommand]);
         await Assert.That(KafkaTestContainer.StartupCommand).Contains("wc -c");
         await Assert.That(KafkaTestContainer.StartupCommand).Contains("exec /bin/sh /testcontainers.sh");
     }
