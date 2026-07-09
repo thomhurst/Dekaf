@@ -46,9 +46,6 @@ public class AclKafkaContainer : KafkaTestContainer
     /// </summary>
     public const string TestPrincipal = $"User:{TestUsername}";
 
-    public override string ContainerName => KafkaTestImages.FloorImage;
-    public override int Version => KafkaTestImages.FloorVersionNumber;
-
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder) =>
         builder
             // Enable StandardAuthorizer for KRaft mode

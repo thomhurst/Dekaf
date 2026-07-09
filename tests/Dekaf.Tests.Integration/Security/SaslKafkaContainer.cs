@@ -34,9 +34,6 @@ public class SaslKafkaContainer : KafkaTestContainer
         $"password=\"{SaslPassword}\" " +
         $"user_{SaslUsername}=\"{SaslPassword}\";";
 
-    public override string ContainerName => KafkaTestImages.FloorImage;
-    public override int Version => KafkaTestImages.FloorVersionNumber;
-
     /// <summary>
     /// Adds SASL-specific environment variables to the Kafka container builder.
     /// </summary>

@@ -29,4 +29,28 @@ public sealed class KafkaTestImagesTests
             .Throws<InvalidOperationException>()
             .WithMessageContaining("Supported lanes");
     }
+
+    [Test]
+    [NotInParallel("KafkaTestLaneEnvironment")]
+    public async Task Selected_UsesConfiguredLane()
+    {
+        var originalLane = Environment.GetEnvironmentVariable(KafkaTestImages.LaneEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                KafkaTestImages.LaneEnvironmentVariable,
+                KafkaTestImages.FloorLane);
+            await Assert.That(KafkaTestImages.Selected.Image).IsEqualTo(KafkaTestImages.FloorImage);
+
+            Environment.SetEnvironmentVariable(
+                KafkaTestImages.LaneEnvironmentVariable,
+                KafkaTestImages.CurrentLane);
+            await Assert.That(KafkaTestImages.Selected.Image).IsEqualTo(KafkaTestImages.CurrentImage);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(KafkaTestImages.LaneEnvironmentVariable, originalLane);
+        }
+    }
 }

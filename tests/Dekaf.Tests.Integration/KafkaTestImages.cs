@@ -1,7 +1,13 @@
+using System.Text;
+using DotNet.Testcontainers.Configurations;
+using Testcontainers.Kafka;
+
 namespace Dekaf.Tests.Integration;
 
 internal static class KafkaTestImages
 {
+    private const int RunWrapperMinimumVersion = 420;
+
     public const string LaneEnvironmentVariable = "DEKAF_TEST_KAFKA_LANE";
     public const string FloorLane = "floor";
     public const string CurrentLane = "current";
@@ -14,9 +20,16 @@ internal static class KafkaTestImages
 
     private static readonly KafkaTestImage s_floor = Parse(FloorImage);
     private static readonly KafkaTestImage s_current = Parse(CurrentImage);
+    private static readonly byte[] s_runWrapperScript = Encoding.UTF8.GetBytes(
+        "#!/bin/bash\n" +
+        "export KAFKA_ADVERTISED_LISTENERS=$(echo \"$KAFKA_ADVERTISED_LISTENERS\" | sed 's/,$//')\n" +
+        "/etc/kafka/docker/configure\n" +
+        "exec /etc/kafka/docker/launch\n");
 
     public static int FloorVersionNumber => s_floor.VersionNumber;
     public static int CurrentVersionNumber => s_current.VersionNumber;
+    public static KafkaTestImage Selected => Resolve(
+        Environment.GetEnvironmentVariable(LaneEnvironmentVariable));
 
     public static KafkaTestImage Resolve(string? requestedLane)
     {
@@ -27,6 +40,29 @@ internal static class KafkaTestImages
             _ => throw new InvalidOperationException(
                 $"Unsupported Kafka test lane '{requestedLane}'. Supported lanes: {FloorLane}, {CurrentLane}.")
         };
+    }
+
+    public static KafkaBuilder CreateBuilderForSelectedLane()
+    {
+        var selected = Selected;
+        return ConfigureBuilderForVersion(new KafkaBuilder(selected.Image), selected.VersionNumber);
+    }
+
+    public static KafkaBuilder ConfigureBuilderForVersion(KafkaBuilder builder, int versionNumber)
+    {
+        if (versionNumber < RunWrapperMinimumVersion)
+            return builder;
+
+        // Testcontainers.Kafka emits a trailing comma in KAFKA_ADVERTISED_LISTENERS
+        // when no extra listener is configured. Kafka 4.2+ rejects that empty entry.
+        return builder.WithResourceMapping(
+            s_runWrapperScript,
+            "/etc/kafka/docker/run",
+            0,
+            0,
+            UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |
+            UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
+            UnixFileModes.OtherRead | UnixFileModes.OtherExecute);
     }
 
     private static KafkaTestImage Parse(string image)

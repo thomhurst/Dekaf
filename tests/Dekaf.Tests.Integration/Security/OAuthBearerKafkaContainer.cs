@@ -36,9 +36,6 @@ public class OAuthBearerKafkaContainer : KafkaTestContainer
     private const string UnsecuredValidatorCallbackHandler =
         "org.apache.kafka.common.security.oauthbearer.internals.unsecured.OAuthBearerUnsecuredValidatorCallbackHandler";
 
-    public override string ContainerName => KafkaTestImages.FloorImage;
-    public override int Version => KafkaTestImages.FloorVersionNumber;
-
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder) => builder
         // External (PLAINTEXT-named) listener uses SASL_PLAINTEXT; inter-broker stays PLAINTEXT.
         .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:SASL_PLAINTEXT,BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT")

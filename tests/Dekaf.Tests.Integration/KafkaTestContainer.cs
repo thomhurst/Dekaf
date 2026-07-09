@@ -30,31 +30,34 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     internal static ComposableEnumerable<string> StartupCommandOverride { get; } =
         new OverwriteEnumerable<string>([StartupCommand]);
 
+    private static readonly KafkaTestImage s_selectedImage = KafkaTestImages.Selected;
     private KafkaContainer? _container;
     protected KafkaContainer? ContainerInstance => _container;
+
+    private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
+
+    public virtual string ContainerName => s_selectedImage.Image;
+    public virtual int Version => s_selectedImage.VersionNumber;
 
     private KafkaContainer CreateContainer()
     {
         // Keep broker defaults, but allow individual KIP-848 groups to opt into
         // shorter test-only liveness intervals through group configuration.
-        var builder = ConfigureBuilder(new KafkaBuilder(ContainerName)
+        var builder = new KafkaBuilder(ContainerName)
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")     // Limit JVM heap for CI runners
             .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")           // Delete segments after 30s
             .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000") // Check every 10s
             .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")        // 1MB segments for faster rotation
             .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
             .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_SESSION_TIMEOUT_MS", "6000")
-            .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_HEARTBEAT_INTERVAL_MS", "1000"));
+            .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_HEARTBEAT_INTERVAL_MS", "1000");
 
+        builder = ConfigureBuilder(builder);
+        builder = KafkaTestImages.ConfigureBuilderForVersion(builder, Version);
         return builder
             .WithCommand(StartupCommandOverride)
             .Build();
     }
-
-    private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
-
-    public abstract string ContainerName { get; }
-    public abstract int Version { get; }
 
     /// <summary>
     /// The Kafka bootstrap servers connection string.

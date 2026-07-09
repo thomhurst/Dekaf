@@ -13,9 +13,6 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
 {
     private DockerClient? _dockerClient;
 
-    public override string ContainerName => KafkaTestImages.FloorImage;
-    public override int Version => KafkaTestImages.FloorVersionNumber;
-
     /// <summary>
     /// Pauses the Kafka container, simulating a network partition.
     /// All processes in the container are frozen; TCP connections go silent.
