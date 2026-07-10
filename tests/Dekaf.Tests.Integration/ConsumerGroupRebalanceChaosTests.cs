@@ -919,6 +919,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 ]);
                 return ValueTask.FromResult(true);
             }
+            catch (ConfluentKafka.TopicPartitionOffsetException exception)
+                when (ContainsOnlyExpectedConfluentCommitFailures(exception.Results))
+            {
+                return ValueTask.FromResult(false);
+            }
             catch (ConfluentKafka.KafkaException exception)
                 when (IsExpectedConfluentCommitFailure(exception.Error.Code))
             {
@@ -1285,6 +1290,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         ConfluentKafka.ErrorCode.RebalanceInProgress or
         ConfluentKafka.ErrorCode.FencedMemberEpoch or
         ConfluentKafka.ErrorCode.StaleMemberEpoch;
+
+    private static bool ContainsOnlyExpectedConfluentCommitFailures(
+        IReadOnlyCollection<ConfluentKafka.TopicPartitionOffsetError> results) =>
+        results.Any(static result => result.Error.IsError) &&
+        results.All(static result =>
+            !result.Error.IsError || IsExpectedConfluentCommitFailure(result.Error.Code));
 
     private enum MemberProtocol
     {
