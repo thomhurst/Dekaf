@@ -13,6 +13,10 @@ namespace Dekaf.Protocol.Records;
 /// </summary>
 public readonly record struct Record
 {
+    // Even empty headers need two wire bytes. This limit already represents at least
+    // 512 KiB of header metadata while bounding pooled-array amplification and parse work.
+    internal const int MaxReasonableHeaderCount = 256 * 1024;
+
     public int Length { get; init; }
     public byte Attributes { get; init; }
     public long TimestampDelta { get; init; }
@@ -144,9 +148,17 @@ public readonly record struct Record
             // The rented array may be oversized; HeaderCount tracks the valid count.
             // The array is returned to the pool when the owning LazyRecordList is disposed.
             headers = ArrayPool<Header>.Shared.Rent(headerCount);
-            for (var i = 0; i < headerCount; i++)
+            try
             {
-                headers[i] = Header.Read(ref reader);
+                for (var i = 0; i < headerCount; i++)
+                {
+                    headers[i] = Header.Read(ref reader);
+                }
+            }
+            catch
+            {
+                ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                throw;
             }
         }
 
@@ -168,7 +180,7 @@ public readonly record struct Record
     private static void ValidateHeaderCount(int headerCount, int recordBodyLength, long bodyBytesRead, long readerRemaining)
     {
         var remainingInRecord = recordBodyLength - bodyBytesRead;
-        if (remainingInRecord < 0 || headerCount < 0)
+        if (remainingInRecord < 0 || headerCount < 0 || headerCount > MaxReasonableHeaderCount)
             throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
 
         // A header needs at least one byte for key length and one byte for value length.

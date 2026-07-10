@@ -70,7 +70,15 @@ public sealed class BrotliCompressionCodec : ICompressionCodec
         using var inputStream = new ReadOnlySequenceStream(source);
         using var brotliStream = new BrotliStream(inputStream, CompressionMode.Decompress);
 
-        CompressionStreamCopy.CopyToBufferWriter(brotliStream, destination);
+        try
+        {
+            CompressionStreamCopy.CopyToBufferWriter(brotliStream, destination);
+        }
+        catch (InvalidOperationException exception)
+            when (exception.Message.Equals("Decoder ran into invalid data.", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Invalid Brotli payload.", exception);
+        }
     }
 }
 

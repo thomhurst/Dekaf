@@ -14,6 +14,16 @@ namespace Dekaf.Tests.Unit.Compression;
 /// </summary>
 public class BrotliCompressionCodecTests
 {
+    [Test]
+    public async Task Decompress_InvalidPayload_ThrowsInvalidData()
+    {
+        var codec = new BrotliCompressionCodec();
+        var destination = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(new byte[63]), destination))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
     #region Basic Functionality Tests
 
     [Test]

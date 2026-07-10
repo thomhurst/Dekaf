@@ -97,7 +97,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     {
         if (!HasXerialMagic(source))
         {
-            Snappier.Snappy.Decompress(source, destination);
+            DecompressBlock(source, destination);
             return;
         }
 
@@ -127,7 +127,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
                 throw new InvalidDataException("Truncated xerial-snappy block.");
 
             var compressedSequence = source.Slice(position, compressedSize);
-            Snappier.Snappy.Decompress(compressedSequence, destination);
+            DecompressBlock(compressedSequence, destination);
 
             position = source.GetPosition(compressedSize, position);
             remaining -= compressedSize;
@@ -147,6 +147,17 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         return magic.SequenceEqual(XerialMagic);
     }
 
+    private static void DecompressBlock(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+    {
+        try
+        {
+            Snappier.Snappy.Decompress(source, destination);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidDataException("Invalid Snappy payload.", exception);
+        }
+    }
 }
 
 internal static class SnappyModuleInit

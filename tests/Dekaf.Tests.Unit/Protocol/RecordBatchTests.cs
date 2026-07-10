@@ -1350,6 +1350,67 @@ public class RecordBatchTests
         }
     }
 
+    [Test]
+    public async Task Record_Read_HeaderCountAboveSafetyLimit_ThrowsMalformedProtocolData()
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(-1); // null key
+        bodyWriter.WriteVarInt(-1); // null value
+        var headerCount = Record.MaxReasonableHeaderCount + 1;
+        bodyWriter.WriteVarInt(headerCount);
+        bodyWriter.WriteRawBytes(new byte[headerCount * 2]); // minimal empty key/value headers
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteVarInt(bodyWriter.BytesWritten);
+        writer.WriteRawBytes(body.WrittenSpan);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        try
+        {
+            Record.Read(ref reader);
+            throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
+        }
+        catch (MalformedProtocolDataException ex)
+        {
+            await Assert.That(ex.Message).Contains("header count");
+        }
+    }
+
+    [Test]
+    public async Task Record_Read_TruncatedHeaderAfterRent_ThrowsInsufficientData()
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(-1); // null key
+        bodyWriter.WriteVarInt(-1); // null value
+        bodyWriter.WriteVarInt(2); // header count
+        bodyWriter.WriteRawBytes(new byte[] { 0, 0, 0x80, 0x80 });
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteVarInt(bodyWriter.BytesWritten);
+        writer.WriteRawBytes(body.WrittenSpan);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        try
+        {
+            Record.Read(ref reader);
+            throw new InvalidOperationException("Expected InsufficientDataException was not thrown");
+        }
+        catch (InsufficientDataException)
+        {
+            // Expected: the rented Header[] is returned before the exception escapes.
+        }
+    }
+
     #endregion
 
     #region Header Copy Correctness Tests

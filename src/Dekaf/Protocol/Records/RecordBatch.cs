@@ -1451,6 +1451,22 @@ internal static class Crc32C
         return ComputeSoftware(data);
     }
 
+    public static uint Compute(ReadOnlySequence<byte> data)
+    {
+        if (data.IsSingleSegment)
+        {
+            return Compute(data.First.Span);
+        }
+
+        var crc = 0u;
+        foreach (var segment in data)
+        {
+            crc = Combine(crc, Compute(segment.Span), segment.Length);
+        }
+
+        return crc;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static uint Combine(uint prefixCrc, uint suffixCrc, int suffixByteCount)
         => ShiftCrc32C(prefixCrc, suffixByteCount) ^ suffixCrc;

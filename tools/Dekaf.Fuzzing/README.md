@@ -1,9 +1,14 @@
 # Kafka protocol fuzzing
 
-`Dekaf.Fuzzing` exposes one SharpFuzz 2.3.0 libFuzzer entry point covering both
-`KafkaProtocolReader` primitives and every registered `IKafkaResponse` parser/version.
+`Dekaf.Fuzzing` exposes two SharpFuzz 2.3.0 libFuzzer targets:
+
+- The default `kafka-protocol` target covers `KafkaProtocolReader` primitives and every
+  registered `IKafkaResponse` parser/version.
+- The `record-batch` target covers RecordBatch decoding, CRC32C validation, record/header
+  parsing, and every registered decompression codec.
+
 Inputs above 1 MiB are ignored so hostile length prefixes cannot turn one iteration into
-unbounded allocation.
+unbounded allocation. RecordBatch decompression is additionally capped at 4 MiB per iteration.
 
 Primitive inputs retain the original format: byte 0 selects a read operation, and its high bit
 selects a two-segment `ReadOnlySequence<byte>`. Original operations retain their modulo-22
@@ -18,22 +23,38 @@ Response inputs use this stable header before the response body:
 | 2 | 2 | Big-endian Kafka API key |
 | 4 | 2 | Big-endian API version |
 
-Expected parse failures are limited to `InsufficientDataException` (truncated input) and
-`MalformedProtocolDataException` (invalid structure). Any other managed exception, access
-violation, hang, or resource failure remains visible to libFuzzer as a crash.
+RecordBatch inputs use byte 0 as an operation selector and the remaining bytes as the payload:
+
+| Selector | Operation |
+|---:|---|
+| 0 | Decode a RecordBatch and enumerate its records and headers |
+| 1 | Validate a RecordBatch CRC32C over contiguous or segmented input |
+| 2 | None decompression |
+| 3 | gzip decompression |
+| 4 | Snappy decompression |
+| 5 | LZ4 decompression |
+| 6 | Zstandard decompression |
+| 7 | Brotli decompression |
+
+Selector bit `0x80` makes the payload a two-segment `ReadOnlySequence<byte>`.
+
+Expected protocol failures are limited to typed truncation, malformed-data, unsupported-format,
+invalid-compressed-data, truncated-stream, and output-limit exceptions. Any other managed
+exception, access violation, hang, or resource failure remains visible to libFuzzer as a crash.
 
 ## Build and replay corpora
 
 ```powershell
 dotnet build tools/Dekaf.Fuzzing/Dekaf.Fuzzing.csproj --configuration Release --framework net10.0
 dotnet build tests/Dekaf.Tests.Unit/Dekaf.Tests.Unit.csproj --configuration Release --framework net10.0
-./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit --treenode-filter "/*/*/(ProtocolReaderFuzzCorpusTests|ResponseParserFuzzCorpusTests)/*"
+./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit --treenode-filter "/*/*/(ProtocolReaderFuzzCorpusTests|ResponseParserFuzzCorpusTests|RecordBatchFuzzCorpusTests)/*"
 ```
 
-Replay tests load every embedded file under `Corpus/ProtocolReader` and `Corpus/Responses`, run
-contiguous and segmented variants, and mutate response truncation, lengths, varints, and nested
-payload bytes. Response corpus coverage is checked against the protocol registry so a new parser
-or supported version cannot land without a seed.
+Replay tests load every embedded file under `Corpus/ProtocolReader`, `Corpus/Responses`, and
+`Corpus/RecordBatch`. They run contiguous and segmented variants, including valid and corrupt
+seeds for every compression codec plus hostile RecordBatch lengths, counts, CRCs, and truncation.
+Response corpus coverage is checked against the protocol registry so a new parser or supported
+version cannot land without a seed.
 
 Response body fixtures named `<ResponseType>.v<Version>.bin` can be wrapped in selector headers
 and regenerated with:
@@ -55,8 +76,27 @@ sharpfuzz artifacts/fuzz/protocol/Dekaf.dll
 & /path/to/libfuzzer-dotnet --target_path=dotnet --target_arg=artifacts/fuzz/protocol/Dekaf.Fuzzing.dll -max_len=1048576 tools/Dekaf.Fuzzing/Corpus/ProtocolReader tools/Dekaf.Fuzzing/Corpus/Responses
 ```
 
+Run the RecordBatch/codec target from a separate publish directory and instrument every assembly
+whose parser or codec implementation contributes coverage:
+
+```powershell
+dotnet publish tools/Dekaf.Fuzzing/Dekaf.Fuzzing.csproj --configuration Release --framework net10.0 --output artifacts/fuzz/record-batch
+@(
+  "Dekaf.dll"
+  "Dekaf.Compression.Brotli.dll"
+  "Dekaf.Compression.Lz4.dll"
+  "Dekaf.Compression.Snappy.dll"
+  "Dekaf.Compression.Zstd.dll"
+) | ForEach-Object { sharpfuzz "artifacts/fuzz/record-batch/$_" }
+$env:DEKAF_FUZZ_TARGET = "record-batch"
+& /path/to/libfuzzer-dotnet --target_path=dotnet --target_arg=artifacts/fuzz/record-batch/Dekaf.Fuzzing.dll -max_len=1048576 tools/Dekaf.Fuzzing/Corpus/RecordBatch
+Remove-Item Env:\DEKAF_FUZZ_TARGET
+```
+
 Use `-max_total_time=<seconds>` for a bounded local run. Reproduce a crash without libFuzzer:
 
 ```powershell
 dotnet ./tools/Dekaf.Fuzzing/bin/Release/net10.0/Dekaf.Fuzzing.dll /path/to/crash-input
 ```
+
+Set `DEKAF_FUZZ_TARGET=record-batch` before replaying a RecordBatch/codec crash input.

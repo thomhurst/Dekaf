@@ -104,6 +104,17 @@ public class SnappyCompressionCodecTests
     }
 
     [Test]
+    public async Task Decompress_UnterminatedRawLength_ThrowsInvalidData()
+    {
+        var codec = new SnappyCompressionCodec();
+        var invalidData = new byte[] { 0x80, 0x80, 0x80, 0x80, 0x80 };
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(invalidData), decompressedBuffer))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
     public async Task Decompress_TruncatedXerialHeader_Throws()
     {
         var codec = new SnappyCompressionCodec();
