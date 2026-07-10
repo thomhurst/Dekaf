@@ -12,13 +12,13 @@
 # in-progress label / open PR, so a lock expiring under a slow-but-live agent is
 # backstopped there; `renew` exists only for the rare unit that runs past the TTL.
 #
-# The acquiring process's token is cached in a per-machine temp state file keyed by
-# lock name, so renew/release do NOT need the token passed back — the agent only ever
-# passes -LockName. Redis remains the sole ownership authority (token-checked EVAL on
-# release/renew); the state file is just this process's private cache of its own
-# token, never an ownership signal. Only the lock holder ever writes it (a losing
-# acquire prints HELD and writes nothing), so concurrent agents cannot clobber each
-# other's token.
+# The acquiring agent's token is cached under a stable owner-identity namespace, then
+# keyed by lock name, so renew/release do NOT need the token passed back. Owner identity
+# resolves from -OwnerId, DEKAF_AGENT_LOCK_OWNER_ID, or CODEX_THREAD_ID (in that order).
+# Non-Codex callers must provide one of the explicit overrides; there is deliberately
+# no machine-wide fallback. Redis remains the sole ownership authority (token-checked
+# EVAL on release/renew); the state file is only the agent's private token cache, never
+# an ownership signal. A losing acquire prints HELD and writes nothing.
 #
 # Verbs:
 #   acquire  -LockName pr-1234 [-Worktree <path>]
@@ -37,7 +37,7 @@
 #              stdout = HELD-BY-ME | HELD | FREE, exit 0
 #
 # Common failure exit: 1 (docker/redis unavailable, or no cached token for
-# renew/release). 2 = bad usage / lock name could not be resolved.
+# renew/release). 2 = bad usage / lock name or owner identity could not be resolved.
 #
 # Lock-name resolution (renew/release/status): -LockName is OPTIONAL there. When
 # omitted it is resolved from, in order: (1) a marker persisted in the current
@@ -56,6 +56,8 @@
 #   pwsh scripts/AgentLocks.ps1 release -LockName pr-1234
 #   # optional, only if the unit may exceed the TTL:
 #   pwsh scripts/AgentLocks.ps1 renew -LockName pr-1234
+#   # outside Codex, set one stable value for every command from the same agent:
+#   $env:DEKAF_AGENT_LOCK_OWNER_ID = 'my-agent-run-id'
 
 [CmdletBinding()]
 param(
@@ -64,7 +66,8 @@ param(
     [string]$Verb,
 
     [string]$LockName = '',
-    [string]$Worktree = ''
+    [string]$Worktree = '',
+    [string]$OwnerId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,7 +76,7 @@ $redisContainer = 'dekaf-agent-locks-redis'
 $lockTtlSeconds = 7200 # 2 hours: the dead-man's switch. Longer than nearly every
 # unit of work; a dead agent frees the item within this window. No periodic
 # heartbeat — use `renew` only for the rare unit that runs past it.
-$stateDir = Join-Path ([System.IO.Path]::GetTempPath()) 'dekaf-agent-locks'
+$stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'dekaf-agent-locks'
 
 function Die([int]$code, [string]$msg) { if ($msg) { [Console]::Error.WriteLine($msg) }; exit $code }
 
@@ -97,6 +100,15 @@ function Set-WorktreeLockMarker([string]$Path) {
     git -C $Path config --worktree agent.lockName $LockName 2>$null | Out-Null
 }
 
+function Resolve-OwnerIdentity([string]$Explicit) {
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) { return $Explicit.Trim() }
+    if (-not [string]::IsNullOrWhiteSpace($env:DEKAF_AGENT_LOCK_OWNER_ID)) {
+        return $env:DEKAF_AGENT_LOCK_OWNER_ID.Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_THREAD_ID)) { return $env:CODEX_THREAD_ID.Trim() }
+    return $null
+}
+
 function Resolve-LockName([string]$Explicit) {
     if ($Explicit) { return $Explicit }
     # 1. marker persisted in the current worktree by a prior `acquire`/`renew -Worktree`.
@@ -113,6 +125,14 @@ if (-not $LockName) {
     Die 2 "cannot resolve lock name: pass -LockName (e.g. pr-1234 / issue-1234), or run inside an issue-<N>-* worktree"
 }
 
+$OwnerId = Resolve-OwnerIdentity $OwnerId
+if (-not $OwnerId) {
+    Die 2 'cannot resolve lock owner identity: pass -OwnerId or set DEKAF_AGENT_LOCK_OWNER_ID (CODEX_THREAD_ID is used automatically in Codex)'
+}
+
+$ownerIdBytes = [System.Text.Encoding]::UTF8.GetBytes($OwnerId)
+$ownerIdHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($ownerIdBytes)).ToLowerInvariant()
+$stateDir = Join-Path $stateRoot $ownerIdHash
 $lockKey = "dekaf:agent-lock:$LockName"
 $metaKey = "dekaf:agent-lock-meta:$LockName"
 $tokenFile = Join-Path $stateDir ("{0}.token" -f ($LockName -replace '[\\/:*?"<>| ]', '_'))
@@ -141,7 +161,7 @@ function Redis { (& docker exec $redisContainer redis-cli @args | Out-String).Tr
 
 function New-Meta([string]$Token) {
     @{
-        lockVersion     = 3
+        lockVersion     = 4
         lockBackend     = 'redis'
         lockName        = $LockName
         token           = $Token

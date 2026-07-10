@@ -34,7 +34,7 @@ A unit of work is **done only when it is committed AND pushed** — never before
 - A status recap, a green **local** build, or an uncommitted/unpushed edit is **not** completion. If your work is uncommitted or unpushed, the unit is unfinished — finish it.
 - Confirm the push actually landed before reporting: `gh pr view <N> --json headRefOid` must match local `git rev-parse HEAD`. A green local build with no matching remote head is a failed unit, not a done one.
 - **Before the first file edit each iteration**, run the active-checkout verify block (§ Worktree Isolation) so edits cannot silently land in the shared checkout.
-- If you cannot push (unresolvable conflict, repeated CI failure outside your context, lost lock), the unit **failed**: release the Redis lock (`pwsh scripts/AgentLocks.ps1 release -LockName <lock>`), leave a GitHub comment stating the blocker, and report the failure honestly. Never report success for unpushed work.
+- If you cannot push (unresolvable conflict, repeated CI failure outside your context, lost lock), the unit **failed**: release the Redis lock (`pwsh $agentLocks release -LockName <lock>`), leave a GitHub comment stating the blocker, and report the failure honestly. Never report success for unpushed work.
 
 ## Dispatching Iterations
 
@@ -77,9 +77,14 @@ Create worktrees outside the shared checkout so agents do not overwrite each oth
 
 ```powershell
 $repo = git rev-parse --show-toplevel
+$agentLocks = Join-Path $repo 'scripts/AgentLocks.ps1'
 $worktreeRoot = Join-Path (Split-Path $repo -Parent) "Dekaf-worktrees"
 New-Item -ItemType Directory -Force $worktreeRoot | Out-Null
 ```
+
+Keep `$agentLocks` for the whole iteration and invoke that absolute shared-checkout path for every
+lock verb, even after entering a worktree. A PR worktree can contain an older lock script whose
+token-cache format is incompatible with the script that acquired the lock.
 
 If the sandbox cannot write to the sibling directory, use `C:\tmp\Dekaf-worktrees` instead.
 
@@ -100,7 +105,7 @@ git status --short --branch
 The Redis lock auto-expires on a TTL — there is **no** periodic heartbeat to run. Optionally, once the worktree exists, write the auto-derive marker so later `release` calls from inside it can omit `-LockName` (also points Redis metadata at the real checkout). Skip this for issue branches — `release` already derives `issue-<N>` from the branch name:
 
 ```powershell
-pwsh scripts/AgentLocks.ps1 renew -LockName $lockName -Worktree $expectedRoot
+pwsh $agentLocks renew -LockName $lockName -Worktree $expectedRoot
 ```
 
 For a new issue branch, claim the issue first, then create the branch and worktree:
@@ -160,12 +165,12 @@ When multiple agents run on the same machine, acquire a Redis lock before workin
 
 Important: `$PID` is only the short-lived shell process that created or refreshed the lock. It is **not** the agent lifetime. Never remove a lock merely because the recorded process no longer exists.
 
-Use `scripts/AgentLocks.ps1` — one local Docker Redis lock per work item, token-checked so one agent cannot release another's lock. The lock **auto-expires on a 2h TTL** (the dead-man's switch if an agent dies); there is **no periodic heartbeat** — just `acquire`, do the work, `release`. **Do not** re-inline the Redis functions; each verb emits one line (or nothing), so a lock cycle costs a few tokens instead of ~100 lines of function bodies. The acquiring token is cached in a temp state file keyed by lock name — never echo or track the token yourself. Redis stays the sole ownership authority; the state file is just this process's private token cache.
+Use the canonical shared-checkout script captured in `$agentLocks` — one local Docker Redis lock per work item, token-checked so one agent cannot release another's lock. Never invoke `scripts/AgentLocks.ps1` relative to a PR worktree: its branch may contain an older cache format. The lock **auto-expires on a 2h TTL** (the dead-man's switch if an agent dies); there is **no periodic heartbeat** — just `acquire`, do the work, `release`. **Do not** re-inline the Redis functions; each verb emits one line (or nothing), so a lock cycle costs a few tokens instead of ~100 lines of function bodies. The acquiring token is cached in a temp state file keyed by stable agent identity and lock name — never echo or track the token yourself. Codex supplies `CODEX_THREAD_ID` automatically. Non-Codex/human automation must set one stable, unique `DEKAF_AGENT_LOCK_OWNER_ID` for every command from that logical agent, or pass the same `-OwnerId`; missing identity fails closed. Redis stays the sole ownership authority; the state file is only that agent's private token cache.
 
 **Acquire** before touching a PR or issue (`$lockName` = `pr-<N>` or `issue-<N>`). Acquire always needs an explicit name — it runs before the worktree exists, and a PR lock's number is not in the branch:
 
 ```powershell
-$token = pwsh scripts/AgentLocks.ps1 acquire -LockName $lockName
+$token = pwsh $agentLocks acquire -LockName $lockName
 switch ($LASTEXITCODE) {
   0 { }                    # acquired — proceed
   3 { <# HELD by another agent — skip this item, survey another #> ; return }
@@ -176,8 +181,8 @@ switch ($LASTEXITCODE) {
 **Release** in the `finally`/cleanup of every claimed item — from inside the worktree the name auto-derives, else pass it:
 
 ```powershell
-pwsh scripts/AgentLocks.ps1 release            # cwd = worktree: name from marker/branch
-pwsh scripts/AgentLocks.ps1 release -LockName $lockName   # or explicit
+pwsh $agentLocks release            # cwd = worktree: name from marker/branch
+pwsh $agentLocks release -LockName $lockName   # or explicit
 # exit 0 = released; exit 5 (STALE) = token mismatch/expired — do NOT delete or
 # overwrite the key; just skip and survey again.
 ```
@@ -185,7 +190,7 @@ pwsh scripts/AgentLocks.ps1 release -LockName $lockName   # or explicit
 **Renew** is **optional and NOT periodic** — call it only for the rare unit that may run past the 2h TTL (re-arms it), or once with `-Worktree` to write the `agent.lockName` marker so a later bare `release` from that worktree resolves a `pr-<N>` lock:
 
 ```powershell
-pwsh scripts/AgentLocks.ps1 renew -LockName $lockName [-Worktree $expectedRoot]
+pwsh $agentLocks renew -LockName $lockName [-Worktree $expectedRoot]
 # exit 4 (LOST): ownership expired and was re-taken — stop work on this item, do not push.
 ```
 

@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 
 $agentLocks = Join-Path $PSScriptRoot 'AgentLocks.ps1'
 $suffix = [Guid]::NewGuid().ToString('N')
+$ownerId = "agent-lock-marker-tests-$suffix"
 $issueNumber = Get-Random -Minimum 100000 -Maximum 999999
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dekaf-agent-lock-tests-$suffix"
 $repo = Join-Path $testRoot 'repo'
@@ -29,7 +30,7 @@ function Invoke-AgentLocks {
 
     Push-Location $WorkingDirectory
     try {
-        $output = @(& pwsh -NoProfile -File $agentLocks @Arguments 2>&1)
+        $output = @(& pwsh -NoProfile -File $agentLocks @Arguments -OwnerId $ownerId 2>&1)
         $exitCode = $LASTEXITCODE
     }
     finally {
