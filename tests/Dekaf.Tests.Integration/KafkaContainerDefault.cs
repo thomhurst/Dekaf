@@ -7,13 +7,13 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// The Kafka container used by all <see cref="KafkaIntegrationTest"/>-derived tests.
 /// The broker image tag is driven by the <c>KAFKA_TEST_IMAGE_TAG</c> environment variable
-/// (default 4.2.0), so a single test binary covers the whole supported broker range:
+/// (default 4.3.1), so a single test binary covers the whole supported broker range:
 /// PR CI runs the current release, and the NuGet release gate sweeps the supported
-/// versions (4.0.1, 4.1.1, 4.2.0) by setting the variable per job.
+/// versions (4.0.2, 4.1.2, 4.2.1) by setting the variable per job.
 /// </summary>
 public class KafkaContainerDefault : KafkaTestContainer
 {
-    public const string DefaultTag = "4.2.0";
+    public const string DefaultTag = "4.3.1";
 
     private static readonly string Tag =
         Environment.GetEnvironmentVariable("KAFKA_TEST_IMAGE_TAG") is { Length: > 0 } tag ? tag : DefaultTag;

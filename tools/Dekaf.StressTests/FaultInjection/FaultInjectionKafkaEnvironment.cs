@@ -19,7 +19,7 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
     private const ushort InternalBrokerPort = 9092;
     private const ushort ControllerPort = 9093;
     private const ushort ExternalBrokerPort = 29092;
-    private const string KafkaImage = "apache/kafka:4.1.0";
+    private const string KafkaImage = "apache/kafka:4.1.2";
     private const string ToxiproxyImage = "ghcr.io/shopify/toxiproxy:2.12.0";
     private const string ClusterId = "MkU3OEVBNTcwNTJENDM2Qg";
 

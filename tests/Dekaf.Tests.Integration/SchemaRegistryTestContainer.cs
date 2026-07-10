@@ -71,7 +71,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Kafka container...");
 
         // Start Kafka with network alias
-        _kafkaContainer = new KafkaBuilder("apache/kafka:4.0.1")
+        _kafkaContainer = new KafkaBuilder("apache/kafka:4.0.2")
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")

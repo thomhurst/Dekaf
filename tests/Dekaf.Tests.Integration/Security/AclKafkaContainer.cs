@@ -46,7 +46,7 @@ public class AclKafkaContainer : KafkaTestContainer
     /// </summary>
     public const string TestPrincipal = $"User:{TestUsername}";
 
-    public override string ContainerName => "apache/kafka:4.0.1";
+    public override string ContainerName => "apache/kafka:4.0.2";
     public override int Version => 401;
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder) =>

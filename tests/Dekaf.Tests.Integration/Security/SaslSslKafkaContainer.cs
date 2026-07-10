@@ -40,7 +40,7 @@ public class SaslSslKafkaContainer : KafkaTestContainer
     private const string KeystoreContainerPath = $"{ContainerSecretsDir}/server.p12";
     private const string TruststoreContainerPath = $"{ContainerSecretsDir}/truststore.p12";
 
-    public override string ContainerName => "apache/kafka:4.0.1";
+    public override string ContainerName => "apache/kafka:4.0.2";
     public override int Version => 401;
 
     /// <summary>

@@ -36,7 +36,7 @@ public class OAuthBearerKafkaContainer : KafkaTestContainer
     private const string UnsecuredValidatorCallbackHandler =
         "org.apache.kafka.common.security.oauthbearer.internals.unsecured.OAuthBearerUnsecuredValidatorCallbackHandler";
 
-    public override string ContainerName => "apache/kafka:4.0.1";
+    public override string ContainerName => "apache/kafka:4.0.2";
     public override int Version => 401;
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder) => builder

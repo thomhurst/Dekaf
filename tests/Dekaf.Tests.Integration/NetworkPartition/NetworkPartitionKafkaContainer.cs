@@ -13,7 +13,7 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
 {
     private DockerClient? _dockerClient;
 
-    public override string ContainerName => "apache/kafka:4.0.1";
+    public override string ContainerName => "apache/kafka:4.0.2";
     public override int Version => 401;
 
     /// <summary>
