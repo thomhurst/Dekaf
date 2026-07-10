@@ -12,6 +12,9 @@ namespace Dekaf.Compression.Lz4;
 /// </summary>
 public sealed class Lz4CompressionCodec : ICompressionCodec
 {
+    [ThreadStatic]
+    private static ExceptionTrackingBufferWriter? t_decompressionDestination;
+
     private readonly LZ4EncoderSettings _encoderSettings;
 
     /// <summary>
@@ -41,8 +44,94 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        using var reader = LZ4Frame.Decode(source);
-        reader.CopyTo(destination);
+        var trackedDestination = GetTrackedDestination(destination);
+        try
+        {
+            using var reader = LZ4Frame.Decode(source);
+            reader.CopyTo(trackedDestination);
+        }
+        catch (InvalidOperationException exception)
+            when (!trackedDestination.DestinationThrewInvalidOperationException)
+        {
+            throw new InvalidDataException("Invalid LZ4 payload.", exception);
+        }
+        finally
+        {
+            trackedDestination.Release();
+        }
+    }
+
+    private static ExceptionTrackingBufferWriter GetTrackedDestination(IBufferWriter<byte> destination)
+    {
+        var trackedDestination = t_decompressionDestination;
+        if (trackedDestination is null)
+        {
+            trackedDestination = new ExceptionTrackingBufferWriter();
+            t_decompressionDestination = trackedDestination;
+        }
+        else if (trackedDestination.IsInUse)
+        {
+            trackedDestination = new ExceptionTrackingBufferWriter();
+        }
+
+        trackedDestination.Initialize(destination);
+        return trackedDestination;
+    }
+
+    private sealed class ExceptionTrackingBufferWriter : IBufferWriter<byte>
+    {
+        private IBufferWriter<byte>? _destination;
+
+        internal bool IsInUse => _destination is not null;
+
+        internal bool DestinationThrewInvalidOperationException { get; private set; }
+
+        internal void Initialize(IBufferWriter<byte> destination)
+        {
+            _destination = destination;
+            DestinationThrewInvalidOperationException = false;
+        }
+
+        internal void Release() => _destination = null;
+
+        public void Advance(int count)
+        {
+            try
+            {
+                _destination!.Advance(count);
+            }
+            catch (InvalidOperationException)
+            {
+                DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+        }
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            try
+            {
+                return _destination!.GetMemory(sizeHint);
+            }
+            catch (InvalidOperationException)
+            {
+                DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            try
+            {
+                return _destination!.GetSpan(sizeHint);
+            }
+            catch (InvalidOperationException)
+            {
+                DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+        }
     }
 }
 

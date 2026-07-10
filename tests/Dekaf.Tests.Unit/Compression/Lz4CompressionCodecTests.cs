@@ -99,6 +99,32 @@ public class Lz4CompressionCodecTests
             .Throws<EndOfStreamException>();
     }
 
+    [Test]
+    public async Task Lz4CompressionCodec_Decompress_MalformedBlock_ThrowsInvalidDataException()
+    {
+        var codec = new Lz4CompressionCodec();
+        var malformedFrame = Convert.FromBase64String(
+            "BCJNGGBAghwAAAAAAAAAAAB5YmF0Y2gtY29kZWMtZnV6ei1zZWVkAAAAAA==");
+
+        await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(malformedFrame),
+                new ArrayBufferWriter<byte>()))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task Lz4CompressionCodec_Decompress_DestinationFailure_IsPreserved()
+    {
+        var codec = new Lz4CompressionCodec();
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>("test"u8.ToArray()), compressedBuffer);
+
+        await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory),
+                new InvalidOperationBufferWriter()))
+            .ThrowsExactly<InvalidOperationException>();
+    }
+
     #endregion
 
     #region Compression Level Tests
@@ -230,6 +256,15 @@ public class Lz4CompressionCodecTests
             Next = segment;
             return segment;
         }
+    }
+
+    private sealed class InvalidOperationBufferWriter : IBufferWriter<byte>
+    {
+        public void Advance(int count) => throw new InvalidOperationException();
+
+        public Memory<byte> GetMemory(int sizeHint = 0) => throw new InvalidOperationException();
+
+        public Span<byte> GetSpan(int sizeHint = 0) => throw new InvalidOperationException();
     }
 
     #endregion
