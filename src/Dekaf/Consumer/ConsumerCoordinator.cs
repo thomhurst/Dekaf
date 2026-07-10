@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -27,6 +28,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
+    // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
+    // Preserve both the immediate stale-fetch signal and the revocation history needed
+    // to defeat assignment ABA (A -> B -> A with the same final set).
+    private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
+    private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
+    // Assignment publication and revocation history form one snapshot. Rebalance callbacks
+    // run only after this lock is released so user code cannot extend its critical section.
+    private readonly Lock _assignmentStateLock = new();
     private IRebalanceListener? _runtimeRebalanceListener;
     private readonly ILogger _logger;
 
@@ -71,12 +80,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         ILogger<ConsumerCoordinator>? logger = null,
-        Func<int>? getConnectionCount = null)
+        Func<int>? getConnectionCount = null,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked = null)
     {
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
         _rebalanceListener = options.RebalanceListener;
+        _onPartitionsRevoked = onPartitionsRevoked;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -89,6 +100,35 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
+
+    internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
+        GetAssignmentSnapshotAndDrainRevocations()
+    {
+        lock (_assignmentStateLock)
+        {
+            HashSet<TopicPartition>? revoked = null;
+            while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+            {
+                (revoked ??= []).Add(partition);
+            }
+
+            return (_assignedPartitions, Volatile.Read(ref _assignmentVersion), revoked);
+        }
+    }
+
+    internal void RestoreRevokedPartitionsSinceLastSync(HashSet<TopicPartition> revoked)
+    {
+        lock (_assignmentStateLock)
+        {
+            EnqueueRevokedPartitions(revoked);
+        }
+    }
+
+    private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked)
+    {
+        foreach (var partition in revoked)
+            _revokedPartitionsSinceLastSync.Enqueue(partition);
+    }
 
     internal IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {
@@ -582,7 +622,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 var request = new OffsetFetchRequest
                 {
                     GroupId = _options.GroupId!,
-                    Topics = topicPartitions
+                    Topics = topicPartitions,
+                    Groups =
+                    [
+                        new OffsetFetchRequestGroup
+                        {
+                            GroupId = _options.GroupId!,
+                            MemberId = _memberId,
+                            MemberEpoch = _generationId,
+                            Topics = topicPartitions
+                        }
+                    ]
                 };
 
                 // Use negotiated API version
@@ -617,15 +667,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         {
                             if (partition.ErrorCode != ErrorCode.None)
                             {
-                                if (partition.ErrorCode.IsRetriable())
+                                throw new GroupException(partition.ErrorCode,
+                                    $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
                                 {
-                                    throw new GroupException(partition.ErrorCode,
-                                        $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
-                                    {
-                                        GroupId = _options.GroupId
-                                    };
-                                }
-                                continue;
+                                    GroupId = _options.GroupId
+                                };
                             }
 
                             if (partition.CommittedOffset >= 0)
@@ -648,15 +694,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         if (group.ErrorCode != ErrorCode.None)
                         {
-                            if (group.ErrorCode.IsRetriable())
+                            HandleOffsetFetchMembershipError(group.ErrorCode);
+                            throw new GroupException(group.ErrorCode,
+                                $"OffsetFetch failed for group: {group.ErrorCode}")
                             {
-                                throw new GroupException(group.ErrorCode,
-                                    $"OffsetFetch failed for group: {group.ErrorCode}")
-                                {
-                                    GroupId = _options.GroupId
-                                };
-                            }
-                            continue;
+                                GroupId = _options.GroupId
+                            };
                         }
 
                         foreach (var topic in group.Topics)
@@ -665,15 +708,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             {
                                 if (partition.ErrorCode != ErrorCode.None)
                                 {
-                                    if (partition.ErrorCode.IsRetriable())
+                                    throw new GroupException(partition.ErrorCode,
+                                        $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
                                     {
-                                        throw new GroupException(partition.ErrorCode,
-                                            $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
-                                        {
-                                            GroupId = _options.GroupId
-                                        };
-                                    }
-                                    continue;
+                                        GroupId = _options.GroupId
+                                    };
                                 }
 
                                 if (partition.CommittedOffset >= 0)
@@ -699,6 +738,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    private void HandleOffsetFetchMembershipError(ErrorCode errorCode)
+    {
+        switch (errorCode)
+        {
+            case ErrorCode.StaleMemberEpoch:
+                RequestRejoin();
+                break;
+
+            case ErrorCode.UnknownMemberId:
+                ResetMemberState();
+                break;
+        }
+    }
+
     private readonly record struct ConsumerHeartbeatResult(
         bool AssignmentChanged,
         IReadOnlyList<TopicPartition>? Revoked,
@@ -710,13 +763,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
-        var hadAssignment = _assignedPartitions.Count != 0;
+        var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
+
         _memberId = null;
         _generationId = -1;
-        _assignedPartitions = [];
         _state = CoordinatorState.Unjoined;
-        if (hadAssignment)
-            Interlocked.Increment(ref _assignmentVersion);
+        lock (_assignmentStateLock)
+        {
+            _assignedPartitions = [];
+            if (revoked is not null)
+            {
+                Interlocked.Increment(ref _assignmentVersion);
+                EnqueueRevokedPartitions(revoked);
+            }
+        }
+
+        if (revoked is not null)
+            _onPartitionsRevoked?.Invoke(revoked);
     }
 
     /// <summary>
@@ -986,8 +1049,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
-            _assignedPartitions = newAssignment;
-            Interlocked.Increment(ref _assignmentVersion);
+            lock (_assignmentStateLock)
+            {
+                _assignedPartitions = newAssignment;
+                Interlocked.Increment(ref _assignmentVersion);
+
+                if (revoked is not null)
+                    EnqueueRevokedPartitions(revoked);
+            }
+
+            if (revoked is not null)
+                _onPartitionsRevoked?.Invoke(revoked);
+
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }
 

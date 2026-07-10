@@ -817,6 +817,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _assignmentEnsureVersion;
     private int _lastManualAssignmentEnsureVersion = -1;
     private int _lastCoordinatorAssignmentVersion = -1;
+    // Deterministic test seam for assignment/revocation snapshot races.
+    internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -1028,7 +1030,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 loggerFactory?.CreateLogger<ConsumerCoordinator>(),
                 getConnectionCount: _connectionScaler is not null
                     ? () => _connectionScaler.CurrentConnectionCount
-                    : null);
+                    : null,
+                onPartitionsRevoked: QueueCoordinatorRevokedPartitionsForFetchClear);
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
@@ -1959,6 +1962,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+                    if (HasPendingCoordinatorRevocations())
+                    {
+                        // Only the user consume loop owns _pendingFetches. Let it discard
+                        // revoked data before prefetch can advance a reassigned position.
+                        await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
                     if (PrefetchLoopControl.ShouldResetConsecutiveErrors(drained))
                         consecutiveErrors = 0;
@@ -3502,27 +3513,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             }
 
+            // Invalidate broker fetches that started before the revocation immediately.
+            // Waiting for the consume loop to drain the queued clear lets an ABA reassignment
+            // make a stale response look current and advance the reinitialized fetch position.
+            Interlocked.Increment(ref _fetchBufferEpoch);
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
-        }
-    }
-
-    private void CancelCoordinatorRevokedPartitionsFetchClear(IReadOnlyList<TopicPartition> partitions)
-    {
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            foreach (var partition in partitions)
-            {
-                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
-            }
-
-            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
         }
     }
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
-        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
+        if (!HasPendingCoordinatorRevocations())
             return false;
 
         HashSet<TopicPartition>? partitionsToRemove;
@@ -3550,6 +3551,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBufferForPartitions(partitionsToRemove);
         return true;
     }
+
+    private bool HasPendingCoordinatorRevocations() =>
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0;
 
     private bool IsCurrentlyAssigned(TopicPartition partition)
     {
@@ -3749,7 +3753,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return await RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+            var connection = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
             if (connection is null)
                 throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
 
@@ -3961,16 +3965,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // _assignment HashSet causes NullReferenceException during enumeration.
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
+        (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
         try
         {
             coordinator = _coordinator;
             if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
             {
-                var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
-                var coordinatorAssignment = coordinator.Assignment;
+                BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
+                var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
+                    coordinator.GetAssignmentSnapshotAndDrainRevocations();
+                if (coordinatorRevocations is not null)
+                {
+                    unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
+                }
 
-                // Fast path: skip all work if assignment hasn't changed (common case after stable join)
-                if (_assignment.SetEquals(coordinatorAssignment))
+                // Set equality alone is insufficient: the assignment can change away and back
+                // between polls. Unseen revocations require stale-fetch cleanup and position reset.
+                if (_assignment.SetEquals(coordinatorAssignment) && coordinatorRevocations is null)
                 {
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                     return;
@@ -3998,10 +4009,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                 }
 
+                if (coordinatorRevocations is not null)
+                {
+                    foreach (var partition in coordinatorRevocations)
+                    {
+                        if (removedPartitions is null || !removedPartitions.Contains(partition))
+                            (removedPartitions ??= []).Add(partition);
+
+                        if (!coordinatorAssignment.Contains(partition))
+                            continue;
+
+                        if (newPartitions is null || !newPartitions.Contains(partition))
+                            (newPartitions ??= []).Add(partition);
+                    }
+                }
+
                 if (newPartitions is { Count: > 0 })
                     LogPartitionsAdded(newPartitions.Count);
                 if (removedPartitions is { Count: > 0 })
                     LogPartitionsRemoved(removedPartitions.Count);
+
+                // Invalidate in-flight fetches before publishing an ABA reassignment or
+                // reinitializing its position. The consume loop owns the actual buffer drain.
+                if (removedPartitions is not null)
+                    QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
 
                 // Update assignment from coordinator
                 _assignment.Clear();
@@ -4019,7 +4050,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Clean up state for removed partitions
                 if (removedPartitions is not null)
                 {
-                    QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
                     if (RemovePartitionState(removedPartitions))
                         PublishPausedSnapshot();
                 }
@@ -4027,11 +4057,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Initialize positions for new partitions
                 if (newPartitions is { Count: > 0 })
                 {
-                    CancelCoordinatorRevokedPartitionsFetchClear(newPartitions);
                     await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
                 }
 
                 Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+                unacknowledgedCoordinatorRevocations = null;
             }
             else
             {
@@ -4062,6 +4092,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
+            // Position initialization and assignment-version publication acknowledge the drain.
+            // Restore on failure so the next sync repeats revocation cleanup and initialization.
+            if (unacknowledgedCoordinatorRevocations is { } revocations)
+                revocations.Coordinator.RestoreRevokedPartitionsSinceLastSync(revocations.Partitions);
+
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
     }
@@ -4167,7 +4202,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
+            var connection = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
             if (connection is null)
                 return 0;
 
@@ -4230,7 +4265,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }, _metadataManager, cancellationToken);
     }
 
-    private async ValueTask<IKafkaConnection?> GetPartitionLeaderConnectionAsync(TopicPartition partition, CancellationToken cancellationToken)
+    private async ValueTask<IKafkaConnection?> GetPartitionLeaderControlConnectionAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
     {
         var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
             .ConfigureAwait(false);
@@ -4238,7 +4275,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (leader is null)
             return null;
 
-        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, 0, cancellationToken).ConfigureAwait(false);
+        // Keep offset-control requests off fetch connections. A delayed fetch response must not
+        // block assignment position initialization or watermark queries during a rebalance.
+        var connectionCount = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var connectionIndex = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionCount);
+        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)

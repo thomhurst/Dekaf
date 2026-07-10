@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -178,6 +179,120 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task EnsureAssignmentAsync_RevokeAndReassignBetweenPolls_InvalidatesPrefetchAndReinitializesPosition()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupAssignmentAbaConsumerGroupHeartbeat(connection);
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var reassignedPartition = new TopicPartition("test-topic", 1);
+        var stalePendingFetch = CreateFetch(partition: 1, baseOffset: 0, value: "stale-pending");
+        var stalePrefetch = CreateFetch(partition: 1, baseOffset: 1_999_999, value: "stale-prefetch");
+        var staleFetchBufferEpoch = GetFetchBufferEpoch(consumer);
+        GetPendingFetches(consumer).Enqueue(stalePendingFetch);
+        GetFetchPositions(consumer)[reassignedPartition] = 0;
+
+        var coordinator = GetCoordinator(consumer);
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer))
+            .ContainsKey(reassignedPartition);
+
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        await WritePrefetchedItemsAsync(consumer, [stalePrefetch], staleFetchBufferEpoch);
+
+        await Assert.That(consumer.Assignment).Contains(reassignedPartition);
+        await Assert.That(GetFetchPositions(consumer)[reassignedPartition]).IsEqualTo(20L);
+        await Assert.That(GetPrefetchBuffer(consumer).TryRead(out _)).IsFalse();
+        await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer))
+            .ContainsKey(reassignedPartition);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_AbaInitializationFailure_RetriesRevocationRecovery()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupAssignmentAbaConsumerGroupHeartbeat(connection);
+        SetupOffsetFetchFailureAfterInitialAssignment(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var reassignedPartition = new TopicPartition("test-topic", 1);
+        var coordinator = GetCoordinator(consumer);
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        coordinator.RequestRejoin();
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        var exception = await Assert.That(async () =>
+                await consumer.EnsureAssignmentAsync(CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
+        await Assert.That(GetFetchPositions(consumer).ContainsKey(reassignedPartition)).IsFalse();
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(GetFetchPositions(consumer)[reassignedPartition]).IsEqualTo(20L);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_AssignmentChangesBeforeRevocationDrain_UsesMatchingSnapshot()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var coordinator = GetCoordinator(consumer);
+        var revokedPartition = new TopicPartition("test-topic", 0);
+        var assignedPartition = new TopicPartition("test-topic", 1);
+        InvalidateCoordinatorAssignmentSnapshot(consumer);
+        consumer.BeforeCoordinatorAssignmentSnapshotForTest = () =>
+        {
+            consumer.BeforeCoordinatorAssignmentSnapshotForTest = null;
+            ProcessCoordinatorAssignment(coordinator, CreateAssignment(1));
+        };
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(consumer.Assignment).DoesNotContain(revokedPartition);
+        await Assert.That(consumer.Assignment).Contains(assignedPartition);
+        await Assert.That(GetFetchPositions(consumer)[assignedPartition]).IsEqualTo(20L);
+    }
+
+    [Test]
     public async Task CoordinatorRevocationFetchClear_ConcurrentQueueAndDrain_KeepsPendingFlagConsistent()
     {
         await using var consumer = CreateConsumer();
@@ -202,28 +317,6 @@ public sealed class ConsumerAssignmentFastPathTests
         }
 
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
-    }
-
-    [Test]
-    public async Task CancelCoordinatorRevokedPartitionsFetchClear_ReassignedPartitionRemovesPendingClear()
-    {
-        await using var consumer = CreateConsumer();
-        var reassignedPartition = new TopicPartition("test-topic", 0);
-        var stillRevokedPartition = new TopicPartition("test-topic", 1);
-
-        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [reassignedPartition, stillRevokedPartition]);
-
-        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [reassignedPartition]);
-
-        var pendingRevocations = GetCoordinatorRevokedPartitionsPendingFetchClear(consumer);
-        await Assert.That(pendingRevocations.ContainsKey(reassignedPartition)).IsFalse();
-        await Assert.That(pendingRevocations.ContainsKey(stillRevokedPartition)).IsTrue();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
-
-        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [stillRevokedPartition]);
-
-        await Assert.That(pendingRevocations).IsEmpty();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
     }
 
@@ -437,39 +530,85 @@ public sealed class ConsumerAssignmentFastPathTests
             });
     }
 
+    private static void SetupAssignmentAbaConsumerGroupHeartbeat(IKafkaConnection connection)
+    {
+        var callCount = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60000,
+                    Assignment = count == 2 ? CreateAssignment(0) : CreateAssignment(0, 1)
+                });
+            });
+    }
+
     private static void SetupOffsetFetch(IKafkaConnection connection)
     {
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static void SetupOffsetFetchFailureAfterInitialAssignment(IKafkaConnection connection)
+    {
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref callCount) == 2
+                ? ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "group-a",
+                            Topics = [],
+                            ErrorCode = ErrorCode.StaleMemberEpoch
+                        }
+                    ]
+                })
+                : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static OffsetFetchResponse CreateSuccessfulOffsetFetchResponse() => new()
+    {
+        ErrorCode = ErrorCode.None,
+        Topics =
+        [
+            new OffsetFetchResponseTopic
             {
-                ErrorCode = ErrorCode.None,
-                Topics =
+                Name = "test-topic",
+                Partitions =
                 [
-                    new OffsetFetchResponseTopic
+                    new OffsetFetchResponsePartition
                     {
-                        Name = "test-topic",
-                        Partitions =
-                        [
-                            new OffsetFetchResponsePartition
-                            {
-                                PartitionIndex = 0,
-                                CommittedOffset = 10,
-                                ErrorCode = ErrorCode.None
-                            },
-                            new OffsetFetchResponsePartition
-                            {
-                                PartitionIndex = 1,
-                                CommittedOffset = 20,
-                                ErrorCode = ErrorCode.None
-                            }
-                        ]
+                        PartitionIndex = 0,
+                        CommittedOffset = 10,
+                        ErrorCode = ErrorCode.None
+                    },
+                    new OffsetFetchResponsePartition
+                    {
+                        PartitionIndex = 1,
+                        CommittedOffset = 20,
+                        ErrorCode = ErrorCode.None
                     }
                 ]
-            }));
-    }
+            }
+        ]
+    };
 
     private static ConsumerGroupHeartbeatAssignment CreateAssignment(params int[] partitions)
     {
@@ -582,18 +721,6 @@ public sealed class ConsumerAssignmentFastPathTests
         method.Invoke(consumer, [partitions]);
     }
 
-    private static void CancelCoordinatorRevokedPartitionsFetchClear(
-        KafkaConsumer<string, string> consumer,
-        TopicPartition[] partitions)
-    {
-        var method = typeof(KafkaConsumer<string, string>).GetMethod(
-            "CancelCoordinatorRevokedPartitionsFetchClear",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("CancelCoordinatorRevokedPartitionsFetchClear method not found.");
-
-        method.Invoke(consumer, [partitions]);
-    }
-
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(KafkaConsumer<string, string> consumer)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
@@ -658,6 +785,28 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_coordinator field not found.");
 
         return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static void InvalidateCoordinatorAssignmentSnapshot(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_lastCoordinatorAssignmentVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_lastCoordinatorAssignmentVersion field not found.");
+
+        field.SetValue(consumer, -1);
+    }
+
+    private static void ProcessCoordinatorAssignment(
+        ConsumerCoordinator coordinator,
+        ConsumerGroupHeartbeatAssignment assignment)
+    {
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "ProcessConsumerGroupAssignment",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment method not found.");
+
+        method.Invoke(coordinator, [assignment]);
     }
 
     private static PendingFetchData CreateFetch(int partition, long baseOffset, string value)

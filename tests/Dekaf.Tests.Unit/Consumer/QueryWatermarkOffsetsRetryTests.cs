@@ -24,7 +24,7 @@ public sealed class QueryWatermarkOffsetsRetryTests
 
         pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
             .Returns(new ValueTask<IKafkaConnection>(connection));
-        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
             .Returns(new ValueTask<IKafkaConnection>(connection));
 
         connection.SendAsync<MetadataRequest, MetadataResponse>(

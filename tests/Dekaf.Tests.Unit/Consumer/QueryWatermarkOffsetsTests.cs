@@ -18,11 +18,11 @@ public sealed class QueryWatermarkOffsetsTests
     private const long LatestOffsetTimestamp = -1;
 
     [Test]
-    public async Task QueryWatermarkOffsetsAsync_StartsEarliestAndLatestRequestsBeforeAwaitingResponses()
+    public async Task QueryWatermarkOffsetsAsync_UsesCoordinationConnectionAndStartsRequestsConcurrently()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
-        connectionPool.GetConnectionByIndexAsync(0, 0, Arg.Any<CancellationToken>())
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(connection));
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
@@ -87,6 +87,10 @@ public sealed class QueryWatermarkOffsetsTests
 
         await Assert.That(watermarks.Low).IsEqualTo(10);
         await Assert.That(watermarks.High).IsEqualTo(42);
+        _ = connectionPool.Received(1).GetConnectionByIndexAsync(
+            0,
+            1,
+            Arg.Any<CancellationToken>());
     }
 
     private static async Task<ListOffsetsResponse> CreateListOffsetsResponseAsync(long timestamp, Task release)
