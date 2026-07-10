@@ -41,7 +41,7 @@ public class SaslSslKafkaContainer : KafkaTestContainer
     private const string TruststoreContainerPath = $"{ContainerSecretsDir}/truststore.p12";
 
     public override string ContainerName => "apache/kafka:4.0.2";
-    public override int Version => 401;
+    public override int Version => 402;
 
     /// <summary>
     /// TLS configuration that validates the broker certificate against the test CA.

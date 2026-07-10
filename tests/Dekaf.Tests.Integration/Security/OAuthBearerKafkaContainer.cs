@@ -37,7 +37,7 @@ public class OAuthBearerKafkaContainer : KafkaTestContainer
         "org.apache.kafka.common.security.oauthbearer.internals.unsecured.OAuthBearerUnsecuredValidatorCallbackHandler";
 
     public override string ContainerName => "apache/kafka:4.0.2";
-    public override int Version => 401;
+    public override int Version => 402;
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder) => builder
         // External (PLAINTEXT-named) listener uses SASL_PLAINTEXT; inter-broker stays PLAINTEXT.

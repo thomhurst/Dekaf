@@ -30,7 +30,7 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
 
     public override string ContainerName => "apache/kafka:4.0.2";
 
-    public override int Version => 401;
+    public override int Version => 402;
 
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly ToxiproxyContainer _toxiproxy;
