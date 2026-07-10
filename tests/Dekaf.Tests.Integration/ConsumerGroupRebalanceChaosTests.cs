@@ -313,15 +313,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         for (var partition = 0; partition < PartitionCount; partition++)
         {
-            var expected = oracle.GetCommittedOffset(partition);
-            if (expected == 0)
+            var (confirmed, processed) = oracle.GetProgressBounds(partition);
+            if (confirmed == 0)
                 continue;
 
             await Assert.That(committedOffsets.TryGetValue(
                     new TopicPartition(oracle.Topic, partition),
                     out var committed))
                 .IsTrue();
-            await Assert.That(committed).IsEqualTo(expected);
+            await Assert.That(committed).IsGreaterThanOrEqualTo(confirmed)
+                .Because("Kafka may accept a commit before member shutdown or rebalance interrupts its response");
+            await Assert.That(committed).IsLessThanOrEqualTo(processed)
+                .Because("committed progress must not pass the contiguous processed prefix");
         }
     }
 
@@ -631,11 +634,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 return [.. state.Seen.Order()];
         }
 
-        public long GetCommittedOffset(int partition)
+        public (long ConfirmedCommit, long ProcessedExclusive) GetProgressBounds(int partition)
         {
             var state = _partitions[partition];
             lock (state.Gate)
-                return state.CommittedExclusive;
+                return (state.CommittedExclusive, state.NextExpected);
         }
 
         private static bool IsExpectedRebalanceCommitFailure(ErrorCode? errorCode) => errorCode is
