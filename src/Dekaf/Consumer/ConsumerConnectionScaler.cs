@@ -162,7 +162,19 @@ internal sealed class ConsumerConnectionScaler
             _logError?.Invoke(task.Exception.InnerException ?? task.Exception);
     }
 
-    internal async ValueTask StopAndDrainAsync()
+    internal async ValueTask StopAndDrainAsync(TimeSpan timeout)
+    {
+        try
+        {
+            await StopAndDrainCoreAsync().AsTask().WaitAsync(timeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Core drain continues observing the pending operations after disposal moves on.
+        }
+    }
+
+    private async ValueTask StopAndDrainCoreAsync()
     {
         Task[] pendingOperations;
         lock (_operationLock)

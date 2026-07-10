@@ -176,6 +176,32 @@ public sealed class ConsumerConnectionScalerTests
     }
 
     [Test]
+    public async Task StopAndDrainAsync_PendingOperation_ReturnsAfterTimeout()
+    {
+        var scaleCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => new ValueTask(scaleCompletion.Task),
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        try
+        {
+            await scaler.StopAndDrainAsync(TimeSpan.Zero);
+            await Assert.That(scaleCompletion.Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            scaleCompletion.TrySetResult();
+            await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Test]
     public async Task SplitPartitions_SingleConnection_ReturnsSingleGroup()
     {
         var groups = new (int StartIndex, int Count)[1];
