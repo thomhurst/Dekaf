@@ -312,6 +312,8 @@ jobs:
     needs: stress-test
     runs-on: ubuntu-latest
     if: always()
+    outputs:
+      repeated_regression: ${{ steps.stress-trends.outputs.should_fail }}
 
     steps:
       - name: Checkout
@@ -433,7 +435,27 @@ jobs:
           print('\n'.join(output))
           EOF
 
+      - name: Detect Performance Trends
+        id: stress-trends
+        env:
+          PYTHONPATH: .github/scripts
+        run: |
+          mkdir -p merged-results
+          result_file=$(find merged-results -type f -name 'stress-test-results-*.json' | sort | tail -1)
+          if [ -z "$result_file" ]; then
+            echo "::error::Merged stress-test results were not produced"
+            exit 1
+          fi
+
+          python3 .github/scripts/stress_trend.py \
+            --results "$result_file" \
+            --history .github/stress-history.json \
+            --output merged-results/stress-history.json \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Upload Merged Results
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: stress-test-results-merged
@@ -461,6 +483,9 @@ jobs:
         with:
           name: stress-test-results-merged
           path: ./results
+
+      - name: Update Stress Trend History
+        run: cp ./results/stress-history.json .github/stress-history.json
 
       - name: Generate Stress Test Documentation
         env:
@@ -533,6 +558,7 @@ jobs:
           output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured")
           output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
           output.append("- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput")
+          output.append("- **Noise-Aware Trends**: each scenario is compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow")
           output.append("- **Parallel Execution**: Each scenario runs in its own isolated environment")
           output.append("- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka")
           output.append("- **Memory Monitoring**: Tracks GC behavior and memory usage over time")
@@ -553,7 +579,7 @@ jobs:
         with:
           commit-message: 'docs: Update stress test results'
           title: 'docs: Update stress test results'
-          body: 'Automated update of stress test results from latest CI run.'
+          body: 'Automated update of stress test results and rolling trend history from latest CI run.'
           branch: docs/stress-test-results
           delete-branch: true
 
@@ -562,3 +588,51 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --delete-branch --auto
+
+      - name: Wait for History Merge
+        if: steps.create-pr.outputs.pull-request-number
+        timeout-minutes: 60
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          while true; do
+            if ! state=$(gh pr view "$PR_NUMBER" --json state --jq '.state'); then
+              echo "::warning::Failed to read stress history PR state; retrying once"
+              sleep 5
+              if ! state=$(gh pr view "$PR_NUMBER" --json state --jq '.state'); then
+                echo "::error::Failed to read stress history PR state after retry"
+                exit 1
+              fi
+            fi
+            case "$state" in
+              MERGED)
+                exit 0
+                ;;
+              OPEN)
+                sleep 30
+                ;;
+              *)
+                echo "::error::Stress history PR ended in state $state"
+                exit 1
+                ;;
+            esac
+          done
+
+  regression-gate:
+    name: Fail on Repeated Stress Regressions
+    needs: [stress-test, generate-summary, publish-to-docs]
+    runs-on: ubuntu-latest
+    # Wait for the docs PR so valid regression observations are persisted before
+    # the workflow reports the repeated regression.
+    if: >-
+      always() &&
+      needs.stress-test.result == 'success' &&
+      needs.generate-summary.result == 'success' &&
+      needs.publish-to-docs.result == 'success' &&
+      needs.generate-summary.outputs.repeated_regression == 'true'
+    steps:
+      - name: Report Repeated Regression
+        run: |
+          echo "Repeated stress regression detected; see Stress Trend Analysis above."
+          exit 1
