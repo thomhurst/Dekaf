@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
@@ -862,6 +861,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var coalescedBatches = new ReadyBatch[maxCoalesce];
         var coalescedGenerations = new int[maxCoalesce];
         var coalescedCount = 0;
+        // Sum individually framed batch sizes, matching RecordAccumulator.Drain's
+        // conservative request budget across batches from separate drain passes.
+        var coalescedRequestBudgetUsed = 0L;
 
         // Pre-allocate reusable response lookup dictionary to avoid per-response allocation.
         // Single-threaded: only accessed by the send loop, cleared after each use.
@@ -1044,6 +1046,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 5. Coalesce ──
                 coalescedPartitions.Clear();
                 coalescedCount = 0;
+                coalescedRequestBudgetUsed = 0;
 
                 // Drain carry-over into temp list for iteration. Per-partition FIFO order
                 // ensures oldest batch per partition is seen first (Java's Deque.pollFirst).
@@ -1055,7 +1058,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < drainList.Count; i++)
                 {
                     CoalesceBatch(drainList[i], coalescedBatches, coalescedGenerations, ref coalescedCount,
-                        coalescedPartitions, carryOver);
+                        ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
                 }
 
                 // Read from the event channel lazily during coalescing (like main reads
@@ -1078,7 +1081,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             var carryBefore = carryOver.Count;
                             channelReads++;
                             CoalesceBatch(evt.GetBatchReference(), coalescedBatches, coalescedGenerations, ref coalescedCount,
-                                coalescedPartitions, carryOver);
+                                ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
                             if (carryOver.Count > carryBefore)
                             {
                                 channelCarryOvers++;
@@ -1126,7 +1129,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
                             CoalesceBatch(evt.GetBatchReference(), coalescedBatches, coalescedGenerations, ref coalescedCount,
-                                coalescedPartitions, carryOver);
+                                ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
                             if (coalescedCount > MicroLingerBatchThreshold)
                                 break;
                         }
@@ -1719,6 +1722,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] coalescedBatches,
         int[] coalescedGenerations,
         ref int coalescedCount,
+        ref long coalescedRequestBudgetUsed,
         HashSet<TopicPartition> coalescedPartitions,
         PartitionCarryOver carryOver)
     {
@@ -1790,7 +1794,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // carry-over — they must retain their retry state and mute status.
             batch.RetryNotBefore = 0;
 
-            if (CarryOverIfCoalescedFull(batchRef, coalescedBatches, coalescedCount, carryOver))
+            if (CarryOverIfCoalescedLimitReached(
+                    batchRef,
+                    coalescedBatches,
+                    coalescedCount,
+                    coalescedRequestBudgetUsed,
+                    carryOver,
+                    out var batchRequestBodySize))
                 return;
 
             if (!coalescedPartitions.Add(batch.TopicPartition))
@@ -1801,7 +1811,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return;
             }
 
-            AddCoalescedBatch(batchRef, coalescedBatches, coalescedGenerations, ref coalescedCount);
+            AddCoalescedBatch(
+                batchRef,
+                coalescedBatches,
+                coalescedGenerations,
+                ref coalescedCount,
+                ref coalescedRequestBudgetUsed,
+                batchRequestBodySize);
             return;
         }
 
@@ -1817,7 +1833,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        if (CarryOverIfCoalescedFull(batchRef, coalescedBatches, coalescedCount, carryOver))
+        if (CarryOverIfCoalescedLimitReached(
+                batchRef,
+                coalescedBatches,
+                coalescedCount,
+                coalescedRequestBudgetUsed,
+                carryOver,
+                out var normalBatchRequestBodySize))
             return;
 
         // Ensure at most one batch per partition per coalesced request
@@ -1828,18 +1850,39 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        AddCoalescedBatch(batchRef, coalescedBatches, coalescedGenerations, ref coalescedCount);
+        AddCoalescedBatch(
+            batchRef,
+            coalescedBatches,
+            coalescedGenerations,
+            ref coalescedCount,
+            ref coalescedRequestBudgetUsed,
+            normalBatchRequestBodySize);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool CarryOverIfCoalescedFull(
+    private bool CarryOverIfCoalescedLimitReached(
         BatchReference batchRef,
         ReadyBatch[] coalescedBatches,
         int coalescedCount,
-        PartitionCarryOver carryOver)
+        long coalescedRequestBudgetUsed,
+        PartitionCarryOver carryOver,
+        out int batchRequestBodySize)
     {
+        batchRequestBodySize = 0;
         if (coalescedCount < coalescedBatches.Length)
-            return false;
+        {
+            var candidateBatch = batchRef.Batch;
+            batchRequestBodySize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+                _options.TransactionalId,
+                candidateBatch.TopicPartition.Topic,
+                candidateBatch.EncodedSize);
+            var maxRequestSize = _options.MaxRequestSize > 0
+                ? _options.MaxRequestSize
+                : ProduceRequestSizeCalculator.DefaultMaxRequestSize;
+            if (coalescedCount == 0
+                || coalescedRequestBudgetUsed + batchRequestBodySize <= maxRequestSize)
+                return false;
+        }
 
         var batch = batchRef.Batch;
         batch.AppendDiag('O');
@@ -1852,13 +1895,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         BatchReference batchRef,
         ReadyBatch[] coalescedBatches,
         int[] coalescedGenerations,
-        ref int coalescedCount)
+        ref int coalescedCount,
+        ref long coalescedRequestBudgetUsed,
+        int batchRequestBodySize)
     {
         var batch = batchRef.Batch;
         batch.AppendDiag('C');
         coalescedBatches[coalescedCount] = batch;
         coalescedGenerations[coalescedCount] = batchRef.Generation;
         coalescedCount++;
+        coalescedRequestBudgetUsed += batchRequestBodySize;
     }
 
     private int CompactCurrentBatches(ReadyBatch[] batches, int[] generations, int count)
@@ -2261,8 +2307,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    var failureException = KafkaException.FromErrorCode(partitionResponse.ErrorCode,
-                        $"Produce failed: {partitionResponse.ErrorCode}");
+                    KafkaException failureException = partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
+                        ? new ProduceException(partitionResponse.ErrorCode,
+                            $"Produce failed: {partitionResponse.ErrorCode}")
+                        {
+                            Topic = expectedTopic,
+                            Partition = expectedPartition
+                        }
+                        : KafkaException.FromErrorCode(partitionResponse.ErrorCode,
+                            $"Produce failed: {partitionResponse.ErrorCode}");
                     if (_muteOnSend)
                         UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
@@ -3157,10 +3210,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var partIdx = 0;
             var runStart = 0;
             var requestBodySizeHint = checked(
-                CompactStringSize(_request.TransactionalId) +
+                ProduceRequestSizeCalculator.CompactStringSize(_request.TransactionalId) +
                 2 + // Acks
                 4 + // TimeoutMs
-                CompactArrayLengthSize(topicCount) +
+                ProduceRequestSizeCalculator.CompactArrayLengthSize(topicCount) +
                 1); // Request tagged fields
 
             // Single pass: populate scratch topic and partition data from contiguous runs
@@ -3177,8 +3230,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var partitionDataStart = partIdx;
                 requestBodySizeHint = checked(
                     requestBodySizeHint +
-                    CompactStringSize(topicName) +
-                    CompactArrayLengthSize(partCount) +
+                    ProduceRequestSizeCalculator.CompactStringSize(topicName) +
+                    ProduceRequestSizeCalculator.CompactArrayLengthSize(partCount) +
                     1); // Topic tagged fields
 
                 for (var p = 0; p < partCount; p++)
@@ -3191,7 +3244,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     requestBodySizeHint = checked(
                         requestBodySizeHint +
                         4 + // Partition index
-                        CompactBytesLengthSize(batch.EncodedSize) +
+                        ProduceRequestSizeCalculator.CompactBytesLengthSize(batch.EncodedSize) +
                         batch.EncodedSize +
                         1); // Partition tagged fields
                     partIdx++;
@@ -3234,20 +3287,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _lastPartitionCount = 0;
         }
 
-        private static int CompactStringSize(string? value)
-        {
-            if (value is null)
-                return 1;
-
-            var byteCount = Encoding.UTF8.GetByteCount(value);
-            return checked(CompactBytesLengthSize(byteCount) + byteCount);
-        }
-
-        private static int CompactArrayLengthSize(int count)
-            => Record.VarUIntSize((uint)checked(count + 1));
-
-        private static int CompactBytesLengthSize(int byteCount)
-            => Record.VarUIntSize((uint)checked(byteCount + 1));
     }
 
     /// <summary>
