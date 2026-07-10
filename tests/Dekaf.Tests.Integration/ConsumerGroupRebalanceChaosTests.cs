@@ -1,9 +1,11 @@
 using System.Globalization;
+using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
+using Dekaf.Serialization;
 using ConfluentKafka = Confluent.Kafka;
 using ConfluentKafkaAdmin = Confluent.Kafka.Admin;
 
@@ -39,6 +41,22 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             await RunChurnScenarioAsync(assignor, cancellationToken);
         }
+    }
+
+    [Test]
+    public async Task SequenceOracle_BrokerObservedCommit_RejectsReplayBelowCommitFloor()
+    {
+        var oracle = new SequenceOracle("test-topic", partitionCount: 1, messagesPerPartition: 4, commitInterval: 2);
+        var second = CreateSequenceResult(offset: 1);
+
+        oracle.Record("original", CreateSequenceResult(offset: 0));
+        oracle.Record("original", second);
+        oracle.ObserveCommittedOffset(partition: 0, committedExclusive: 2);
+        oracle.Record("restarted", second);
+
+        await Assert.That(oracle.GetProgressBounds(0).ConfirmedCommit).IsEqualTo(2);
+        await Assert.That(oracle.Violations.Any(static violation =>
+            violation.Contains("replayed offset 1 below committed offset 2", StringComparison.Ordinal))).IsTrue();
     }
 
     [Test]
@@ -206,6 +224,22 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             await Task.Delay(GroupConfigVerificationDelay, cancellationToken);
         }
     }
+
+    private static ConsumeResult<string, string> CreateSequenceResult(long offset) =>
+        new(
+            topic: "test-topic",
+            partition: 0,
+            offset,
+            keyData: ReadOnlyMemory<byte>.Empty,
+            isKeyNull: true,
+            valueData: Encoding.UTF8.GetBytes(offset.ToString(CultureInfo.InvariantCulture)),
+            isValueNull: false,
+            headers: null,
+            timestampMs: 0,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: Serializers.String);
 
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
     {
@@ -378,17 +412,20 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         for (var partition = 0; partition < PartitionCount; partition++)
         {
             var (confirmed, processed) = oracle.GetProgressBounds(partition);
-            if (confirmed == 0)
-                continue;
-
-            await Assert.That(committedOffsets.TryGetValue(
+            if (!committedOffsets.TryGetValue(
                     new TopicPartition(oracle.Topic, partition),
                     out var committed))
-                .IsTrue();
+            {
+                await Assert.That(confirmed).IsEqualTo(0)
+                    .Because("a locally confirmed commit must exist on the broker");
+                continue;
+            }
+
             await Assert.That(committed).IsGreaterThanOrEqualTo(confirmed)
                 .Because("Kafka may accept a commit before member shutdown or rebalance interrupts its response");
             await Assert.That(committed).IsLessThanOrEqualTo(processed)
                 .Because("committed progress must not pass the contiguous processed prefix");
+            oracle.ObserveCommittedOffset(partition, committed);
         }
     }
 
@@ -707,6 +744,31 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             var state = _partitions[partition];
             lock (state.Gate)
                 return (state.CommittedExclusive, state.NextExpected);
+        }
+
+        public void ObserveCommittedOffset(int partition, long committedExclusive)
+        {
+            var state = _partitions[partition];
+            var finalCommit = false;
+            lock (state.Gate)
+            {
+                if (committedExclusive <= state.CommittedExclusive)
+                    return;
+
+                if (committedExclusive > state.NextExpected)
+                {
+                    AddViolation(
+                        $"Partition {partition}: broker commit {committedExclusive} jumped past processed offset {state.NextExpected}");
+                    return;
+                }
+
+                finalCommit = state.CommittedExclusive < _messagesPerPartition &&
+                              committedExclusive == _messagesPerPartition;
+                state.CommittedExclusive = committedExclusive;
+            }
+
+            if (finalCommit)
+                _finalCommits.Increment();
         }
 
         private static bool IsExpectedRebalanceCommitFailure(ErrorCode? errorCode) => errorCode is
