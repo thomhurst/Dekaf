@@ -266,6 +266,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             cancellationToken);
     }
 
+    [Test]
+    [Timeout(600_000)]
+    public async Task Kip848Uniform_ToClassicEagerRange_OnlineMigrationPreservesSequencesAndCommittedProgress(
+        CancellationToken cancellationToken)
+    {
+        await RunChurnScenarioAsync(
+            "kip848-uniform-to-classic-range",
+            MemberProtocol.Kip848Uniform,
+            MemberProtocol.ClassicEagerRange,
+            cancellationToken);
+    }
+
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
     {
         var protocol = assignor switch
@@ -287,6 +299,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         var (topic, groupId, oracle) = await CreateScenarioAsync(
             $"rebalance-chaos-{scenarioName}",
             cancellationToken);
+        var jointGroupProtocol = anchorProtocol == MemberProtocol.ClassicEagerRange
+            ? transientProtocol
+            : anchorProtocol;
 
         await using var admin = KafkaContainer.CreateAdminClient();
 
@@ -316,7 +331,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             transient.Allow(1);
             await transient.WaitForAnyAssignmentAsync(cancellationToken);
             await transient.WaitForObservedCountAsync(1, cancellationToken);
-            await AssertGroupModeAsync(admin, groupId, transientProtocol, cancellationToken);
+            await AssertGroupModeAsync(admin, groupId, jointGroupProtocol, cancellationToken);
             await Assert.That(anchor.ObservedCount).IsEqualTo(anchorCountBeforeJoin)
                 .Because("group joins must not consume records without an anchor permit");
 
