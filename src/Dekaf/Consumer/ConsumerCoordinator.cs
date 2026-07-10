@@ -1310,6 +1310,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     break;
                 }
 
+                // A foreground poll may have expired the member while this loop waited for _lock.
+                if (_state != CoordinatorState.Stable)
+                    break;
+
                 var result = await SendConsumerGroupHeartbeatAsync(
                     isInitial: false, cancellationToken).ConfigureAwait(false);
 
