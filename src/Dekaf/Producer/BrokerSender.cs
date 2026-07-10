@@ -1318,6 +1318,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 var slot = nextSingleConnectionFireAndForgetSlot;
                                 nextSingleConnectionFireAndForgetSlot = 1 - nextSingleConnectionFireAndForgetSlot;
 
+                                // The single-connection fire-and-forget path starts the next write
+                                // before awaiting the previous flush. Fence these partitions before
+                                // starting the write so a newer same-partition batch stays in
+                                // carry-over while other partitions can still use the open slot.
+                                MutePartitionsForSend(batchesToSend, countToSend);
+
                                 ResetBucketTimeout(ref singleConnectionFireAndForgetTimeoutCts[slot],
                                     cancellationToken);
 
@@ -1546,6 +1552,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else if (carryOver.Count > 0)
                 {
+                    if (hasPendingSingleConnectionFireAndForgetSend)
+                    {
+                        await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
+                        continue;
+                    }
+
                     // Carry-over exists but no pending responses (e.g. retry backoff waiting).
                     // Timed wait — loop back after earliest retry backoff or delivery deadline.
                     var wakeupMs = ComputeNextWakeupMs(carryOver);
@@ -2884,6 +2896,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                         request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
 
+                    // The write is now ordered on the connection. Release the send-time fence
+                    // before resource pins so each batch still owns its original partition.
+                    if (_muteOnSend)
+                    {
+                        for (var i = 0; i < count; i++)
+                            UnmutePartition(batches[i].TopicPartition);
+                    }
+
                     // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                     scratch.ClearReferences();
                     ReleaseResourcePins(batches, resourcePinCount);
@@ -3003,14 +3023,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // the configured request limit already permits only 1 in-flight request.
                 // This ensures at most one batch per partition in-flight across all requests.
                 // Idempotent producers with maxInFlight > 1 use sequence numbers instead.
-                if (_muteOnSend)
-                {
-                    for (var i = 0; i < count; i++)
-                    {
-                        if (!batches[i].IsLoopExitRedelivery)
-                            MutePartition(batches[i].TopicPartition);
-                    }
-                }
+                MutePartitionsForSend(batches, count);
 
                 LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
             }
@@ -3609,6 +3622,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         if (_mutedPartitions.TryAdd(tp, 0))
             _accumulator.MutePartition(tp);
+    }
+
+    private void MutePartitionsForSend(ReadyBatch[] batches, int count)
+    {
+        if (!_muteOnSend)
+            return;
+
+        for (var i = 0; i < count; i++)
+        {
+            if (!batches[i].IsLoopExitRedelivery)
+                MutePartition(batches[i].TopicPartition);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

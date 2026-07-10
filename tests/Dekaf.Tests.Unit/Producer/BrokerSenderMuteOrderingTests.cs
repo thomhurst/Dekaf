@@ -370,6 +370,78 @@ public sealed class BrokerSenderMuteOrderingTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task NonIdempotentFireAndForget_SerializesSamePartitionWrites(
+        CancellationToken ct)
+    {
+        var firstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestKafkaConnection();
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions(
+            acks: Acks.None,
+            maxInFlight: 2,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledgedCount = 0;
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        BrokerSender? sender = null;
+        var secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+        var sendCount = 0;
+
+        connection.SendProduceFireAndForgetWithCallerTimeout = () =>
+        {
+            var current = Interlocked.Increment(ref sendCount);
+            if (current == 1)
+            {
+                sender!.Enqueue(secondBatch);
+                return new ValueTask(firstWrite.Task);
+            }
+
+            secondWriteStarted.TrySetResult();
+            return new ValueTask(secondWrite.Task);
+        };
+
+        sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, ex) =>
+            {
+                if (ex is null && Interlocked.Increment(ref acknowledgedCount) == 2)
+                    allAcknowledged.TrySetResult();
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", partition: 0));
+
+            await WaitForDiagAsync(secondBatch, 'O', TimeSpan.FromSeconds(5), ct);
+            await Assert.That(secondWriteStarted.Task.IsCompleted).IsFalse();
+
+            firstWrite.SetResult();
+            await secondWriteStarted.Task.WaitAsync(ct);
+            secondWrite.SetResult();
+            await allAcknowledged.Task.WaitAsync(ct);
+        }
+        finally
+        {
+            firstWrite.TrySetResult();
+            secondWrite.TrySetResult();
+            if (sender is not null)
+                await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task CoalesceBatch_WhenFull_CarriesOverNormalBatch()
     {
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();

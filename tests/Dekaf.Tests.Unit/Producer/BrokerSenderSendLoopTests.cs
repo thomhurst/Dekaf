@@ -28,12 +28,14 @@ public sealed class BrokerSenderSendLoopTests
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
-        int connectionsPerBroker = 1, bool enableAdaptiveConnections = true) => new()
+        int connectionsPerBroker = 1, bool enableAdaptiveConnections = true,
+        bool enableIdempotence = true) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
             ConnectionsPerBroker = connectionsPerBroker,
             EnableAdaptiveConnections = enableAdaptiveConnections,
+            EnableIdempotence = enableIdempotence,
             Acks = acks,
             DeliveryTimeoutMs = deliveryTimeoutMs,
             RetryBackoffMs = retryBackoffMs,
@@ -1199,7 +1201,10 @@ public sealed class BrokerSenderSendLoopTests
         var sendCount = 0;
         BrokerSender? sender = null;
 
-        var options = CreateOptions(acks: Acks.None, maxInFlight: 5);
+        var options = CreateOptions(
+            acks: Acks.None,
+            maxInFlight: 5,
+            enableIdempotence: false);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         var secondBatch = CreateTestBatch(vtPool, "test-topic", 1);
