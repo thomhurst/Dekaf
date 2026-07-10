@@ -1101,6 +1101,25 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task RecordPollIfLossNotificationComplete_PendingLoss_DoesNotAdvancePollVersion()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
+        typeof(ConsumerCoordinator).GetField(
+            "_maxPollLossNotificationPending",
+            BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(coordinator, 1);
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "RecordPollIfLossNotificationComplete",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        method.Invoke(coordinator, [Stopwatch.GetTimestamp()]);
+
+        await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
+            .IsEqualTo(pollVersion);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_OverdueBeforeHeartbeatExpiry_RejectsCommit()
     {
         SetupFindCoordinator();

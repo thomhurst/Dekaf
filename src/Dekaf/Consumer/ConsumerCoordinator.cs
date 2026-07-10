@@ -135,8 +135,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return ExpireAndRecordPollAsync(cancellationToken);
         }
 
-        RecordPoll(now);
+        RecordPollIfLossNotificationComplete(now);
         return ValueTask.CompletedTask;
+    }
+
+    private void RecordPollIfLossNotificationComplete(long timestamp)
+    {
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return;
+
+        RecordPoll(timestamp);
     }
 
     private async ValueTask ExpireAndRecordPollAsync(CancellationToken cancellationToken)
