@@ -183,7 +183,6 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
-        await Assert.That(DrainPendingFetchException(consumer)).IsNull();
     }
 
     [Test]
@@ -337,11 +336,14 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task ResetToDivergingEpoch_ClearsActiveConsumedLeaderEpoch()
+    public async Task ResetToDivergingEpoch_ClearsActiveAutoCommitSnapshot()
     {
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
-        await using var consumer = CreateConsumer(pool, metadataManager);
+        await using var consumer = CreateConsumer(
+            pool,
+            metadataManager,
+            offsetCommitMode: OffsetCommitMode.Auto);
         var partition = new TopicPartition(Topic, 0);
         consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
         SetInitialized(consumer);
@@ -352,9 +354,16 @@ public sealed class ConsumerLeaderDiscoveryTests
             .GetAsyncEnumerator();
 
         await Assert.That(await enumerator.MoveNextAsync()).IsTrue();
+        var activePosition = GetActiveConsumedPosition(consumer, partition);
+        await Assert.That(activePosition.HasValue).IsTrue();
+        var activePositionValue = activePosition.GetValueOrDefault();
+        await Assert.That(activePositionValue.Position).IsEqualTo(1);
+        await Assert.That(activePositionValue.LeaderEpoch).IsEqualTo(9);
+
         InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetActiveConsumedPosition(consumer, partition).HasValue).IsFalse();
         await Assert.That(consumer.GetPosition(partition)).IsEqualTo(1);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
     }
@@ -604,7 +613,6 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(43);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
-        await Assert.That(DrainPendingFetchException(consumer)).IsNull();
     }
 
     [Test]
@@ -744,13 +752,15 @@ public sealed class ConsumerLeaderDiscoveryTests
         IConnectionPool pool,
         MetadataManager metadataManager,
         IDeserializer<string>? keyDeserializer = null,
-        IConsumerInterceptor<string, string>? interceptor = null)
+        IConsumerInterceptor<string, string>? interceptor = null,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Auto)
         => new(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 ClientId = "test-consumer",
-                Interceptors = interceptor is null ? null : [interceptor]
+                Interceptors = interceptor is null ? null : [interceptor],
+                OffsetCommitMode = offsetCommitMode
             },
             keyDeserializer ?? Serializers.String,
             Serializers.String,
@@ -983,21 +993,19 @@ public sealed class ConsumerLeaderDiscoveryTests
         return (int)method.Invoke(consumer, [new TopicPartition(Topic, partition)])!;
     }
 
-    private static Exception? DrainPendingFetchException(KafkaConsumer<string, string> consumer)
+    private static (long Position, int LeaderEpoch)? GetActiveConsumedPosition(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition)
     {
         var method = typeof(KafkaConsumer<string, string>)
-            .GetMethod("ThrowPendingFetchException", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("ThrowPendingFetchException method not found");
+            .GetMethod("TryGetActiveConsumedPosition", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("TryGetActiveConsumedPosition method not found");
 
-        try
-        {
-            method.Invoke(consumer, []);
+        object?[] arguments = [partition, 0L, -1];
+        if (!(bool)method.Invoke(consumer, arguments)!)
             return null;
-        }
-        catch (TargetInvocationException ex)
-        {
-            return ex.InnerException;
-        }
+
+        return ((long)arguments[1]!, (int)arguments[2]!);
     }
 
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(

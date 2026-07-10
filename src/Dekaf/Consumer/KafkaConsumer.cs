@@ -701,7 +701,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
-    private readonly ConcurrentQueue<Exception> _pendingFetchExceptions = new();
     // Auto-commit reads this snapshot from its background task instead of touching _pendingFetches.
     private string? _activeConsumedTopic;
     private int _activeConsumedPartition;
@@ -1362,8 +1361,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1427,8 +1424,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Direct fetch (no prefetching)
                     await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                ThrowPendingFetchException();
             }
 
             // Yield records lazily from pending fetches
@@ -1668,8 +1663,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1728,8 +1721,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Direct fetch (no prefetching)
                     await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                ThrowPendingFetchException();
             }
 
             // Yield batches from pending fetches
@@ -1808,8 +1799,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1868,8 +1857,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Direct fetch (no prefetching)
                     await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                ThrowPendingFetchException();
             }
 
             // Yield raw batches from pending fetches
@@ -3007,8 +2994,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -3025,8 +3010,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     return null;
                 }
-
-                ThrowPendingFetchException();
             }
 
             if (TryConsumeOneFromPendingFetches(out var result))
@@ -5296,17 +5279,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private int GetStoredOffsetLeaderEpoch(TopicPartition partition) =>
         _storedOffsetLeaderEpochs.GetValueOrDefault(partition, -1);
-
-    private void ThrowPendingFetchException()
-    {
-        if (_pendingFetchExceptions.TryDequeue(out var exception))
-            throw exception;
-    }
-
-    private void QueueFetchException(Exception exception)
-    {
-        _pendingFetchExceptions.Enqueue(exception);
-    }
 
     private bool ResetToDivergingEpoch(
         string topic,
