@@ -65,6 +65,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     // KIP-848 consumer protocol state
     private volatile int _heartbeatIntervalMs;
+    private long _lastPollTimestamp;
+    private long _pollVersion;
+    private long _maxPollExpiredAtPollVersion = -1;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
@@ -93,6 +96,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
+        _lastPollTimestamp = Stopwatch.GetTimestamp();
     }
 
     public string? MemberId => _memberId;
@@ -100,6 +104,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
+
+    internal void RecordPoll()
+    {
+        Volatile.Write(ref _lastPollTimestamp, Stopwatch.GetTimestamp());
+        Interlocked.Increment(ref _pollVersion);
+    }
 
     internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
         GetAssignmentSnapshotAndDrainRevocations()
@@ -775,11 +785,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
-        var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
-
         _memberId = null;
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
+        Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
+
+        ClearAssignment();
+    }
+
+    private IReadOnlyList<TopicPartition>? ClearAssignment()
+    {
+        var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
+
         lock (_assignmentStateLock)
         {
             _assignedPartitions = [];
@@ -792,6 +809,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (revoked is not null)
             _onPartitionsRevoked?.Invoke(revoked);
+
+        return revoked;
     }
 
     /// <summary>
@@ -876,7 +895,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             MemberId = memberId,
             MemberEpoch = memberEpoch,
             InstanceId = _options.GroupInstanceId,
-            RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
+            RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
             RackId = isInitial ? _options.ClientRack : null,
             SubscribedTopicNames = subscribedTopics,
             SubscribedTopicRegex = subscribedTopicRegex,
@@ -1112,6 +1131,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             ThrowIfFatalHeartbeatException();
 
+            var expiredPollVersion = Volatile.Read(ref _maxPollExpiredAtPollVersion);
+            if (expiredPollVersion >= 0)
+            {
+                // Background prefetch also calls EnsureActiveGroup. Do not let it rejoin a
+                // member evicted for max.poll.interval until the application polls again.
+                if (Volatile.Read(ref _pollVersion) == expiredPollVersion)
+                    return;
+
+                _memberId = null;
+                _generationId = -1;
+                Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
+            }
+
             if (_state == CoordinatorState.Stable)
                 return;
 
@@ -1220,9 +1252,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             try
             {
                 // Task.Delay (not PeriodicTimer): the broker controls the interval via each response,
-                // and PeriodicTimer cannot change its period after construction. At ~5s intervals,
-                // the per-tick TimerQueueTimer allocation is negligible.
-                await Task.Delay(_heartbeatIntervalMs, cancellationToken).ConfigureAwait(false);
+                // and PeriodicTimer cannot change its period after construction. Wake at the
+                // max.poll deadline when it is sooner so eviction is not heartbeat-interval late.
+                await Task.Delay(GetConsumerProtocolHeartbeatDelay(), cancellationToken).ConfigureAwait(false);
+
+                var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
+                if (expiration.Expired)
+                {
+                    if (expiration.Lost is { Count: > 0 })
+                    {
+                        await InvokeRebalanceListenersAsync(
+                            "OnPartitionsLost",
+                            expiration.Lost,
+                            static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+
+                    break;
+                }
 
                 var result = await SendConsumerGroupHeartbeatAsync(
                     isInitial: false, cancellationToken).ConfigureAwait(false);
@@ -1285,11 +1332,71 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    private TimeSpan GetConsumerProtocolHeartbeatDelay()
+    {
+        var heartbeatDelay = TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1));
+        var remaining = TimeSpan.FromMilliseconds(_options.MaxPollIntervalMs)
+            - Stopwatch.GetElapsedTime(Volatile.Read(ref _lastPollTimestamp));
+
+        if (remaining <= TimeSpan.Zero)
+            return TimeSpan.Zero;
+
+        return remaining < heartbeatDelay ? remaining : heartbeatDelay;
+    }
+
+    private async ValueTask<(bool Expired, IReadOnlyList<TopicPartition>? Lost)> TryExpireMaxPollIntervalAsync(
+        CancellationToken cancellationToken)
+    {
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_state != CoordinatorState.Stable)
+                return default;
+
+            var pollVersion = Volatile.Read(ref _pollVersion);
+            var lastPollTimestamp = Volatile.Read(ref _lastPollTimestamp);
+            if (Stopwatch.GetElapsedTime(lastPollTimestamp) < TimeSpan.FromMilliseconds(_options.MaxPollIntervalMs))
+                return default;
+
+            // Record the poll generation that expired. A prefetch loop may continue calling
+            // EnsureActiveGroup, but only a new foreground poll increments this generation.
+            Volatile.Write(ref _maxPollExpiredAtPollVersion, pollVersion);
+            _state = CoordinatorState.Unjoined;
+
+            var lost = ClearAssignment();
+
+            LogMaxPollIntervalExceeded(_options.MaxPollIntervalMs);
+            await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
+            return (true, lost);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     /// <summary>
     /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1 for dynamic members,
     /// or -2 for static members so the broker keeps the assignment warm.
     /// </summary>
     private async ValueTask LeaveGroupConsumerProtocolAsync(CancellationToken cancellationToken)
+    {
+        await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
+
+        await StopHeartbeatAsync().ConfigureAwait(false);
+
+        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            ResetMemberState();
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private async ValueTask SendConsumerProtocolLeaveRequestAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -1326,18 +1433,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             LogLeaveGroupRequestFailed(ex);
-        }
-
-        await StopHeartbeatAsync().ConfigureAwait(false);
-
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            ResetMemberState();
-        }
-        finally
-        {
-            _lock.Release();
         }
     }
 
@@ -1429,6 +1524,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Maximum poll interval of {MaxPollIntervalMs}ms exceeded; leaving consumer group")]
+    private partial void LogMaxPollIntervalExceeded(int maxPollIntervalMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
     private partial void LogLeaveGroupFailed(ErrorCode errorCode);

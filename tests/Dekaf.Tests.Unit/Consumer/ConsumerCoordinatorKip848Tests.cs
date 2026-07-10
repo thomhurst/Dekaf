@@ -89,7 +89,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         string? groupRemoteAssignor = null,
         string? clientRack = null,
         int heartbeatIntervalMs = 3000,
-        int rebalanceTimeoutMs = 30000) => new()
+        int rebalanceTimeoutMs = 30000,
+        int maxPollIntervalMs = 300000) => new()
         {
             BootstrapServers = ["localhost:9092"],
             GroupId = groupId,
@@ -98,7 +99,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             ClientRack = clientRack,
             RebalanceListener = rebalanceListener,
             HeartbeatIntervalMs = heartbeatIntervalMs,
-            RebalanceTimeoutMs = rebalanceTimeoutMs
+            RebalanceTimeoutMs = rebalanceTimeoutMs,
+            MaxPollIntervalMs = maxPollIntervalMs
         };
 
     private void SetupFindCoordinator()
@@ -261,6 +263,63 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         // MemberEpoch is stored in GenerationId for offset commit compatibility
         await Assert.That(coordinator.GenerationId).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_InitialJoin_SendsMaxPollIntervalAsRebalanceTimeout()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(
+            rebalanceTimeoutMs: 30_000,
+            maxPollIntervalMs: 12_345);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.RebalanceTimeoutMs == 12_345),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task ConsumerProtocol_MaxPollIntervalExceeded_LeavesDynamicMember(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var leaveRequest = new TaskCompletionSource<ConsumerGroupHeartbeatRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (request.MemberEpoch == -1)
+                    leaveRequest.TrySetResult(request);
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = request.MemberEpoch == -1 ? -1 : 1,
+                    HeartbeatIntervalMs = 10
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 10,
+            maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+
+        var request = await leaveRequest.Task.WaitAsync(cancellationToken);
+        await Assert.That(request.MemberEpoch).IsEqualTo(-1);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
     }
 
     [Test]

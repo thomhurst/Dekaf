@@ -952,6 +952,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollIntervalMs, 1);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
@@ -1378,6 +1379,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
+        _coordinator?.RecordPoll();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1601,6 +1603,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
 
                         yield return nextResult;
+                        _coordinator?.RecordPoll();
 
                         // User code at the yield point may have called Seek/Assign, which
                         // clears _pendingFetches and disposes `pending` while it is still
@@ -1667,6 +1670,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     eofEvent.Partition.Topic,
                     eofEvent.Partition.Partition,
                     eofEvent.Offset);
+                _coordinator?.RecordPoll();
             }
         }
     }
@@ -1680,6 +1684,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         ThrowIfNotInitialized();
+        _coordinator?.RecordPoll();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1786,6 +1791,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
+                    _coordinator?.RecordPoll();
                 }
                 finally
                 {
@@ -1816,6 +1822,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         ThrowIfNotInitialized();
+        _coordinator?.RecordPoll();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1917,6 +1924,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     ConsumeRawBatch batch = new(pending, CanContinueBatchIteration, _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
+                    _coordinator?.RecordPoll();
                 }
                 finally
                 {
@@ -3028,6 +3036,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
+        _coordinator?.RecordPoll();
 
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
