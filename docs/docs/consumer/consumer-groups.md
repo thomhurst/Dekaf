@@ -220,31 +220,34 @@ For the built-in partitioned runtime, prefer
 channel-per-partition pattern, bounded queues, pause/resume backpressure, and
 revoke/lost/shutdown commits for you.
 
-### Cooperative Rebalancing
+### Rebalance Protocols and Assignors
 
-Dekaf uses cooperative (incremental) rebalancing by default, which minimizes disruption:
+Dekaf group subscriptions use Kafka's KIP-848 `consumer` group protocol, which requires Kafka 4.0 or later. KIP-848 assignment is server-side and every rebalance is incremental/cooperative: only partitions that move are revoked, while unaffected partitions continue processing.
+
+Choose one of the broker's configured remote assignors with `WithGroupRemoteAssignor`:
 
 ```csharp
 using Dekaf;
 
-// Default: CooperativeSticky assignor
 var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
-    .BuildAsync();
-
-// Or explicitly set the assignor
-var consumer = await Kafka.CreateConsumer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .WithGroupId("my-group")
-    .WithPartitionAssignmentStrategy(PartitionAssignmentStrategy.CooperativeSticky)
+    .WithGroupRemoteAssignor("uniform") // Or "range"
     .BuildAsync();
 ```
 
-With cooperative rebalancing:
-- Only affected partitions are revoked
-- Other partitions continue processing
-- Reduces rebalance time significantly
+When no remote assignor is specified, the broker selects the first entry in its `group.consumer.assignors` configuration (`uniform` by default on Kafka 4.0).
+
+Assignment algorithm and rebalance protocol are separate choices:
+
+| Group mode | Assignment | Rebalance semantics | Dekaf configuration |
+| --- | --- | --- | --- |
+| KIP-848 `uniform` | Broker distributes partitions as evenly as possible across subscribed members. | Incremental/cooperative | `WithGroupRemoteAssignor("uniform")` |
+| KIP-848 `range` | Broker assigns ordered partition ranges per topic, preserving co-partitioning where possible. | Incremental/cooperative | `WithGroupRemoteAssignor("range")` |
+| Classic `range` or `roundrobin` | A classic client-side leader computes the assignment. | Eager: every member revokes its full assignment. | Not supported by Dekaf; use a classic compatibility client. |
+| Classic `cooperative-sticky` | A classic client-side leader computes a sticky assignment. | Cooperative, using the classic JoinGroup/SyncGroup APIs. | Not supported by Dekaf. It is not an alias for KIP-848 `uniform`. |
+
+Kafka 4.0 supports online migration between compatible Classic and Consumer groups. With the broker's default bidirectional migration policy, a classic `range` member can coexist temporarily with Dekaf while a rolling migration is in progress: the group becomes a Consumer group while a KIP-848 member is present and returns to Classic after the last KIP-848 member leaves. Custom classic assignor metadata or a restrictive `group.consumer.migration.policy` can prevent that migration. See Apache Kafka's [consumer rebalance protocol guide](https://kafka.apache.org/40/operations/consumer-rebalance-protocol/) for broker settings and limitations.
 
 ## Static Membership
 
