@@ -69,6 +69,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _lastPollTimestamp;
     private long _pollVersion;
     private long _maxPollExpiredAtPollVersion = -1;
+    private long _maxPollExpirationVersion;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
@@ -887,9 +888,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
         bool isInitial,
-        bool discardIfNotStable,
+        bool discardIfMembershipChanged,
         CancellationToken cancellationToken)
     {
+        var maxPollExpirationVersion = discardIfMembershipChanged
+            ? Volatile.Read(ref _maxPollExpirationVersion)
+            : 0;
         using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
             _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
@@ -953,7 +957,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // A foreground poll can expire the member while this request is in flight.
         // Ignore the stale response before it can update the epoch or assignment.
-        if (discardIfNotStable && _state != CoordinatorState.Stable)
+        if (discardIfMembershipChanged &&
+            (_state != CoordinatorState.Stable ||
+             Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion))
             return default;
 
         if (response.ErrorCode != ErrorCode.None)
@@ -1226,7 +1232,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     heartbeatResult = await SendConsumerGroupHeartbeatAsync(
                         isInitial: _memberId is null || _generationId <= 0,
-                        discardIfNotStable: false,
+                        discardIfMembershipChanged: false,
                         cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
@@ -1323,7 +1329,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 var result = await SendConsumerGroupHeartbeatAsync(
                     isInitial: false,
-                    discardIfNotStable: true,
+                    discardIfMembershipChanged: true,
                     cancellationToken).ConfigureAwait(false);
 
                 await FireConsumerProtocolRebalanceListenersAsync(result, cancellationToken)
@@ -1412,6 +1418,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             // Record the poll generation that expired. A prefetch loop may continue calling
             // EnsureActiveGroup, but only a new foreground poll increments this generation.
+            Interlocked.Increment(ref _maxPollExpirationVersion);
             Volatile.Write(ref _maxPollExpiredAtPollVersion, pollVersion);
             _state = CoordinatorState.Unjoined;
 
