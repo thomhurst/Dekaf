@@ -473,8 +473,21 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await survivor.WaitForPartitionAssignedAsync(crashedPartition, cancellationToken);
         await survivor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
 
-        // A two-member uniform/range assignment cannot return the crashed partition
-        // and all four partitions to the survivor until the broker expires the killed member.
+        // Start the post-expiry admin probe only after full reassignment shows the
+        // coordinator transition has settled, then reuse it for both checkpoints.
+        await using var postExpiryAdmin = KafkaContainer.CreateAdminClient();
+        await AssertGroupMemberPresenceAsync(
+            postExpiryAdmin,
+            groupId,
+            crashedClientId,
+            expected: false,
+            cancellationToken);
+        var committedAfterExpiry = await CaptureAndAssertCommittedOffsetsAsync(
+            postExpiryAdmin,
+            groupId,
+            oracle,
+            cancellationToken,
+            committedAtCrash);
 
         var remainingPermits = PartitionCount * MessagesPerPartition * 2;
         survivor.Allow(remainingPermits);
@@ -500,15 +513,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 .IsEquivalentTo(Enumerable.Range(0, MessagesPerPartition).Select(static value => (long)value));
         }
 
-        // Reconnect after the broker-side session transition; the pre-crash
-        // admin connection can time out while rediscovering the coordinator.
-        await using var finalAdmin = KafkaContainer.CreateAdminClient();
         await CaptureAndAssertCommittedOffsetsAsync(
-            finalAdmin,
+            postExpiryAdmin,
             groupId,
             oracle,
             cancellationToken,
-            committedAtCrash);
+            committedAfterExpiry);
     }
 
     private async Task ProduceSequencedBacklogAsync(string topic, CancellationToken cancellationToken)

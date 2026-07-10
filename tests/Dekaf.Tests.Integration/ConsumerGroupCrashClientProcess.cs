@@ -213,14 +213,9 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
                 process.WaitForExit(milliseconds: 10_000);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception)
         {
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-        }
-        catch (NotSupportedException)
-        {
+            // Startup cleanup is best-effort; preserve the original start failure.
         }
     }
 
